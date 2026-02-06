@@ -11,16 +11,15 @@ pip install octomil-sdk
 ## Quick Start
 
 ```python
-from octomil import Octomil
+from octomil import FederatedClient
 
-client = Octomil(api_key="your-api-key")
-
-# Create rollout
-rollout = client.rollouts.create(
-    model_id="model-123",
-    version="2.0.0",
-    rollout_percentage=10
+client = FederatedClient(
+    auth_token_provider=lambda: "<short-lived-device-token>",
+    org_id="org_123",
 )
+
+# Register this runtime as a device participant
+device_id = client.register()
 ```
 
 ## Documentation
