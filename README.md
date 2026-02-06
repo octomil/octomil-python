@@ -26,3 +26,23 @@ rollout = client.rollouts.create(
 ## Documentation
 
 https://docs.octomil.io/sdks/python
+
+## Runtime Device Auth
+
+Use backend-issued short-lived device tokens instead of embedding org API keys in clients.
+
+```python
+from octomil import DeviceAuthClient
+
+auth = DeviceAuthClient(
+    base_url="https://api.octomil.io",
+    org_id="org_123",
+    device_identifier="device-abc",
+)
+
+# 1) Bootstrap once with a backend-issued bootstrap bearer token.
+await auth.bootstrap(bootstrap_bearer_token="token_from_backend")
+
+# 2) Get access token for device API calls (auto-refreshes near expiry).
+access_token = await auth.get_access_token()
+```
