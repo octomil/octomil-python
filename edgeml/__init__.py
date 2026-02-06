@@ -28,6 +28,7 @@ Basic Usage:
 """
 
 from .device_info import DeviceInfo
+from .auth import DeviceAuthClient
 
-__version__ = "1.0.0"
-__all__ = ["DeviceInfo"]
+__version__ = "1.1.0"
+__all__ = ["DeviceInfo", "DeviceAuthClient"]

@@ -5,6 +5,7 @@ Automatically collects hardware metadata and system constraints
 for device monitoring and training eligibility.
 """
 
+import locale
 import platform
 import socket
 import subprocess
@@ -65,10 +66,45 @@ def get_network_type() -> str:
     Get current network connection type.
 
     Returns:
-        Network type: 'wifi', 'cellular', 'ethernet', or 'unknown'.
+        Network type: 'wifi', 'cellular', 'ethernet', 'offline', or 'unknown'.
     """
-    # Basic implementation - can be enhanced with platform-specific checks
-    return "wifi"  # Default assumption for desktop/laptop
+    try:
+        import psutil
+
+        stats = psutil.net_if_stats()
+        if not stats:
+            return "unknown"
+
+        active_ifaces = [name.lower() for name, data in stats.items() if data.isup]
+        if not active_ifaces:
+            return "offline"
+
+        if any(
+            key in name
+            for name in active_ifaces
+            for key in ["wlan", "wifi", "wi-fi", "airport", "en0", "wl"]
+        ):
+            return "wifi"
+
+        if any(
+            key in name
+            for name in active_ifaces
+            for key in ["wwan", "cell", "rmnet", "pdp_ip", "lte"]
+        ):
+            return "cellular"
+
+        if any(
+            key in name
+            for name in active_ifaces
+            for key in ["eth", "en", "ethernet"]
+        ):
+            return "ethernet"
+
+        return "unknown"
+    except ImportError:
+        return "unknown"
+    except Exception:
+        return "unknown"
 
 
 def get_timezone() -> str:
@@ -85,6 +121,28 @@ def get_timezone() -> str:
     except Exception:
         pass
     return "UTC"
+
+
+def get_locale_identifier() -> Optional[str]:
+    """Get locale identifier like en_US."""
+    try:
+        value = locale.getdefaultlocale()[0]
+        if value:
+            return value
+    except Exception:
+        pass
+    return None
+
+
+def get_region_code() -> Optional[str]:
+    """Get region/country code from locale identifier."""
+    locale_id = get_locale_identifier()
+    if not locale_id:
+        return None
+    parts = locale_id.split("_")
+    if len(parts) >= 2 and parts[1]:
+        return parts[1].upper()
+    return None
 
 
 def get_manufacturer() -> Optional[str]:
@@ -185,7 +243,6 @@ class DeviceInfo:
     def __init__(self):
         """Initialize device information collector."""
         self._device_id: Optional[str] = None
-        self._cached_info: Optional[Dict[str, Any]] = None
 
     @property
     def device_id(self) -> str:
@@ -247,8 +304,8 @@ class DeviceInfo:
             "platform": platform.system().lower(),
             "os_version": f"{platform.system()} {platform.release()}",
             "device_info": self.collect_device_info(),
-            "locale": "en_US",  # Can be enhanced with locale detection
-            "region": "US",     # Can be enhanced with region detection
+            "locale": get_locale_identifier(),
+            "region": get_region_code(),
             "timezone": get_timezone(),
             "metadata": self.collect_metadata(),
             "capabilities": self.collect_capabilities(),

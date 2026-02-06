@@ -4,11 +4,11 @@ Official Python SDK for the EdgeML federated learning platform.
 
 ## Features
 
-- ✅ **Automatic Device Registration** - Collects and sends complete hardware metadata
-- ✅ **Real-Time Monitoring** - Tracks battery level, network type, and system constraints
-- ✅ **Stable Device IDs** - Hardware-based identifiers prevent duplicate registrations
-- ✅ **Cross-Platform** - Works on macOS, Linux, and Windows
-- ✅ **Privacy-First** - All training happens on-device
+- Automatic Device Registration - Collects and sends complete hardware metadata
+- Real-Time Monitoring - Tracks battery level, network type, and system constraints
+- Stable Device IDs - Hardware-based identifiers prevent duplicate registrations
+- Cross-Platform - Works on macOS, Linux, and Windows
+- Privacy-First - All training happens on-device
 
 ## Installation
 
@@ -60,24 +60,27 @@ print(f"Network: {metadata['network_type']}")
 import httpx
 from edgeml import DeviceInfo
 
-async def register_device(api_key: str, org_id: str, base_url: str):
+# Your backend should mint a short-lived, org-scoped device token.
+# Never embed long-lived org API keys in desktop/mobile clients.
+
+async def register_device(device_token: str, org_id: str, base_url: str):
     device = DeviceInfo()
 
     # Prepare registration data
     data = device.to_registration_dict()
     data["org_id"] = org_id
-    data["sdk_version"] = "1.0.0"
+    data["sdk_version"] = "1.1.0"
 
     # Send to EdgeML API
     async with httpx.AsyncClient() as client:
         response = await client.post(
             f"{base_url}/api/v1/devices/register",
             json=data,
-            headers={"Authorization": f"Bearer {api_key}"}
+            headers={"Authorization": f"Bearer {device_token}"}
         )
         return response.json()
 
-async def send_heartbeat(device_id: str, api_key: str, base_url: str):
+async def send_heartbeat(device_id: str, device_token: str, base_url: str):
     device = DeviceInfo()
 
     # Get updated metadata
@@ -87,15 +90,34 @@ async def send_heartbeat(device_id: str, api_key: str, base_url: str):
         response = await client.put(
             f"{base_url}/api/v1/devices/{device_id}/heartbeat",
             json={"metadata": metadata},
-            headers={"Authorization": f"Bearer {api_key}"}
+            headers={"Authorization": f"Bearer {device_token}"}
         )
         return response.json()
 ```
 
+## Runtime Auth Manager
+
+```python
+from edgeml import DeviceAuthClient
+
+auth = DeviceAuthClient(
+    base_url="https://api.edgeml.io",
+    org_id="your_org_id",
+    device_identifier="device-123",
+)
+
+# Bootstrap with a backend-issued bootstrap token
+await auth.bootstrap(bootstrap_bearer_token="token_from_your_backend")
+
+# Get a valid short-lived access token (auto-refreshes if needed)
+access_token = await auth.get_access_token()
+```
+
 ## Dependencies
 
-- **psutil** (optional but recommended) - For battery and system info
-- **httpx** - For API communication
+- psutil (optional but recommended) - For battery and system info
+- httpx - For API communication
+- keyring - For secure token storage in the OS keychain
 
 If `psutil` is not installed, the SDK will gracefully fall back to defaults:
 - Battery: None
