@@ -48,13 +48,22 @@ class EdgeMLClientError(RuntimeError):
 
 
 class _ApiClient:
-    def __init__(self, api_key: str, api_base: str, timeout: float = 20.0):
-        self.api_key = api_key
+    def __init__(
+        self,
+        auth_token_provider: Callable[[], str],
+        api_base: str,
+        timeout: float = 20.0,
+    ):
+        self.api_key = None
+        self.auth_token_provider = auth_token_provider
         self.api_base = api_base.rstrip("/")
         self.timeout = timeout
 
     def _headers(self) -> dict[str, str]:
-        return {"Authorization": f"Bearer {self.api_key}"}
+        token = self.auth_token_provider()
+        if not token:
+            raise EdgeMLClientError("auth_token_provider returned an empty token")
+        return {"Authorization": f"Bearer {token}"}
 
     def get(self, path: str, params: Optional[dict[str, Any]] = None) -> Any:
         with httpx.Client(timeout=self.timeout) as client:
@@ -81,12 +90,15 @@ class _ApiClient:
 class Federation:
     def __init__(
         self,
-        api_key: str,
+        auth_token_provider: Callable[[], str],
         name: str | None = None,
         org_id: str = "default",
         api_base: str = "https://api.edgeml.io/api/v1",
     ):
-        self.api = _ApiClient(api_key=api_key, api_base=api_base)
+        self.api = _ApiClient(
+            auth_token_provider=auth_token_provider,
+            api_base=api_base,
+        )
         self.org_id = org_id
         self.name = name or "default"
         self.last_model_id: Optional[str] = None
@@ -200,7 +212,7 @@ class FederatedClient:
     Client for participating in federated learning.
 
     Simple usage (just works):
-        client = FederatedClient(api_key="...")
+        client = FederatedClient(auth_token_provider=lambda: "<device-access-token>")
         client.train(model="my-model", data="s3://bucket/data.parquet")
         # That's it. Data loaded, features auto-detected, alignment automatic.
 
@@ -219,13 +231,16 @@ class FederatedClient:
 
     def __init__(
         self,
-        api_key: str,
+        auth_token_provider: Callable[[], str],
         org_id: str = "default",
         api_base: str = "https://api.edgeml.io/api/v1",
         device_identifier: Optional[str] = None,
         platform: str = "python",
     ):
-        self.api = _ApiClient(api_key=api_key, api_base=api_base)
+        self.api = _ApiClient(
+            auth_token_provider=auth_token_provider,
+            api_base=api_base,
+        )
         self.org_id = org_id
         self.device_identifier = device_identifier or f"client-{uuid.uuid4().hex[:10]}"
         self.platform = platform
@@ -560,12 +575,16 @@ def compute_state_dict_delta(
 class ModelRegistry:
     def __init__(
         self,
-        api_key: str,
+        auth_token_provider: Callable[[], str],
         org_id: str = "default",
         api_base: str = "https://api.edgeml.io/api/v1",
         timeout: float = 60.0,
     ):
-        self.api = _ApiClient(api_key=api_key, api_base=api_base, timeout=timeout)
+        self.api = _ApiClient(
+            auth_token_provider=auth_token_provider,
+            api_base=api_base,
+            timeout=timeout,
+        )
         self.org_id = org_id
 
     def resolve_model_id(self, model: str) -> str:

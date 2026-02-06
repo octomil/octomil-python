@@ -4,6 +4,7 @@ Device auth runtime client for bootstrap/refresh/revoke token flow.
 
 from __future__ import annotations
 
+import asyncio
 import json
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -170,3 +171,13 @@ class DeviceAuthClient:
         if now + timedelta(seconds=refresh_if_expiring_within_seconds) >= state.expires_at:
             state = await self.refresh()
         return state.access_token
+
+    def get_access_token_sync(self, refresh_if_expiring_within_seconds: int = 30) -> str:
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return asyncio.run(self.get_access_token(refresh_if_expiring_within_seconds))
+        raise RuntimeError(
+            "get_access_token_sync cannot be called inside an active event loop; "
+            "use await get_access_token(...) instead."
+        )
