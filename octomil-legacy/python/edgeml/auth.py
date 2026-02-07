@@ -169,7 +169,13 @@ class DeviceAuthClient:
             raise RuntimeError("No token state found in keyring")
         now = datetime.now(timezone.utc)
         if now + timedelta(seconds=refresh_if_expiring_within_seconds) >= state.expires_at:
-            state = await self.refresh()
+            try:
+                state = await self.refresh()
+            except Exception:
+                # Offline-safe fallback: keep using current token until hard expiry.
+                if now < state.expires_at:
+                    return state.access_token
+                raise
         return state.access_token
 
     def get_access_token_sync(self, refresh_if_expiring_within_seconds: int = 30) -> str:
