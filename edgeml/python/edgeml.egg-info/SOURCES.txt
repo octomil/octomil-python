@@ -1,0 +1,9 @@
+README.md
+pyproject.toml
+edgeml/__init__.py
+edgeml/client.py
+edgeml.egg-info/PKG-INFO
+edgeml.egg-info/SOURCES.txt
+edgeml.egg-info/dependency_links.txt
+edgeml.egg-info/requires.txt
+edgeml.egg-info/top_level.txt

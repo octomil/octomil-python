@@ -1,0 +1,47 @@
+Metadata-Version: 2.4
+Name: edgeml-sdk
+Version: 0.1.2
+Summary: EdgeML Python SDK
+Requires-Python: >=3.9
+Description-Content-Type: text/markdown
+Requires-Dist: httpx>=0.25.0
+
+# EdgeML Python SDK
+
+Minimal Python SDK wrapper for the EdgeML REST API.
+
+## Quickstart
+
+```python
+from edgeml import Federation, FederatedClient
+
+# Admin / coordinator
+fed = Federation(api_key="ek_live_...", org_id="default")
+fed.invite(org_ids=["org_hospital_a", "org_hospital_b"])
+fed.train("tumor_detection", rounds=10)
+fed.deploy()
+
+# Client device
+client = FederatedClient(api_key="ek_live_...", org_id="org_hospital_a")
+client.join_federation("cancer_research_consortium")
+client.train("tumor_detection", local_data, rounds=10)
+```
+
+## Install (local dev)
+
+```bash
+pip install -e .
+```
+
+## Publish (automated)
+
+Tag a release with `edgeml-vX.Y.Z` and push the tag:
+
+```bash
+git tag edgeml-v0.1.1
+git push origin edgeml-v0.1.1
+```
+
+The GitHub Action `Publish Python SDK` will build and publish to PyPI. Configure
+PyPI trusted publishing for this repo (or set the `PYPI_API_TOKEN` secret and
+update the workflow to use it).

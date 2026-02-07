@@ -1,107 +1,55 @@
 # EdgeML Python SDK
 
-Official Python SDK for the EdgeML federated learning platform.
+Python SDK for federated orchestration and device runtime participation.
 
-## Features
+## Enterprise Runtime Auth (required for device-side/runtime use)
 
-- ✅ **Automatic Device Registration** - Collects and sends complete hardware metadata
-- ✅ **Real-Time Monitoring** - Tracks battery level, network type, and system constraints
-- ✅ **Stable Device IDs** - Hardware-based identifiers prevent duplicate registrations
-- ✅ **Cross-Platform** - Works on macOS, Linux, and Windows
-- ✅ **Privacy-First** - All training happens on-device
+Do not embed org API keys in distributed clients. Use backend-issued bootstrap tokens and short-lived device credentials.
+
+**Server endpoints**
+- `POST /api/v1/device-auth/bootstrap`
+- `POST /api/v1/device-auth/refresh`
+- `POST /api/v1/device-auth/revoke`
+
+**Default lifetimes**
+- Access token: 15 minutes (configurable, max 60 minutes)
+- Refresh token: 30 days (rotated on refresh)
 
 ## Installation
 
 ```bash
-pip install edgeml psutil
+pip install edgeml-sdk
 ```
 
-## Quick Start
+## Quick Start (Enterprise Runtime Auth)
 
 ```python
-from edgeml import DeviceInfo
+from edgeml import DeviceAuthClient, FederatedClient
 
-# Collect device information
-device = DeviceInfo()
+auth = DeviceAuthClient(
+    base_url="https://api.edgeml.io",
+    org_id="org_123",
+    device_identifier="python-runtime-001",
+)
 
-# Get registration payload
-registration_data = device.to_registration_dict()
-print(f"Device ID: {device.device_id}")
+# One-time bootstrap with backend-issued token
+await auth.bootstrap(bootstrap_bearer_token=backend_bootstrap_token)
 
-# Get current metadata (battery, network)
-metadata = device.update_metadata()
-print(f"Battery: {metadata['battery_level']}%")
-print(f"Network: {metadata['network_type']}")
+client = FederatedClient(
+    auth_token_provider=lambda: auth.get_access_token_sync(),
+    org_id="org_123",
+)
+
+device_id = client.register()
 ```
 
-## Device Information Collected
+## Token lifecycle
 
-### Hardware
-- Manufacturer (e.g., "Apple", "Dell")
-- Model (e.g., "MacBookPro18,1")
-- CPU Architecture (e.g., "arm64", "x86_64")
-- Total Memory (MB)
-- Available Storage (MB)
-- GPU Available (boolean)
+- `DeviceAuthClient.get_access_token()` auto-refreshes near expiry.
+- `DeviceAuthClient.revoke()` invalidates the session.
+- Use `keyring` for system keychain/keyring storage.
 
-### Runtime Constraints
-- Battery Level (0-100%)
-- Network Type (wifi, cellular, ethernet)
+## Docs
 
-### System Info
-- Platform (darwin, linux, windows)
-- OS Version
-- Python Version
-- Timezone
-
-## Integration
-
-```python
-import httpx
-from edgeml import DeviceInfo
-
-async def register_device(api_key: str, org_id: str, base_url: str):
-    device = DeviceInfo()
-
-    # Prepare registration data
-    data = device.to_registration_dict()
-    data["org_id"] = org_id
-    data["sdk_version"] = "1.0.0"
-
-    # Send to EdgeML API
-    async with httpx.AsyncClient() as client:
-        response = await client.post(
-            f"{base_url}/api/v1/devices/register",
-            json=data,
-            headers={"Authorization": f"Bearer {api_key}"}
-        )
-        return response.json()
-
-async def send_heartbeat(device_id: str, api_key: str, base_url: str):
-    device = DeviceInfo()
-
-    # Get updated metadata
-    metadata = device.update_metadata()
-
-    async with httpx.AsyncClient() as client:
-        response = await client.put(
-            f"{base_url}/api/v1/devices/{device_id}/heartbeat",
-            json={"metadata": metadata},
-            headers={"Authorization": f"Bearer {api_key}"}
-        )
-        return response.json()
-```
-
-## Dependencies
-
-- **psutil** (optional but recommended) - For battery and system info
-- **httpx** - For API communication
-
-If `psutil` is not installed, the SDK will gracefully fall back to defaults:
-- Battery: None
-- Memory/Storage: None
-- GPU detection: Limited
-
-## License
-
-MIT
+- https://docs.edgeml.io/sdks/python
+- https://docs.edgeml.io/reference/api-endpoints
