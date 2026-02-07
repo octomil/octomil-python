@@ -1,6 +1,19 @@
 # EdgeML Python SDK
 
-Federated Learning orchestration and client SDK for Python.
+Python SDK for federated orchestration and device runtime participation.
+
+## Enterprise Runtime Auth (required for device-side/runtime use)
+
+Do not embed org API keys in distributed clients. Use backend-issued bootstrap tokens and short-lived device credentials.
+
+**Server endpoints**
+- `POST /api/v1/device-auth/bootstrap`
+- `POST /api/v1/device-auth/refresh`
+- `POST /api/v1/device-auth/revoke`
+
+**Default lifetimes**
+- Access token: 15 minutes (configurable, max 60 minutes)
+- Refresh token: 30 days (rotated on refresh)
 
 ## Installation
 
@@ -8,40 +21,35 @@ Federated Learning orchestration and client SDK for Python.
 pip install edgeml-sdk
 ```
 
-## Quick Start
+## Quick Start (Enterprise Runtime Auth)
 
 ```python
-from edgeml import FederatedClient
-
-client = FederatedClient(
-    auth_token_provider=lambda: "<short-lived-device-token>",
-    org_id="org_123",
-)
-
-# Register this runtime as a device participant
-device_id = client.register()
-```
-
-## Documentation
-
-https://docs.edgeml.io/sdks/python
-
-## Runtime Device Auth
-
-Use backend-issued short-lived device tokens instead of embedding org API keys in clients.
-
-```python
-from edgeml import DeviceAuthClient
+from edgeml import DeviceAuthClient, FederatedClient
 
 auth = DeviceAuthClient(
     base_url="https://api.edgeml.io",
     org_id="org_123",
-    device_identifier="device-abc",
+    device_identifier="python-runtime-001",
 )
 
-# 1) Bootstrap once with a backend-issued bootstrap bearer token.
-await auth.bootstrap(bootstrap_bearer_token="token_from_backend")
+# One-time bootstrap with backend-issued token
+await auth.bootstrap(bootstrap_bearer_token=backend_bootstrap_token)
 
-# 2) Get access token for device API calls (auto-refreshes near expiry).
-access_token = await auth.get_access_token()
+client = FederatedClient(
+    auth_token_provider=lambda: auth.get_access_token_sync(),
+    org_id="org_123",
+)
+
+device_id = client.register()
 ```
+
+## Token lifecycle
+
+- `DeviceAuthClient.get_access_token()` auto-refreshes near expiry.
+- `DeviceAuthClient.revoke()` invalidates the session.
+- Use `keyring` for system keychain/keyring storage.
+
+## Docs
+
+- https://docs.edgeml.io/sdks/python
+- https://docs.edgeml.io/reference/api-endpoints

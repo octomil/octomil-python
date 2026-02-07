@@ -1,39 +1,31 @@
 # EdgeML Python SDK
 
-Minimal Python SDK wrapper for the EdgeML REST API.
+Python SDK for federated orchestration and device runtime participation.
 
-## Quickstart
+## Enterprise Runtime Auth
+
+Use backend-issued bootstrap tokens and short-lived device credentials for runtime clients.
 
 ```python
-from edgeml import Federation, FederatedClient
+from edgeml import DeviceAuthClient
 
-# Admin / coordinator
-fed = Federation(api_key="ek_live_...", org_id="default")
-fed.invite(org_ids=["org_hospital_a", "org_hospital_b"])
-fed.train("tumor_detection", rounds=10)
-fed.deploy()
+auth = DeviceAuthClient(
+    base_url="https://api.edgeml.io",
+    org_id="org_123",
+    device_identifier="python-runtime-001",
+)
 
-# Client device
-client = FederatedClient(api_key="ek_live_...", org_id="org_hospital_a")
-client.join_federation("cancer_research_consortium")
-client.train("tumor_detection", local_data, rounds=10)
+await auth.bootstrap(bootstrap_bearer_token=backend_bootstrap_token)
+access_token = await auth.get_access_token()
 ```
 
-## Install (local dev)
+Pass an auth token provider into `FederatedClient`:
 
-```bash
-pip install -e .
+```python
+from edgeml import FederatedClient
+
+client = FederatedClient(
+    auth_token_provider=lambda: auth.get_access_token_sync(),
+    org_id="org_123",
+)
 ```
-
-## Publish (automated)
-
-Tag a release with `edgeml-vX.Y.Z` and push the tag:
-
-```bash
-git tag edgeml-v0.1.1
-git push origin edgeml-v0.1.1
-```
-
-The GitHub Action `Publish Python SDK` will build and publish to PyPI. Configure
-PyPI trusted publishing for this repo (or set the `PYPI_API_TOKEN` secret and
-update the workflow to use it).
