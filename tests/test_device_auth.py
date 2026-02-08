@@ -35,6 +35,8 @@ class _FakeResponse:
 
 
 class _FakeAsyncClient:
+    requests_log = []
+
     def __init__(self, *args, **kwargs):
         self._requests = []
 
@@ -46,6 +48,7 @@ class _FakeAsyncClient:
 
     async def post(self, url, json=None, headers=None):
         self._requests.append((url, json, headers))
+        self.__class__.requests_log.append((url, json, headers))
         if url.endswith("/bootstrap"):
             payload = {
                 "access_token": "acc_bootstrap",
@@ -81,6 +84,9 @@ class _FailRefreshAsyncClient(_FakeAsyncClient):
 
 
 class DeviceAuthClientTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        _FakeAsyncClient.requests_log = []
+
     async def test_bootstrap_refresh_revoke_lifecycle(self):
         fake_keyring = _FakeKeyring()
         with patch("octomil.python.octomil.auth.keyring", fake_keyring), patch(
@@ -95,6 +101,44 @@ class DeviceAuthClientTests(unittest.IsolatedAsyncioTestCase):
 
             await client.revoke()
             self.assertIsNone(client._load_token_state())
+
+    async def test_bootstrap_sends_expected_payload_and_bearer_token(self):
+        fake_keyring = _FakeKeyring()
+        with patch("octomil.python.octomil.auth.keyring", fake_keyring), patch(
+            "octomil.python.octomil.auth.httpx.AsyncClient", _FakeAsyncClient
+        ):
+            client = DeviceAuthClient(base_url="https://api.example.com", org_id="org_1", device_identifier="device_1")
+            await client.bootstrap(
+                bootstrap_bearer_token="bootstrap_token",
+                scopes=["devices:write", "heartbeat:write"],
+                access_ttl_seconds=600,
+                device_id="device_db_id",
+            )
+
+            bootstrap_url, bootstrap_payload, bootstrap_headers = _FakeAsyncClient.requests_log[0]
+            self.assertTrue(bootstrap_url.endswith("/api/v1/device-auth/bootstrap"))
+            self.assertEqual(bootstrap_headers["Authorization"], "Bearer bootstrap_token")
+            self.assertEqual(bootstrap_payload["org_id"], "org_1")
+            self.assertEqual(bootstrap_payload["device_identifier"], "device_1")
+            self.assertEqual(bootstrap_payload["access_ttl_seconds"], 600)
+            self.assertEqual(bootstrap_payload["device_id"], "device_db_id")
+            self.assertEqual(bootstrap_payload["scopes"], ["devices:write", "heartbeat:write"])
+
+    async def test_refresh_uses_rotated_refresh_token(self):
+        fake_keyring = _FakeKeyring()
+        with patch("octomil.python.octomil.auth.keyring", fake_keyring), patch(
+            "octomil.python.octomil.auth.httpx.AsyncClient", _FakeAsyncClient
+        ):
+            client = DeviceAuthClient(base_url="https://api.example.com", org_id="org_1", device_identifier="device_1")
+            await client.bootstrap(bootstrap_bearer_token="bootstrap_token")
+            await client.refresh()
+            await client.refresh()
+
+            refresh_requests = [
+                payload for url, payload, _headers in _FakeAsyncClient.requests_log if url.endswith("/api/v1/device-auth/refresh")
+            ]
+            self.assertEqual(refresh_requests[0]["refresh_token"], "ref_bootstrap")
+            self.assertEqual(refresh_requests[1]["refresh_token"], "ref_refresh")
 
     async def test_get_access_token_offline_fallback_before_expiry(self):
         fake_keyring = _FakeKeyring()
@@ -135,6 +179,25 @@ class DeviceAuthClientTests(unittest.IsolatedAsyncioTestCase):
 
             with self.assertRaises(RuntimeError):
                 await client.get_access_token(refresh_if_expiring_within_seconds=30)
+
+    async def test_revoke_failure_preserves_stored_state(self):
+        fake_keyring = _FakeKeyring()
+
+        class _FailRevokeAsyncClient(_FakeAsyncClient):
+            async def post(self, url, json=None, headers=None):
+                if url.endswith("/revoke"):
+                    raise RuntimeError("network down")
+                return await super().post(url, json=json, headers=headers)
+
+        with patch("octomil.python.octomil.auth.keyring", fake_keyring), patch(
+            "octomil.python.octomil.auth.httpx.AsyncClient", _FailRevokeAsyncClient
+        ):
+            client = DeviceAuthClient(base_url="https://api.example.com", org_id="org_1", device_identifier="device_1")
+            await client.bootstrap(bootstrap_bearer_token="bootstrap_token")
+
+            with self.assertRaises(RuntimeError):
+                await client.revoke()
+            self.assertIsNotNone(client._load_token_state())
 
 
 if __name__ == "__main__":
