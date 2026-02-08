@@ -1,9 +1,0 @@
-README.md
-pyproject.toml
-octomil/__init__.py
-octomil/client.py
-octomil.egg-info/PKG-INFO
-octomil.egg-info/SOURCES.txt
-octomil.egg-info/dependency_links.txt
-octomil.egg-info/requires.txt
-octomil.egg-info/top_level.txt
