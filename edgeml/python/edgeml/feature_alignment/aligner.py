@@ -133,7 +133,7 @@ class FeatureAligner:
         for i, feature in enumerate(all_features):
             # Use feature name hash to determine output positions
             # This ensures consistent projection across devices
-            hash_val = int(md5(feature.encode()).hexdigest(), 16)
+            hash_val = int(md5(feature.encode(), usedforsecurity=False).hexdigest(), 16)
 
             # Primary position
             primary_idx = hash_val % self.input_dim

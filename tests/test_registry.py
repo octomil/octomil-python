@@ -10,6 +10,7 @@ class _StubApi:
     def __init__(self):
         self.calls = []
         self._responses = {}
+        self.timeout = 60.0  # Add timeout attribute
 
     def set_response(self, key, response):
         self._responses[key] = response
@@ -389,6 +390,141 @@ class ModelRegistryTests(unittest.TestCase):
         self.assertEqual(method, "post")
         self.assertEqual(path, "/models/model_1/rollouts")
         self.assertEqual(payload["rollout_percentage"], 20.0)
+
+    def test_upload_version_from_path(self):
+        registry = ModelRegistry(auth_token_provider=lambda: "token123")
+        stub = _StubApi()
+        registry.api = stub
+
+        class _FakeResponse:
+            status_code = 200
+            text = ""
+            def json(self):
+                return {"version": "1.0.0", "id": "version_123"}
+
+        class _FakeHttpxClient:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc_val, exc_tb):
+                return False
+
+            def post(self, url, data=None, files=None, headers=None):
+                return _FakeResponse()
+
+        import tempfile
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".onnx") as tmp:
+            tmp.write(b"model data")
+            tmp_path = tmp.name
+
+        try:
+            with patch("edgeml.registry.httpx.Client", _FakeHttpxClient):
+                result = registry.upload_version_from_path(
+                    model_id="model_1",
+                    file_path=tmp_path,
+                    version="1.0.0",
+                    description="test upload",
+                    formats="onnx",
+                    architecture="resnet",
+                    input_dim=224,
+                    hidden_dim=512,
+                    output_dim=10,
+                )
+            self.assertEqual(result["version"], "1.0.0")
+        finally:
+            import os
+            os.unlink(tmp_path)
+
+    def test_upload_version_from_path_with_onnx_data(self):
+        registry = ModelRegistry(auth_token_provider=lambda: "token123")
+        stub = _StubApi()
+        registry.api = stub
+
+        class _FakeResponse:
+            status_code = 200
+            text = ""
+            def json(self):
+                return {"version": "1.0.0"}
+
+        class _FakeHttpxClient:
+            def __init__(self, *args, **kwargs):
+                self.post_called_with_files = None
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc_val, exc_tb):
+                return False
+
+            def post(self, url, data=None, files=None, headers=None):
+                self.post_called_with_files = files
+                return _FakeResponse()
+
+        import tempfile
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".onnx") as tmp:
+            tmp.write(b"model data")
+            tmp_path = tmp.name
+
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".onnx.data") as tmp2:
+            tmp2.write(b"onnx data")
+            tmp2_path = tmp2.name
+
+        try:
+            with patch("edgeml.registry.httpx.Client", _FakeHttpxClient):
+                result = registry.upload_version_from_path(
+                    model_id="model_1",
+                    file_path=tmp_path,
+                    version="1.0.0",
+                    onnx_data_path=tmp2_path,
+                )
+            self.assertEqual(result["version"], "1.0.0")
+        finally:
+            import os
+            os.unlink(tmp_path)
+            os.unlink(tmp2_path)
+
+    def test_upload_version_from_path_http_error(self):
+        registry = ModelRegistry(auth_token_provider=lambda: "token123")
+        stub = _StubApi()
+        registry.api = stub
+
+        class _FakeResponse:
+            status_code = 400
+            text = "Bad request"
+
+        class _FakeHttpxClient:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc_val, exc_tb):
+                return False
+
+            def post(self, url, data=None, files=None, headers=None):
+                return _FakeResponse()
+
+        import tempfile
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".onnx") as tmp:
+            tmp.write(b"model data")
+            tmp_path = tmp.name
+
+        try:
+            with patch("edgeml.registry.httpx.Client", _FakeHttpxClient):
+                with self.assertRaises(EdgeMLClientError) as ctx:
+                    registry.upload_version_from_path(
+                        model_id="model_1",
+                        file_path=tmp_path,
+                        version="1.0.0",
+                    )
+                self.assertIn("Bad request", str(ctx.exception))
+        finally:
+            import os
+            os.unlink(tmp_path)
 
 
 if __name__ == "__main__":

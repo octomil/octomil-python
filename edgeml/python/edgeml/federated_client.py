@@ -293,7 +293,7 @@ class FederatedClient:
         except Exception as exc:
             raise EdgeMLClientError("torch is required to load remote weights") from exc
         buffer = io.BytesIO(payload)
-        state = torch.load(buffer, map_location="cpu")
+        state = torch.load(buffer, map_location="cpu", weights_only=True)
         if not isinstance(state, dict):
             raise EdgeMLClientError("Remote payload was not a state_dict")
         return state

@@ -1,3 +1,4 @@
+import os
 from setuptools import setup, find_packages
 
 setup(
@@ -11,10 +12,25 @@ setup(
     url="https://github.com/edgeml-ai/edgeml-python",
     packages=find_packages(),
     install_requires=[
-        "requests>=2.31.0",
-        "torch>=2.0.0",
-        "numpy>=1.24.0",
+        "psutil>=5.9.0",
+        "httpx>=0.24.0",
     ],
+    extras_require={
+        "ml": [
+            "torch>=2.0.0",
+            "numpy>=1.24.0",
+            "pandas>=1.5.0",
+        ],
+        "test": [
+            "pytest>=7.0.0",
+            "pytest-cov>=4.0.0",
+            "pytest-asyncio>=0.21.0",
+            "torch>=2.0.0",
+            "numpy>=1.24.0",
+            "pandas>=1.5.0",
+            "keyring>=23.0.0",
+        ],
+    },
     python_requires=">=3.8",
     classifiers=[
         "Development Status :: 4 - Beta",

@@ -6,11 +6,14 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
 import httpx
+
+logger = logging.getLogger(__name__)
 
 try:
     import keyring
@@ -103,8 +106,8 @@ class DeviceAuthClient:
     def clear_token_state(self) -> None:
         try:
             keyring.delete_password(self._storage_service, self._storage_key)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("Failed to delete password from keyring: %s", e)
 
     async def bootstrap(
         self,
