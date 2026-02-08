@@ -89,8 +89,8 @@ class DeviceAuthClientTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_bootstrap_refresh_revoke_lifecycle(self):
         fake_keyring = _FakeKeyring()
-        with patch("octomil.python.octomil.auth.keyring", fake_keyring), patch(
-            "octomil.python.octomil.auth.httpx.AsyncClient", _FakeAsyncClient
+        with patch("octomil.auth.keyring", fake_keyring), patch(
+            "octomil.auth.httpx.AsyncClient", _FakeAsyncClient
         ):
             client = DeviceAuthClient(base_url="https://api.example.com", org_id="org_1", device_identifier="device_1")
             state = await client.bootstrap(bootstrap_bearer_token="bootstrap_token")
@@ -104,8 +104,8 @@ class DeviceAuthClientTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_bootstrap_sends_expected_payload_and_bearer_token(self):
         fake_keyring = _FakeKeyring()
-        with patch("octomil.python.octomil.auth.keyring", fake_keyring), patch(
-            "octomil.python.octomil.auth.httpx.AsyncClient", _FakeAsyncClient
+        with patch("octomil.auth.keyring", fake_keyring), patch(
+            "octomil.auth.httpx.AsyncClient", _FakeAsyncClient
         ):
             client = DeviceAuthClient(base_url="https://api.example.com", org_id="org_1", device_identifier="device_1")
             await client.bootstrap(
@@ -126,8 +126,8 @@ class DeviceAuthClientTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_refresh_uses_rotated_refresh_token(self):
         fake_keyring = _FakeKeyring()
-        with patch("octomil.python.octomil.auth.keyring", fake_keyring), patch(
-            "octomil.python.octomil.auth.httpx.AsyncClient", _FakeAsyncClient
+        with patch("octomil.auth.keyring", fake_keyring), patch(
+            "octomil.auth.httpx.AsyncClient", _FakeAsyncClient
         ):
             client = DeviceAuthClient(base_url="https://api.example.com", org_id="org_1", device_identifier="device_1")
             await client.bootstrap(bootstrap_bearer_token="bootstrap_token")
@@ -142,8 +142,8 @@ class DeviceAuthClientTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_get_access_token_offline_fallback_before_expiry(self):
         fake_keyring = _FakeKeyring()
-        with patch("octomil.python.octomil.auth.keyring", fake_keyring), patch(
-            "octomil.python.octomil.auth.httpx.AsyncClient", _FailRefreshAsyncClient
+        with patch("octomil.auth.keyring", fake_keyring), patch(
+            "octomil.auth.httpx.AsyncClient", _FailRefreshAsyncClient
         ):
             client = DeviceAuthClient(base_url="https://api.example.com", org_id="org_1", device_identifier="device_1")
             state = DeviceTokenState(
@@ -162,8 +162,8 @@ class DeviceAuthClientTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_get_access_token_raises_if_expired_and_refresh_fails(self):
         fake_keyring = _FakeKeyring()
-        with patch("octomil.python.octomil.auth.keyring", fake_keyring), patch(
-            "octomil.python.octomil.auth.httpx.AsyncClient", _FailRefreshAsyncClient
+        with patch("octomil.auth.keyring", fake_keyring), patch(
+            "octomil.auth.httpx.AsyncClient", _FailRefreshAsyncClient
         ):
             client = DeviceAuthClient(base_url="https://api.example.com", org_id="org_1", device_identifier="device_1")
             state = DeviceTokenState(
@@ -189,8 +189,8 @@ class DeviceAuthClientTests(unittest.IsolatedAsyncioTestCase):
                     raise RuntimeError("network down")
                 return await super().post(url, json=json, headers=headers)
 
-        with patch("octomil.python.octomil.auth.keyring", fake_keyring), patch(
-            "octomil.python.octomil.auth.httpx.AsyncClient", _FailRevokeAsyncClient
+        with patch("octomil.auth.keyring", fake_keyring), patch(
+            "octomil.auth.httpx.AsyncClient", _FailRevokeAsyncClient
         ):
             client = DeviceAuthClient(base_url="https://api.example.com", org_id="org_1", device_identifier="device_1")
             await client.bootstrap(bootstrap_bearer_token="bootstrap_token")
@@ -198,6 +198,117 @@ class DeviceAuthClientTests(unittest.IsolatedAsyncioTestCase):
             with self.assertRaises(RuntimeError):
                 await client.revoke()
             self.assertIsNotNone(client._load_token_state())
+
+
+    async def test_device_token_state_from_response_with_expires_at(self):
+        payload = {
+            "access_token": "acc_token",
+            "refresh_token": "ref_token",
+            "token_type": "Bearer",
+            "expires_at": "2024-12-31T23:59:59Z",
+            "org_id": "org_1",
+            "device_identifier": "device_1",
+            "scopes": ["devices:write"],
+        }
+        state = DeviceTokenState.from_response(payload)
+        self.assertEqual(state.access_token, "acc_token")
+        self.assertEqual(state.expires_at.year, 2024)
+
+    async def test_device_token_state_from_response_with_expires_in(self):
+        payload = {
+            "access_token": "acc_token",
+            "refresh_token": "ref_token",
+            "expires_in": 900,
+            "org_id": "org_1",
+            "device_identifier": "device_1",
+        }
+        state = DeviceTokenState.from_response(payload)
+        self.assertEqual(state.access_token, "acc_token")
+        self.assertEqual(state.token_type, "Bearer")
+        self.assertEqual(state.scopes, [])
+
+    async def test_device_token_state_serialization(self):
+        state = DeviceTokenState(
+            access_token="acc",
+            refresh_token="ref",
+            token_type="Bearer",
+            expires_at=datetime.now(timezone.utc) + timedelta(minutes=15),
+            org_id="org_1",
+            device_identifier="device_1",
+            scopes=["devices:write"],
+        )
+        json_str = state.to_json()
+        restored = DeviceTokenState.from_json(json_str)
+        self.assertEqual(restored.access_token, state.access_token)
+        self.assertEqual(restored.refresh_token, state.refresh_token)
+        self.assertEqual(restored.org_id, state.org_id)
+
+    async def test_clear_token_state(self):
+        fake_keyring = _FakeKeyring()
+        with patch("octomil.auth.keyring", fake_keyring), patch(
+            "octomil.auth.httpx.AsyncClient", _FakeAsyncClient
+        ):
+            client = DeviceAuthClient(base_url="https://api.example.com", org_id="org_1", device_identifier="device_1")
+            await client.bootstrap(bootstrap_bearer_token="bootstrap_token")
+            self.assertIsNotNone(client._load_token_state())
+            client.clear_token_state()
+            self.assertIsNone(client._load_token_state())
+
+    def test_get_access_token_sync_outside_loop(self):
+        """Test get_access_token_sync works when called outside an event loop"""
+        import asyncio
+        fake_keyring = _FakeKeyring()
+        with patch("octomil.auth.keyring", fake_keyring), patch(
+            "octomil.auth.httpx.AsyncClient", _FakeAsyncClient
+        ):
+            client = DeviceAuthClient(base_url="https://api.example.com", org_id="org_1", device_identifier="device_1")
+            state = DeviceTokenState(
+                access_token="valid_token",
+                refresh_token="refresh_token",
+                token_type="Bearer",
+                expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+                org_id="org_1",
+                device_identifier="device_1",
+                scopes=["devices:write"],
+            )
+            client._store_token_state(state)
+            # This is a non-async test method, so no event loop is running
+            token = client.get_access_token_sync()
+            self.assertEqual(token, "valid_token")
+
+    async def test_get_access_token_sync_raises_inside_loop(self):
+        """Test get_access_token_sync raises when called inside an event loop"""
+        fake_keyring = _FakeKeyring()
+        with patch("octomil.auth.keyring", fake_keyring):
+            client = DeviceAuthClient(base_url="https://api.example.com", org_id="org_1", device_identifier="device_1")
+            # This async test method runs inside an event loop, so sync call should raise
+            with self.assertRaises(RuntimeError) as ctx:
+                client.get_access_token_sync()
+            self.assertIn("cannot be called inside an active event loop", str(ctx.exception))
+
+    async def test_get_access_token_no_token_state(self):
+        fake_keyring = _FakeKeyring()
+        with patch("octomil.auth.keyring", fake_keyring):
+            client = DeviceAuthClient(base_url="https://api.example.com", org_id="org_1", device_identifier="device_1")
+            with self.assertRaises(RuntimeError) as ctx:
+                await client.get_access_token()
+            self.assertIn("No token state found", str(ctx.exception))
+
+    async def test_refresh_no_token_state(self):
+        fake_keyring = _FakeKeyring()
+        with patch("octomil.auth.keyring", fake_keyring):
+            client = DeviceAuthClient(base_url="https://api.example.com", org_id="org_1", device_identifier="device_1")
+            with self.assertRaises(RuntimeError) as ctx:
+                await client.refresh()
+            self.assertIn("No token state found", str(ctx.exception))
+
+    async def test_revoke_with_no_state_is_noop(self):
+        fake_keyring = _FakeKeyring()
+        with patch("octomil.auth.keyring", fake_keyring), patch(
+            "octomil.auth.httpx.AsyncClient", _FakeAsyncClient
+        ):
+            client = DeviceAuthClient(base_url="https://api.example.com", org_id="org_1", device_identifier="device_1")
+            await client.revoke()
 
 
 if __name__ == "__main__":
