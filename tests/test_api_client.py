@@ -8,7 +8,8 @@ class _FakeResponse:
     def __init__(self, status_code: int, json_data: dict = None, text_data: str = ""):
         self.status_code = status_code
         self._json_data = json_data or {}
-        self.text = text_data
+        self.text = text_data if text_data else (str(json_data) if json_data else "")
+        self.content = b""
 
     def json(self):
         return self._json_data
