@@ -68,3 +68,7 @@ class _ApiClient:
             raise EdgeMLClientError(res.text)
         return res.content
 
+    def report_inference_event(self, payload: dict[str, Any]) -> Any:
+        """Report a streaming inference event to ``POST /inference/events``."""
+        return self.post("/inference/events", payload)
+
