@@ -1,7 +1,7 @@
 # Octomil Python SDK
 
-[![CI](https://github.com/octomil/octomil-python/actions/workflows/ci.yml/badge.svg)](https://github.com/octomil/octomil-python/actions/workflows/ci.yml)
-[![codecov](https://codecov.io/gh/octomil/octomil-python/branch/main/graph/badge.svg)](https://codecov.io/gh/octomil/octomil-python)
+[![CI](https://github.com/octomil-ai/octomil-python/actions/workflows/ci.yml/badge.svg)](https://github.com/octomil-ai/octomil-python/actions/workflows/ci.yml)
+[![codecov](https://codecov.io/gh/octomil-ai/octomil-python/branch/main/graph/badge.svg)](https://codecov.io/gh/octomil-ai/octomil-python)
 [![Quality Gate Status](https://sonarcloud.io/api/project_badges/measure?project=octomil-ai_octomil-python&metric=alert_status)](https://sonarcloud.io/summary/new_code?id=octomil-ai_octomil-python)
 [![Security Rating](https://sonarcloud.io/api/project_badges/measure?project=octomil-ai_octomil-python&metric=security_rating)](https://sonarcloud.io/summary/new_code?id=octomil-ai_octomil-python)
 [![Python Version](https://img.shields.io/pypi/pyversions/octomil-sdk.svg)](https://pypi.org/project/octomil-sdk/)
@@ -217,7 +217,7 @@ We welcome contributions! Please see our [Contributing Guide](CONTRIBUTING.md) f
 
 ```bash
 # Clone repository
-git clone https://github.com/octomil/octomil-python.git
+git clone https://github.com/octomil-ai/octomil-python.git
 cd octomil-python
 
 # Install in development mode
@@ -280,7 +280,7 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 ## Support
 
-For issues and feature requests, please use the [GitHub issue tracker](https://github.com/octomil/octomil-python/issues).
+For issues and feature requests, please use the [GitHub issue tracker](https://github.com/octomil-ai/octomil-python/issues).
 
 For questions: support@octomil.io
 
