@@ -57,8 +57,36 @@ class FederatedClient:
         self.device_id: Optional[str] = None
         self._detected_features: Optional[List[str]] = None
         self._model_cache: Dict[str, Dict[str, Any]] = {}
+        self._inference_client = None
         self.rollouts = RolloutsAPI(self.api)
         self.experiments = ExperimentsAPI(self.api, org_id=self.org_id)
+
+    @property
+    def inference(self):
+        """
+        Returns a :class:`~edgeml.inference.StreamingInferenceClient` for
+        streaming generative inference with timing metrics.
+
+        The device must be registered before using this property.
+
+        Example::
+
+            from edgeml.inference import Modality
+
+            client.register()
+            for chunk in client.inference.generate("my-llm", prompt="hello", modality=Modality.TEXT):
+                print(chunk.data.decode(), end="", flush=True)
+        """
+        if self._inference_client is None:
+            from .inference import StreamingInferenceClient
+
+            device_id = self.device_id or self.device_identifier
+            self._inference_client = StreamingInferenceClient(
+                api=self.api,
+                device_id=device_id,
+                org_id=self.org_id,
+            )
+        return self._inference_client
 
     def register(self, feature_schema: Optional[List[str]] = None) -> str:
         if self.device_id:
