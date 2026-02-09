@@ -5,6 +5,7 @@
 [![Quality Gate Status](https://sonarcloud.io/api/project_badges/measure?project=edgeml-ai_edgeml-python&metric=alert_status)](https://sonarcloud.io/summary/new_code?id=edgeml-ai_edgeml-python)
 [![Security Rating](https://sonarcloud.io/api/project_badges/measure?project=edgeml-ai_edgeml-python&metric=security_rating)](https://sonarcloud.io/summary/new_code?id=edgeml-ai_edgeml-python)
 [![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/edgeml-ai/edgeml-python/badge)](https://scorecard.dev/viewer/?uri=github.com/edgeml-ai/edgeml-python)
+[![CII Best Practices](https://www.bestpractices.dev/projects/11914/badge)](https://www.bestpractices.dev/projects/11914)
 [![CodeQL](https://github.com/edgeml-ai/edgeml-python/actions/workflows/codeql.yml/badge.svg)](https://github.com/edgeml-ai/edgeml-python/actions/workflows/codeql.yml)
 [![Python Version](https://img.shields.io/pypi/pyversions/edgeml-sdk.svg)](https://pypi.org/project/edgeml-sdk/)
 [![PyPI version](https://badge.fury.io/py/edgeml-sdk.svg)](https://badge.fury.io/py/edgeml-sdk)
