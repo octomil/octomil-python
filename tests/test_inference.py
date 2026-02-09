@@ -448,8 +448,8 @@ class GenerateFailureTests(unittest.TestCase):
     def test_backend_exception_does_not_populate_last_result(self):
         client = _make_client()
         def _failing_backend(*a, **kw):
+            yield from ()
             raise RuntimeError("fail")
-            yield  # noqa: unreachable — makes this a generator
 
         client._backend_generate = _failing_backend
         with self.assertRaises(RuntimeError):
