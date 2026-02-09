@@ -1,9 +1,45 @@
+import os
 import tempfile
 import unittest
 from unittest.mock import patch
 
 from edgeml.api_client import EdgeMLClientError
 from edgeml.registry import ModelRegistry
+
+
+class _FakeHttpxResponse:
+    """Configurable fake httpx response for use in download/upload tests."""
+
+    def __init__(self, status_code=200, content=b"", text="", json_data=None):
+        self.status_code = status_code
+        self.content = content
+        self.text = text
+        self._json_data = json_data
+
+    def json(self):
+        return self._json_data if self._json_data is not None else {}
+
+
+class _FakeHttpxClient:
+    """Configurable fake httpx.Client that returns a preset response."""
+
+    def __init__(self, response):
+        self._response = response
+
+    def __call__(self, *args, **kwargs):
+        return self
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        return False
+
+    def get(self, url, **kwargs):
+        return self._response
+
+    def post(self, url, **kwargs):
+        return self._response
 
 
 class _StubApi:
@@ -227,36 +263,19 @@ class ModelRegistryTests(unittest.TestCase):
         stub.set_response(("/models/model_1/versions/1.0.0/download-url", (("format", "onnx"),)), {"url": "https://download.com/model.onnx"})
         registry.api = stub
 
-        class _FakeResponse:
-            status_code = 200
-            content = b"model data"
-
-        class _FakeHttpxClient:
-            def __init__(self, *args, **kwargs):
-                # No state needed for fake client
-                pass
-
-            def __enter__(self):
-                return self
-
-            def __exit__(self, exc_type, exc_val, exc_tb):
-                # No cleanup needed for fake client
-                return False
-
-            def get(self, url):
-                return _FakeResponse()
+        fake_response = _FakeHttpxResponse(status_code=200, content=b"model data")
+        fake_client = _FakeHttpxClient(fake_response)
 
         with tempfile.NamedTemporaryFile(delete=False) as tmp:
             tmp_path = tmp.name
 
-        with patch("edgeml.registry.httpx.Client", _FakeHttpxClient):
+        with patch("edgeml.registry.httpx.Client", fake_client):
             result = registry.download_version("model_1", "1.0.0", "onnx", tmp_path)
 
         self.assertEqual(result, tmp_path)
         with open(tmp_path, "rb") as f:
             self.assertEqual(f.read(), b"model data")
 
-        import os
         os.unlink(tmp_path)
 
     def test_download_version_missing_url_raises(self):
@@ -274,26 +293,10 @@ class ModelRegistryTests(unittest.TestCase):
         stub.set_response(("/models/model_1/versions/1.0.0/download-url", (("format", "onnx"),)), {"url": "https://download.com/model.onnx"})
         registry.api = stub
 
-        class _FakeResponse:
-            status_code = 404
-            text = "Not found"
+        fake_response = _FakeHttpxResponse(status_code=404, text="Not found")
+        fake_client = _FakeHttpxClient(fake_response)
 
-        class _FakeHttpxClient:
-            def __init__(self, *args, **kwargs):
-                # No state needed for fake client
-                pass
-
-            def __enter__(self):
-                return self
-
-            def __exit__(self, exc_type, exc_val, exc_tb):
-                # No cleanup needed for fake client
-                return False
-
-            def get(self, url):
-                return _FakeResponse()
-
-        with patch("edgeml.registry.httpx.Client", _FakeHttpxClient):
+        with patch("edgeml.registry.httpx.Client", fake_client):
             with self.assertRaises(EdgeMLClientError) as ctx:
                 registry.download_version("model_1", "1.0.0", "onnx", "/tmp/model.onnx")
         self.assertIn("Not found", str(ctx.exception))
@@ -401,34 +404,17 @@ class ModelRegistryTests(unittest.TestCase):
         stub = _StubApi()
         registry.api = stub
 
-        class _FakeResponse:
-            status_code = 200
-            text = ""
-            def json(self):
-                return {"version": "1.0.0", "id": "version_123"}
+        fake_response = _FakeHttpxResponse(
+            status_code=200, text="", json_data={"version": "1.0.0", "id": "version_123"},
+        )
+        fake_client = _FakeHttpxClient(fake_response)
 
-        class _FakeHttpxClient:
-            def __init__(self, *args, **kwargs):
-                # No state needed for fake client
-                pass
-
-            def __enter__(self):
-                return self
-
-            def __exit__(self, exc_type, exc_val, exc_tb):
-                # No cleanup needed for fake client
-                return False
-
-            def post(self, url, data=None, files=None, headers=None):
-                return _FakeResponse()
-
-        import tempfile
         with tempfile.NamedTemporaryFile(delete=False, suffix=".onnx") as tmp:
             tmp.write(b"model data")
             tmp_path = tmp.name
 
         try:
-            with patch("edgeml.registry.httpx.Client", _FakeHttpxClient):
+            with patch("edgeml.registry.httpx.Client", fake_client):
                 result = registry.upload_version_from_path(
                     model_id="model_1",
                     file_path=tmp_path,
@@ -442,7 +428,6 @@ class ModelRegistryTests(unittest.TestCase):
                 )
             self.assertEqual(result["version"], "1.0.0")
         finally:
-            import os
             os.unlink(tmp_path)
 
     def test_upload_version_from_path_with_onnx_data(self):
@@ -450,28 +435,11 @@ class ModelRegistryTests(unittest.TestCase):
         stub = _StubApi()
         registry.api = stub
 
-        class _FakeResponse:
-            status_code = 200
-            text = ""
-            def json(self):
-                return {"version": "1.0.0"}
+        fake_response = _FakeHttpxResponse(
+            status_code=200, text="", json_data={"version": "1.0.0"},
+        )
+        fake_client = _FakeHttpxClient(fake_response)
 
-        class _FakeHttpxClient:
-            def __init__(self, *args, **kwargs):
-                self.post_called_with_files = None
-
-            def __enter__(self):
-                return self
-
-            def __exit__(self, exc_type, exc_val, exc_tb):
-                # No cleanup needed for fake client
-                return False
-
-            def post(self, url, data=None, files=None, headers=None):
-                self.post_called_with_files = files
-                return _FakeResponse()
-
-        import tempfile
         with tempfile.NamedTemporaryFile(delete=False, suffix=".onnx") as tmp:
             tmp.write(b"model data")
             tmp_path = tmp.name
@@ -481,7 +449,7 @@ class ModelRegistryTests(unittest.TestCase):
             tmp2_path = tmp2.name
 
         try:
-            with patch("edgeml.registry.httpx.Client", _FakeHttpxClient):
+            with patch("edgeml.registry.httpx.Client", fake_client):
                 result = registry.upload_version_from_path(
                     model_id="model_1",
                     file_path=tmp_path,
@@ -490,7 +458,6 @@ class ModelRegistryTests(unittest.TestCase):
                 )
             self.assertEqual(result["version"], "1.0.0")
         finally:
-            import os
             os.unlink(tmp_path)
             os.unlink(tmp2_path)
 
@@ -499,32 +466,15 @@ class ModelRegistryTests(unittest.TestCase):
         stub = _StubApi()
         registry.api = stub
 
-        class _FakeResponse:
-            status_code = 400
-            text = "Bad request"
+        fake_response = _FakeHttpxResponse(status_code=400, text="Bad request")
+        fake_client = _FakeHttpxClient(fake_response)
 
-        class _FakeHttpxClient:
-            def __init__(self, *args, **kwargs):
-                # No state needed for fake client
-                pass
-
-            def __enter__(self):
-                return self
-
-            def __exit__(self, exc_type, exc_val, exc_tb):
-                # No cleanup needed for fake client
-                return False
-
-            def post(self, url, data=None, files=None, headers=None):
-                return _FakeResponse()
-
-        import tempfile
         with tempfile.NamedTemporaryFile(delete=False, suffix=".onnx") as tmp:
             tmp.write(b"model data")
             tmp_path = tmp.name
 
         try:
-            with patch("edgeml.registry.httpx.Client", _FakeHttpxClient):
+            with patch("edgeml.registry.httpx.Client", fake_client):
                 with self.assertRaises(EdgeMLClientError) as ctx:
                     registry.upload_version_from_path(
                         model_id="model_1",
@@ -533,7 +483,6 @@ class ModelRegistryTests(unittest.TestCase):
                     )
                 self.assertIn("Bad request", str(ctx.exception))
         finally:
-            import os
             os.unlink(tmp_path)
 
 
