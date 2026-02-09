@@ -2,8 +2,8 @@
 
 [![CI](https://github.com/edgeml/edgeml-python/actions/workflows/ci.yml/badge.svg)](https://github.com/edgeml/edgeml-python/actions/workflows/ci.yml)
 [![codecov](https://codecov.io/gh/edgeml/edgeml-python/branch/main/graph/badge.svg)](https://codecov.io/gh/edgeml/edgeml-python)
-[![Quality Gate Status](https://sonarcloud.io/api/project_badges/measure?project=edgeml_edgeml-python&metric=alert_status)](https://sonarcloud.io/summary/new_code?id=edgeml_edgeml-python)
-[![Security Rating](https://sonarcloud.io/api/project_badges/measure?project=edgeml_edgeml-python&metric=security_rating)](https://sonarcloud.io/summary/new_code?id=edgeml_edgeml-python)
+[![Quality Gate Status](https://sonarcloud.io/api/project_badges/measure?project=edgeml-ai_edgeml-python&metric=alert_status)](https://sonarcloud.io/summary/new_code?id=edgeml-ai_edgeml-python)
+[![Security Rating](https://sonarcloud.io/api/project_badges/measure?project=edgeml-ai_edgeml-python&metric=security_rating)](https://sonarcloud.io/summary/new_code?id=edgeml-ai_edgeml-python)
 [![Python Version](https://img.shields.io/pypi/pyversions/edgeml-sdk.svg)](https://pypi.org/project/edgeml-sdk/)
 [![PyPI version](https://badge.fury.io/py/edgeml-sdk.svg)](https://badge.fury.io/py/edgeml-sdk)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
