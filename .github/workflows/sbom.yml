@@ -33,7 +33,7 @@ jobs:
         run: pip-licenses --format=json --output-file=licenses.json
 
       - name: Upload SBOM
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@47309c993abb98030a35d55ef7ff34b7fa1074b5 # v4
         with:
           name: sbom
           path: |
