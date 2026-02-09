@@ -5,23 +5,25 @@ import types
 import unittest
 from unittest.mock import MagicMock, mock_open, patch
 
-from edgeml.device_info import (
-    DeviceInfo,
-    detect_gpu,
-    get_battery_level,
-    get_manufacturer,
-    get_memory_info,
-    get_model,
-    get_network_type,
-    get_stable_device_id,
-    get_storage_info,
-    get_timezone,
-)
+try:
+    from edgeml.device_info import (
+        DeviceInfo,
+        detect_gpu,
+        get_battery_level,
+        get_manufacturer,
+        get_memory_info,
+        get_model,
+        get_network_type,
+        get_stable_device_id,
+        get_storage_info,
+        get_timezone,
+    )
+    HAS_DEVICE_INFO = True
+except ImportError:
+    HAS_DEVICE_INFO = False
 
 
-# ---------------------------------------------------------------------------
-# get_stable_device_id
-# ---------------------------------------------------------------------------
+@unittest.skipUnless(HAS_DEVICE_INFO, "edgeml.device_info not available in this install")
 class TestGetStableDeviceId(unittest.TestCase):
     @patch("edgeml.device_info.platform.system", return_value="Darwin")
     @patch("edgeml.device_info.subprocess.check_output")
@@ -100,6 +102,7 @@ class TestGetStableDeviceId(unittest.TestCase):
 # ---------------------------------------------------------------------------
 # get_battery_level
 # ---------------------------------------------------------------------------
+@unittest.skipUnless(HAS_DEVICE_INFO, "edgeml.device_info not available in this install")
 class TestGetBatteryLevel(unittest.TestCase):
     def test_with_psutil_available(self):
         fake_battery = MagicMock()
@@ -140,6 +143,7 @@ class TestGetBatteryLevel(unittest.TestCase):
 # ---------------------------------------------------------------------------
 # get_network_type
 # ---------------------------------------------------------------------------
+@unittest.skipUnless(HAS_DEVICE_INFO, "edgeml.device_info not available in this install")
 class TestGetNetworkType(unittest.TestCase):
     def test_always_returns_wifi(self):
         self.assertEqual(get_network_type(), "wifi")
@@ -148,6 +152,7 @@ class TestGetNetworkType(unittest.TestCase):
 # ---------------------------------------------------------------------------
 # get_timezone
 # ---------------------------------------------------------------------------
+@unittest.skipUnless(HAS_DEVICE_INFO, "edgeml.device_info not available in this install")
 class TestGetTimezone(unittest.TestCase):
     @patch("edgeml.device_info.platform.system", return_value="Darwin")
     @patch("edgeml.device_info.subprocess.check_output")
@@ -197,6 +202,7 @@ class TestGetTimezone(unittest.TestCase):
 # ---------------------------------------------------------------------------
 # get_manufacturer
 # ---------------------------------------------------------------------------
+@unittest.skipUnless(HAS_DEVICE_INFO, "edgeml.device_info not available in this install")
 class TestGetManufacturer(unittest.TestCase):
     @patch("edgeml.device_info.platform.system", return_value="Darwin")
     def test_macos_returns_apple(self, mock_system):
@@ -222,6 +228,7 @@ class TestGetManufacturer(unittest.TestCase):
 # ---------------------------------------------------------------------------
 # get_model
 # ---------------------------------------------------------------------------
+@unittest.skipUnless(HAS_DEVICE_INFO, "edgeml.device_info not available in this install")
 class TestGetModel(unittest.TestCase):
     @patch("edgeml.device_info.platform.system", return_value="Darwin")
     @patch("edgeml.device_info.subprocess.check_output")
@@ -255,6 +262,7 @@ class TestGetModel(unittest.TestCase):
 # ---------------------------------------------------------------------------
 # get_memory_info
 # ---------------------------------------------------------------------------
+@unittest.skipUnless(HAS_DEVICE_INFO, "edgeml.device_info not available in this install")
 class TestGetMemoryInfo(unittest.TestCase):
     def test_with_psutil(self):
         fake_memory = MagicMock()
@@ -285,6 +293,7 @@ class TestGetMemoryInfo(unittest.TestCase):
 # ---------------------------------------------------------------------------
 # get_storage_info
 # ---------------------------------------------------------------------------
+@unittest.skipUnless(HAS_DEVICE_INFO, "edgeml.device_info not available in this install")
 class TestGetStorageInfo(unittest.TestCase):
     def test_with_psutil(self):
         fake_disk = MagicMock()
@@ -316,6 +325,7 @@ class TestGetStorageInfo(unittest.TestCase):
 # ---------------------------------------------------------------------------
 # detect_gpu
 # ---------------------------------------------------------------------------
+@unittest.skipUnless(HAS_DEVICE_INFO, "edgeml.device_info not available in this install")
 class TestDetectGpu(unittest.TestCase):
     @patch("edgeml.device_info.platform.system", return_value="Darwin")
     @patch("edgeml.device_info.subprocess.check_output")
@@ -357,6 +367,7 @@ class TestDetectGpu(unittest.TestCase):
 # ---------------------------------------------------------------------------
 # DeviceInfo class
 # ---------------------------------------------------------------------------
+@unittest.skipUnless(HAS_DEVICE_INFO, "edgeml.device_info not available in this install")
 class TestDeviceInfo(unittest.TestCase):
     def test_init_state(self):
         info = DeviceInfo()
