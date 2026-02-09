@@ -1,7 +1,5 @@
-import platform
 import subprocess
 import sys
-import types
 import unittest
 from unittest.mock import MagicMock, mock_open, patch
 

@@ -1,7 +1,6 @@
 import unittest
 import time
 from typing import Optional
-from unittest.mock import patch
 
 from edgeml.inference import (
     InferenceChunk,

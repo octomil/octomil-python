@@ -21,7 +21,7 @@ def get_stable_device_id() -> str:
     try:
         if platform.system() == "Darwin":  # macOS
             hardware_uuid = subprocess.check_output(
-                ["system_profiler", "SPHardwareDataType"], text=True
+                ["system_profiler", "SPHardwareDataType"], text=True  # noqa: S603,S607
             )
             for line in hardware_uuid.split("\n"):
                 if "Hardware UUID" in line or "UUID" in line:
@@ -32,9 +32,9 @@ def get_stable_device_id() -> str:
                 with open("/etc/machine-id", "r") as f:
                     machine_id = f.read().strip()
                     return f"Linux-{machine_id[:8]}"
-            except Exception:
+            except (OSError, IOError):
                 pass
-    except Exception:
+    except (subprocess.SubprocessError, OSError):
         pass
 
     # Fallback to hostname
@@ -55,7 +55,7 @@ def get_battery_level() -> Optional[int]:
             return int(battery.percent)
     except ImportError:
         pass
-    except Exception:
+    except (AttributeError, OSError):
         pass
     return None
 
@@ -75,14 +75,16 @@ def get_timezone() -> str:
     """Get system timezone."""
     try:
         if platform.system() == "Darwin":
-            tz = subprocess.check_output(["readlink", "/etc/localtime"], text=True).strip()
+            tz = subprocess.check_output(
+                ["readlink", "/etc/localtime"], text=True  # noqa: S603,S607
+            ).strip()
             return tz.split("/zoneinfo/")[-1] if "/zoneinfo/" in tz else "UTC"
         elif platform.system() == "Linux":
             tz = subprocess.check_output(
-                ["timedatectl", "show", "--value", "-p", "Timezone"], text=True
+                ["timedatectl", "show", "--value", "-p", "Timezone"], text=True  # noqa: S603,S607
             ).strip()
             return tz
-    except Exception:
+    except (subprocess.SubprocessError, OSError):
         pass
     return "UTC"
 
@@ -96,7 +98,7 @@ def get_manufacturer() -> Optional[str]:
         try:
             with open("/sys/devices/virtual/dmi/id/sys_vendor", "r") as f:
                 return f.read().strip()
-        except Exception:
+        except (OSError, IOError):
             pass
     return system
 
@@ -105,9 +107,11 @@ def get_model() -> Optional[str]:
     """Get device model name."""
     try:
         if platform.system() == "Darwin":
-            model = subprocess.check_output(["sysctl", "-n", "hw.model"], text=True).strip()
+            model = subprocess.check_output(
+                ["sysctl", "-n", "hw.model"], text=True  # noqa: S603,S607
+            ).strip()
             return model
-    except Exception:
+    except (subprocess.SubprocessError, OSError):
         pass
     return platform.node()
 
@@ -125,7 +129,7 @@ def get_memory_info() -> Optional[int]:
         return int(memory.total / (1024 * 1024))
     except ImportError:
         pass
-    except Exception:
+    except (AttributeError, OSError):
         pass
     return None
 
@@ -143,7 +147,7 @@ def get_storage_info() -> Optional[int]:
         return int(disk.free / (1024 * 1024))
     except ImportError:
         pass
-    except Exception:
+    except (AttributeError, OSError):
         pass
     return None
 
@@ -158,10 +162,10 @@ def detect_gpu() -> bool:
     try:
         if platform.system() == "Darwin":
             gpu_info = subprocess.check_output(
-                ["system_profiler", "SPDisplaysDataType"], text=True
+                ["system_profiler", "SPDisplaysDataType"], text=True  # noqa: S603,S607
             )
             return "Chipset Model" in gpu_info or "GPU" in gpu_info
-    except Exception:
+    except (subprocess.SubprocessError, OSError):
         pass
     return False
 

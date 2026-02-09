@@ -1,8 +1,7 @@
 import unittest
 import tempfile
 import os
-from pathlib import Path
-from unittest.mock import Mock, patch, MagicMock, patch as mock_patch
+from unittest.mock import patch
 
 from edgeml.data_loader import (
     DataLoadError, load_data, validate_target, _detect_format,
@@ -24,7 +23,7 @@ class DataLoaderTests(unittest.TestCase):
 
     def test_load_data_csv_from_file(self):
         try:
-            import pandas as pd
+            import pandas as pd  # noqa: F401
         except ImportError:
             self.skipTest("pandas not installed")
 
@@ -45,7 +44,7 @@ class DataLoaderTests(unittest.TestCase):
 
     def test_load_data_json_from_file(self):
         try:
-            import pandas as pd
+            import pandas as pd  # noqa: F401
         except ImportError:
             self.skipTest("pandas not installed")
 
@@ -88,7 +87,7 @@ class DataLoaderTests(unittest.TestCase):
 
     def test_load_data_nonexistent_file_raises(self):
         try:
-            import pandas as pd
+            import pandas as pd  # noqa: F401
         except ImportError:
             self.skipTest("pandas not installed")
 
@@ -405,7 +404,7 @@ class DataLoaderTests(unittest.TestCase):
 
     def test_load_data_json_standard_format(self):
         try:
-            import pandas as pd
+            import pandas as pd  # noqa: F401
         except ImportError:
             self.skipTest("pandas not installed")
 

@@ -1,8 +1,6 @@
 import unittest
-import tempfile
 import io
-from unittest.mock import Mock, patch
-import numpy as np
+from unittest.mock import patch
 
 from edgeml.api_client import EdgeMLClientError
 from edgeml.federated_client import FederatedClient, compute_state_dict_delta, apply_filters
@@ -212,7 +210,7 @@ class FederatedClientTests(unittest.TestCase):
 
     def test_serialize_weights_torch_module(self):
         try:
-            import torch
+            import torch  # noqa: F401
             import torch.nn as nn
         except ImportError:
             self.skipTest("torch not installed")
@@ -388,7 +386,8 @@ class FederatedClientTests(unittest.TestCase):
         client = FederatedClient(auth_token_provider=lambda: "token123", org_id="org_1")
         client.api = stub
 
-        data_fn = lambda: (b"weights_from_callable", 100, {"loss": 0.5})
+        def data_fn():
+            return (b"weights_from_callable", 100, {"loss": 0.5})
 
         results = client.train("model_456", data=data_fn, rounds=1)
         self.assertIsInstance(results, list)
@@ -444,7 +443,7 @@ class FederatedClientTests(unittest.TestCase):
 
     def test_train_from_remote(self):
         try:
-            import torch
+            import torch  # noqa: F401
         except ImportError:
             self.skipTest("torch not installed")
 
@@ -479,7 +478,7 @@ class FederatedClientTests(unittest.TestCase):
 
     def test_train_from_remote_delta_format(self):
         try:
-            import torch
+            import torch  # noqa: F401
         except ImportError:
             self.skipTest("torch not installed")
 
@@ -776,7 +775,7 @@ class RoundManagementTests(unittest.TestCase):
 
     def test_participate_in_round(self):
         try:
-            import torch
+            import torch  # noqa: F401
         except ImportError:
             self.skipTest("torch not installed")
 
@@ -811,7 +810,7 @@ class RoundManagementTests(unittest.TestCase):
 
     def test_participate_in_round_with_clip_norm(self):
         try:
-            import torch
+            import torch  # noqa: F401
         except ImportError:
             self.skipTest("torch not installed")
 
@@ -839,7 +838,7 @@ class RoundManagementTests(unittest.TestCase):
 
     def test_participate_in_round_with_filters(self):
         try:
-            import torch
+            import torch  # noqa: F401
         except ImportError:
             self.skipTest("torch not installed")
 
@@ -868,7 +867,7 @@ class RoundManagementTests(unittest.TestCase):
 
     def test_participate_in_round_no_version_raises(self):
         try:
-            import torch
+            import torch  # noqa: F401
         except ImportError:
             self.skipTest("torch not installed")
 
@@ -917,7 +916,7 @@ class PersonalizationTests(unittest.TestCase):
         client.api = stub
         client.device_id = "device_123"
 
-        result = client.upload_personalized_update(
+        client.upload_personalized_update(
             weights=b"personal_weights",
             metrics={"accuracy": 0.92},
         )

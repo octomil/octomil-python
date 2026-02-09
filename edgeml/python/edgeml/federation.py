@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Iterable, Optional
 
-from .api_client import _ApiClient, EdgeMLClientError
+from .api_client import EdgeMLClientError, _ApiClient
 from .control_plane import ExperimentsAPI, RolloutsAPI
 
 

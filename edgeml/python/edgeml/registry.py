@@ -5,7 +5,7 @@ from typing import Any, Callable, Optional
 
 import httpx
 
-from .api_client import _ApiClient, EdgeMLClientError
+from .api_client import EdgeMLClientError, _ApiClient
 from .control_plane import ExperimentsAPI, RolloutsAPI
 
 _MODELS_PATH = "/models"

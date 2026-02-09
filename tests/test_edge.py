@@ -1,5 +1,5 @@
 import unittest
-from unittest.mock import patch, Mock
+from unittest.mock import patch
 
 from edgeml.edge import EdgeML
 from edgeml.federated_client import FederatedClient

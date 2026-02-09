@@ -1,5 +1,4 @@
 import asyncio
-import json
 import unittest
 from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
@@ -257,7 +256,6 @@ class DeviceAuthClientTests(unittest.IsolatedAsyncioTestCase):
 
     def test_get_access_token_sync_outside_loop(self):
         """Test get_access_token_sync works when called outside an event loop"""
-        import asyncio
         fake_keyring = _FakeKeyring()
         with patch("edgeml.auth.keyring", fake_keyring), patch(
             "edgeml.auth.httpx.AsyncClient", _FakeAsyncClient

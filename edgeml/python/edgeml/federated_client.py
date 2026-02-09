@@ -7,6 +7,7 @@ import math
 import uuid
 from pathlib import Path
 from typing import (
+    TYPE_CHECKING,
     Any,
     Callable,
     Dict,
@@ -14,16 +15,14 @@ from typing import (
     Optional,
     Tuple,
     Union,
-    TYPE_CHECKING,
 )
 
-from .api_client import _ApiClient, EdgeMLClientError
+from .api_client import EdgeMLClientError, _ApiClient
 from .control_plane import ExperimentsAPI, RolloutsAPI
-from .data_loader import load_data, validate_target, DataSource, DataLoadError
+from .data_loader import DataLoadError, DataSource, load_data, validate_target
 
 if TYPE_CHECKING:
     import pandas as pd
-    import torch
 
 logger = logging.getLogger(__name__)
 
