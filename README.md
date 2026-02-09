@@ -1,7 +1,7 @@
 # EdgeML Python SDK
 
-[![CI](https://github.com/edgeml/edgeml-python/actions/workflows/ci.yml/badge.svg)](https://github.com/edgeml/edgeml-python/actions/workflows/ci.yml)
-[![codecov](https://codecov.io/gh/edgeml/edgeml-python/branch/main/graph/badge.svg)](https://codecov.io/gh/edgeml/edgeml-python)
+[![CI](https://github.com/edgeml-ai/edgeml-python/actions/workflows/ci.yml/badge.svg)](https://github.com/edgeml-ai/edgeml-python/actions/workflows/ci.yml)
+[![codecov](https://codecov.io/gh/edgeml-ai/edgeml-python/branch/main/graph/badge.svg)](https://codecov.io/gh/edgeml-ai/edgeml-python)
 [![Quality Gate Status](https://sonarcloud.io/api/project_badges/measure?project=edgeml-ai_edgeml-python&metric=alert_status)](https://sonarcloud.io/summary/new_code?id=edgeml-ai_edgeml-python)
 [![Security Rating](https://sonarcloud.io/api/project_badges/measure?project=edgeml-ai_edgeml-python&metric=security_rating)](https://sonarcloud.io/summary/new_code?id=edgeml-ai_edgeml-python)
 [![Python Version](https://img.shields.io/pypi/pyversions/edgeml-sdk.svg)](https://pypi.org/project/edgeml-sdk/)
@@ -217,7 +217,7 @@ We welcome contributions! Please see our [Contributing Guide](CONTRIBUTING.md) f
 
 ```bash
 # Clone repository
-git clone https://github.com/edgeml/edgeml-python.git
+git clone https://github.com/edgeml-ai/edgeml-python.git
 cd edgeml-python
 
 # Install in development mode
@@ -280,7 +280,7 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 ## Support
 
-For issues and feature requests, please use the [GitHub issue tracker](https://github.com/edgeml/edgeml-python/issues).
+For issues and feature requests, please use the [GitHub issue tracker](https://github.com/edgeml-ai/edgeml-python/issues).
 
 For questions: support@edgeml.io
 
