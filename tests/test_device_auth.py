@@ -47,6 +47,7 @@ class _FakeAsyncClient:
         return False
 
     async def post(self, url, json=None, headers=None):
+        await asyncio.sleep(0)  # yield to event loop
         self._requests.append((url, json, headers))
         self.__class__.requests_log.append((url, json, headers))
         if url.endswith("/bootstrap"):
@@ -200,7 +201,7 @@ class DeviceAuthClientTests(unittest.IsolatedAsyncioTestCase):
             self.assertIsNotNone(client._load_token_state())
 
 
-    async def test_device_token_state_from_response_with_expires_at(self):
+    def test_device_token_state_from_response_with_expires_at(self):
         payload = {
             "access_token": "acc_token",
             "refresh_token": "ref_token",
@@ -214,7 +215,7 @@ class DeviceAuthClientTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(state.access_token, "acc_token")
         self.assertEqual(state.expires_at.year, 2024)
 
-    async def test_device_token_state_from_response_with_expires_in(self):
+    def test_device_token_state_from_response_with_expires_in(self):
         payload = {
             "access_token": "acc_token",
             "refresh_token": "ref_token",
@@ -227,7 +228,7 @@ class DeviceAuthClientTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(state.token_type, "Bearer")
         self.assertEqual(state.scopes, [])
 
-    async def test_device_token_state_serialization(self):
+    def test_device_token_state_serialization(self):
         state = DeviceTokenState(
             access_token="acc",
             refresh_token="ref",
@@ -278,10 +279,10 @@ class DeviceAuthClientTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_get_access_token_sync_raises_inside_loop(self):
         """Test get_access_token_sync raises when called inside an event loop"""
+        await asyncio.sleep(0)  # ensure event loop is active
         fake_keyring = _FakeKeyring()
         with patch("edgeml.auth.keyring", fake_keyring):
             client = DeviceAuthClient(base_url="https://api.example.com", org_id="org_1", device_identifier="device_1")
-            # This async test method runs inside an event loop, so sync call should raise
             with self.assertRaises(RuntimeError) as ctx:
                 client.get_access_token_sync()
             self.assertIn("cannot be called inside an active event loop", str(ctx.exception))

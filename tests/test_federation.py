@@ -157,7 +157,7 @@ class FederationTests(unittest.TestCase):
         self.assertEqual(payload["rollout_percentage"], 20.0)
         self.assertEqual(payload["target_percentage"], 90.0)
         self.assertEqual(payload["increment_step"], 15.0)
-        self.assertEqual(payload["start_immediately"], False)
+        self.assertFalse(payload["start_immediately"])
 
     def test_deploy_uses_last_model_and_version(self):
         stub = _StubApi()
@@ -171,7 +171,7 @@ class FederationTests(unittest.TestCase):
         federation.last_version = "3.0.0"
         federation.deploy()
 
-        method, path, payload = stub.calls[-1]
+        _, path, payload = stub.calls[-1]
         self.assertEqual(payload["version"], "3.0.0")
         self.assertIn("model_auto", path)
 
@@ -187,7 +187,7 @@ class FederationTests(unittest.TestCase):
         federation.last_model_id = "model_1"
         federation.deploy()
 
-        method, path, payload = stub.calls[-1]
+        _, _, payload = stub.calls[-1]
         self.assertEqual(payload["version"], "4.0.0")
 
     def test_deploy_raises_if_no_model_id(self):

@@ -8,6 +8,8 @@ import httpx
 from .api_client import _ApiClient, EdgeMLClientError
 from .control_plane import ExperimentsAPI, RolloutsAPI
 
+_MODELS_PATH = "/models"
+
 
 class ModelRegistry:
     def __init__(
@@ -27,7 +29,7 @@ class ModelRegistry:
         self.experiments = ExperimentsAPI(self.api, org_id=self.org_id)
 
     def resolve_model_id(self, model: str) -> str:
-        data = self.api.get("/models", params={"org_id": self.org_id})
+        data = self.api.get(_MODELS_PATH, params={"org_id": self.org_id})
         for item in data.get("models", []):
             if item.get("name") == model:
                 return item["id"]
@@ -48,7 +50,7 @@ class ModelRegistry:
             params["framework"] = framework
         if use_case:
             params["use_case"] = use_case
-        return self.api.get("/models", params=params)
+        return self.api.get(_MODELS_PATH, params=params)
 
     def get_model(self, model_id: str) -> dict[str, Any]:
         return self.api.get(f"/models/{model_id}")
@@ -139,7 +141,7 @@ class ModelRegistry:
         model_contract: Optional[dict[str, Any]] = None,
         data_contract: Optional[dict[str, Any]] = None,
     ) -> dict[str, Any]:
-        data = self.api.get("/models", params={"org_id": self.org_id})
+        data = self.api.get(_MODELS_PATH, params={"org_id": self.org_id})
         for item in data.get("models", []):
             if item.get("name") == name:
                 return item
@@ -154,7 +156,7 @@ class ModelRegistry:
             payload["model_contract"] = model_contract
         if data_contract:
             payload["data_contract"] = data_contract
-        return self.api.post("/models", payload)
+        return self.api.post(_MODELS_PATH, payload)
 
     def upload_version_from_path(
         self,

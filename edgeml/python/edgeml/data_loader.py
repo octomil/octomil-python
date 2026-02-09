@@ -138,40 +138,41 @@ def _load_json(path: str) -> "pd.DataFrame":
 
 def _get_storage_options(path: str) -> Optional[Dict[str, Any]]:
     """Get storage options for cloud paths."""
+    if path.startswith('s3://'):
+        return _get_s3_options()
+    elif path.startswith('gs://'):
+        return None
+    elif path.startswith('az://') or path.startswith('abfs://'):
+        return _get_azure_options()
+    else:
+        return None
+
+
+def _get_s3_options() -> Optional[Dict[str, Any]]:
+    """Get AWS S3 storage options from environment variables."""
     import os
 
-    if path.startswith('s3://'):
-        # AWS S3 - credentials from environment
-        options: Dict[str, Any] = {}
-        if os.environ.get('AWS_ACCESS_KEY_ID'):
-            options['key'] = os.environ['AWS_ACCESS_KEY_ID']
-        if os.environ.get('AWS_SECRET_ACCESS_KEY'):
-            options['secret'] = os.environ['AWS_SECRET_ACCESS_KEY']
-        if os.environ.get('AWS_SESSION_TOKEN'):
-            options['token'] = os.environ['AWS_SESSION_TOKEN']
-        if os.environ.get('AWS_ENDPOINT_URL'):
-            options['endpoint_url'] = os.environ['AWS_ENDPOINT_URL']
-        return options if options else None
+    env_map = {
+        'AWS_ACCESS_KEY_ID': 'key',
+        'AWS_SECRET_ACCESS_KEY': 'secret',
+        'AWS_SESSION_TOKEN': 'token',
+        'AWS_ENDPOINT_URL': 'endpoint_url',
+    }
+    options = {v: os.environ[k] for k, v in env_map.items() if os.environ.get(k)}
+    return options or None
 
-    elif path.startswith('gs://'):
-        # Google Cloud Storage - uses GOOGLE_APPLICATION_CREDENTIALS env var
-        # gcsfs reads this automatically
-        return None
 
-    elif path.startswith('az://') or path.startswith('abfs://'):
-        # Azure Blob Storage
-        options = {}
-        if os.environ.get('AZURE_STORAGE_CONNECTION_STRING'):
-            options['connection_string'] = os.environ['AZURE_STORAGE_CONNECTION_STRING']
-        if os.environ.get('AZURE_STORAGE_ACCOUNT_NAME'):
-            options['account_name'] = os.environ['AZURE_STORAGE_ACCOUNT_NAME']
-        if os.environ.get('AZURE_STORAGE_ACCOUNT_KEY'):
-            options['account_key'] = os.environ['AZURE_STORAGE_ACCOUNT_KEY']
-        return options if options else None
+def _get_azure_options() -> Optional[Dict[str, Any]]:
+    """Get Azure Blob Storage options from environment variables."""
+    import os
 
-    else:
-        # Local file or HTTP - no special options
-        return None
+    env_map = {
+        'AZURE_STORAGE_CONNECTION_STRING': 'connection_string',
+        'AZURE_STORAGE_ACCOUNT_NAME': 'account_name',
+        'AZURE_STORAGE_ACCOUNT_KEY': 'account_key',
+    }
+    options = {v: os.environ[k] for k, v in env_map.items() if os.environ.get(k)}
+    return options or None
 
 
 def validate_target(
@@ -200,7 +201,7 @@ def validate_target(
 
     # Check column exists
     if target_col not in df.columns:
-        available = sorted([c for c in df.columns])
+        available = sorted(df.columns)
         raise ValueError(
             f"Target column '{target_col}' not found. "
             f"Available columns: {available}"
@@ -277,7 +278,7 @@ def prepare_data(
             output_dim=model_architecture.get("output_dim", 1),
         )
     elif target_col not in df.columns:
-        available = sorted([c for c in df.columns])
+        available = sorted(df.columns)
         raise ValueError(
             f"Target column '{target_col}' not found. "
             f"Available columns: {available}"

@@ -1,6 +1,6 @@
 import tempfile
 import unittest
-from unittest.mock import Mock, patch
+from unittest.mock import patch
 
 from edgeml.api_client import EdgeMLClientError
 from edgeml.registry import ModelRegistry
@@ -91,7 +91,7 @@ class ModelRegistryTests(unittest.TestCase):
         stub = _StubApi()
         registry.api = stub
         registry.list_models()
-        method, path, params = stub.calls[-1]
+        _, _, params = stub.calls[-1]
         self.assertNotIn("framework", params)
         self.assertNotIn("use_case", params)
 
@@ -100,7 +100,7 @@ class ModelRegistryTests(unittest.TestCase):
         stub = _StubApi()
         registry.api = stub
         registry.get_model("model_1")
-        method, path, params = stub.calls[-1]
+        method, path, _ = stub.calls[-1]
         self.assertEqual(method, "get")
         self.assertEqual(path, "/models/model_1")
 
@@ -120,7 +120,7 @@ class ModelRegistryTests(unittest.TestCase):
         stub = _StubApi()
         registry.api = stub
         registry.delete_model("model_1")
-        method, path, params = stub.calls[-1]
+        method, path, _ = stub.calls[-1]
         self.assertEqual(method, "delete")
         self.assertEqual(path, "/models/model_1")
 
@@ -158,7 +158,7 @@ class ModelRegistryTests(unittest.TestCase):
         stub = _StubApi()
         registry.api = stub
         registry.list_versions("model_1")
-        method, path, params = stub.calls[-1]
+        _, _, params = stub.calls[-1]
         self.assertNotIn("status", params)
 
     def test_get_version(self):
@@ -166,7 +166,7 @@ class ModelRegistryTests(unittest.TestCase):
         stub = _StubApi()
         registry.api = stub
         registry.get_version("model_1", "1.0.0")
-        method, path, params = stub.calls[-1]
+        method, path, _ = stub.calls[-1]
         self.assertEqual(method, "get")
         self.assertEqual(path, "/models/model_1/versions/1.0.0")
 
@@ -174,7 +174,7 @@ class ModelRegistryTests(unittest.TestCase):
         registry = ModelRegistry(auth_token_provider=lambda: "token123")
         stub = _StubApi()
         registry.api = stub
-        result = registry.create_version(
+        registry.create_version(
             model_id="model_1",
             version="2.0.0",
             storage_path="s3://bucket/model.onnx",
@@ -207,7 +207,7 @@ class ModelRegistryTests(unittest.TestCase):
             checksum="abc123",
             size_bytes=1024,
         )
-        method, path, payload = stub.calls[-1]
+        _, _, payload = stub.calls[-1]
         self.assertNotIn("description", payload)
         self.assertNotIn("metrics", payload)
 
@@ -216,8 +216,8 @@ class ModelRegistryTests(unittest.TestCase):
         stub = _StubApi()
         stub.set_response(("/models/model_1/versions/1.0.0/download-url", (("format", "onnx"),)), {"url": "https://download.com/model.onnx"})
         registry.api = stub
-        result = registry.get_download_url("model_1", "1.0.0", fmt="onnx")
-        method, path, params = stub.calls[-1]
+        registry.get_download_url("model_1", "1.0.0", fmt="onnx")
+        method, _, params = stub.calls[-1]
         self.assertEqual(method, "get")
         self.assertEqual(params["format"], "onnx")
 
@@ -233,12 +233,14 @@ class ModelRegistryTests(unittest.TestCase):
 
         class _FakeHttpxClient:
             def __init__(self, *args, **kwargs):
+                # No state needed for fake client
                 pass
 
             def __enter__(self):
                 return self
 
             def __exit__(self, exc_type, exc_val, exc_tb):
+                # No cleanup needed for fake client
                 return False
 
             def get(self, url):
@@ -278,12 +280,14 @@ class ModelRegistryTests(unittest.TestCase):
 
         class _FakeHttpxClient:
             def __init__(self, *args, **kwargs):
+                # No state needed for fake client
                 pass
 
             def __enter__(self):
                 return self
 
             def __exit__(self, exc_type, exc_val, exc_tb):
+                # No cleanup needed for fake client
                 return False
 
             def get(self, url):
@@ -299,7 +303,7 @@ class ModelRegistryTests(unittest.TestCase):
         stub = _StubApi()
         stub.set_response(("/models", (("org_id", "org_1"),)), {"models": []})
         registry.api = stub
-        result = registry.ensure_model(
+        registry.ensure_model(
             name="new_model",
             framework="pytorch",
             use_case="detection",
@@ -307,7 +311,7 @@ class ModelRegistryTests(unittest.TestCase):
             model_contract={"input": "tensor"},
             data_contract={"format": "json"},
         )
-        method, path, payload = stub.calls[-1]
+        method, _, payload = stub.calls[-1]
         self.assertEqual(method, "post")
         self.assertEqual(payload["name"], "new_model")
         self.assertEqual(payload["framework"], "pytorch")
@@ -332,7 +336,7 @@ class ModelRegistryTests(unittest.TestCase):
         stub.set_response(("/models", (("org_id", "org_1"),)), {"models": []})
         registry.api = stub
         registry.ensure_model(name="new_model", framework="pytorch", use_case="detection")
-        method, path, payload = stub.calls[-1]
+        _, _, payload = stub.calls[-1]
         self.assertNotIn("model_contract", payload)
         self.assertNotIn("data_contract", payload)
 
@@ -341,7 +345,7 @@ class ModelRegistryTests(unittest.TestCase):
         stub = _StubApi()
         registry.api = stub
         registry.publish_version("model_1", "1.0.0")
-        method, path, payload = stub.calls[-1]
+        method, path, _ = stub.calls[-1]
         self.assertEqual(method, "post")
         self.assertEqual(path, "/models/model_1/versions/1.0.0/publish")
 
@@ -350,7 +354,7 @@ class ModelRegistryTests(unittest.TestCase):
         stub = _StubApi()
         registry.api = stub
         registry.deprecate_version("model_1", "1.0.0")
-        method, path, payload = stub.calls[-1]
+        method, path, _ = stub.calls[-1]
         self.assertEqual(method, "post")
         self.assertEqual(path, "/models/model_1/versions/1.0.0/deprecate")
 
@@ -369,7 +373,7 @@ class ModelRegistryTests(unittest.TestCase):
         stub = _StubApi()
         registry.api = stub
         registry.delete_version("model_1", "1.0.0")
-        method, path, params = stub.calls[-1]
+        method, path, _ = stub.calls[-1]
         self.assertEqual(method, "delete")
         self.assertEqual(path, "/models/model_1/versions/1.0.0")
 
@@ -405,12 +409,14 @@ class ModelRegistryTests(unittest.TestCase):
 
         class _FakeHttpxClient:
             def __init__(self, *args, **kwargs):
+                # No state needed for fake client
                 pass
 
             def __enter__(self):
                 return self
 
             def __exit__(self, exc_type, exc_val, exc_tb):
+                # No cleanup needed for fake client
                 return False
 
             def post(self, url, data=None, files=None, headers=None):
@@ -458,6 +464,7 @@ class ModelRegistryTests(unittest.TestCase):
                 return self
 
             def __exit__(self, exc_type, exc_val, exc_tb):
+                # No cleanup needed for fake client
                 return False
 
             def post(self, url, data=None, files=None, headers=None):
@@ -498,12 +505,14 @@ class ModelRegistryTests(unittest.TestCase):
 
         class _FakeHttpxClient:
             def __init__(self, *args, **kwargs):
+                # No state needed for fake client
                 pass
 
             def __enter__(self):
                 return self
 
             def __exit__(self, exc_type, exc_val, exc_tb):
+                # No cleanup needed for fake client
                 return False
 
             def post(self, url, data=None, files=None, headers=None):

@@ -39,7 +39,7 @@ class RolloutsApiTests(unittest.TestCase):
         self.assertEqual(path, "/models/model_1/rollouts")
         self.assertEqual(payload["version"], "1.0.0")
         self.assertEqual(payload["rollout_percentage"], 20.0)
-        self.assertEqual(payload["start_immediately"], True)
+        self.assertTrue(payload["start_immediately"])
 
     def test_rollout_list_with_filter(self):
         api = _StubApi()
@@ -54,7 +54,7 @@ class RolloutsApiTests(unittest.TestCase):
         api = _StubApi()
         rollouts = RolloutsAPI(api)
         rollouts.list("model_1")
-        method, path, params = api.calls[-1]
+        method, _, params = api.calls[-1]
         self.assertEqual(method, "get")
         self.assertIsNone(params)
 
@@ -62,7 +62,7 @@ class RolloutsApiTests(unittest.TestCase):
         api = _StubApi()
         rollouts = RolloutsAPI(api)
         rollouts.list_active("model_1")
-        method, path, params = api.calls[-1]
+        method, path, _ = api.calls[-1]
         self.assertEqual(method, "get")
         self.assertEqual(path, "/models/model_1/rollouts/active")
 
@@ -70,7 +70,7 @@ class RolloutsApiTests(unittest.TestCase):
         api = _StubApi()
         rollouts = RolloutsAPI(api)
         rollouts.get("model_1", 5)
-        method, path, params = api.calls[-1]
+        method, path, _ = api.calls[-1]
         self.assertEqual(method, "get")
         self.assertEqual(path, "/models/model_1/rollouts/5")
 
@@ -78,7 +78,7 @@ class RolloutsApiTests(unittest.TestCase):
         api = _StubApi()
         rollouts = RolloutsAPI(api)
         rollouts.start("model_1", 5)
-        method, path, payload = api.calls[-1]
+        method, path, _ = api.calls[-1]
         self.assertEqual(method, "post")
         self.assertEqual(path, "/models/model_1/rollouts/5/start")
 
@@ -86,7 +86,7 @@ class RolloutsApiTests(unittest.TestCase):
         api = _StubApi()
         rollouts = RolloutsAPI(api)
         rollouts.pause("model_1", 5)
-        method, path, payload = api.calls[-1]
+        method, path, _ = api.calls[-1]
         self.assertEqual(method, "post")
         self.assertEqual(path, "/models/model_1/rollouts/5/pause")
 
@@ -94,7 +94,7 @@ class RolloutsApiTests(unittest.TestCase):
         api = _StubApi()
         rollouts = RolloutsAPI(api)
         rollouts.resume("model_1", 5)
-        method, path, payload = api.calls[-1]
+        method, path, _ = api.calls[-1]
         self.assertEqual(method, "post")
         self.assertEqual(path, "/models/model_1/rollouts/5/resume")
 
@@ -111,7 +111,7 @@ class RolloutsApiTests(unittest.TestCase):
         api = _StubApi()
         rollouts = RolloutsAPI(api)
         rollouts.advance("model_1", 5, custom_increment=25.0)
-        method, path, payload = api.calls[-1]
+        method, _, payload = api.calls[-1]
         self.assertEqual(method, "post")
         self.assertEqual(payload["custom_increment"], 25.0)
 
@@ -129,7 +129,7 @@ class RolloutsApiTests(unittest.TestCase):
         api = _StubApi()
         rollouts = RolloutsAPI(api)
         rollouts.update_percentage("model_1", 7, 50.0)
-        method, path, payload = api.calls[-1]
+        method, _, payload = api.calls[-1]
         self.assertEqual(method, "post")
         self.assertNotIn("reason", payload)
 
@@ -137,7 +137,7 @@ class RolloutsApiTests(unittest.TestCase):
         api = _StubApi()
         rollouts = RolloutsAPI(api)
         rollouts.get_status_history("model_1", 5)
-        method, path, params = api.calls[-1]
+        method, path, _ = api.calls[-1]
         self.assertEqual(method, "get")
         self.assertEqual(path, "/models/model_1/rollouts/5/status-history")
 
@@ -145,7 +145,7 @@ class RolloutsApiTests(unittest.TestCase):
         api = _StubApi()
         rollouts = RolloutsAPI(api)
         rollouts.get_affected_devices("model_1", 5)
-        method, path, params = api.calls[-1]
+        method, path, _ = api.calls[-1]
         self.assertEqual(method, "get")
         self.assertEqual(path, "/models/model_1/rollouts/5/affected-devices")
 
@@ -162,7 +162,7 @@ class RolloutsApiTests(unittest.TestCase):
         api = _StubApi()
         rollouts = RolloutsAPI(api)
         rollouts.delete("model_1", 7)
-        method, path, params = api.calls[-1]
+        method, _, params = api.calls[-1]
         self.assertEqual(method, "delete")
         self.assertEqual(params, {"force": "false"})
 
@@ -184,7 +184,7 @@ class ExperimentsApiTests(unittest.TestCase):
         self.assertEqual(method, "post")
         self.assertEqual(path, "/experiments")
         self.assertEqual(payload["name"], "ab_test")
-        self.assertEqual(payload["variants"][0]["is_control"], True)
+        self.assertTrue(payload["variants"][0]["is_control"])
         self.assertEqual(payload["variants"][0]["traffic_allocation"], 40.0)
         self.assertEqual(payload["variants"][1]["traffic_allocation"], 60.0)
 
@@ -205,7 +205,7 @@ class ExperimentsApiTests(unittest.TestCase):
         api = _StubApi()
         experiments = ExperimentsAPI(api, org_id="org_1")
         experiments.list()
-        method, path, params = api.calls[-1]
+        method, _, params = api.calls[-1]
         self.assertEqual(method, "get")
         self.assertEqual(params["org_id"], "org_1")
         self.assertNotIn("model_id", params)
@@ -215,7 +215,7 @@ class ExperimentsApiTests(unittest.TestCase):
         api = _StubApi()
         experiments = ExperimentsAPI(api, org_id="org_1")
         experiments.get("exp_123")
-        method, path, params = api.calls[-1]
+        method, path, _ = api.calls[-1]
         self.assertEqual(method, "get")
         self.assertEqual(path, "/experiments/exp_123")
 
@@ -223,7 +223,7 @@ class ExperimentsApiTests(unittest.TestCase):
         api = _StubApi()
         experiments = ExperimentsAPI(api, org_id="org_1")
         experiments.start("exp_123")
-        method, path, payload = api.calls[-1]
+        method, path, _ = api.calls[-1]
         self.assertEqual(method, "post")
         self.assertEqual(path, "/experiments/exp_123/start")
 
@@ -231,7 +231,7 @@ class ExperimentsApiTests(unittest.TestCase):
         api = _StubApi()
         experiments = ExperimentsAPI(api, org_id="org_1")
         experiments.pause("exp_123")
-        method, path, payload = api.calls[-1]
+        method, path, _ = api.calls[-1]
         self.assertEqual(method, "post")
         self.assertEqual(path, "/experiments/exp_123/pause")
 
@@ -239,7 +239,7 @@ class ExperimentsApiTests(unittest.TestCase):
         api = _StubApi()
         experiments = ExperimentsAPI(api, org_id="org_1")
         experiments.resume("exp_123")
-        method, path, payload = api.calls[-1]
+        method, path, _ = api.calls[-1]
         self.assertEqual(method, "post")
         self.assertEqual(path, "/experiments/exp_123/resume")
 
@@ -247,7 +247,7 @@ class ExperimentsApiTests(unittest.TestCase):
         api = _StubApi()
         experiments = ExperimentsAPI(api, org_id="org_1")
         experiments.complete("exp_123")
-        method, path, payload = api.calls[-1]
+        method, path, _ = api.calls[-1]
         self.assertEqual(method, "post")
         self.assertEqual(path, "/experiments/exp_123/complete")
 
@@ -255,7 +255,7 @@ class ExperimentsApiTests(unittest.TestCase):
         api = _StubApi()
         experiments = ExperimentsAPI(api, org_id="org_1")
         experiments.cancel("exp_123")
-        method, path, payload = api.calls[-1]
+        method, path, _ = api.calls[-1]
         self.assertEqual(method, "post")
         self.assertEqual(path, "/experiments/exp_123/cancel")
 
@@ -273,7 +273,7 @@ class ExperimentsApiTests(unittest.TestCase):
         api = _StubApi()
         experiments = ExperimentsAPI(api, org_id="org_1")
         experiments.get_target_groups("exp_123")
-        method, path, params = api.calls[-1]
+        method, path, _ = api.calls[-1]
         self.assertEqual(method, "get")
         self.assertEqual(path, "/experiments/exp_123/target-groups")
 
@@ -290,7 +290,7 @@ class ExperimentsApiTests(unittest.TestCase):
         api = _StubApi()
         experiments = ExperimentsAPI(api, org_id="org_1")
         experiments.add_target_group("exp_123", "group_1")
-        method, path, payload = api.calls[-1]
+        method, path, _ = api.calls[-1]
         self.assertEqual(method, "post")
         self.assertEqual(path, "/experiments/exp_123/target-groups/group_1")
 
@@ -298,7 +298,7 @@ class ExperimentsApiTests(unittest.TestCase):
         api = _StubApi()
         experiments = ExperimentsAPI(api, org_id="org_1")
         experiments.remove_target_group("exp_123", "group_1")
-        method, path, params = api.calls[-1]
+        method, path, _ = api.calls[-1]
         self.assertEqual(method, "delete")
         self.assertEqual(path, "/experiments/exp_123/target-groups/group_1")
 
@@ -306,7 +306,7 @@ class ExperimentsApiTests(unittest.TestCase):
         api = _StubApi()
         experiments = ExperimentsAPI(api, org_id="org_1")
         experiments.get_analytics("exp_123")
-        method, path, params = api.calls[-1]
+        method, path, _ = api.calls[-1]
         self.assertEqual(method, "get")
         self.assertEqual(path, "/experiments/exp_123/analytics")
 
@@ -314,7 +314,7 @@ class ExperimentsApiTests(unittest.TestCase):
         api = _StubApi()
         experiments = ExperimentsAPI(api, org_id="org_1")
         experiments.get_analytics_sample_size("exp_123")
-        method, path, params = api.calls[-1]
+        method, path, _ = api.calls[-1]
         self.assertEqual(method, "get")
         self.assertEqual(path, "/experiments/exp_123/analytics/sample-size")
 
@@ -322,7 +322,7 @@ class ExperimentsApiTests(unittest.TestCase):
         api = _StubApi()
         experiments = ExperimentsAPI(api, org_id="org_1")
         experiments.get_analytics_timeseries("exp_123")
-        method, path, params = api.calls[-1]
+        method, path, _ = api.calls[-1]
         self.assertEqual(method, "get")
         self.assertEqual(path, "/experiments/exp_123/analytics/timeseries")
 
@@ -346,7 +346,7 @@ class ModelRegistryControlPlaneTests(unittest.TestCase):
         self.assertEqual(result["payload"]["rollout_percentage"], 15.0)
         self.assertEqual(result["payload"]["target_percentage"], 75.0)
         self.assertEqual(result["payload"]["increment_step"], 5.0)
-        self.assertEqual(result["payload"]["start_immediately"], False)
+        self.assertFalse(result["payload"]["start_immediately"])
 
     def test_update_version_metrics_endpoint(self):
         registry = ModelRegistry(auth_token_provider=lambda: "token")

@@ -33,6 +33,8 @@ except ImportError:
     pd = None  # type: ignore[assignment]
     HAS_PANDAS = False
 
+_MODEL_VERSION_ERROR = "Failed to resolve model version"
+
 WeightsData = Union[bytes, bytearray, Dict[str, Any], Any]
 TrainResult = Tuple[Dict[str, Any], int, Optional[Dict[str, float]]]
 LocalTrainFn = Callable[[Dict[str, Any]], TrainResult]
@@ -127,6 +129,44 @@ class FederatedClient:
         model_info = self._get_model_info(model)
         return model_info.get("architecture", {})
 
+    def _prepare_training_data(
+        self,
+        model: str,
+        data: DataSource,
+        target_col: Optional[str],
+    ) -> tuple["pd.DataFrame", List[str], str, int]:
+        """Load and validate training data."""
+        try:
+            df = load_data(data)
+        except DataLoadError as e:
+            raise EdgeMLClientError(f"Failed to load data: {e}") from e
+
+        architecture = self._get_model_architecture(model)
+        if target_col is None:
+            target_col = architecture.get("target_col", "target")
+
+        if target_col not in df.columns:
+            available = sorted(df.columns)
+            raise EdgeMLClientError(
+                f"Target column '{target_col}' not found. "
+                f"Available columns: {available}"
+            )
+
+        if architecture:
+            df = validate_target(
+                df,
+                target_col=target_col,
+                output_type=architecture.get("output_type", "binary"),
+                output_dim=architecture.get("output_dim", 1),
+            )
+
+        detected_features = [c for c in df.columns if c != target_col]
+        sample_count = len(df)
+        logger.info(
+            f"Loaded data: {sample_count} samples, {len(detected_features)} features"
+        )
+        return df, detected_features, target_col, sample_count
+
     def train(
         self,
         model: str,
@@ -147,37 +187,11 @@ class FederatedClient:
         )
 
         if is_data_source:
-            try:
-                df = load_data(data)
-            except DataLoadError as e:
-                raise EdgeMLClientError(f"Failed to load data: {e}") from e
-
-            architecture = self._get_model_architecture(model)
-            if target_col is None:
-                target_col = architecture.get("target_col", "target")
-
-            if target_col not in df.columns:
-                available = sorted([c for c in df.columns])
-                raise EdgeMLClientError(
-                    f"Target column '{target_col}' not found. "
-                    f"Available columns: {available}"
-                )
-
-            if architecture:
-                df = validate_target(
-                    df,
-                    target_col=target_col,
-                    output_type=architecture.get("output_type", "binary"),
-                    output_dim=architecture.get("output_dim", 1),
-                )
-
-            detected_features = [c for c in df.columns if c != target_col]
-            self._detected_features = detected_features
-            sample_count = sample_count or len(df)
-
-            logger.info(
-                f"Loaded data: {sample_count} samples, {len(detected_features)} features"
+            df, detected_features, target_col, data_count = self._prepare_training_data(
+                model, data, target_col,
             )
+            self._detected_features = detected_features
+            sample_count = sample_count or data_count
 
         self.register(feature_schema=detected_features)
 
@@ -188,7 +202,7 @@ class FederatedClient:
             latest = self.api.get(f"/models/{model_id}/versions/latest")
             version = latest.get("version")
         if not version:
-            raise EdgeMLClientError("Failed to resolve model version")
+            raise EdgeMLClientError(_MODEL_VERSION_ERROR)
 
         for _ in range(rounds):
             if callable(data):
@@ -232,7 +246,7 @@ class FederatedClient:
             latest = self.api.get(f"/models/{model_id}/versions/latest")
             version = latest.get("version")
         if not version:
-            raise EdgeMLClientError("Failed to resolve model version")
+            raise EdgeMLClientError(_MODEL_VERSION_ERROR)
         return self.api.get_bytes(
             f"/models/{model_id}/versions/{version}/download",
             params={"format": format},
@@ -253,7 +267,7 @@ class FederatedClient:
             latest = self.api.get(f"/models/{model_id}/versions/latest")
             version = latest.get("version")
         if not version:
-            raise EdgeMLClientError("Failed to resolve model version")
+            raise EdgeMLClientError(_MODEL_VERSION_ERROR)
 
         results = []
         for _ in range(rounds):
