@@ -288,7 +288,7 @@ class DataLoaderTests(unittest.TestCase):
         self.assertEqual(mock_azure.call_count, 1)
 
     def test_get_storage_options_local_path(self):
-        result = _get_storage_options('/tmp/data.csv')
+        result = _get_storage_options('/home/user/data.csv')
         self.assertIsNone(result)
 
         result_relative = _get_storage_options('data.csv')
