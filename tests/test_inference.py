@@ -1,7 +1,6 @@
 import unittest
 import time
 from typing import Optional
-from unittest.mock import patch
 
 from octomil.inference import (
     InferenceChunk,
@@ -20,7 +19,7 @@ class _StubApi:
 
     def post(self, path: str, payload: dict) -> dict:
         if self._raise_on_post:
-            raise RuntimeError("simulated network error")
+            raise OSError("simulated network error")
         self.calls.append((path, payload))
         return {}
 

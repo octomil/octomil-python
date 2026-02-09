@@ -14,9 +14,9 @@ Credentials are read from environment variables:
 
 from __future__ import annotations
 
-from pathlib import Path
-from typing import Union, Optional, List, Any, Dict, TYPE_CHECKING
 import logging
+from pathlib import Path
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Union
 
 if TYPE_CHECKING:
     import pandas as pd
@@ -154,8 +154,8 @@ def _get_s3_options() -> Optional[Dict[str, Any]]:
 
     env_map = {
         'AWS_ACCESS_KEY_ID': 'key',
-        'AWS_SECRET_ACCESS_KEY': 'secret',
-        'AWS_SESSION_TOKEN': 'token',
+        'AWS_SECRET_ACCESS_KEY': 'secret',  # noqa: S105
+        'AWS_SESSION_TOKEN': 'token',  # noqa: S105
         'AWS_ENDPOINT_URL': 'endpoint_url',
     }
     options = {v: os.environ[k] for k, v in env_map.items() if os.environ.get(k)}
@@ -197,7 +197,6 @@ def validate_target(
         ValueError: If target column missing or incompatible
     """
     import pandas as pd
-    import numpy as np
 
     # Check column exists
     if target_col not in df.columns:

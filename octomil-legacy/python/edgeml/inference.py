@@ -14,7 +14,7 @@ import time
 import uuid
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any, AsyncIterator, Iterator, Optional, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, AsyncIterator, Iterator, Optional
 
 if TYPE_CHECKING:
     from .api_client import _ApiClient
@@ -347,5 +347,5 @@ class StreamingInferenceClient:
             if metrics:
                 payload["metrics"] = metrics
             self.api.post("/inference/events", payload)
-        except Exception:
+        except (OSError, ValueError):
             pass  # best-effort reporting
