@@ -1104,10 +1104,10 @@ class ApplyFiltersTests(unittest.TestCase):
         except ImportError:
             self.skipTest("torch not installed")
 
-        delta = {"w": torch.tensor([3.0, 4.0])}  # norm = 5.0
+        delta = {"w": torch.tensor([3.0, 4.0])}
         result = apply_filters(delta, [{"type": "gradient_clip", "max_norm": 1.0}])
 
-        clipped_norm = torch.norm(result["w"].float())
+        clipped_norm = torch.norm(result["w"].float().flatten(), dim=0)
         self.assertAlmostEqual(clipped_norm.item(), 1.0, places=4)
 
     def test_gradient_clip_no_op_when_below_threshold(self):
@@ -1191,7 +1191,7 @@ class ApplyFiltersTests(unittest.TestCase):
         except ImportError:
             self.skipTest("torch not installed")
 
-        delta = {"w": torch.tensor([3.0, 4.0])}  # norm = 5
+        delta = {"w": torch.tensor([3.0, 4.0])}
         result = apply_filters(delta, [
             {"type": "gradient_clip", "max_norm": 1.0},
             {"type": "norm_validation", "max_norm": 2.0},

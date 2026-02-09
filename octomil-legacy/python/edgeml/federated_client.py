@@ -34,10 +34,77 @@ except ImportError:
     HAS_PANDAS = False
 
 _MODEL_VERSION_ERROR = "Failed to resolve model version"
+_TRAINING_WEIGHTS_ENDPOINT = "/training/weights"
 
 WeightsData = Union[bytes, bytearray, Dict[str, Any], Any]
 TrainResult = Tuple[Dict[str, Any], int, Optional[Dict[str, float]]]
 LocalTrainFn = Callable[[Dict[str, Any]], TrainResult]
+
+
+def _apply_gradient_clip(torch, result: Dict[str, Any], f: Dict[str, Any]) -> None:
+    """Clip per-tensor norms to ``max_norm``."""
+    max_norm = float(f.get("max_norm", 1.0))
+    for key, tensor in result.items():
+        if not torch.is_tensor(tensor):
+            continue
+        norm = torch.norm(tensor.float().flatten(), dim=0)
+        if norm > max_norm:
+            result[key] = tensor * (max_norm / norm)
+
+
+def _apply_gaussian_noise(torch, result: Dict[str, Any], f: Dict[str, Any]) -> None:
+    """Add N(0, stddev^2) noise to each tensor."""
+    stddev = float(f.get("stddev", 0.01))
+    for key, tensor in result.items():
+        if not torch.is_tensor(tensor):
+            continue
+        result[key] = tensor + torch.randn_like(tensor.float()) * stddev
+
+
+def _apply_norm_validation(torch, result: Dict[str, Any], f: Dict[str, Any]) -> None:
+    """Drop tensors whose norm exceeds ``max_norm``."""
+    max_norm = float(f.get("max_norm", 10.0))
+    for key in list(result.keys()):
+        tensor = result[key]
+        if torch.is_tensor(tensor) and torch.norm(tensor.float().flatten(), dim=0) > max_norm:
+            del result[key]
+
+
+def _apply_sparsification(torch, result: Dict[str, Any], f: Dict[str, Any]) -> None:
+    """Zero out values below the top-k% by magnitude."""
+    top_k_percent = float(f.get("top_k_percent", 10.0))
+    for key, tensor in result.items():
+        if not torch.is_tensor(tensor):
+            continue
+        flat = tensor.float().abs().flatten()
+        k = max(1, int(math.ceil(flat.numel() * top_k_percent / 100.0)))
+        threshold = torch.topk(flat, k).values[-1]
+        mask = tensor.abs() >= threshold
+        result[key] = tensor * mask
+
+
+def _apply_quantization(torch, result: Dict[str, Any], f: Dict[str, Any]) -> None:
+    """Round tensor values to ``bits``-bit resolution."""
+    bits = int(f.get("bits", 8))
+    levels = (1 << bits) - 1
+    for key, tensor in result.items():
+        if not torch.is_tensor(tensor):
+            continue
+        t_min = tensor.min()
+        t_max = tensor.max()
+        if t_min == t_max:
+            continue
+        scale = (t_max - t_min) / levels
+        result[key] = (torch.round((tensor - t_min) / scale) * scale) + t_min
+
+
+_FILTER_HANDLERS = {
+    "gradient_clip": _apply_gradient_clip,
+    "gaussian_noise": _apply_gaussian_noise,
+    "norm_validation": _apply_norm_validation,
+    "sparsification": _apply_sparsification,
+    "quantization": _apply_quantization,
+}
 
 
 def apply_filters(delta: Dict[str, Any], filters: List[Dict[str, Any]]) -> Dict[str, Any]:
@@ -58,54 +125,9 @@ def apply_filters(delta: Dict[str, Any], filters: List[Dict[str, Any]]) -> Dict[
     result = {k: v.clone() if torch.is_tensor(v) else v for k, v in delta.items()}
 
     for f in filters:
-        kind = f.get("type", "")
-
-        if kind == "gradient_clip":
-            max_norm = float(f.get("max_norm", 1.0))
-            for key, tensor in result.items():
-                if not torch.is_tensor(tensor):
-                    continue
-                norm = torch.norm(tensor.float())
-                if norm > max_norm:
-                    result[key] = tensor * (max_norm / norm)
-
-        elif kind == "gaussian_noise":
-            stddev = float(f.get("stddev", 0.01))
-            for key, tensor in result.items():
-                if not torch.is_tensor(tensor):
-                    continue
-                result[key] = tensor + torch.randn_like(tensor.float()) * stddev
-
-        elif kind == "norm_validation":
-            max_norm = float(f.get("max_norm", 10.0))
-            for key in list(result.keys()):
-                tensor = result[key]
-                if torch.is_tensor(tensor) and torch.norm(tensor.float()) > max_norm:
-                    del result[key]
-
-        elif kind == "sparsification":
-            top_k_percent = float(f.get("top_k_percent", 10.0))
-            for key, tensor in result.items():
-                if not torch.is_tensor(tensor):
-                    continue
-                flat = tensor.float().abs().flatten()
-                k = max(1, int(math.ceil(flat.numel() * top_k_percent / 100.0)))
-                threshold = torch.topk(flat, k).values[-1]
-                mask = tensor.abs() >= threshold
-                result[key] = tensor * mask
-
-        elif kind == "quantization":
-            bits = int(f.get("bits", 8))
-            levels = (1 << bits) - 1
-            for key, tensor in result.items():
-                if not torch.is_tensor(tensor):
-                    continue
-                t_min = tensor.min()
-                t_max = tensor.max()
-                if t_min == t_max:
-                    continue
-                scale = (t_max - t_min) / levels
-                result[key] = (torch.round((tensor - t_min) / scale) * scale) + t_min
+        handler = _FILTER_HANDLERS.get(f.get("type", ""))
+        if handler is not None:
+            handler(torch, result, f)
 
     return result
 
@@ -298,7 +320,7 @@ class FederatedClient:
             if detected_features:
                 payload["detected_features"] = detected_features
 
-            results.append(self.api.post("/training/weights", payload))
+            results.append(self.api.post(_TRAINING_WEIGHTS_ENDPOINT, payload))
 
         return results
 
@@ -356,7 +378,7 @@ class FederatedClient:
                 "update_format": update_format,
                 "weights_data": base64.b64encode(weights_data).decode("ascii"),
             }
-            results.append(self.api.post("/training/weights", payload))
+            results.append(self.api.post(_TRAINING_WEIGHTS_ENDPOINT, payload))
         return results
 
     # ------------------------------------------------------------------
@@ -450,7 +472,7 @@ class FederatedClient:
             "update_format": "delta",
             "weights_data": base64.b64encode(weights_data).decode("ascii"),
         }
-        return self.api.post("/training/weights", payload)
+        return self.api.post(_TRAINING_WEIGHTS_ENDPOINT, payload)
 
     # ------------------------------------------------------------------
     # Personalization
