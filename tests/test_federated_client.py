@@ -5,7 +5,7 @@ from unittest.mock import Mock, patch
 import numpy as np
 
 from edgeml.api_client import EdgeMLClientError
-from edgeml.federated_client import FederatedClient, compute_state_dict_delta
+from edgeml.federated_client import FederatedClient, compute_state_dict_delta, apply_filters
 
 
 class _StubApi:
@@ -696,6 +696,552 @@ class PrepareTrainingDataTests(unittest.TestCase):
             self.assertEqual(call_kwargs.kwargs.get("target_col") or call_kwargs[1].get("target_col"), "target")
             self.assertEqual(call_kwargs.kwargs.get("output_type") or call_kwargs[1].get("output_type"), "multiclass")
             self.assertEqual(call_kwargs.kwargs.get("output_dim") or call_kwargs[1].get("output_dim"), 3)
+
+
+class RoundManagementTests(unittest.TestCase):
+    """Tests for round-based training methods."""
+
+    def test_get_round_assignment_returns_round(self):
+        stub = _StubApi()
+        stub.set_response("/training/rounds", {
+            "rounds": [{"round_id": "r1", "config": {"model_id": "m1"}}],
+        })
+
+        client = FederatedClient(auth_token_provider=lambda: "token123", org_id="org_1")
+        client.api = stub
+        client.device_id = "device_123"
+
+        assignment = client.get_round_assignment()
+        self.assertIsNotNone(assignment)
+        self.assertEqual(assignment["round_id"], "r1")
+
+    def test_get_round_assignment_returns_none_when_empty(self):
+        stub = _StubApi()
+        stub.set_response("/training/rounds", {"rounds": []})
+
+        client = FederatedClient(auth_token_provider=lambda: "token123", org_id="org_1")
+        client.api = stub
+        client.device_id = "device_123"
+
+        assignment = client.get_round_assignment()
+        self.assertIsNone(assignment)
+
+    def test_get_round_assignment_returns_none_on_error(self):
+        class _ErrorApi(_StubApi):
+            def get(self, path, params=None):
+                self.calls.append(("get", path, params))
+                if "/training/rounds" in path:
+                    raise EdgeMLClientError("server error")
+                return super().get(path, params)
+
+        client = FederatedClient(auth_token_provider=lambda: "token123", org_id="org_1")
+        client.api = _ErrorApi()
+        client.device_id = "device_123"
+
+        assignment = client.get_round_assignment()
+        self.assertIsNone(assignment)
+
+    def test_get_round_assignment_handles_list_response(self):
+        """Server may return a plain list instead of {rounds: [...]}."""
+        class _ListApi(_StubApi):
+            def get(self, path, params=None):
+                self.calls.append(("get", path, params))
+                if path == "/training/rounds":
+                    return [{"round_id": "r2"}]
+                return super().get(path, params)
+
+        client = FederatedClient(auth_token_provider=lambda: "token123", org_id="org_1")
+        client.api = _ListApi()
+        client.device_id = "device_123"
+
+        assignment = client.get_round_assignment()
+        self.assertIsNotNone(assignment)
+        self.assertEqual(assignment["round_id"], "r2")
+
+    def test_get_round_status(self):
+        stub = _StubApi()
+        stub.set_response("/training/rounds/r1/status", {
+            "round_id": "r1",
+            "status": "active",
+            "participants": 5,
+            "target_participants": 10,
+        })
+
+        client = FederatedClient(auth_token_provider=lambda: "token123", org_id="org_1")
+        client.api = stub
+
+        status = client.get_round_status("r1")
+        self.assertEqual(status["round_id"], "r1")
+        self.assertEqual(status["participants"], 5)
+
+    def test_participate_in_round(self):
+        try:
+            import torch
+        except ImportError:
+            self.skipTest("torch not installed")
+
+        stub = _StubApi()
+        stub.set_response("/training/rounds/r1/status", {
+            "round_id": "r1",
+            "config": {
+                "model_id": "model_456",
+                "version": "1.0.0",
+            },
+        })
+        stub.set_response("/models/model_456/versions/latest", {"version": "1.0.0"})
+
+        client = FederatedClient(auth_token_provider=lambda: "token123", org_id="org_1")
+        client.api = stub
+        client.device_id = "device_123"
+
+        def local_train_fn(base_state):
+            updated = {k: v + 0.1 for k, v in base_state.items()}
+            return updated, 100, {"loss": 0.5}
+
+        result = client.participate_in_round("r1", local_train_fn)
+        self.assertEqual(result["status"], "accepted")
+
+        # Verify round_id was included in the upload
+        post_calls = [c for c in stub.calls if c[0] == "post" and c[1] == "/training/weights"]
+        self.assertEqual(len(post_calls), 1)
+        payload = post_calls[0][2]
+        self.assertEqual(payload["round_id"], "r1")
+        self.assertEqual(payload["update_format"], "delta")
+        self.assertEqual(payload["sample_count"], 100)
+
+    def test_participate_in_round_with_clip_norm(self):
+        try:
+            import torch
+        except ImportError:
+            self.skipTest("torch not installed")
+
+        stub = _StubApi()
+        stub.set_response("/training/rounds/r1/status", {
+            "round_id": "r1",
+            "config": {
+                "model_id": "model_456",
+                "version": "1.0.0",
+                "clip_norm": 0.5,
+            },
+        })
+
+        client = FederatedClient(auth_token_provider=lambda: "token123", org_id="org_1")
+        client.api = stub
+        client.device_id = "device_123"
+
+        def local_train_fn(base_state):
+            # Make a large update so clipping has an effect
+            updated = {k: v + 100.0 for k, v in base_state.items()}
+            return updated, 50, {}
+
+        result = client.participate_in_round("r1", local_train_fn)
+        self.assertEqual(result["status"], "accepted")
+
+    def test_participate_in_round_with_filters(self):
+        try:
+            import torch
+        except ImportError:
+            self.skipTest("torch not installed")
+
+        stub = _StubApi()
+        stub.set_response("/training/rounds/r1/status", {
+            "round_id": "r1",
+            "config": {
+                "model_id": "model_456",
+                "version": "1.0.0",
+                "filters": [
+                    {"type": "gradient_clip", "max_norm": 1.0},
+                ],
+            },
+        })
+
+        client = FederatedClient(auth_token_provider=lambda: "token123", org_id="org_1")
+        client.api = stub
+        client.device_id = "device_123"
+
+        def local_train_fn(base_state):
+            updated = {k: v + 1.0 for k, v in base_state.items()}
+            return updated, 10, {"loss": 0.2}
+
+        result = client.participate_in_round("r1", local_train_fn)
+        self.assertEqual(result["status"], "accepted")
+
+    def test_participate_in_round_no_version_raises(self):
+        try:
+            import torch
+        except ImportError:
+            self.skipTest("torch not installed")
+
+        stub = _StubApi()
+        stub.set_response("/training/rounds/r1/status", {
+            "round_id": "r1",
+            "config": {"model_id": "model_456"},
+        })
+        stub.set_response("/models/model_456/versions/latest", {})
+
+        client = FederatedClient(auth_token_provider=lambda: "token123", org_id="org_1")
+        client.api = stub
+        client.device_id = "device_123"
+
+        with self.assertRaises(EdgeMLClientError) as ctx:
+            client.participate_in_round("r1", lambda s: (s, 0, {}))
+        self.assertIn("Failed to resolve model version", str(ctx.exception))
+
+
+class PersonalizationTests(unittest.TestCase):
+    """Tests for personalization methods."""
+
+    def test_get_personalized_model(self):
+        stub = _StubApi()
+        stub.set_response("/training/personalized/device_123", {
+            "weights_data": "abc123",
+            "version": "personal-v1",
+        })
+
+        client = FederatedClient(auth_token_provider=lambda: "token123", org_id="org_1")
+        client.api = stub
+        client.device_id = "device_123"
+
+        result = client.get_personalized_model()
+        self.assertEqual(result["version"], "personal-v1")
+
+        # Verify the correct endpoint was called
+        get_calls = [c for c in stub.calls if c[0] == "get" and "/personalized/" in c[1]]
+        self.assertEqual(len(get_calls), 1)
+        self.assertIn("device_123", get_calls[0][1])
+
+    def test_upload_personalized_update(self):
+        stub = _StubApi()
+
+        client = FederatedClient(auth_token_provider=lambda: "token123", org_id="org_1")
+        client.api = stub
+        client.device_id = "device_123"
+
+        result = client.upload_personalized_update(
+            weights=b"personal_weights",
+            metrics={"accuracy": 0.92},
+        )
+
+        post_calls = [c for c in stub.calls if c[0] == "post" and "/personalized/" in c[1]]
+        self.assertEqual(len(post_calls), 1)
+        payload = post_calls[0][2]
+        self.assertEqual(payload["metrics"], {"accuracy": 0.92})
+        self.assertIn("weights_data", payload)
+
+    def test_upload_personalized_update_no_metrics(self):
+        stub = _StubApi()
+
+        client = FederatedClient(auth_token_provider=lambda: "token123", org_id="org_1")
+        client.api = stub
+        client.device_id = "device_123"
+
+        client.upload_personalized_update(weights=b"personal_weights")
+
+        post_calls = [c for c in stub.calls if c[0] == "post" and "/personalized/" in c[1]]
+        payload = post_calls[0][2]
+        self.assertEqual(payload["metrics"], {})
+
+    def test_train_ditto(self):
+        try:
+            import torch
+        except ImportError:
+            self.skipTest("torch not installed")
+
+        client = FederatedClient(auth_token_provider=lambda: "token123", org_id="org_1")
+
+        global_model = {
+            "layer1.weight": torch.tensor([1.0, 2.0, 3.0]),
+            "layer1.bias": torch.tensor([0.5]),
+        }
+        personal_model = {
+            "layer1.weight": torch.tensor([1.5, 2.5, 3.5]),
+            "layer1.bias": torch.tensor([0.8]),
+        }
+
+        def local_train_fn(base_state):
+            updated = {k: v + 0.1 for k, v in base_state.items()}
+            return updated, 100, {"loss": 0.3}
+
+        global_updated, personal_updated, sample_count, metrics = client.train_ditto(
+            global_model=global_model,
+            personal_model=personal_model,
+            local_train_fn=local_train_fn,
+            lambda_ditto=0.5,
+        )
+
+        # Global model should be trained normally
+        self.assertEqual(sample_count, 100)
+        self.assertEqual(metrics, {"loss": 0.3})
+        torch.testing.assert_close(
+            global_updated["layer1.weight"],
+            global_model["layer1.weight"] + 0.1,
+        )
+
+        # Personal model should be regularized toward global
+        for key in personal_model:
+            p = personal_model[key]
+            g = global_model[key]
+            expected = p - 0.5 * (p - g)
+            torch.testing.assert_close(personal_updated[key], expected)
+
+    def test_train_ditto_zero_lambda(self):
+        """With lambda=0, personal model should remain unchanged."""
+        try:
+            import torch
+        except ImportError:
+            self.skipTest("torch not installed")
+
+        client = FederatedClient(auth_token_provider=lambda: "token123", org_id="org_1")
+
+        global_model = {"w": torch.tensor([1.0, 2.0])}
+        personal_model = {"w": torch.tensor([3.0, 4.0])}
+
+        def local_train_fn(base_state):
+            return {k: v + 1.0 for k, v in base_state.items()}, 10, {}
+
+        _, personal_updated, _, _ = client.train_ditto(
+            global_model=global_model,
+            personal_model=personal_model,
+            local_train_fn=local_train_fn,
+            lambda_ditto=0.0,
+        )
+        torch.testing.assert_close(personal_updated["w"], personal_model["w"])
+
+    def test_train_fedper(self):
+        try:
+            import torch
+        except ImportError:
+            self.skipTest("torch not installed")
+
+        client = FederatedClient(auth_token_provider=lambda: "token123", org_id="org_1")
+
+        model = {
+            "backbone.conv.weight": torch.tensor([1.0, 2.0]),
+            "backbone.conv.bias": torch.tensor([0.5]),
+            "head.fc.weight": torch.tensor([3.0, 4.0]),
+            "head.fc.bias": torch.tensor([1.0]),
+        }
+
+        def local_train_fn(state):
+            updated = {k: v + 0.1 for k, v in state.items()}
+            return updated, 50, {"loss": 0.2}
+
+        delta, sample_count, metrics = client.train_fedper(
+            model=model,
+            head_layers=["head"],
+            local_train_fn=local_train_fn,
+        )
+
+        self.assertEqual(sample_count, 50)
+        self.assertEqual(metrics, {"loss": 0.2})
+
+        # Body layers should be in the delta
+        self.assertIn("backbone.conv.weight", delta)
+        self.assertIn("backbone.conv.bias", delta)
+
+        # Head layers should be excluded
+        self.assertNotIn("head.fc.weight", delta)
+        self.assertNotIn("head.fc.bias", delta)
+
+    def test_train_fedper_no_head_layers(self):
+        """With empty head_layers, all layers are included."""
+        try:
+            import torch
+        except ImportError:
+            self.skipTest("torch not installed")
+
+        client = FederatedClient(auth_token_provider=lambda: "token123", org_id="org_1")
+
+        model = {
+            "layer1.weight": torch.tensor([1.0]),
+            "layer2.weight": torch.tensor([2.0]),
+        }
+
+        def local_train_fn(state):
+            return {k: v + 1.0 for k, v in state.items()}, 20, {}
+
+        delta, _, _ = client.train_fedper(
+            model=model,
+            head_layers=[],
+            local_train_fn=local_train_fn,
+        )
+
+        self.assertIn("layer1.weight", delta)
+        self.assertIn("layer2.weight", delta)
+
+
+class PrivacyBudgetTests(unittest.TestCase):
+    """Tests for privacy budget methods."""
+
+    def test_get_privacy_budget(self):
+        stub = _StubApi()
+        stub.set_response("/federations/fed_123/privacy", {
+            "epsilon": 3.0,
+            "delta": 1e-5,
+            "rounds_consumed": 10,
+            "budget_remaining": 0.7,
+        })
+
+        client = FederatedClient(auth_token_provider=lambda: "token123", org_id="org_1")
+        client.api = stub
+
+        result = client.get_privacy_budget("fed_123")
+        self.assertEqual(result["epsilon"], 3.0)
+        self.assertEqual(result["delta"], 1e-5)
+        self.assertEqual(result["rounds_consumed"], 10)
+
+        # Verify correct endpoint
+        get_calls = [c for c in stub.calls if c[0] == "get" and "/privacy" in c[1]]
+        self.assertEqual(len(get_calls), 1)
+        self.assertIn("fed_123", get_calls[0][1])
+
+
+class ApplyFiltersTests(unittest.TestCase):
+    """Tests for the composable filter pipeline."""
+
+    def test_gradient_clip(self):
+        try:
+            import torch
+        except ImportError:
+            self.skipTest("torch not installed")
+
+        delta = {"w": torch.tensor([3.0, 4.0])}  # norm = 5.0
+        result = apply_filters(delta, [{"type": "gradient_clip", "max_norm": 1.0}])
+
+        clipped_norm = torch.norm(result["w"].float())
+        self.assertAlmostEqual(clipped_norm.item(), 1.0, places=4)
+
+    def test_gradient_clip_no_op_when_below_threshold(self):
+        try:
+            import torch
+        except ImportError:
+            self.skipTest("torch not installed")
+
+        delta = {"w": torch.tensor([0.1, 0.2])}  # norm ~ 0.22
+        result = apply_filters(delta, [{"type": "gradient_clip", "max_norm": 10.0}])
+        torch.testing.assert_close(result["w"], delta["w"])
+
+    def test_gaussian_noise(self):
+        try:
+            import torch
+        except ImportError:
+            self.skipTest("torch not installed")
+
+        torch.manual_seed(42)
+        delta = {"w": torch.zeros(100)}
+        result = apply_filters(delta, [{"type": "gaussian_noise", "stddev": 1.0}])
+
+        # Noise was added so result should not be all zeros
+        self.assertGreater(torch.abs(result["w"]).sum().item(), 0)
+
+    def test_norm_validation(self):
+        try:
+            import torch
+        except ImportError:
+            self.skipTest("torch not installed")
+
+        delta = {
+            "small": torch.tensor([0.1, 0.2]),  # norm ~ 0.22
+            "large": torch.tensor([100.0, 200.0]),  # norm >> 1
+        }
+        result = apply_filters(delta, [{"type": "norm_validation", "max_norm": 1.0}])
+
+        self.assertIn("small", result)
+        self.assertNotIn("large", result)
+
+    def test_sparsification(self):
+        try:
+            import torch
+        except ImportError:
+            self.skipTest("torch not installed")
+
+        delta = {"w": torch.tensor([0.01, 0.5, 0.02, 0.9, 0.01])}
+        result = apply_filters(delta, [{"type": "sparsification", "top_k_percent": 40.0}])
+
+        # 40% of 5 elements = 2 elements kept
+        non_zero = (result["w"] != 0).sum().item()
+        self.assertEqual(non_zero, 2)
+
+    def test_quantization(self):
+        try:
+            import torch
+        except ImportError:
+            self.skipTest("torch not installed")
+
+        delta = {"w": torch.tensor([0.0, 0.33, 0.66, 1.0])}
+        result = apply_filters(delta, [{"type": "quantization", "bits": 2}])
+
+        # With 2 bits, only 3 levels (0, 0.5, 1.0 approximately)
+        unique_vals = result["w"].unique()
+        self.assertLessEqual(len(unique_vals), 4)  # 2^2 - 1 + 1
+
+    def test_quantization_skip_constant_tensor(self):
+        try:
+            import torch
+        except ImportError:
+            self.skipTest("torch not installed")
+
+        delta = {"w": torch.tensor([5.0, 5.0, 5.0])}
+        result = apply_filters(delta, [{"type": "quantization", "bits": 8}])
+        torch.testing.assert_close(result["w"], delta["w"])
+
+    def test_composable_filters(self):
+        """Multiple filters applied in sequence."""
+        try:
+            import torch
+        except ImportError:
+            self.skipTest("torch not installed")
+
+        delta = {"w": torch.tensor([3.0, 4.0])}  # norm = 5
+        result = apply_filters(delta, [
+            {"type": "gradient_clip", "max_norm": 1.0},
+            {"type": "norm_validation", "max_norm": 2.0},
+        ])
+
+        # After clipping to norm=1, norm_validation with max_norm=2 should keep it
+        self.assertIn("w", result)
+
+    def test_filter_does_not_modify_original(self):
+        try:
+            import torch
+        except ImportError:
+            self.skipTest("torch not installed")
+
+        original = torch.tensor([3.0, 4.0])
+        delta = {"w": original}
+        apply_filters(delta, [{"type": "gradient_clip", "max_norm": 0.1}])
+        # Original tensor should not be modified
+        torch.testing.assert_close(delta["w"], torch.tensor([3.0, 4.0]))
+
+    def test_unknown_filter_type_ignored(self):
+        try:
+            import torch
+        except ImportError:
+            self.skipTest("torch not installed")
+
+        delta = {"w": torch.tensor([1.0, 2.0])}
+        result = apply_filters(delta, [{"type": "unknown_filter"}])
+        torch.testing.assert_close(result["w"], delta["w"])
+
+    def test_empty_filter_list(self):
+        try:
+            import torch
+        except ImportError:
+            self.skipTest("torch not installed")
+
+        delta = {"w": torch.tensor([1.0, 2.0])}
+        result = apply_filters(delta, [])
+        torch.testing.assert_close(result["w"], delta["w"])
+
+    def test_non_tensor_values_preserved(self):
+        try:
+            import torch
+        except ImportError:
+            self.skipTest("torch not installed")
+
+        delta = {"w": torch.tensor([3.0, 4.0]), "metadata": "some_string"}
+        result = apply_filters(delta, [{"type": "gradient_clip", "max_norm": 1.0}])
+        self.assertEqual(result["metadata"], "some_string")
 
 
 if __name__ == "__main__":

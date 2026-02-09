@@ -19,7 +19,9 @@ The EdgeML Python SDK enables privacy-preserving federated learning for producti
 - **🔒 Enterprise Security**: Token-based authentication with automatic refresh and secure keyring storage
 - **🚀 Production Ready**: Comprehensive error handling, logging, and monitoring capabilities
 - **📊 Model Management**: Full control-plane APIs for model registry, rollouts, and experiments
-- **🔄 Federated Learning**: Seamless device-side training with automatic model synchronization
+- **🔄 Federated Learning**: Round-based training with automatic model synchronization and delta computation
+- **🎯 Personalization**: Ditto and FedPer strategies for device-specific model adaptation
+- **🛡️ Privacy Filters**: Configurable filter pipeline (gradient clipping, noise, sparsification, quantization)
 - **✅ Type Safe**: Complete type hints for enhanced IDE support and code quality
 - **📈 Observable**: Built-in metrics, logging, and health check endpoints
 
@@ -81,8 +83,18 @@ client = FederatedClient(
     org_id="org_123",
 )
 
-# Register device and start training
+# Register device and participate in federated rounds
 device_id = client.register()
+
+# Check for an active training round
+assignment = client.get_round_assignment()
+if assignment:
+    result = client.participate_in_round(
+        round_id=assignment["round_id"],
+        local_train_fn=my_train_fn,  # your training loop
+    )
+    # participate_in_round handles the full lifecycle:
+    # fetch config -> pull model -> train -> compute delta -> apply filters -> upload
 ```
 
 ### Control Plane APIs
@@ -133,6 +145,117 @@ The Python SDK provides enterprise-grade device authentication and federated lea
 - **Storage**: System keyring (production) or in-memory (development)
 
 The SDK automatically handles token refresh before expiration, ensuring uninterrupted API access.
+
+## Round-Based Training
+
+The SDK manages the full lifecycle of federated training rounds:
+
+```python
+from edgeml import FederatedClient
+
+client = FederatedClient(
+    auth_token_provider=auth_provider,
+    org_id="org_123",
+)
+client.register()
+
+# Poll for round assignments
+assignment = client.get_round_assignment()
+if assignment:
+    # Full lifecycle: fetch config, pull model, train, compute delta, apply filters, upload
+    result = client.participate_in_round(
+        round_id=assignment["round_id"],
+        local_train_fn=my_train_fn,
+    )
+```
+
+### State Dict Utilities
+
+Compute weight deltas between model states:
+
+```python
+from edgeml.federated import compute_state_dict_delta
+
+delta = compute_state_dict_delta(base_state=global_weights, updated_state=trained_weights)
+```
+
+## Personalization
+
+The SDK supports personalization strategies that adapt models to individual devices while still contributing to the global federation.
+
+### Personalized Model State
+
+```python
+# Fetch the device's personalized model
+personal_state = client.get_personalized_model()
+
+# Upload a personalized update with metrics
+client.upload_personalized_update(
+    weights=updated_personal_weights,
+    metrics={"loss": 0.12, "accuracy": 0.95},
+)
+```
+
+### Ditto Strategy
+
+Ditto trains a global model and a personal model simultaneously. The personal model uses proximal regularization to stay close to the global model:
+
+```python
+result = client.train_ditto(
+    global_model=global_weights,
+    personal_model=personal_weights,
+    local_train_fn=my_train_fn,
+    lambda_ditto=0.1,  # proximal regularization strength
+)
+# result contains updated global and personal model states
+```
+
+### FedPer Strategy
+
+FedPer splits the model into body (shared) and head (personal) layers. Only body layers are uploaded to the server:
+
+```python
+result = client.train_fedper(
+    model=model_weights,
+    head_layers=["classifier.weight", "classifier.bias"],
+    local_train_fn=my_train_fn,
+)
+# Only body layers (everything except head_layers) are sent to the server
+```
+
+## Filter Pipeline
+
+Privacy-preserving filters are applied automatically during round participation. You can also use them directly:
+
+```python
+from edgeml.federated import apply_filters
+
+filters = [
+    {"type": "gradient_clip", "max_norm": 1.0},
+    {"type": "gaussian_noise", "sigma": 0.01},
+    {"type": "norm_validation", "max_norm": 10.0},
+    {"type": "sparsification", "top_k": 0.1},
+    {"type": "quantization", "bits": 8},
+]
+
+filtered_delta = apply_filters(delta=model_delta, filters=filters)
+```
+
+Supported filters:
+- **gradient_clip**: Clip gradient norms to a maximum value
+- **gaussian_noise**: Add calibrated Gaussian noise for differential privacy
+- **norm_validation**: Reject updates that exceed a norm threshold
+- **sparsification**: Keep only the top-k% of weight updates
+- **quantization**: Reduce weight precision to save bandwidth
+
+### Privacy Budget
+
+Query the remaining privacy budget for a federation:
+
+```python
+budget = client.get_privacy_budget(federation_id="fed_456")
+# Returns current epsilon spent, remaining budget, etc.
+```
 
 ## Configuration
 

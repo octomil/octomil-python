@@ -14,6 +14,7 @@ from .python.edgeml import (
     RolloutsAPI,
     DeviceAuthClient,
     compute_state_dict_delta,
+    apply_filters,
 )
 
 __all__ = [
@@ -25,5 +26,6 @@ __all__ = [
     "RolloutsAPI",
     "ExperimentsAPI",
     "compute_state_dict_delta",
+    "apply_filters",
     "DeviceAuthClient",
 ]
