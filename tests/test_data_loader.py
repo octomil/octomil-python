@@ -182,7 +182,7 @@ class DataLoaderTests(unittest.TestCase):
         })
         result = validate_target(df, "target", output_type="binary")
         # Should be encoded to numeric
-        self.assertTrue(result["target"].dtype in [int, float, 'int64', 'float64'])
+        self.assertIn(result["target"].dtype, [int, float, 'int64', 'float64'])
 
     def test_validate_target_regression(self):
         try:

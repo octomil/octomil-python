@@ -100,12 +100,12 @@ class FeatureAligner:
             features = set(df.columns) - {target_col}
             all_features.update(features)
 
-        all_features = sorted(list(all_features))
+        all_features = sorted(all_features)
 
         if self.strategy == "embedding":
-            self._fit_embedding(datasets, all_features, target_col)
+            self._fit_embedding(datasets, all_features)
         elif self.strategy == "union_imputation":
-            self._fit_union(datasets, all_features, target_col)
+            self._fit_union(datasets, all_features)
         elif self.strategy == "intersection":
             self._fit_intersection(datasets, target_col)
 
@@ -115,42 +115,42 @@ class FeatureAligner:
         self,
         datasets: DatasetDict,
         all_features: List[str],
-        target_col: str,
     ) -> None:
         """Fit embedding projection matrix."""
-        # Create feature-to-index mapping using consistent hashing
         self._feature_to_index = {f: i for i, f in enumerate(all_features)}
 
-        # Determine output dimension
         if self.input_dim is None:
             self.input_dim = len(all_features)
 
-        # Build projection matrix using feature name hashing
-        # Each feature maps to a sparse vector in the output space
+        self._build_projection_matrix(all_features)
+        self._compute_feature_stats(datasets, all_features)
+        self.feature_schema = all_features
+
+    def _build_projection_matrix(self, all_features: List[str]) -> None:
+        """Build projection matrix using feature name hashing."""
         n_features = len(all_features)
         self._projection_matrix = np.zeros((n_features, self.input_dim))
 
         for i, feature in enumerate(all_features):
-            # Use feature name hash to determine output positions
-            # This ensures consistent projection across devices
             hash_val = int(md5(feature.encode(), usedforsecurity=False).hexdigest(), 16)
-
-            # Primary position
             primary_idx = hash_val % self.input_dim
             self._projection_matrix[i, primary_idx] = 1.0
 
-            # Secondary positions for better distribution (optional)
             if self.input_dim > 10:
                 secondary_idx = (hash_val >> 8) % self.input_dim
                 if secondary_idx != primary_idx:
                     self._projection_matrix[i, secondary_idx] = 0.5
 
-        # Normalize columns
         col_norms = np.linalg.norm(self._projection_matrix, axis=0, keepdims=True)
-        col_norms[col_norms == 0] = 1  # Avoid division by zero
+        col_norms[col_norms == 0] = 1
         self._projection_matrix = self._projection_matrix / col_norms
 
-        # Learn feature statistics for any needed normalization
+    def _compute_feature_stats(
+        self,
+        datasets: DatasetDict,
+        all_features: List[str],
+    ) -> None:
+        """Learn feature statistics for normalization."""
         for feature in all_features:
             values = []
             for df in datasets.values():
@@ -169,13 +169,10 @@ class FeatureAligner:
                     'mean': 0.0, 'std': 1.0, 'min': 0.0, 'max': 0.0
                 }
 
-        self.feature_schema = all_features
-
     def _fit_union(
         self,
         datasets: DatasetDict,
         all_features: List[str],
-        target_col: str,
     ) -> None:
         """Fit union with imputation strategy."""
         self.feature_schema = all_features
@@ -209,7 +206,7 @@ class FeatureAligner:
             for df in datasets.values()
         ]
         common_features = set.intersection(*feature_sets) if feature_sets else set()
-        self.feature_schema = sorted(list(common_features))
+        self.feature_schema = sorted(common_features)
 
     def transform(
         self,
@@ -326,8 +323,8 @@ class FeatureAligner:
         detected_set = set(detected)
 
         common = schema_set & detected_set
-        missing = sorted(list(schema_set - detected_set))
-        extra = sorted(list(detected_set - schema_set))
+        missing = sorted(schema_set - detected_set)
+        extra = sorted(detected_set - schema_set)
 
         coverage = len(common) / len(schema_set) if schema_set else 1.0
 

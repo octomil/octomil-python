@@ -85,6 +85,103 @@ class StreamingInferenceClient:
         self.last_result: Optional[StreamingInferenceResult] = None
 
     # ------------------------------------------------------------------
+    # Session helpers (shared by sync and async paths)
+    # ------------------------------------------------------------------
+
+    def _init_session(
+        self, model_id: str, version: str, modality: Modality, resolved_input: Any,
+    ) -> dict[str, Any]:
+        """Create session tracking state and report ``generation_started``."""
+        state: dict[str, Any] = {
+            "session_id": uuid.uuid4().hex,
+            "session_start": time.monotonic(),
+            "first_chunk_time": None,
+            "previous_time": time.monotonic(),
+            "latencies": [],
+            "chunk_count": 0,
+            "resolved_input": resolved_input,
+        }
+        self._report_event(
+            model_id=model_id,
+            version=version,
+            modality=modality,
+            session_id=state["session_id"],
+            event_type="generation_started",
+        )
+        return state
+
+    def _make_chunk(self, raw_data: Any, modality: Modality, state: dict[str, Any]) -> InferenceChunk:
+        """Process a raw backend datum into an :class:`InferenceChunk`, updating *state* in-place."""
+        now = time.monotonic()
+        if state["first_chunk_time"] is None:
+            state["first_chunk_time"] = now
+
+        latency_ms = (now - state["previous_time"]) * 1000
+        state["previous_time"] = now
+        state["latencies"].append(latency_ms)
+        state["chunk_count"] += 1
+
+        if isinstance(raw_data, bytes):
+            chunk_data = raw_data
+        elif isinstance(raw_data, str):
+            chunk_data = raw_data.encode("utf-8")
+        else:
+            chunk_data = bytes(raw_data)
+
+        return InferenceChunk(
+            index=state["chunk_count"] - 1,
+            data=chunk_data,
+            modality=modality,
+            timestamp=time.time(),
+            latency_ms=latency_ms,
+        )
+
+    def _report_failure(self, model_id: str, version: str, modality: Modality, session_id: str) -> None:
+        """Report ``generation_failed`` event."""
+        self._report_event(
+            model_id=model_id,
+            version=version,
+            modality=modality,
+            session_id=session_id,
+            event_type="generation_failed",
+        )
+
+    def _finalize_session(self, model_id: str, version: str, modality: Modality, state: dict[str, Any]) -> None:
+        """Compute result metrics, store ``last_result``, and report ``generation_completed``."""
+        session_end = time.monotonic()
+        total_duration_ms = (session_end - state["session_start"]) * 1000
+        ttfc_ms = ((state["first_chunk_time"] or session_end) - state["session_start"]) * 1000
+        latencies = state["latencies"]
+        chunk_count = state["chunk_count"]
+        avg_latency = sum(latencies) / len(latencies) if latencies else 0.0
+        throughput = chunk_count / (total_duration_ms / 1000) if total_duration_ms > 0 else 0.0
+
+        result = StreamingInferenceResult(
+            session_id=state["session_id"],
+            modality=modality,
+            ttfc_ms=ttfc_ms,
+            avg_chunk_latency_ms=avg_latency,
+            total_chunks=chunk_count,
+            total_duration_ms=total_duration_ms,
+            throughput=throughput,
+        )
+        self.last_result = result
+
+        self._report_event(
+            model_id=model_id,
+            version=version,
+            modality=modality,
+            session_id=state["session_id"],
+            event_type="generation_completed",
+            metrics={
+                "ttfc_ms": ttfc_ms,
+                "total_chunks": chunk_count,
+                "total_duration_ms": total_duration_ms,
+                "throughput": throughput,
+            },
+        )
+
+    # ------------------------------------------------------------------
     # Synchronous streaming
     # ------------------------------------------------------------------
 
@@ -106,89 +203,18 @@ class StreamingInferenceClient:
         aggregated metrics and the result has been reported to the server.
         """
         resolved_input = prompt if prompt is not None else input
-        session_id = uuid.uuid4().hex
-        session_start = time.monotonic()
-        first_chunk_time: Optional[float] = None
-        previous_time = session_start
-        latencies: list[float] = []
-        chunk_count = 0
+        state = self._init_session(model_id, version, modality, resolved_input)
 
-        # Report generation_started
-        self._report_event(
-            model_id=model_id,
-            version=version,
-            modality=modality,
-            session_id=session_id,
-            event_type="generation_started",
-        )
-
-        failed = False
         try:
             for raw_data in self._backend_generate(
-                modality=modality,
-                input=resolved_input,
-                max_tokens=max_tokens,
+                modality=modality, resolved_input=resolved_input, max_tokens=max_tokens,
             ):
-                now = time.monotonic()
-                if first_chunk_time is None:
-                    first_chunk_time = now
-
-                latency_ms = (now - previous_time) * 1000
-                previous_time = now
-                latencies.append(latency_ms)
-                chunk_count += 1
-
-                chunk = InferenceChunk(
-                    index=chunk_count - 1,
-                    data=raw_data if isinstance(raw_data, bytes) else raw_data.encode("utf-8") if isinstance(raw_data, str) else bytes(raw_data),
-                    modality=modality,
-                    timestamp=time.time(),
-                    latency_ms=latency_ms,
-                )
-                yield chunk
-
+                yield self._make_chunk(raw_data, modality, state)
         except Exception:
-            failed = True
-            self._report_event(
-                model_id=model_id,
-                version=version,
-                modality=modality,
-                session_id=session_id,
-                event_type="generation_failed",
-            )
+            self._report_failure(model_id, version, modality, state["session_id"])
             raise
 
-        session_end = time.monotonic()
-        total_duration_ms = (session_end - session_start) * 1000
-        ttfc_ms = ((first_chunk_time or session_end) - session_start) * 1000
-        avg_latency = sum(latencies) / len(latencies) if latencies else 0.0
-        throughput = chunk_count / (total_duration_ms / 1000) if total_duration_ms > 0 else 0.0
-
-        result = StreamingInferenceResult(
-            session_id=session_id,
-            modality=modality,
-            ttfc_ms=ttfc_ms,
-            avg_chunk_latency_ms=avg_latency,
-            total_chunks=chunk_count,
-            total_duration_ms=total_duration_ms,
-            throughput=throughput,
-        )
-        self.last_result = result
-
-        # Report generation_completed
-        self._report_event(
-            model_id=model_id,
-            version=version,
-            modality=modality,
-            session_id=session_id,
-            event_type="generation_completed",
-            metrics={
-                "ttfc_ms": ttfc_ms,
-                "total_chunks": chunk_count,
-                "total_duration_ms": total_duration_ms,
-                "throughput": throughput,
-            },
-        )
+        self._finalize_session(model_id, version, modality, state)
 
     # ------------------------------------------------------------------
     # Async streaming
@@ -206,113 +232,44 @@ class StreamingInferenceClient:
     ) -> AsyncIterator[InferenceChunk]:
         """Async version of :meth:`generate`."""
         resolved_input = prompt if prompt is not None else input
-        session_id = uuid.uuid4().hex
-        session_start = time.monotonic()
-        first_chunk_time: Optional[float] = None
-        previous_time = session_start
-        latencies: list[float] = []
-        chunk_count = 0
+        state = self._init_session(model_id, version, modality, resolved_input)
 
-        self._report_event(
-            model_id=model_id,
-            version=version,
-            modality=modality,
-            session_id=session_id,
-            event_type="generation_started",
-        )
-
-        failed = False
         try:
             async for raw_data in self._backend_generate_async(
-                modality=modality,
-                input=resolved_input,
-                max_tokens=max_tokens,
+                modality=modality, resolved_input=resolved_input, max_tokens=max_tokens,
             ):
-                now = time.monotonic()
-                if first_chunk_time is None:
-                    first_chunk_time = now
-
-                latency_ms = (now - previous_time) * 1000
-                previous_time = now
-                latencies.append(latency_ms)
-                chunk_count += 1
-
-                chunk = InferenceChunk(
-                    index=chunk_count - 1,
-                    data=raw_data if isinstance(raw_data, bytes) else raw_data.encode("utf-8") if isinstance(raw_data, str) else bytes(raw_data),
-                    modality=modality,
-                    timestamp=time.time(),
-                    latency_ms=latency_ms,
-                )
-                yield chunk
-
+                yield self._make_chunk(raw_data, modality, state)
         except Exception:
-            failed = True
-            self._report_event(
-                model_id=model_id,
-                version=version,
-                modality=modality,
-                session_id=session_id,
-                event_type="generation_failed",
-            )
+            self._report_failure(model_id, version, modality, state["session_id"])
             raise
 
-        session_end = time.monotonic()
-        total_duration_ms = (session_end - session_start) * 1000
-        ttfc_ms = ((first_chunk_time or session_end) - session_start) * 1000
-        avg_latency = sum(latencies) / len(latencies) if latencies else 0.0
-        throughput = chunk_count / (total_duration_ms / 1000) if total_duration_ms > 0 else 0.0
-
-        result = StreamingInferenceResult(
-            session_id=session_id,
-            modality=modality,
-            ttfc_ms=ttfc_ms,
-            avg_chunk_latency_ms=avg_latency,
-            total_chunks=chunk_count,
-            total_duration_ms=total_duration_ms,
-            throughput=throughput,
-        )
-        self.last_result = result
-
-        self._report_event(
-            model_id=model_id,
-            version=version,
-            modality=modality,
-            session_id=session_id,
-            event_type="generation_completed",
-            metrics={
-                "ttfc_ms": ttfc_ms,
-                "total_chunks": chunk_count,
-                "total_duration_ms": total_duration_ms,
-                "throughput": throughput,
-            },
-        )
+        self._finalize_session(model_id, version, modality, state)
 
     # ------------------------------------------------------------------
     # Backend dispatch
     # ------------------------------------------------------------------
 
     def _backend_generate(
-        self, modality: Modality, input: Any, max_tokens: int,
+        self, modality: Modality, resolved_input: Any, max_tokens: int,
     ) -> Iterator[bytes]:
         """Dispatch to modality-specific backend (sync)."""
         if modality == Modality.TEXT:
-            yield from self._generate_text(input, max_tokens)
+            yield from self._generate_text(resolved_input, max_tokens)
         elif modality == Modality.IMAGE:
-            yield from self._generate_image(input)
+            yield from self._generate_image(resolved_input)
         elif modality == Modality.AUDIO:
-            yield from self._generate_audio(input)
+            yield from self._generate_audio(resolved_input)
         elif modality == Modality.VIDEO:
-            yield from self._generate_video(input)
+            yield from self._generate_video(resolved_input)
 
     async def _backend_generate_async(
-        self, modality: Modality, input: Any, max_tokens: int,
+        self, modality: Modality, resolved_input: Any, max_tokens: int,
     ) -> AsyncIterator[bytes]:
         """Dispatch to modality-specific backend (async)."""
         import asyncio
 
         # Wrap sync generator for now; backends can override with native async
-        for chunk in self._backend_generate(modality, input, max_tokens):
+        for chunk in self._backend_generate(modality, resolved_input, max_tokens):
             yield chunk
             await asyncio.sleep(0)  # yield to event loop
 
@@ -342,7 +299,7 @@ class StreamingInferenceClient:
     # Image generation (diffusers when available)
     # ------------------------------------------------------------------
 
-    def _generate_image(self, input: Any) -> Iterator[bytes]:
+    def _generate_image(self, _input: Any) -> Iterator[bytes]:
         # Placeholder — each yield represents one denoising step
         for step in range(20):
             yield bytes([step] * 64)
@@ -351,15 +308,15 @@ class StreamingInferenceClient:
     # Audio generation
     # ------------------------------------------------------------------
 
-    def _generate_audio(self, input: Any) -> Iterator[bytes]:
-        for frame in range(80):
+    def _generate_audio(self, _input: Any) -> Iterator[bytes]:
+        for _ in range(80):
             yield bytes(1024 * 2)
 
     # ------------------------------------------------------------------
     # Video generation
     # ------------------------------------------------------------------
 
-    def _generate_video(self, input: Any) -> Iterator[bytes]:
+    def _generate_video(self, _input: Any) -> Iterator[bytes]:
         for frame in range(30):
             yield bytes([frame % 256] * 1024)
 
