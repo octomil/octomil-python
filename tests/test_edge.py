@@ -1,5 +1,5 @@
 import unittest
-from unittest.mock import patch, Mock
+from unittest.mock import patch
 
 from octomil.edge import Octomil
 from octomil.federated_client import FederatedClient

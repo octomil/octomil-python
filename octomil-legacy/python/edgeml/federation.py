@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Iterable, Optional
 
-from .api_client import _ApiClient, OctomilClientError
+from .api_client import OctomilClientError, _ApiClient
 from .control_plane import ExperimentsAPI, RolloutsAPI
 
 
