@@ -318,6 +318,198 @@ class FederatedClientTests(unittest.TestCase):
         expected_weight_delta = updated_state["weight"] - base_state["weight"]
         torch.testing.assert_close(delta["weight"], expected_weight_delta)
 
+    def test_inference_property_returns_streaming_inference_client(self):
+        from edgeml.inference import StreamingInferenceClient
+
+        stub = _StubApi()
+        client = FederatedClient(auth_token_provider=lambda: "token123", org_id="org_1")
+        client.api = stub
+
+        inference = client.inference
+        self.assertIsInstance(inference, StreamingInferenceClient)
+
+    def test_inference_property_is_cached(self):
+        stub = _StubApi()
+        client = FederatedClient(auth_token_provider=lambda: "token123", org_id="org_1")
+        client.api = stub
+
+        inference1 = client.inference
+        inference2 = client.inference
+        self.assertIs(inference1, inference2)
+
+    def test_inference_property_uses_device_id_when_registered(self):
+        from edgeml.inference import StreamingInferenceClient
+
+        stub = _StubApi()
+        client = FederatedClient(
+            auth_token_provider=lambda: "token123",
+            org_id="org_1",
+            device_identifier="my_identifier",
+        )
+        client.api = stub
+        client.device_id = "registered_device_id"
+
+        inference = client.inference
+        self.assertIsInstance(inference, StreamingInferenceClient)
+        # The client should use device_id (not device_identifier)
+        self.assertEqual(inference.device_id, "registered_device_id")
+
+    def test_inference_property_uses_device_identifier_when_not_registered(self):
+        from edgeml.inference import StreamingInferenceClient
+
+        stub = _StubApi()
+        client = FederatedClient(
+            auth_token_provider=lambda: "token123",
+            org_id="org_1",
+            device_identifier="my_identifier",
+        )
+        client.api = stub
+        # device_id is None (not registered)
+
+        inference = client.inference
+        self.assertIsInstance(inference, StreamingInferenceClient)
+        self.assertEqual(inference.device_id, "my_identifier")
+
+    def test_train_no_version_found_raises(self):
+        stub = _StubApi()
+        stub.set_response("/models/model_456/versions/latest", {})
+
+        client = FederatedClient(auth_token_provider=lambda: "token123", org_id="org_1")
+        client.api = stub
+
+        with self.assertRaises(EdgeMLClientError) as ctx:
+            client.train("model_456", data=b"some_weights")
+        self.assertIn("Failed to resolve model version", str(ctx.exception))
+
+    def test_train_with_callable_data(self):
+        stub = _StubApi()
+        stub.set_response("/models/model_456/versions/latest", {"version": "1.0.0"})
+
+        client = FederatedClient(auth_token_provider=lambda: "token123", org_id="org_1")
+        client.api = stub
+
+        data_fn = lambda: (b"weights_from_callable", 100, {"loss": 0.5})
+
+        results = client.train("model_456", data=data_fn, rounds=1)
+        self.assertIsInstance(results, list)
+        self.assertEqual(len(results), 1)
+
+        # Verify the posted payload has the correct sample_count and metrics
+        post_calls = [c for c in stub.calls if c[0] == "post" and c[1] == "/training/weights"]
+        self.assertEqual(len(post_calls), 1)
+        payload = post_calls[0][2]
+        self.assertEqual(payload["sample_count"], 100)
+        self.assertEqual(payload["metrics"], {"loss": 0.5})
+
+    def test_train_with_raw_bytes_data(self):
+        stub = _StubApi()
+        stub.set_response("/models/model_456/versions/latest", {"version": "1.0.0"})
+
+        client = FederatedClient(auth_token_provider=lambda: "token123", org_id="org_1")
+        client.api = stub
+
+        results = client.train("model_456", data=b"raw_weights", rounds=1)
+        self.assertIsInstance(results, list)
+        self.assertEqual(len(results), 1)
+
+        # Verify post was made
+        post_calls = [c for c in stub.calls if c[0] == "post" and c[1] == "/training/weights"]
+        self.assertEqual(len(post_calls), 1)
+        payload = post_calls[0][2]
+        self.assertEqual(payload["model_id"], "model_456")
+        self.assertEqual(payload["version"], "1.0.0")
+        self.assertEqual(payload["sample_count"], 0)  # no sample_count provided
+
+    def test_get_model_architecture_public_method(self):
+        stub = _StubApi()
+        stub.set_response("/models", {"models": [{"name": "my_model", "id": "model_456"}]})
+        stub.set_response("/models/model_456", {"id": "model_456", "architecture": {"layers": 5, "type": "cnn"}})
+
+        client = FederatedClient(auth_token_provider=lambda: "token123", org_id="org_1")
+        client.api = stub
+
+        arch = client.get_model_architecture("my_model")
+        self.assertEqual(arch, {"layers": 5, "type": "cnn"})
+
+    def test_pull_model_no_version_found_raises(self):
+        stub = _StubApi()
+        stub.set_response("/models/model_456/versions/latest", {})
+
+        client = FederatedClient(auth_token_provider=lambda: "token123", org_id="org_1")
+        client.api = stub
+
+        with self.assertRaises(EdgeMLClientError) as ctx:
+            client.pull_model("model_456")
+        self.assertIn("Failed to resolve model version", str(ctx.exception))
+
+    def test_train_from_remote(self):
+        try:
+            import torch
+        except ImportError:
+            self.skipTest("torch not installed")
+
+        stub = _StubApi()
+        stub.set_response("/models/model_456/versions/latest", {"version": "1.0.0"})
+
+        client = FederatedClient(auth_token_provider=lambda: "token123", org_id="org_1")
+        client.api = stub
+
+        def local_train_fn(base_state):
+            # Modify the state dict
+            updated_state = {k: v + 1.0 for k, v in base_state.items()}
+            return updated_state, 50, {"loss": 0.3}
+
+        results = client.train_from_remote(
+            "model_456",
+            local_train_fn=local_train_fn,
+            rounds=1,
+        )
+        self.assertIsInstance(results, list)
+        self.assertEqual(len(results), 1)
+
+        # Verify the posted payload
+        post_calls = [c for c in stub.calls if c[0] == "post" and c[1] == "/training/weights"]
+        self.assertEqual(len(post_calls), 1)
+        payload = post_calls[0][2]
+        self.assertEqual(payload["model_id"], "model_456")
+        self.assertEqual(payload["version"], "1.0.0")
+        self.assertEqual(payload["sample_count"], 50)
+        self.assertEqual(payload["metrics"], {"loss": 0.3})
+        self.assertEqual(payload["update_format"], "weights")
+
+    def test_train_from_remote_delta_format(self):
+        try:
+            import torch
+        except ImportError:
+            self.skipTest("torch not installed")
+
+        stub = _StubApi()
+        stub.set_response("/models/model_456/versions/latest", {"version": "2.0.0"})
+
+        client = FederatedClient(auth_token_provider=lambda: "token123", org_id="org_1")
+        client.api = stub
+
+        def local_train_fn(base_state):
+            updated_state = {k: v + 0.5 for k, v in base_state.items()}
+            return updated_state, 25, {"accuracy": 0.95}
+
+        results = client.train_from_remote(
+            "model_456",
+            local_train_fn=local_train_fn,
+            rounds=1,
+            update_format="delta",
+        )
+        self.assertIsInstance(results, list)
+        self.assertEqual(len(results), 1)
+
+        # Verify delta format was used in the payload
+        post_calls = [c for c in stub.calls if c[0] == "post" and c[1] == "/training/weights"]
+        self.assertEqual(len(post_calls), 1)
+        payload = post_calls[0][2]
+        self.assertEqual(payload["update_format"], "delta")
+        self.assertEqual(payload["sample_count"], 25)
+        self.assertEqual(payload["metrics"], {"accuracy": 0.95})
+
     def test_train_with_dataframe(self):
         try:
             import pandas as pd
@@ -344,6 +536,166 @@ class FederatedClientTests(unittest.TestCase):
         results = client.train("my_model", df, target_col="target", rounds=1)
         self.assertIsInstance(results, list)
         self.assertGreater(len(results), 0)
+
+
+class PrepareTrainingDataTests(unittest.TestCase):
+    """Tests for FederatedClient._prepare_training_data."""
+
+    def _make_client(self, architecture=None):
+        """Create a FederatedClient with a stubbed API that returns the given architecture."""
+        stub = _StubApi()
+        stub.set_response("/models", {"models": [{"name": "test_model", "id": "model_1"}]})
+        model_info = {"id": "model_1"}
+        if architecture is not None:
+            model_info["architecture"] = architecture
+        stub.set_response("/models/model_1", model_info)
+
+        client = FederatedClient(
+            auth_token_provider=lambda: "token",
+            org_id="default",
+        )
+        client.api = stub
+        return client
+
+    def test_prepare_training_data_success(self):
+        """Provide a DataFrame with features + target column, verify returned tuple."""
+        try:
+            import pandas as pd
+        except ImportError:
+            self.skipTest("pandas not installed")
+
+        client = self._make_client(architecture={})
+
+        df = pd.DataFrame({
+            "feat_a": [10, 20, 30],
+            "feat_b": [40, 50, 60],
+            "target": [0, 1, 0],
+        })
+
+        result_df, features, target_col, sample_count = client._prepare_training_data(
+            model="test_model",
+            data=df,
+            target_col="target",
+        )
+
+        self.assertEqual(target_col, "target")
+        self.assertEqual(sample_count, 3)
+        self.assertEqual(sorted(features), ["feat_a", "feat_b"])
+        self.assertNotIn("target", features)
+        self.assertEqual(len(result_df), 3)
+
+    def test_prepare_training_data_load_error(self):
+        """Mock load_data to raise DataLoadError, verify EdgeMLClientError is raised."""
+        from edgeml.data_loader import DataLoadError
+
+        client = self._make_client(architecture={})
+
+        with patch(
+            "edgeml.federated_client.load_data",
+            side_effect=DataLoadError("file not found"),
+        ):
+            with self.assertRaises(EdgeMLClientError) as ctx:
+                client._prepare_training_data(
+                    model="test_model",
+                    data="nonexistent.csv",
+                    target_col="target",
+                )
+            self.assertIn("Failed to load data", str(ctx.exception))
+            self.assertIn("file not found", str(ctx.exception))
+
+    def test_prepare_training_data_missing_target_col(self):
+        """Provide DataFrame without the target column, verify error lists available columns."""
+        try:
+            import pandas as pd
+        except ImportError:
+            self.skipTest("pandas not installed")
+
+        client = self._make_client(architecture={})
+
+        df = pd.DataFrame({
+            "alpha": [1, 2],
+            "beta": [3, 4],
+        })
+
+        with self.assertRaises(EdgeMLClientError) as ctx:
+            client._prepare_training_data(
+                model="test_model",
+                data=df,
+                target_col="nonexistent",
+            )
+        msg = str(ctx.exception)
+        self.assertIn("nonexistent", msg)
+        self.assertIn("alpha", msg)
+        self.assertIn("beta", msg)
+
+    def test_prepare_training_data_default_target_col(self):
+        """Pass target_col=None, verify it defaults to architecture's target_col or 'target'."""
+        try:
+            import pandas as pd
+        except ImportError:
+            self.skipTest("pandas not installed")
+
+        # Case 1: architecture specifies a custom target_col
+        client = self._make_client(architecture={"target_col": "label"})
+        df = pd.DataFrame({
+            "x": [1, 2, 3],
+            "label": [0, 1, 0],
+        })
+        _, _, resolved_col, _ = client._prepare_training_data(
+            model="test_model",
+            data=df,
+            target_col=None,
+        )
+        self.assertEqual(resolved_col, "label")
+
+        # Case 2: architecture has no target_col key -- falls back to "target"
+        client2 = self._make_client(architecture={})
+        df2 = pd.DataFrame({
+            "x": [1, 2, 3],
+            "target": [0, 1, 0],
+        })
+        _, _, resolved_col2, _ = client2._prepare_training_data(
+            model="test_model",
+            data=df2,
+            target_col=None,
+        )
+        self.assertEqual(resolved_col2, "target")
+
+    def test_prepare_training_data_with_architecture_validation(self):
+        """Provide architecture info, verify validate_target is called with correct args."""
+        try:
+            import pandas as pd
+        except ImportError:
+            self.skipTest("pandas not installed")
+
+        architecture = {
+            "output_type": "multiclass",
+            "output_dim": 3,
+        }
+        client = self._make_client(architecture=architecture)
+
+        df = pd.DataFrame({
+            "f1": [1, 2, 3],
+            "f2": [4, 5, 6],
+            "target": [0, 1, 2],
+        })
+
+        with patch(
+            "edgeml.federated_client.validate_target",
+            return_value=df,
+        ) as mock_validate:
+            client._prepare_training_data(
+                model="test_model",
+                data=df,
+                target_col="target",
+            )
+
+            mock_validate.assert_called_once()
+            call_kwargs = mock_validate.call_args
+            # validate_target(df, target_col=..., output_type=..., output_dim=...)
+            self.assertEqual(call_kwargs.kwargs.get("target_col") or call_kwargs[1].get("target_col"), "target")
+            self.assertEqual(call_kwargs.kwargs.get("output_type") or call_kwargs[1].get("output_type"), "multiclass")
+            self.assertEqual(call_kwargs.kwargs.get("output_dim") or call_kwargs[1].get("output_dim"), 3)
 
 
 if __name__ == "__main__":

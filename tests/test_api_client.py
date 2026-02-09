@@ -8,7 +8,12 @@ class _FakeResponse:
     def __init__(self, status_code: int, json_data: dict = None, text_data: str = ""):
         self.status_code = status_code
         self._json_data = json_data or {}
-        self.text = text_data if text_data else (str(json_data) if json_data else "")
+        if text_data:
+            self.text = text_data
+        elif json_data:
+            self.text = str(json_data)
+        else:
+            self.text = ""
         self.content = b""
 
     def json(self):
@@ -118,7 +123,7 @@ class ApiClientTests(unittest.TestCase):
         )
         with patch("edgeml.api_client.httpx.Client", lambda timeout: _FakeHttpxClient(response, timeout=timeout)):
             result = client.put("/path", payload={"field": "value"})
-        self.assertEqual(result["updated"], True)
+        self.assertTrue(result["updated"])
 
     def test_put_success_empty_response(self):
         response = _FakeResponse(200, text_data="")
@@ -149,7 +154,7 @@ class ApiClientTests(unittest.TestCase):
         )
         with patch("edgeml.api_client.httpx.Client", lambda timeout: _FakeHttpxClient(response, timeout=timeout)):
             result = client.patch("/path", payload={"field": "value"})
-        self.assertEqual(result["patched"], True)
+        self.assertTrue(result["patched"])
 
     def test_patch_success_empty_response(self):
         response = _FakeResponse(204, text_data="")
@@ -180,7 +185,7 @@ class ApiClientTests(unittest.TestCase):
         )
         with patch("edgeml.api_client.httpx.Client", lambda timeout: _FakeHttpxClient(response, timeout=timeout)):
             result = client.delete("/path", params={"id": "123"})
-        self.assertEqual(result["deleted"], True)
+        self.assertTrue(result["deleted"])
 
     def test_delete_success_empty_response(self):
         response = _FakeResponse(204, text_data="")
