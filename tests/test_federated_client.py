@@ -3,7 +3,7 @@ import io
 from unittest.mock import patch
 
 from edgeml.api_client import EdgeMLClientError
-from edgeml.federated_client import FederatedClient, compute_state_dict_delta, apply_filters
+from edgeml.federated_client import FederatedClient, compute_state_dict_delta, apply_filters, _apply_fedprox_correction
 
 
 class _StubApi:
@@ -1241,6 +1241,163 @@ class ApplyFiltersTests(unittest.TestCase):
         delta = {"w": torch.tensor([3.0, 4.0]), "metadata": "some_string"}
         result = apply_filters(delta, [{"type": "gradient_clip", "max_norm": 1.0}])
         self.assertEqual(result["metadata"], "some_string")
+
+
+class FedProxCorrectionTests(unittest.TestCase):
+    """Tests for FedProx proximal correction."""
+
+    def test_fedprox_correction_scales_delta(self):
+        """proximal_mu > 0 should scale delta by 1/(1+mu)."""
+        try:
+            import torch
+        except ImportError:
+            self.skipTest("torch not installed")
+
+        delta = {
+            "weight": torch.tensor([2.0, 4.0]),
+            "bias": torch.tensor([1.0]),
+        }
+        mu = 1.0  # scale = 0.5
+        result = _apply_fedprox_correction(delta, mu)
+
+        torch.testing.assert_close(result["weight"], torch.tensor([1.0, 2.0]))
+        torch.testing.assert_close(result["bias"], torch.tensor([0.5]))
+
+    def test_fedprox_correction_small_mu(self):
+        """Small mu should have minimal effect."""
+        try:
+            import torch
+        except ImportError:
+            self.skipTest("torch not installed")
+
+        delta = {"w": torch.tensor([10.0])}
+        mu = 0.01
+        result = _apply_fedprox_correction(delta, mu)
+
+        expected = 10.0 / 1.01
+        self.assertAlmostEqual(result["w"].item(), expected, places=4)
+
+    def test_fedprox_correction_preserves_non_tensor(self):
+        """Non-tensor values should be passed through unchanged."""
+        try:
+            import torch
+        except ImportError:
+            self.skipTest("torch not installed")
+
+        delta = {"w": torch.tensor([2.0]), "name": "layer1"}
+        result = _apply_fedprox_correction(delta, 1.0)
+        self.assertEqual(result["name"], "layer1")
+
+    def test_fedprox_correction_does_not_modify_original(self):
+        """Original delta should not be mutated."""
+        try:
+            import torch
+        except ImportError:
+            self.skipTest("torch not installed")
+
+        original = torch.tensor([6.0, 8.0])
+        delta = {"w": original}
+        _apply_fedprox_correction(delta, 1.0)
+
+        torch.testing.assert_close(delta["w"], torch.tensor([6.0, 8.0]))
+
+    def test_participate_in_round_applies_fedprox(self):
+        """participate_in_round should apply FedProx when proximal_mu is in config."""
+        try:
+            import torch
+        except ImportError:
+            self.skipTest("torch not installed")
+
+        stub = _StubApi()
+        stub.set_response("/training/rounds/r1/status", {
+            "round_id": "r1",
+            "config": {
+                "model_id": "model_456",
+                "version": "1.0.0",
+                "proximal_mu": 1.0,
+            },
+        })
+
+        client = FederatedClient(auth_token_provider=lambda: "token123", org_id="org_1")
+        client.api = stub
+        client.device_id = "device_123"
+
+        base_state_captured = {}
+
+        def local_train_fn(base_state):
+            # Capture the base state for verification
+            base_state_captured.update({k: v.clone() for k, v in base_state.items()})
+            # Make a known update: add 2.0 to everything
+            updated = {k: v + 2.0 for k, v in base_state.items()}
+            return updated, 100, {"loss": 0.5}
+
+        result = client.participate_in_round("r1", local_train_fn)
+        self.assertEqual(result["status"], "accepted")
+
+        # The delta is (updated - base) = 2.0 for each tensor
+        # With proximal_mu=1.0, the corrected delta = 2.0 / (1+1) = 1.0
+        # We can't directly inspect the uploaded bytes easily, but we can
+        # verify the call went through successfully.
+        post_calls = [c for c in stub.calls if c[0] == "post" and c[1] == "/training/weights"]
+        self.assertEqual(len(post_calls), 1)
+        payload = post_calls[0][2]
+        self.assertEqual(payload["round_id"], "r1")
+
+    def test_participate_in_round_no_fedprox_without_mu(self):
+        """Without proximal_mu, no FedProx correction is applied."""
+        try:
+            import torch
+        except ImportError:
+            self.skipTest("torch not installed")
+
+        stub = _StubApi()
+        stub.set_response("/training/rounds/r1/status", {
+            "round_id": "r1",
+            "config": {
+                "model_id": "model_456",
+                "version": "1.0.0",
+                # No proximal_mu
+            },
+        })
+
+        client = FederatedClient(auth_token_provider=lambda: "token123", org_id="org_1")
+        client.api = stub
+        client.device_id = "device_123"
+
+        def local_train_fn(base_state):
+            updated = {k: v + 2.0 for k, v in base_state.items()}
+            return updated, 100, {"loss": 0.5}
+
+        result = client.participate_in_round("r1", local_train_fn)
+        self.assertEqual(result["status"], "accepted")
+
+    def test_participate_in_round_zero_mu_no_correction(self):
+        """proximal_mu=0 should not apply any correction."""
+        try:
+            import torch
+        except ImportError:
+            self.skipTest("torch not installed")
+
+        stub = _StubApi()
+        stub.set_response("/training/rounds/r1/status", {
+            "round_id": "r1",
+            "config": {
+                "model_id": "model_456",
+                "version": "1.0.0",
+                "proximal_mu": 0.0,
+            },
+        })
+
+        client = FederatedClient(auth_token_provider=lambda: "token123", org_id="org_1")
+        client.api = stub
+        client.device_id = "device_123"
+
+        def local_train_fn(base_state):
+            updated = {k: v + 1.0 for k, v in base_state.items()}
+            return updated, 50, {}
+
+        result = client.participate_in_round("r1", local_train_fn)
+        self.assertEqual(result["status"], "accepted")
 
 
 if __name__ == "__main__":

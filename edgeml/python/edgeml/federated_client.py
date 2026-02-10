@@ -107,6 +107,36 @@ _FILTER_HANDLERS = {
 }
 
 
+def _apply_fedprox_correction(delta: Dict[str, Any], mu: float) -> Dict[str, Any]:
+    """Apply FedProx proximal correction to a weight delta.
+
+    The FedProx objective adds ``(mu/2) * ||w - w_global||^2`` to the local
+    loss.  When the user's training loop does not include this term, we
+    approximate its effect by scaling: ``delta / (1 + mu)``.  This keeps local
+    updates closer to the global model, reducing client drift.
+
+    Args:
+        delta: State-dict delta (updated - base).
+        mu: Proximal regularization strength (> 0).
+
+    Returns:
+        A new delta dict with the correction applied.
+    """
+    try:
+        import torch  # type: ignore
+    except Exception as exc:
+        raise EdgeMLClientError("torch is required for FedProx correction") from exc
+
+    scale = 1.0 / (1.0 + mu)
+    corrected: Dict[str, Any] = {}
+    for key, value in delta.items():
+        if torch.is_tensor(value):
+            corrected[key] = value * scale
+        else:
+            corrected[key] = value
+    return corrected
+
+
 def apply_filters(delta: Dict[str, Any], filters: List[Dict[str, Any]]) -> Dict[str, Any]:
     """Apply a composable filter pipeline to a state-dict delta.
 
@@ -453,6 +483,15 @@ class FederatedClient:
 
         # 4. Compute delta
         delta = compute_state_dict_delta(base_state, updated_state)
+
+        # 4b. Apply FedProx proximal correction if configured.
+        # The proximal term (mu/2)*||w - w_global||^2 dampens the update so
+        # local models stay closer to the global model.  When the inner
+        # training loop doesn't include the proximal loss directly, we apply
+        # the closed-form correction: delta_corrected = delta / (1 + mu).
+        proximal_mu = config.get("proximal_mu")
+        if proximal_mu is not None and float(proximal_mu) > 0:
+            delta = _apply_fedprox_correction(delta, float(proximal_mu))
 
         # 5. Apply client-side filters from round config
         filter_list = config.get("filters", [])
