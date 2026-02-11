@@ -34,7 +34,7 @@ def get_stable_device_id() -> str:
                     return f"Linux-{machine_id[:8]}"
             except (OSError, IOError):
                 pass
-    except (subprocess.SubprocessError, OSError):
+    except Exception:
         pass
 
     # Fallback to hostname
@@ -55,7 +55,7 @@ def get_battery_level() -> Optional[int]:
             return int(battery.percent)
     except ImportError:
         pass
-    except (AttributeError, OSError):
+    except (AttributeError, OSError, RuntimeError):
         pass
     return None
 
@@ -129,7 +129,7 @@ def get_memory_info() -> Optional[int]:
         return int(memory.total / (1024 * 1024))
     except ImportError:
         pass
-    except (AttributeError, OSError):
+    except (AttributeError, OSError, RuntimeError):
         pass
     return None
 
@@ -147,7 +147,7 @@ def get_storage_info() -> Optional[int]:
         return int(disk.free / (1024 * 1024))
     except ImportError:
         pass
-    except (AttributeError, OSError):
+    except (AttributeError, OSError, RuntimeError):
         pass
     return None
 

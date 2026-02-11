@@ -3,7 +3,6 @@ from __future__ import annotations
 import base64
 import io
 import logging
-import math
 import uuid
 from pathlib import Path
 from typing import (
@@ -20,6 +19,8 @@ from typing import (
 from .api_client import OctomilClientError, _ApiClient
 from .control_plane import ExperimentsAPI, RolloutsAPI
 from .data_loader import DataLoadError, DataSource, load_data, validate_target
+from .filters import apply_filters as _apply_filters_impl
+from .filters import FilterRegistry, FilterResult  # noqa: F401 -- re-export
 
 if TYPE_CHECKING:
     import pandas as pd
@@ -41,95 +42,47 @@ TrainResult = Tuple[Dict[str, Any], int, Optional[Dict[str, float]]]
 LocalTrainFn = Callable[[Dict[str, Any]], TrainResult]
 
 
-def _apply_gradient_clip(torch, result: Dict[str, Any], f: Dict[str, Any]) -> None:
-    """Clip per-tensor norms to ``max_norm``."""
-    max_norm = float(f.get("max_norm", 1.0))
-    for key, tensor in result.items():
-        if not torch.is_tensor(tensor):
-            continue
-        norm = torch.norm(tensor.float().flatten(), dim=0)
-        if norm > max_norm:
-            result[key] = tensor * (max_norm / norm)
+def _apply_fedprox_correction(delta: Dict[str, Any], mu: float) -> Dict[str, Any]:
+    """Apply FedProx proximal correction to a weight delta.
 
+    The FedProx objective adds ``(mu/2) * ||w - w_global||^2`` to the local
+    loss.  When the user's training loop does not include this term, we
+    approximate its effect by scaling: ``delta / (1 + mu)``.  This keeps local
+    updates closer to the global model, reducing client drift.
 
-def _apply_gaussian_noise(torch, result: Dict[str, Any], f: Dict[str, Any]) -> None:
-    """Add N(0, stddev^2) noise to each tensor."""
-    stddev = float(f.get("stddev", 0.01))
-    for key, tensor in result.items():
-        if not torch.is_tensor(tensor):
-            continue
-        result[key] = tensor + torch.randn_like(tensor.float()) * stddev
+    Args:
+        delta: State-dict delta (updated - base).
+        mu: Proximal regularization strength (> 0).
 
+    Returns:
+        A new delta dict with the correction applied.
+    """
+    try:
+        import torch  # type: ignore
+    except Exception as exc:
+        raise OctomilClientError("torch is required for FedProx correction") from exc
 
-def _apply_norm_validation(torch, result: Dict[str, Any], f: Dict[str, Any]) -> None:
-    """Drop tensors whose norm exceeds ``max_norm``."""
-    max_norm = float(f.get("max_norm", 10.0))
-    for key in list(result.keys()):
-        tensor = result[key]
-        if torch.is_tensor(tensor) and torch.norm(tensor.float().flatten(), dim=0) > max_norm:
-            del result[key]
-
-
-def _apply_sparsification(torch, result: Dict[str, Any], f: Dict[str, Any]) -> None:
-    """Zero out values below the top-k% by magnitude."""
-    top_k_percent = float(f.get("top_k_percent", 10.0))
-    for key, tensor in result.items():
-        if not torch.is_tensor(tensor):
-            continue
-        flat = tensor.float().abs().flatten()
-        k = max(1, int(math.ceil(flat.numel() * top_k_percent / 100.0)))
-        threshold = torch.topk(flat, k).values[-1]
-        mask = tensor.abs() >= threshold
-        result[key] = tensor * mask
-
-
-def _apply_quantization(torch, result: Dict[str, Any], f: Dict[str, Any]) -> None:
-    """Round tensor values to ``bits``-bit resolution."""
-    bits = int(f.get("bits", 8))
-    levels = (1 << bits) - 1
-    for key, tensor in result.items():
-        if not torch.is_tensor(tensor):
-            continue
-        t_min = tensor.min()
-        t_max = tensor.max()
-        if t_min == t_max:
-            continue
-        scale = (t_max - t_min) / levels
-        result[key] = (torch.round((tensor - t_min) / scale) * scale) + t_min
-
-
-_FILTER_HANDLERS = {
-    "gradient_clip": _apply_gradient_clip,
-    "gaussian_noise": _apply_gaussian_noise,
-    "norm_validation": _apply_norm_validation,
-    "sparsification": _apply_sparsification,
-    "quantization": _apply_quantization,
-}
+    scale = 1.0 / (1.0 + mu)
+    corrected: Dict[str, Any] = {}
+    for key, value in delta.items():
+        if torch.is_tensor(value):
+            corrected[key] = value * scale
+        else:
+            corrected[key] = value
+    return corrected
 
 
 def apply_filters(delta: Dict[str, Any], filters: List[Dict[str, Any]]) -> Dict[str, Any]:
     """Apply a composable filter pipeline to a state-dict delta.
 
-    Supported filter types:
-      - gradient_clip: clip per-tensor norms to ``max_norm``
-      - gaussian_noise: add N(0, stddev^2) noise
-      - norm_validation: drop tensors exceeding ``max_norm``
-      - sparsification: zero out values below top-k% by magnitude
-      - quantization: round values to ``bits``-bit resolution
+    This is a backward-compatible wrapper around :func:`octomil.filters.apply_filters`.
+    It accepts the same dict-based filter configs and returns a plain dict.
+
+    For the full API with audit trail and :class:`~octomil.filters.DeltaFilter`
+    support, use :func:`octomil.filters.apply_filters` directly.
     """
-    try:
-        import torch  # type: ignore
-    except Exception as exc:
-        raise OctomilClientError("torch is required for filter pipeline") from exc
-
-    result = {k: v.clone() if torch.is_tensor(v) else v for k, v in delta.items()}
-
-    for f in filters:
-        handler = _FILTER_HANDLERS.get(f.get("type", ""))
-        if handler is not None:
-            handler(torch, result, f)
-
-    return result
+    result = _apply_filters_impl(delta, filters)
+    return result.delta
 
 
 class FederatedClient:
@@ -140,6 +93,7 @@ class FederatedClient:
         api_base: str = "https://api.octomil.io/api/v1",
         device_identifier: Optional[str] = None,
         platform: str = "python",
+        secure_aggregation: bool = False,
     ):
         self.api = _ApiClient(
             auth_token_provider=auth_token_provider,
@@ -152,6 +106,7 @@ class FederatedClient:
         self._detected_features: Optional[List[str]] = None
         self._model_cache: Dict[str, Dict[str, Any]] = {}
         self._inference_client = None
+        self.secure_aggregation = secure_aggregation
         self.rollouts = RolloutsAPI(self.api)
         self.experiments = ExperimentsAPI(self.api, org_id=self.org_id)
 
@@ -423,6 +378,10 @@ class FederatedClient:
         The round config is inspected for strategy-specific parameters
         (``proximal_mu`` for FedProx, ``lambda_ditto`` for Ditto,
         ``head_layers`` for FedPer) and client-side filter settings.
+
+        When ``secure_aggregation`` is enabled (via the constructor flag **or**
+        the round config), the update is masked using Shamir secret sharing
+        before being uploaded.
         """
         self.register()
 
@@ -448,6 +407,15 @@ class FederatedClient:
         # 4. Compute delta
         delta = compute_state_dict_delta(base_state, updated_state)
 
+        # 4b. Apply FedProx proximal correction if configured.
+        # The proximal term (mu/2)*||w - w_global||^2 dampens the update so
+        # local models stay closer to the global model.  When the inner
+        # training loop doesn't include the proximal loss directly, we apply
+        # the closed-form correction: delta_corrected = delta / (1 + mu).
+        proximal_mu = config.get("proximal_mu")
+        if proximal_mu is not None and float(proximal_mu) > 0:
+            delta = _apply_fedprox_correction(delta, float(proximal_mu))
+
         # 5. Apply client-side filters from round config
         filter_list = config.get("filters", [])
 
@@ -460,8 +428,15 @@ class FederatedClient:
         if filter_list:
             delta = apply_filters(delta, filter_list)
 
-        # 6. Upload
+        # 6. Serialize weights
         weights_data = self._serialize_weights(delta)
+
+        # 7. SecAgg: mask the update if enabled
+        use_secagg = self.secure_aggregation or config.get("secure_aggregation", False)
+        if use_secagg:
+            weights_data = self._secagg_mask_and_share(round_id, weights_data)
+
+        # 8. Upload
         payload: Dict[str, Any] = {
             "model_id": model_id,
             "version": version,
@@ -473,6 +448,36 @@ class FederatedClient:
             "weights_data": base64.b64encode(weights_data).decode("ascii"),
         }
         return self.api.post(_TRAINING_WEIGHTS_ENDPOINT, payload)
+
+    def _secagg_mask_and_share(self, round_id: str, weights_data: bytes) -> bytes:
+        """Run the client side of the SecAgg protocol and return masked weights."""
+        from .secagg import SecAggClient, SecAggConfig as _SAConfig
+
+        # Fetch session parameters from the server.
+        session_info = self.api.secagg_get_session(round_id, self.device_id)
+
+        sa_config = _SAConfig(
+            session_id=session_info.get("session_id", ""),
+            round_id=round_id,
+            threshold=session_info.get("threshold", 2),
+            total_clients=session_info.get("total_clients", 3),
+            field_size=session_info.get("field_size", (1 << 127) - 1),
+            key_length=session_info.get("key_length", 256),
+            noise_scale=session_info.get("noise_scale"),
+        )
+
+        sac = SecAggClient(sa_config)
+
+        # Phase 1 -- share keys with all participants.
+        shares = sac.generate_key_shares()
+        shares_bytes = SecAggClient.serialize_shares(shares)
+        self.api.secagg_submit_shares(round_id, self.device_id, shares_bytes)
+
+        # Phase 2 -- mask the weights.
+        masked_data = sac.mask_model_update(weights_data)
+
+        logger.info("SecAgg: masked update for round %s", round_id)
+        return masked_data
 
     # ------------------------------------------------------------------
     # Personalization
