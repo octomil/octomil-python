@@ -43,6 +43,7 @@ dev = [
     "mypy>=1.0.0",
     "ruff>=0.1.0",
     "flwr-datasets>=0.3.0",
+    "cryptography>=41.0.0",
 ]
 auth = ["keyring>=24.0.0"]
 secagg = ["cryptography>=41.0.0"]

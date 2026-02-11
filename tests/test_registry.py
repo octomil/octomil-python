@@ -284,7 +284,7 @@ class ModelRegistryTests(unittest.TestCase):
         stub.set_response(("/models/model_1/versions/1.0.0/download-url", (("format", "onnx"),)), {})
         registry.api = stub
         with self.assertRaises(EdgeMLClientError) as ctx:
-            registry.download_version("model_1", "1.0.0", "onnx", "/tmp/model.onnx")
+            registry.download_version("model_1", "1.0.0", "onnx", os.path.join(tempfile.gettempdir(), "model.onnx"))
         self.assertIn("Download URL missing", str(ctx.exception))
 
     def test_download_version_http_error_raises(self):
@@ -298,7 +298,7 @@ class ModelRegistryTests(unittest.TestCase):
 
         with patch("edgeml.registry.httpx.Client", fake_client):
             with self.assertRaises(EdgeMLClientError) as ctx:
-                registry.download_version("model_1", "1.0.0", "onnx", "/tmp/model.onnx")
+                registry.download_version("model_1", "1.0.0", "onnx", os.path.join(tempfile.gettempdir(), "model.onnx"))
         self.assertIn("Not found", str(ctx.exception))
 
     def test_ensure_model_creates_if_not_exists(self):

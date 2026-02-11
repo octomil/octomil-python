@@ -7,8 +7,8 @@
 [![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/edgeml-ai/edgeml-python/badge)](https://scorecard.dev/viewer/?uri=github.com/edgeml-ai/edgeml-python)
 [![CII Best Practices](https://www.bestpractices.dev/projects/11914/badge)](https://www.bestpractices.dev/projects/11914)
 [![CodeQL](https://github.com/edgeml-ai/edgeml-python/actions/workflows/codeql.yml/badge.svg)](https://github.com/edgeml-ai/edgeml-python/actions/workflows/codeql.yml)
-[![Python Version](https://img.shields.io/pypi/pyversions/edgeml-sdk.svg)](https://pypi.org/project/edgeml-sdk/)
-[![PyPI version](https://badge.fury.io/py/edgeml-sdk.svg)](https://badge.fury.io/py/edgeml-sdk)
+[![Python](https://img.shields.io/badge/Python-3.9+-3776AB?logo=python&logoColor=white)](https://www.python.org/)
+[![PyPI version](https://img.shields.io/pypi/v/edgeml-sdk.svg)](https://pypi.org/project/edgeml-sdk/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 > Enterprise-grade Python SDK for federated learning orchestration and secure device runtime participation.
