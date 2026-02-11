@@ -31,7 +31,7 @@ jobs:
           pip install -e "edgeml/python[all]"
 
       - name: Generate CycloneDX SBOM
-        run: cyclonedx-py environment --outfile sbom.json --output-format JSON
+        run: cyclonedx-py environment -o sbom.json
 
       - name: Generate license report
         run: pip-licenses --format=json --output-file=licenses.json
