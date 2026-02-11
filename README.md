@@ -7,8 +7,8 @@
 [![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/octomil-ai/octomil-python/badge)](https://scorecard.dev/viewer/?uri=github.com/octomil-ai/octomil-python)
 [![CII Best Practices](https://www.bestpractices.dev/projects/11914/badge)](https://www.bestpractices.dev/projects/11914)
 [![CodeQL](https://github.com/octomil-ai/octomil-python/actions/workflows/codeql.yml/badge.svg)](https://github.com/octomil-ai/octomil-python/actions/workflows/codeql.yml)
-[![Python Version](https://img.shields.io/pypi/pyversions/octomil-sdk.svg)](https://pypi.org/project/octomil-sdk/)
-[![PyPI version](https://badge.fury.io/py/octomil-sdk.svg)](https://badge.fury.io/py/octomil-sdk)
+[![Python](https://img.shields.io/badge/Python-3.9+-3776AB?logo=python&logoColor=white)](https://www.python.org/)
+[![PyPI version](https://img.shields.io/pypi/v/octomil-sdk.svg)](https://pypi.org/project/octomil-sdk/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 > Enterprise-grade Python SDK for federated learning orchestration and secure device runtime participation.
