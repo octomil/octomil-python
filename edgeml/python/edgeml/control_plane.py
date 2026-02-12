@@ -82,6 +82,99 @@ class RolloutsAPI:
         return self.api.delete(f"/models/{model_id}/rollouts/{rollout_id}", params=params)
 
 
+class FederatedAnalyticsAPI:
+    """Federated analytics API for cross-site statistical analysis."""
+
+    def __init__(self, api: _ApiClient, federation_id: str):
+        self.api = api
+        self.federation_id = federation_id
+        self._base = f"/federations/{federation_id}/analytics"
+
+    def descriptive(
+        self,
+        variable: str,
+        group_by: str = "device_group",
+        group_ids: Optional[list[str]] = None,
+        include_percentiles: bool = True,
+        filters: Optional[dict[str, Any]] = None,
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "variable": variable,
+            "group_by": group_by,
+            "include_percentiles": include_percentiles,
+        }
+        if group_ids is not None:
+            payload["group_ids"] = group_ids
+        if filters is not None:
+            payload["filters"] = filters
+        return self.api.post(f"{self._base}/descriptive", payload)
+
+    def t_test(
+        self,
+        variable: str,
+        group_a: str,
+        group_b: str,
+        confidence_level: float = 0.95,
+        filters: Optional[dict[str, Any]] = None,
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "variable": variable,
+            "group_a": group_a,
+            "group_b": group_b,
+            "confidence_level": confidence_level,
+        }
+        if filters is not None:
+            payload["filters"] = filters
+        return self.api.post(f"{self._base}/t-test", payload)
+
+    def chi_square(
+        self,
+        variable_1: str,
+        variable_2: str,
+        group_ids: Optional[list[str]] = None,
+        confidence_level: float = 0.95,
+        filters: Optional[dict[str, Any]] = None,
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "variable_1": variable_1,
+            "variable_2": variable_2,
+            "confidence_level": confidence_level,
+        }
+        if group_ids is not None:
+            payload["group_ids"] = group_ids
+        if filters is not None:
+            payload["filters"] = filters
+        return self.api.post(f"{self._base}/chi-square", payload)
+
+    def anova(
+        self,
+        variable: str,
+        group_by: str = "device_group",
+        group_ids: Optional[list[str]] = None,
+        confidence_level: float = 0.95,
+        post_hoc: bool = True,
+        filters: Optional[dict[str, Any]] = None,
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "variable": variable,
+            "group_by": group_by,
+            "confidence_level": confidence_level,
+            "post_hoc": post_hoc,
+        }
+        if group_ids is not None:
+            payload["group_ids"] = group_ids
+        if filters is not None:
+            payload["filters"] = filters
+        return self.api.post(f"{self._base}/anova", payload)
+
+    def list_queries(self, limit: int = 50, offset: int = 0) -> dict[str, Any]:
+        params: dict[str, Any] = {"limit": limit, "offset": offset}
+        return self.api.get(f"{self._base}/queries", params=params)
+
+    def get_query(self, query_id: str) -> dict[str, Any]:
+        return self.api.get(f"{self._base}/queries/{query_id}")
+
+
 class ExperimentsAPI:
     """Control-plane experiment management and analytics API."""
 

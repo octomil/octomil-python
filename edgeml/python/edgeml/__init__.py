@@ -1,6 +1,6 @@
 from .api_client import EdgeMLClientError
 from .auth import DeviceAuthClient
-from .control_plane import ExperimentsAPI, RolloutsAPI
+from .control_plane import ExperimentsAPI, FederatedAnalyticsAPI, RolloutsAPI
 from .edge import EdgeML
 from .federated_client import FederatedClient, apply_filters, compute_state_dict_delta
 from .federation import Federation
@@ -26,6 +26,7 @@ __all__ = [
     "ModelRegistry",
     "RolloutsAPI",
     "ExperimentsAPI",
+    "FederatedAnalyticsAPI",
     "compute_state_dict_delta",
     "apply_filters",
     "DataKind",
