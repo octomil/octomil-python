@@ -18,6 +18,7 @@ from .secagg import (
     SecAggPlusConfig,
 )
 from .local import connect, model
+from .deploy import DeployedModel, Engine, deploy
 from .openai_client import OpenAIClient
 
 __all__ = [
@@ -48,4 +49,7 @@ __all__ = [
     "OpenAIClient",
     "model",
     "connect",
+    "deploy",
+    "DeployedModel",
+    "Engine",
 ]
