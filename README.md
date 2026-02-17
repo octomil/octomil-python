@@ -98,6 +98,58 @@ edgeml.connect(api_key="edgeml_...")
 # All subsequent runs automatically report to the server
 ```
 
+### Engine Router — `edgeml.deploy()`
+
+Load any model file and get an instrumented inference wrapper with automatic engine detection:
+
+```python
+import edgeml
+
+# Auto-detects ONNX from extension, benchmarks available engines, picks fastest
+model = edgeml.deploy("mobilenet.onnx")
+result = model.predict(input_array)
+print(model.engine)             # Engine.ONNX
+print(model.benchmark_results)  # {"onnx": 4.2}
+
+# Streaming LLM inference
+model = edgeml.deploy("phi-3.gguf")
+for token in model.stream("Hello"):
+    print(token, end="")
+# stderr: [edgeml] phi-3 gguf | 128 tok | TTFC 183ms | 42.1 tok/s | p99 61ms
+
+# Benchmark with real data
+print(model.benchmark(real_input, n_runs=10))
+# {"engine": "gguf", "median_ms": 24.3, "min_ms": 22.1, "max_ms": 31.0, "runs": 10}
+```
+
+Supported engines: ONNX Runtime, PyTorch, TFLite, CoreML, GGUF (llama.cpp), MLX. All imports are lazy — install only what you need.
+
+### Cross-Platform Deployment
+
+Deploy one model to iOS and Android devices from a single Python script:
+
+```python
+import edgeml
+
+edgeml.connect(api_key="edgeml_...")
+
+# Checks compatibility, optimizes, and rolls out to both platforms
+deployment = edgeml.deploy_remote(
+    model="mobilenet-v3",
+    version="1.0.0",
+    targets=["iphone_15_pro", "pixel_8"],
+    optimize=True,        # pruning + quantization + format conversion
+    rollout=10,           # start at 10%
+)
+# {"iphone_15_pro": {"format": "coreml", "size_mb": 4.2, "rollout": 10},
+#  "pixel_8":       {"format": "tflite", "size_mb": 3.8, "rollout": 10}}
+
+deployment.advance(50)   # bump rollout to 50%
+deployment.pause()       # freeze current rollout
+```
+
+See [`examples/deploy_mobilenet.py`](examples/deploy_mobilenet.py) for a complete working example.
+
 ### Enterprise Runtime Authentication
 
 For production deployments, use secure token-based authentication:

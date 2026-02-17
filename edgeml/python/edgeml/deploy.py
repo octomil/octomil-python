@@ -506,6 +506,16 @@ def deploy_remote(
 
     deployment = Deployment(model, version, targets, registry)
 
+    # Check compatibility before doing anything expensive
+    compat = registry.check_compatibility(model_id=model, target_devices=targets)
+    deployment._compatibility = compat
+    incompatible = compat.get("incompatible_devices", [])
+    if incompatible:
+        raise RuntimeError(
+            f"Model {model!r} is incompatible with devices: {incompatible}. "
+            f"Recommendations: {compat.get('recommendations', 'N/A')}"
+        )
+
     # Optimize if requested
     if optimize:
         deployment._optimization = registry.optimize(
