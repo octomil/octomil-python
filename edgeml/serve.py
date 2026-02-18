@@ -166,6 +166,7 @@ class InferenceMetrics:
     """Metrics for a single inference request."""
 
     ttfc_ms: float = 0.0
+    prompt_tokens: int = 0
     total_tokens: int = 0
     tokens_per_second: float = 0.0
     total_duration_ms: float = 0.0
@@ -257,6 +258,7 @@ class MLXBackend(InferenceBackend):
         import mlx_lm  # type: ignore[import-untyped]
 
         prompt = self._apply_chat_template(request.messages)
+        prompt_tokens = len(self._tokenizer.encode(prompt))
         sampler = self._make_sampler(request.temperature, request.top_p)
         start = time.monotonic()
         first_token_time: Optional[float] = None
@@ -283,6 +285,7 @@ class MLXBackend(InferenceBackend):
 
         return text, InferenceMetrics(
             ttfc_ms=ttfc,
+            prompt_tokens=prompt_tokens,
             total_tokens=len(tokens),
             tokens_per_second=final_tps,
             total_duration_ms=elapsed * 1000,
@@ -572,16 +575,25 @@ def create_app(
     api_base: str = "https://api.edgeml.io/api/v1",
 ) -> Any:
     """Create a FastAPI app with OpenAI-compatible endpoints."""
+    from contextlib import asynccontextmanager
+
     from fastapi import FastAPI, HTTPException
     from fastapi.middleware.cors import CORSMiddleware
     from fastapi.responses import StreamingResponse
 
-    app = FastAPI(title="EdgeML Serve", version="1.0.0")
     state = ServerState(
         model_name=model_name,
         api_key=api_key,
         api_base=api_base,
     )
+
+    @asynccontextmanager
+    async def lifespan(app: Any) -> Any:
+        state.backend = _detect_backend(model_name)
+        state.start_time = time.time()
+        yield
+
+    app = FastAPI(title="EdgeML Serve", version="1.0.0", lifespan=lifespan)
 
     app.add_middleware(
         CORSMiddleware,
@@ -589,11 +601,6 @@ def create_app(
         allow_methods=["*"],
         allow_headers=["*"],
     )
-
-    @app.on_event("startup")
-    async def _load_model() -> None:
-        state.backend = _detect_backend(model_name)
-        state.start_time = time.time()
 
     @app.get("/v1/models")
     async def list_models() -> dict[str, Any]:
@@ -648,9 +655,9 @@ def create_app(
                 }
             ],
             "usage": {
-                "prompt_tokens": 0,
+                "prompt_tokens": metrics.prompt_tokens,
                 "completion_tokens": metrics.total_tokens,
-                "total_tokens": metrics.total_tokens,
+                "total_tokens": metrics.prompt_tokens + metrics.total_tokens,
             },
         }
 

@@ -176,26 +176,19 @@ class TestPydanticModels:
 @pytest.fixture
 def echo_app():
     """Create a FastAPI app with EchoBackend for testing."""
-    app = create_app("test-model")
-    # Manually inject echo backend (skip startup event in tests)
-
-    # Access the state object from the app's routes
-    # We need to pre-load the backend since startup events don't run in test
-    for route in app.routes:
-        pass  # routes are registered
-
-    # Patch _detect_backend to always return echo
     with patch("edgeml.serve._detect_backend") as mock_detect:
         echo = EchoBackend()
         echo.load_model("test-model")
         mock_detect.return_value = echo
 
-        # Trigger the startup manually
-        async def _trigger_startup():
-            for handler in app.router.on_startup:
-                await handler()
+        app = create_app("test-model")
 
-        asyncio.get_event_loop().run_until_complete(_trigger_startup())
+        # Trigger lifespan startup manually
+        async def _trigger_lifespan():
+            ctx = app.router.lifespan_context(app)
+            await ctx.__aenter__()
+
+        asyncio.get_event_loop().run_until_complete(_trigger_lifespan())
 
     return app
 
