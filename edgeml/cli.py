@@ -546,17 +546,28 @@ def dashboard() -> None:
 # ---------------------------------------------------------------------------
 
 
+def _percentile(data: list[float], pct: float) -> float:
+    """Compute the pct-th percentile of a sorted list."""
+    s = sorted(data)
+    idx = (pct / 100.0) * (len(s) - 1)
+    lo = int(idx)
+    hi = min(lo + 1, len(s) - 1)
+    frac = idx - lo
+    return s[lo] * (1 - frac) + s[hi] * frac
+
+
 @main.command()
 @click.argument("model")
 @click.option(
     "--share", is_flag=True, help="Upload anonymous benchmark results to EdgeML."
 )
 @click.option("--iterations", "-n", default=10, help="Number of inference iterations.")
-def benchmark(model: str, share: bool, iterations: int) -> None:
+@click.option("--max-tokens", default=50, help="Max tokens to generate per iteration.")
+def benchmark(model: str, share: bool, iterations: int, max_tokens: int) -> None:
     """Run inference benchmarks on a model.
 
-    Measures time-to-first-chunk, throughput, and memory usage
-    across multiple iterations.
+    Measures TTFT, TPOT, latency distribution (min/avg/median/p90/p95/p99/max),
+    throughput, and memory usage across multiple iterations.
 
     Example:
 
@@ -565,7 +576,11 @@ def benchmark(model: str, share: bool, iterations: int) -> None:
     import platform as _platform
     import time
 
-    click.echo(f"Benchmarking {model} ({iterations} iterations)...")
+    import psutil
+
+    click.echo(
+        f"Benchmarking {model} ({iterations} iterations, {max_tokens} max tokens)..."
+    )
     click.echo(f"Platform: {_platform.system()} {_platform.machine()}")
 
     from .serve import _detect_backend
@@ -578,33 +593,91 @@ def benchmark(model: str, share: bool, iterations: int) -> None:
     req = GenerationRequest(
         model=model,
         messages=[{"role": "user", "content": "Hello, how are you?"}],
-        max_tokens=50,
+        max_tokens=max_tokens,
     )
 
     latencies: list[float] = []
     tps_list: list[float] = []
+    ttft_list: list[float] = []
+    prompt_tokens_list: list[int] = []
+    completion_tokens_list: list[int] = []
+
+    process = psutil.Process()
+    mem_before = process.memory_info().rss
 
     for i in range(iterations):
         start = time.monotonic()
-        text, metrics = backend.generate(req)
+        _text, metrics = backend.generate(req)
         elapsed = (time.monotonic() - start) * 1000
         latencies.append(elapsed)
         tps_list.append(metrics.tokens_per_second)
+        if metrics.ttfc_ms > 0:
+            ttft_list.append(metrics.ttfc_ms)
+        if metrics.prompt_tokens > 0:
+            prompt_tokens_list.append(metrics.prompt_tokens)
+        if metrics.total_tokens > 0:
+            completion_tokens_list.append(metrics.total_tokens)
         click.echo(
-            f"  [{i+1}/{iterations}] {elapsed:.1f}ms, {metrics.tokens_per_second:.1f} tok/s"
+            f"  [{i+1}/{iterations}] {elapsed:.1f}ms, "
+            f"{metrics.tokens_per_second:.1f} tok/s, "
+            f"{metrics.total_tokens} tokens"
         )
 
+    peak_mem = process.memory_info().rss
+    peak_mem_delta = peak_mem - mem_before
+
+    # Latency stats
     avg_latency = sum(latencies) / len(latencies)
-    p50 = sorted(latencies)[len(latencies) // 2]
-    p95 = sorted(latencies)[int(len(latencies) * 0.95)]
+    min_latency = min(latencies)
+    max_latency = max(latencies)
+    p50 = _percentile(latencies, 50)
+    p90 = _percentile(latencies, 90)
+    p95 = _percentile(latencies, 95)
+    p99 = _percentile(latencies, 99)
+
+    # Throughput stats
     avg_tps = sum(tps_list) / len(tps_list)
+    peak_tps = max(tps_list) if tps_list else 0
+
+    # Token-level timing
+    avg_ttft = sum(ttft_list) / len(ttft_list) if ttft_list else 0
+    avg_prompt = (
+        sum(prompt_tokens_list) // len(prompt_tokens_list) if prompt_tokens_list else 0
+    )
+    avg_completion = (
+        sum(completion_tokens_list) // len(completion_tokens_list)
+        if completion_tokens_list
+        else 0
+    )
+    # TPOT = (total_latency - TTFT) / completion_tokens
+    tpot = (
+        (avg_latency - avg_ttft) / avg_completion
+        if avg_completion > 0 and avg_ttft > 0
+        else 0
+    )
 
     click.echo("\nResults:")
-    click.echo(f"  Avg latency: {avg_latency:.1f}ms")
-    click.echo(f"  P50 latency: {p50:.1f}ms")
-    click.echo(f"  P95 latency: {p95:.1f}ms")
-    click.echo(f"  Avg throughput: {avg_tps:.1f} tok/s")
-    click.echo(f"  Backend: {backend.name}")
+    click.echo(f"  Backend:          {backend.name}")
+    click.echo(f"  Iterations:       {iterations}")
+    click.echo(f"  Avg prompt:       {avg_prompt} tokens")
+    click.echo(f"  Avg completion:   {avg_completion} tokens")
+    click.echo("")
+    click.echo(f"  TTFT (avg):       {avg_ttft:.1f}ms")
+    click.echo(f"  TPOT (avg):       {tpot:.2f}ms/token")
+    click.echo("")
+    click.echo(f"  Latency min:      {min_latency:.1f}ms")
+    click.echo(f"  Latency avg:      {avg_latency:.1f}ms")
+    click.echo(f"  Latency p50:      {p50:.1f}ms")
+    click.echo(f"  Latency p90:      {p90:.1f}ms")
+    click.echo(f"  Latency p95:      {p95:.1f}ms")
+    click.echo(f"  Latency p99:      {p99:.1f}ms")
+    click.echo(f"  Latency max:      {max_latency:.1f}ms")
+    click.echo("")
+    click.echo(f"  Throughput avg:   {avg_tps:.1f} tok/s")
+    click.echo(f"  Throughput peak:  {peak_tps:.1f} tok/s")
+    click.echo(
+        f"  Peak memory:      {peak_mem / 1024 / 1024:.0f} MB (+{peak_mem_delta / 1024 / 1024:.0f} MB)"
+    )
 
     if share:
         api_key = _get_api_key()
@@ -624,11 +697,24 @@ def benchmark(model: str, share: bool, iterations: int) -> None:
                 "backend": backend.name,
                 "platform": _platform.system(),
                 "arch": _platform.machine(),
-                "avg_latency_ms": avg_latency,
-                "p50_latency_ms": p50,
-                "p95_latency_ms": p95,
-                "avg_tokens_per_second": avg_tps,
+                "os_version": _platform.platform(),
+                "accelerator": "Metal" if _platform.system() == "Darwin" else "CPU",
+                "ram_total_bytes": psutil.virtual_memory().total,
                 "iterations": iterations,
+                "prompt_tokens": avg_prompt,
+                "completion_tokens": avg_completion,
+                "avg_latency_ms": round(avg_latency, 2),
+                "min_latency_ms": round(min_latency, 2),
+                "max_latency_ms": round(max_latency, 2),
+                "p50_latency_ms": round(p50, 2),
+                "p90_latency_ms": round(p90, 2),
+                "p95_latency_ms": round(p95, 2),
+                "p99_latency_ms": round(p99, 2),
+                "ttft_ms": round(avg_ttft, 2) if avg_ttft > 0 else None,
+                "tpot_ms": round(tpot, 2) if tpot > 0 else None,
+                "avg_tokens_per_second": round(avg_tps, 1),
+                "peak_tokens_per_second": round(peak_tps, 1),
+                "peak_memory_bytes": peak_mem,
             }
             api_base = os.environ.get("EDGEML_API_BASE", "https://api.edgeml.io/api/v1")
             resp = httpx.post(
