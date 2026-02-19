@@ -15,6 +15,8 @@ setup(
         "psutil>=5.9.0",
         "httpx>=0.24.0",
         "click>=8.0.0",
+        "pandas>=1.5.0",
+        "pyarrow>=10.0.0",
     ],
     extras_require={
         "serve": [
@@ -46,6 +48,7 @@ setup(
             "cryptography>=41.0.0",
             "fastapi>=0.100.0",
             "uvicorn[standard]>=0.20.0",
+            "flwr-datasets>=0.3.0",
         ],
         "dev": [
             "pytest>=7.0.0",
