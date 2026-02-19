@@ -470,6 +470,17 @@ def deploy(
     if phone:
         import httpx
 
+        # Detect ollama models before deploying
+        from .ollama import get_ollama_model
+
+        ollama_model = get_ollama_model(name)
+        if ollama_model:
+            click.echo(
+                f"Detected ollama model: {ollama_model.name} "
+                f"({ollama_model.size_display}, {ollama_model.quantization})"
+            )
+
+
         api_key = _require_api_key()
         api_base = os.environ.get("EDGEML_API_BASE", "https://api.edgeml.io/api/v1")
         dashboard_url = os.environ.get("EDGEML_DASHBOARD_URL", "https://app.edgeml.io")
@@ -768,7 +779,7 @@ def benchmark(model: str, share: bool, iterations: int, max_tokens: int) -> None
         if metrics.total_tokens > 0:
             completion_tokens_list.append(metrics.total_tokens)
         click.echo(
-            f"  [{i+1}/{iterations}] {elapsed:.1f}ms, "
+            f"  [{i + 1}/{iterations}] {elapsed:.1f}ms, "
             f"{metrics.tokens_per_second:.1f} tok/s, "
             f"{metrics.total_tokens} tokens"
         )
@@ -879,6 +890,62 @@ def benchmark(model: str, share: bool, iterations: int, max_tokens: int) -> None
                 click.echo(f"Failed to share: {resp.status_code}", err=True)
         except Exception as exc:
             click.echo(f"Failed to share: {exc}", err=True)
+
+
+# ---------------------------------------------------------------------------
+# edgeml models
+# ---------------------------------------------------------------------------
+
+
+@main.command()
+@click.option(
+    "--source",
+    type=click.Choice(["all", "ollama", "registry"]),
+    default="all",
+    help="Filter model source.",
+)
+def models(source: str) -> None:
+    """List available models from ollama and the EdgeML registry."""
+    if source in ("all", "ollama"):
+        from .ollama import is_ollama_running, list_ollama_models
+
+        if is_ollama_running():
+            ollama_models = list_ollama_models()
+            if ollama_models:
+                click.echo("Local (ollama):")
+                for m in ollama_models:
+                    click.echo(
+                        f"  {m.name:<20s}{m.size_display:>8s}   "
+                        f"{m.quantization:<9s}{m.family}"
+                    )
+            else:
+                click.echo("Local (ollama): no models found")
+        else:
+            click.echo("Local (ollama): not running")
+
+    if source in ("all", "registry"):
+        api_key = _get_api_key()
+        if api_key:
+            try:
+                client = _get_client()
+                registry_models = client.list_models()
+                if registry_models:
+                    click.echo("Registry (edgeml):")
+                    for m in registry_models:
+                        name = m.get("name", "unknown")
+                        size = m.get("size", 0)
+                        fmt = m.get("format", "unknown")
+                        framework = m.get("framework", "unknown")
+                        size_mb = size / (1024 * 1024) if size else 0
+                        click.echo(
+                            f"  {name:<20s}{size_mb:>5.0f} MB   {fmt:<9s}{framework}"
+                        )
+                else:
+                    click.echo("Registry (edgeml): no models found")
+            except Exception:
+                click.echo("Registry (edgeml): unable to fetch", err=True)
+        elif source == "registry":
+            click.echo("Registry (edgeml): no API key — run `edgeml login` first")
 
 
 if __name__ == "__main__":
