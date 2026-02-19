@@ -96,7 +96,11 @@ def serve(model: str, port: int, host: str, benchmark: bool, share: bool) -> Non
             -d '{"model":"gemma-1b","messages":[{"role":"user","content":"Hi"}]}'
     """
     api_key = _get_api_key() if share else None
-    api_base = os.environ.get("EDGEML_API_BASE", "https://api.edgeml.io/api/v1")
+    api_base: str = (
+        os.environ.get("EDGEML_API_URL")
+        or os.environ.get("EDGEML_API_BASE")
+        or "https://api.edgeml.io/api/v1"
+    )
 
     click.echo(f"Starting EdgeML serve on {host}:{port}")
     click.echo(f"Model: {model}")
@@ -506,7 +510,11 @@ def deploy(
             )
 
         api_key = _require_api_key()
-        api_base = os.environ.get("EDGEML_API_BASE", "https://api.edgeml.io/api/v1")
+        api_base: str = (
+            os.environ.get("EDGEML_API_URL")
+            or os.environ.get("EDGEML_API_BASE")
+            or "https://api.edgeml.io/api/v1"
+        )
         dashboard_url = os.environ.get("EDGEML_DASHBOARD_URL", "https://app.edgeml.io")
 
         click.echo(f"Creating pairing session for {name}...")
@@ -525,7 +533,14 @@ def deploy(
 
         session = resp.json()
         code = session["code"]
-        pair_url = f"{dashboard_url}/deploy/phone?code={code}&model={name}"
+
+        # Build the universal link URL for App Clip
+        pair_url = f"https://edgeml.io/pair?code={code}"
+        # Include server URL for non-production environments
+        if api_base != "https://api.edgeml.io/api/v1":
+            import urllib.parse
+
+            pair_url += f"&server={urllib.parse.quote(api_base, safe='')}"
 
         # Render QR code in a styled box
         qr_art = render_qr_terminal(pair_url)
@@ -738,7 +753,11 @@ def pair(
 
     import httpx
 
-    api_base = os.environ.get("EDGEML_API_BASE", "https://api.edgeml.io/api/v1")
+    api_base: str = (
+        os.environ.get("EDGEML_API_URL")
+        or os.environ.get("EDGEML_API_BASE")
+        or "https://api.edgeml.io/api/v1"
+    )
     device_id = device_id or f"device-{uuid.uuid4().hex[:8]}"
     platform = platform or f"python-{_platform.system().lower()}"
     device_name = device_name or f"{_platform.node()}"
@@ -1023,7 +1042,11 @@ def benchmark(model: str, share: bool, iterations: int, max_tokens: int) -> None
                 "peak_tokens_per_second": round(peak_tps, 1),
                 "peak_memory_bytes": peak_mem,
             }
-            api_base = os.environ.get("EDGEML_API_BASE", "https://api.edgeml.io/api/v1")
+            api_base: str = (
+                os.environ.get("EDGEML_API_URL")
+                or os.environ.get("EDGEML_API_BASE")
+                or "https://api.edgeml.io/api/v1"
+            )
             resp = httpx.post(
                 f"{api_base}/benchmarks",
                 json=payload,
