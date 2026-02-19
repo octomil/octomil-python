@@ -440,7 +440,7 @@ def pull(name: str, version: Optional[str], fmt: Optional[str], output: str) -> 
     "--strategy",
     "-s",
     default="canary",
-    type=click.Choice(["canary", "immediate"]),
+    type=click.Choice(["canary", "immediate", "blue_green"]),
     help="Rollout strategy.",
 )
 @click.option(
@@ -449,6 +449,22 @@ def pull(name: str, version: Optional[str], fmt: Optional[str], output: str) -> 
     default=None,
     help="Comma-separated target formats: ios, android.",
 )
+@click.option(
+    "--devices",
+    default=None,
+    help="Comma-separated device IDs to deploy to.",
+)
+@click.option(
+    "--group",
+    "-g",
+    default=None,
+    help="Device group name to deploy to.",
+)
+@click.option(
+    "--dry-run",
+    is_flag=True,
+    help="Preview what would happen without deploying.",
+)
 def deploy(
     name: str,
     version: Optional[str],
@@ -456,16 +472,23 @@ def deploy(
     rollout: int,
     strategy: str,
     target: Optional[str],
+    devices: Optional[str],
+    group: Optional[str],
+    dry_run: bool,
 ) -> None:
     """Deploy a model to edge devices.
 
     Deploys NAME at VERSION to devices. Use --phone for quick
-    phone deployment, or --rollout for fleet percentage rollouts.
+    phone deployment, --devices/--group for targeted deployment,
+    or --rollout for fleet percentage rollouts.
 
     Examples:
 
         octomil deploy gemma-1b --phone
         octomil deploy sentiment-v1 --rollout 10 --strategy canary
+        octomil deploy gemma-1b --devices device_1,device_2
+        octomil deploy gemma-1b --group production
+        octomil deploy gemma-1b --group production --dry-run
     """
     if phone:
         import httpx
@@ -588,17 +611,94 @@ def deploy(
         return
 
     client = _get_client()
-    click.echo(f"Deploying {name} at {rollout}% rollout ({strategy})...")
+    device_list = [d.strip() for d in devices.split(",")] if devices else None
 
+    # Dry-run: preview deployment plan
+    if dry_run:
+        click.echo(f"Preparing deployment plan for {name}...")
+        plan = client.deploy_prepare(
+            name, version=version, devices=device_list, group=group
+        )
+        click.echo(f"Model: {plan.model_name} v{plan.model_version}")
+        click.echo(f"Devices: {len(plan.deployments)}")
+        for d in plan.deployments:
+            conv = " (conversion needed)" if d.conversion_needed else ""
+            click.echo(
+                f"  {d.device_id}: {d.format} via {d.executor} [{d.quantization}]{conv}"
+            )
+        return
+
+    # Targeted deployment
+    if device_list or group:
+        target_desc = f"devices={devices}" if devices else f"group={group}"
+        click.echo(f"Deploying {name} to {target_desc} ({strategy})...")
+        result = client.deploy(
+            name,
+            version=version,
+            rollout=rollout,
+            strategy=strategy,
+            devices=device_list,
+            group=group,
+        )
+        # result is a DeploymentResult
+        from .models import DeploymentResult
+
+        if isinstance(result, DeploymentResult):
+            click.echo(f"Deployment: {result.deployment_id}")
+            click.echo(f"Status: {result.status}")
+            for ds in result.device_statuses:
+                err = f" — {ds.error}" if ds.error else ""
+                click.echo(f"  {ds.device_id}: {ds.status}{err}")
+        return
+
+    # Default: rollout-based deploy
+    click.echo(f"Deploying {name} at {rollout}% rollout ({strategy})...")
     result = client.deploy(
         name,
         version=version,
         rollout=rollout,
         strategy=strategy,
     )
-
     click.echo(f"Rollout created: {result.get('id', 'ok')}")
     click.echo(f"Status: {result.get('status', 'started')}")
+
+
+# ---------------------------------------------------------------------------
+# octomil rollback
+# ---------------------------------------------------------------------------
+
+
+@main.command()
+@click.argument("name")
+@click.option(
+    "--to-version",
+    default=None,
+    help="Version to rollback to. Defaults to previous version.",
+)
+def rollback(name: str, to_version: Optional[str]) -> None:
+    """Rollback a model to a previous version.
+
+    Reverts NAME to the specified version, or the previous version
+    if --to-version is not provided.
+
+    Examples:
+
+        octomil rollback gemma-1b
+        octomil rollback gemma-1b --to-version 1.0.0
+    """
+    client = _get_client()
+    target = to_version or "previous"
+    click.echo(f"Rolling back {name} to {target}...")
+
+    try:
+        result = client.rollback(name, to_version=to_version)
+    except Exception as exc:
+        click.echo(f"Rollback failed: {exc}", err=True)
+        sys.exit(1)
+
+    click.echo(f"Rolled back: {result.from_version} -> {result.to_version}")
+    click.echo(f"Rollout ID: {result.rollout_id}")
+    click.echo(f"Status: {result.status}")
 
 
 # ---------------------------------------------------------------------------

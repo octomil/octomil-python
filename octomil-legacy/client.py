@@ -16,6 +16,14 @@ from __future__ import annotations
 import os
 from typing import Any, Optional
 
+from .models import (
+    DeploymentPlan,
+    DeploymentResult,
+    DeviceDeployment,
+    DeviceDeploymentStatus,
+    RollbackResult,
+    TrainingSession,
+)
 from .python.octomil.api_client import _ApiClient
 from .python.octomil.control_plane import RolloutsAPI
 from .python.octomil.registry import ModelRegistry
@@ -138,7 +146,7 @@ class Client:
         )
 
     # ------------------------------------------------------------------
-    # Deploy — create a rollout
+    # Deploy — create a rollout with optional device targeting
     # ------------------------------------------------------------------
 
     def deploy(
@@ -149,22 +157,50 @@ class Client:
         rollout: int = 100,
         strategy: str = "canary",
         increment: int = 10,
-    ) -> dict[str, Any]:
+        devices: list[str] | None = None,
+        group: str | None = None,
+    ) -> dict[str, Any] | DeploymentResult:
         """Deploy a model version to devices via rollout.
+
+        When ``devices`` or ``group`` is specified, uses the deploy
+        orchestration endpoint for targeted deployment.  Otherwise falls
+        back to the existing rollout creation flow.
 
         Args:
             name: Model name or ID.
             version: Version to deploy. Defaults to latest.
             rollout: Initial rollout percentage (1-100).
-            strategy: Rollout strategy (canary, immediate).
+            strategy: Rollout strategy (canary, immediate, blue_green).
             increment: Percentage increment per advance step.
+            devices: Specific device IDs to target.
+            group: Device group name to target.
 
         Returns:
-            Rollout creation response.
+            ``DeploymentResult`` when using targeted deployment, otherwise
+            the raw rollout creation response dict.
         """
         model_id = self._registry.resolve_model_id(name)
         if version is None:
             version = self._registry.get_latest_version(model_id)
+
+        # Targeted deployment via orchestration endpoint
+        if devices is not None or group is not None:
+            payload: dict[str, Any] = {
+                "model_id": model_id,
+                "model_name": name,
+                "version": version,
+                "rollout_percentage": rollout,
+                "strategy": strategy,
+            }
+            if devices is not None:
+                payload["devices"] = devices
+            if group is not None:
+                payload["group"] = group
+
+            resp = self._api.post("/deploy/execute", payload)
+            return _parse_deployment_result(resp, name, version)
+
+        # Fallback: existing rollout-based deploy
         return self._registry.deploy_version(
             model_id=model_id,
             version=version,
@@ -172,6 +208,161 @@ class Client:
             target_percentage=100,
             increment_step=increment,
             start_immediately=(strategy == "immediate"),
+        )
+
+    # ------------------------------------------------------------------
+    # Deploy prepare — dry-run / preview
+    # ------------------------------------------------------------------
+
+    def deploy_prepare(
+        self,
+        name: str,
+        *,
+        version: Optional[str] = None,
+        devices: list[str] | None = None,
+        group: str | None = None,
+    ) -> DeploymentPlan:
+        """Preview a deployment without executing it.
+
+        Calls the deploy preparation endpoint and returns a plan
+        showing what format, executor, and conversion each device
+        would need.
+
+        Args:
+            name: Model name or ID.
+            version: Version to deploy. Defaults to latest.
+            devices: Specific device IDs to target.
+            group: Device group name to target.
+
+        Returns:
+            ``DeploymentPlan`` with per-device deployment details.
+        """
+        model_id = self._registry.resolve_model_id(name)
+        if version is None:
+            version = self._registry.get_latest_version(model_id)
+
+        payload: dict[str, Any] = {
+            "model_id": model_id,
+            "model_name": name,
+            "version": version,
+        }
+        if devices is not None:
+            payload["devices"] = devices
+        if group is not None:
+            payload["group"] = group
+
+        resp = self._api.post("/deploy/prepare", payload)
+        return _parse_deployment_plan(resp, name, version)
+
+    # ------------------------------------------------------------------
+    # Train — create a federated training session
+    # ------------------------------------------------------------------
+
+    def train(
+        self,
+        name: str,
+        *,
+        group: str = "default",
+        strategy: str = "fedavg",
+        rounds: int = 10,
+        min_updates: int = 1,
+        **kwargs: Any,
+    ) -> TrainingSession:
+        """Start a federated training session.
+
+        Wires to the training round management endpoint to create
+        a new training session.
+
+        Args:
+            name: Model name or ID.
+            group: Device group to train on.
+            strategy: Aggregation strategy (fedavg, fedprox, etc.).
+            rounds: Number of training rounds.
+            min_updates: Minimum device updates required per round.
+            **kwargs: Additional training parameters forwarded to the server.
+
+        Returns:
+            ``TrainingSession`` with session info and status.
+        """
+        model_id = self._registry.resolve_model_id(name)
+
+        payload: dict[str, Any] = {
+            "model_id": model_id,
+            "group": group,
+            "strategy": strategy,
+            "rounds": rounds,
+            "min_updates": min_updates,
+            **kwargs,
+        }
+
+        resp = self._api.post("/training/sessions", payload)
+
+        return TrainingSession(
+            session_id=resp.get("session_id", resp.get("id", "")),
+            model_name=name,
+            group=group,
+            strategy=strategy,
+            rounds=rounds,
+            status=resp.get("status", "created"),
+        )
+
+    # ------------------------------------------------------------------
+    # Rollback — revert to a previous model version
+    # ------------------------------------------------------------------
+
+    def rollback(
+        self,
+        name: str,
+        *,
+        to_version: str | None = None,
+    ) -> RollbackResult:
+        """Rollback a model to a previous version.
+
+        If ``to_version`` is not specified, the second-most-recent
+        version is used (i.e. the version before the current one).
+
+        Args:
+            name: Model name or ID.
+            to_version: Explicit version to rollback to.  ``None`` means
+                the previous version.
+
+        Returns:
+            ``RollbackResult`` with rollback details and status.
+        """
+        model_id = self._registry.resolve_model_id(name)
+
+        # Determine the current version
+        current_version = self._registry.get_latest_version(model_id)
+
+        # Determine the target version
+        if to_version is None:
+            versions_resp = self._registry.list_versions(model_id)
+            versions = versions_resp.get("versions", [])
+            if len(versions) < 2:
+                from .python.octomil.api_client import OctomilClientError
+
+                raise OctomilClientError(
+                    f"Cannot rollback {name}: only one version exists"
+                )
+            # Versions come sorted newest-first from the API; pick the second.
+            to_version = versions[1].get("version", "")
+
+        # Deploy the target version at 100% immediately
+        rollout_resp = self._registry.deploy_version(
+            model_id=model_id,
+            version=to_version,
+            rollout_percentage=100,
+            target_percentage=100,
+            increment_step=100,
+            start_immediately=True,
+        )
+
+        return RollbackResult(
+            model_name=name,
+            from_version=current_version,
+            to_version=to_version,
+            rollout_id=str(rollout_resp.get("id", "")),
+            status=rollout_resp.get("status", "rolling_back"),
         )
 
     # ------------------------------------------------------------------
@@ -267,3 +458,53 @@ class Client:
     def list_models(self, **kwargs: Any) -> dict[str, Any]:
         """List models in the registry."""
         return self._registry.list_models(**kwargs)
+
+
+# ------------------------------------------------------------------
+# Parsing helpers (module-level)
+# ------------------------------------------------------------------
+
+
+def _parse_deployment_result(
+    resp: dict[str, Any], name: str, version: str
+) -> DeploymentResult:
+    """Convert a raw API response into a ``DeploymentResult``."""
+    device_statuses = [
+        DeviceDeploymentStatus(
+            device_id=ds.get("device_id", ""),
+            status=ds.get("status", "unknown"),
+            download_url=ds.get("download_url"),
+            error=ds.get("error"),
+        )
+        for ds in resp.get("device_statuses", [])
+    ]
+    return DeploymentResult(
+        deployment_id=resp.get("deployment_id", resp.get("id", "")),
+        model_name=name,
+        model_version=version,
+        status=resp.get("status", "created"),
+        device_statuses=device_statuses,
+    )
+
+
+def _parse_deployment_plan(
+    resp: dict[str, Any], name: str, version: str
+) -> DeploymentPlan:
+    """Convert a raw API response into a ``DeploymentPlan``."""
+    deployments = [
+        DeviceDeployment(
+            device_id=d.get("device_id", ""),
+            format=d.get("format", ""),
+            executor=d.get("executor", ""),
+            quantization=d.get("quantization", "none"),
+            download_url=d.get("download_url"),
+            conversion_needed=d.get("conversion_needed", False),
+            runtime_config=d.get("runtime_config", {}),
+        )
+        for d in resp.get("deployments", [])
+    ]
+    return DeploymentPlan(
+        model_name=name,
+        model_version=version,
+        deployments=deployments,
+    )
