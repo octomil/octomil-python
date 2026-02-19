@@ -252,6 +252,123 @@ class TestClientStatus:
         assert len(result["active_rollouts"]) == 1
 
 
+class TestClientTrain:
+    @patch("edgeml.client.RolloutsAPI")
+    @patch("edgeml.client.ModelRegistry")
+    @patch("edgeml.client._ApiClient")
+    def test_train_basic(self, mock_api_cls, mock_registry_cls, mock_rollouts):
+        from edgeml.client import Client
+
+        mock_registry = mock_registry_cls.return_value
+        mock_api = mock_api_cls.return_value
+        mock_registry.resolve_model_id.return_value = "model-abc"
+        mock_api.post.return_value = {"training_id": "tr-123"}
+
+        c = Client(api_key="key")
+        result = c.train("my-model")
+
+        mock_registry.resolve_model_id.assert_called_once_with("my-model")
+        mock_api.post.assert_called_once_with(
+            "/training/start",
+            {
+                "model_id": "model-abc",
+                "strategy": "fedavg",
+                "num_rounds": 10,
+                "device_group": None,
+                "privacy_mechanism": None,
+                "epsilon": None,
+                "min_devices": 2,
+            },
+        )
+        assert result["training_id"] == "tr-123"
+
+    @patch("edgeml.client.RolloutsAPI")
+    @patch("edgeml.client.ModelRegistry")
+    @patch("edgeml.client._ApiClient")
+    def test_train_with_all_options(
+        self, mock_api_cls, mock_registry_cls, mock_rollouts
+    ):
+        from edgeml.client import Client
+
+        mock_registry = mock_registry_cls.return_value
+        mock_api = mock_api_cls.return_value
+        mock_registry.resolve_model_id.return_value = "model-xyz"
+        mock_api.post.return_value = {"training_id": "tr-456"}
+
+        c = Client(api_key="key")
+        result = c.train(
+            "my-model",
+            strategy="fedprox",
+            rounds=50,
+            group="us-west",
+            privacy="dp-sgd",
+            epsilon=1.0,
+            min_devices=5,
+        )
+
+        mock_api.post.assert_called_once_with(
+            "/training/start",
+            {
+                "model_id": "model-xyz",
+                "strategy": "fedprox",
+                "num_rounds": 50,
+                "device_group": "us-west",
+                "privacy_mechanism": "dp-sgd",
+                "epsilon": 1.0,
+                "min_devices": 5,
+            },
+        )
+        assert result["training_id"] == "tr-456"
+
+
+class TestClientTrainStatus:
+    @patch("edgeml.client.RolloutsAPI")
+    @patch("edgeml.client.ModelRegistry")
+    @patch("edgeml.client._ApiClient")
+    def test_train_status(self, mock_api_cls, mock_registry_cls, mock_rollouts):
+        from edgeml.client import Client
+
+        mock_registry = mock_registry_cls.return_value
+        mock_api = mock_api_cls.return_value
+        mock_registry.resolve_model_id.return_value = "model-abc"
+        mock_api.get.return_value = {
+            "current_round": 5,
+            "total_rounds": 10,
+            "active_devices": 12,
+            "status": "in_progress",
+            "loss": 0.45,
+            "accuracy": 0.87,
+        }
+
+        c = Client(api_key="key")
+        result = c.train_status("my-model")
+
+        mock_registry.resolve_model_id.assert_called_once_with("my-model")
+        mock_api.get.assert_called_once_with("/training/model-abc/status")
+        assert result["current_round"] == 5
+        assert result["status"] == "in_progress"
+
+
+class TestClientTrainStop:
+    @patch("edgeml.client.RolloutsAPI")
+    @patch("edgeml.client.ModelRegistry")
+    @patch("edgeml.client._ApiClient")
+    def test_train_stop(self, mock_api_cls, mock_registry_cls, mock_rollouts):
+        from edgeml.client import Client
+
+        mock_registry = mock_registry_cls.return_value
+        mock_api = mock_api_cls.return_value
+        mock_registry.resolve_model_id.return_value = "model-abc"
+        mock_api.post.return_value = {"last_round": 5}
+
+        c = Client(api_key="key")
+        result = c.train_stop("my-model")
+
+        mock_registry.resolve_model_id.assert_called_once_with("my-model")
+        mock_api.post.assert_called_once_with("/training/model-abc/stop")
+        assert result["last_round"] == 5
+
+
 class TestClientListModels:
     @patch("edgeml.client.RolloutsAPI")
     @patch("edgeml.client.ModelRegistry")

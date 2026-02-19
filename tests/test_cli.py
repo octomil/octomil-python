@@ -283,3 +283,168 @@ class TestPullCommand:
         )
         assert result.exit_code == 0
         assert "Downloaded: /tmp/model.onnx" in result.output
+
+
+# ---------------------------------------------------------------------------
+# edgeml train start
+# ---------------------------------------------------------------------------
+
+
+class TestTrainStartCommand:
+    @patch("edgeml.cli._get_client")
+    def test_train_start_basic(self, mock_get_client, monkeypatch):
+        monkeypatch.setenv("EDGEML_API_KEY", "test-key")
+        mock_client = MagicMock()
+        mock_client.train.return_value = {"training_id": "tr-123"}
+        mock_get_client.return_value = mock_client
+
+        runner = CliRunner()
+        result = runner.invoke(main, ["train", "start", "sentiment-v1"])
+        assert result.exit_code == 0
+        assert "Training started" in result.output
+        assert "tr-123" in result.output
+        mock_client.train.assert_called_once()
+
+    @patch("edgeml.cli._get_client")
+    def test_train_start_with_options(self, mock_get_client, monkeypatch):
+        monkeypatch.setenv("EDGEML_API_KEY", "test-key")
+        mock_client = MagicMock()
+        mock_client.train.return_value = {"training_id": "tr-456"}
+        mock_get_client.return_value = mock_client
+
+        runner = CliRunner()
+        result = runner.invoke(
+            main,
+            [
+                "train",
+                "start",
+                "sentiment-v1",
+                "--strategy",
+                "fedprox",
+                "--rounds",
+                "50",
+                "--privacy",
+                "dp-sgd",
+                "--epsilon",
+                "1.0",
+            ],
+        )
+        assert result.exit_code == 0
+        assert "fedprox" in result.output
+        assert "50" in result.output
+        assert "dp-sgd" in result.output
+        mock_client.train.assert_called_once_with(
+            "sentiment-v1",
+            strategy="fedprox",
+            rounds=50,
+            group=None,
+            privacy="dp-sgd",
+            epsilon=1.0,
+            min_devices=2,
+        )
+
+    def test_train_start_requires_api_key(self, monkeypatch):
+        monkeypatch.delenv("EDGEML_API_KEY", raising=False)
+        runner = CliRunner()
+        result = runner.invoke(main, ["train", "start", "model"])
+        assert result.exit_code != 0
+
+    @patch("edgeml.cli._get_client")
+    def test_train_start_with_group(self, mock_get_client, monkeypatch):
+        monkeypatch.setenv("EDGEML_API_KEY", "test-key")
+        mock_client = MagicMock()
+        mock_client.train.return_value = {"training_id": "tr-789"}
+        mock_get_client.return_value = mock_client
+
+        runner = CliRunner()
+        result = runner.invoke(
+            main,
+            ["train", "start", "sentiment-v1", "--group", "us-west"],
+        )
+        assert result.exit_code == 0
+        mock_client.train.assert_called_once_with(
+            "sentiment-v1",
+            strategy="fedavg",
+            rounds=10,
+            group="us-west",
+            privacy=None,
+            epsilon=None,
+            min_devices=2,
+        )
+
+    def test_train_start_invalid_strategy(self, monkeypatch):
+        monkeypatch.setenv("EDGEML_API_KEY", "test-key")
+        runner = CliRunner()
+        result = runner.invoke(
+            main, ["train", "start", "model", "--strategy", "invalid"]
+        )
+        assert result.exit_code != 0
+
+
+# ---------------------------------------------------------------------------
+# edgeml train status
+# ---------------------------------------------------------------------------
+
+
+class TestTrainStatusCommand:
+    @patch("edgeml.cli._get_client")
+    def test_train_status(self, mock_get_client, monkeypatch):
+        monkeypatch.setenv("EDGEML_API_KEY", "test-key")
+        mock_client = MagicMock()
+        mock_client.train_status.return_value = {
+            "current_round": 23,
+            "total_rounds": 50,
+            "active_devices": 47,
+            "status": "in_progress",
+            "loss": 0.342,
+            "accuracy": 0.912,
+        }
+        mock_get_client.return_value = mock_client
+
+        runner = CliRunner()
+        result = runner.invoke(main, ["train", "status", "sentiment-v1"])
+        assert result.exit_code == 0
+        assert "23/50" in result.output
+        assert "47" in result.output
+        assert "in_progress" in result.output
+        assert "0.3420" in result.output
+        assert "91.2%" in result.output
+
+    @patch("edgeml.cli._get_client")
+    def test_train_status_no_metrics(self, mock_get_client, monkeypatch):
+        monkeypatch.setenv("EDGEML_API_KEY", "test-key")
+        mock_client = MagicMock()
+        mock_client.train_status.return_value = {
+            "current_round": 1,
+            "total_rounds": 10,
+            "active_devices": 3,
+            "status": "starting",
+        }
+        mock_get_client.return_value = mock_client
+
+        runner = CliRunner()
+        result = runner.invoke(main, ["train", "status", "my-model"])
+        assert result.exit_code == 0
+        assert "1/10" in result.output
+        assert "Loss" not in result.output
+        assert "Accuracy" not in result.output
+
+
+# ---------------------------------------------------------------------------
+# edgeml train stop
+# ---------------------------------------------------------------------------
+
+
+class TestTrainStopCommand:
+    @patch("edgeml.cli._get_client")
+    def test_train_stop(self, mock_get_client, monkeypatch):
+        monkeypatch.setenv("EDGEML_API_KEY", "test-key")
+        mock_client = MagicMock()
+        mock_client.train_stop.return_value = {"last_round": 23}
+        mock_get_client.return_value = mock_client
+
+        runner = CliRunner()
+        result = runner.invoke(main, ["train", "stop", "sentiment-v1"])
+        assert result.exit_code == 0
+        assert "stopped" in result.output.lower()
+        assert "23" in result.output

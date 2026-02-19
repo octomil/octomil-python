@@ -768,7 +768,7 @@ def benchmark(model: str, share: bool, iterations: int, max_tokens: int) -> None
         if metrics.total_tokens > 0:
             completion_tokens_list.append(metrics.total_tokens)
         click.echo(
-            f"  [{i+1}/{iterations}] {elapsed:.1f}ms, "
+            f"  [{i + 1}/{iterations}] {elapsed:.1f}ms, "
             f"{metrics.tokens_per_second:.1f} tok/s, "
             f"{metrics.total_tokens} tokens"
         )
@@ -879,6 +879,127 @@ def benchmark(model: str, share: bool, iterations: int, max_tokens: int) -> None
                 click.echo(f"Failed to share: {resp.status_code}", err=True)
         except Exception as exc:
             click.echo(f"Failed to share: {exc}", err=True)
+
+
+# ---------------------------------------------------------------------------
+# edgeml train
+# ---------------------------------------------------------------------------
+
+
+@main.group()
+def train() -> None:
+    """Federated training across deployed devices."""
+
+
+@train.command("start")
+@click.argument("name")
+@click.option(
+    "--strategy",
+    "-s",
+    default="fedavg",
+    type=click.Choice(
+        [
+            "fedavg",
+            "fedprox",
+            "fedopt",
+            "fedadam",
+            "krum",
+            "scaffold",
+            "ditto",
+            "fedmedian",
+            "fedtrimmedavg",
+        ]
+    ),
+    help="Aggregation strategy.",
+)
+@click.option("--rounds", "-r", default=10, help="Number of training rounds.")
+@click.option("--group", "-g", default=None, help="Device group to train on.")
+@click.option(
+    "--privacy",
+    default=None,
+    type=click.Choice(["dp-sgd", "none"]),
+    help="Privacy mechanism.",
+)
+@click.option(
+    "--epsilon", default=None, type=float, help="Privacy budget (lower = more private)."
+)
+@click.option("--min-devices", default=2, help="Minimum devices required per round.")
+def train_start(
+    name: str,
+    strategy: str,
+    rounds: int,
+    group: Optional[str],
+    privacy: Optional[str],
+    epsilon: Optional[float],
+    min_devices: int,
+) -> None:
+    """Start federated training.
+
+    Example:
+
+        edgeml train start sentiment-v1 --strategy fedavg --rounds 50
+    """
+    client = _get_client()
+    click.echo(f"Starting federated training for {name}")
+    click.echo(f"Strategy: {strategy} | Rounds: {rounds} | Min devices: {min_devices}")
+    if privacy:
+        click.echo(f"Privacy: {privacy} (e={epsilon})")
+
+    result = client.train(
+        name,
+        strategy=strategy,
+        rounds=rounds,
+        group=group,
+        privacy=privacy,
+        epsilon=epsilon,
+        min_devices=min_devices,
+    )
+    click.echo(f"Training started: {result.get('training_id', 'ok')}")
+    click.echo(f"Monitor: edgeml train status {name}")
+
+
+@train.command("status")
+@click.argument("name")
+def train_status_cmd(name: str) -> None:
+    """Show training progress.
+
+    Example:
+
+        edgeml train status sentiment-v1
+    """
+    client = _get_client()
+    info = client.train_status(name)
+
+    current = info.get("current_round", 0)
+    total = info.get("total_rounds", 0)
+    devices = info.get("active_devices", 0)
+    status_val = info.get("status", "unknown")
+    loss = info.get("loss")
+    accuracy = info.get("accuracy")
+
+    click.echo(f"Model: {name}")
+    click.echo(f"Status: {status_val}")
+    click.echo(f"Round: {current}/{total}")
+    click.echo(f"Active devices: {devices}")
+    if loss is not None:
+        click.echo(f"Loss: {loss:.4f}")
+    if accuracy is not None:
+        click.echo(f"Accuracy: {accuracy:.1%}")
+
+
+@train.command("stop")
+@click.argument("name")
+def train_stop_cmd(name: str) -> None:
+    """Stop active training.
+
+    Example:
+
+        edgeml train stop sentiment-v1
+    """
+    client = _get_client()
+    click.echo(f"Stopping training for {name}...")
+    result = client.train_stop(name)
+    click.echo(f"Training stopped. Last round: {result.get('last_round', '?')}")
 
 
 if __name__ == "__main__":

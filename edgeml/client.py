@@ -193,6 +193,74 @@ class Client:
         }
 
     # ------------------------------------------------------------------
+    # Train — federated training
+    # ------------------------------------------------------------------
+
+    def train(
+        self,
+        name: str,
+        *,
+        strategy: str = "fedavg",
+        rounds: int = 10,
+        group: Optional[str] = None,
+        privacy: Optional[str] = None,
+        epsilon: Optional[float] = None,
+        min_devices: int = 2,
+    ) -> dict[str, Any]:
+        """Start federated training across deployed devices.
+
+        Args:
+            name: Model name or ID.
+            strategy: Aggregation strategy (fedavg, fedprox, etc.).
+            rounds: Number of training rounds.
+            group: Device group to train on.
+            privacy: Privacy mechanism (dp-sgd, none).
+            epsilon: Privacy budget (lower = more private).
+            min_devices: Minimum devices required per round.
+
+        Returns:
+            Training start response with training_id.
+        """
+        model_id = self._registry.resolve_model_id(name)
+        return self._api.post(
+            "/training/start",
+            {
+                "model_id": model_id,
+                "strategy": strategy,
+                "num_rounds": rounds,
+                "device_group": group,
+                "privacy_mechanism": privacy,
+                "epsilon": epsilon,
+                "min_devices": min_devices,
+            },
+        )
+
+    def train_status(self, name: str) -> dict[str, Any]:
+        """Get training status for a model.
+
+        Args:
+            name: Model name or ID.
+
+        Returns:
+            Dict with current_round, total_rounds, active_devices, status,
+            and optional loss/accuracy metrics.
+        """
+        model_id = self._registry.resolve_model_id(name)
+        return self._api.get(f"/training/{model_id}/status")
+
+    def train_stop(self, name: str) -> dict[str, Any]:
+        """Stop active training for a model.
+
+        Args:
+            name: Model name or ID.
+
+        Returns:
+            Dict with last_round and stop confirmation.
+        """
+        model_id = self._registry.resolve_model_id(name)
+        return self._api.post(f"/training/{model_id}/stop")
+
+    # ------------------------------------------------------------------
     # List — list all models
     # ------------------------------------------------------------------
 
