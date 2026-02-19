@@ -63,7 +63,15 @@ for _name in _SUBMODULES:
             _importlib.import_module(_fq)
         except ImportError:
             continue
-    _sys.modules[f"octomil.{_name}"] = _sys.modules[_fq]
+    _mod = _sys.modules[_fq]
+    _sys.modules[f"octomil.{_name}"] = _mod
+    # Also set as attribute on parent module so getattr() works (required by
+    # unittest.mock._dot_lookup on Python <3.12).
+    _parts = _name.split(".")
+    _parent = _sys.modules[__name__]
+    for _part in _parts[:-1]:
+        _parent = getattr(_parent, _part, _parent)
+    setattr(_parent, _parts[-1], _mod)
 
 __all__ = [
     "Client",
