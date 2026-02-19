@@ -134,31 +134,62 @@ def serve(model: str, port: int, host: str, benchmark: bool, share: bool) -> Non
 def check(model_path: str, devices: Optional[str]) -> None:
     """Check device compatibility for a local model file.
 
-    Analyzes the model and reports which edge devices can run it,
-    estimated latency, memory usage, and required optimizations.
+    Analyzes the model and reports file size, format, and basic
+    compatibility with edge devices.
     """
-    try:
-        sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
-        from ml_service.conversion.device_compat import DeviceCompatibilityChecker
-    except ImportError:
+    file_size = os.path.getsize(model_path)
+    ext = os.path.splitext(model_path)[1].lower()
+
+    click.echo(f"Checking: {model_path}")
+    click.echo(f"Size: {file_size / 1024 / 1024:.1f} MB")
+
+    format_map = {
+        ".pt": "PyTorch",
+        ".pth": "PyTorch",
+        ".onnx": "ONNX",
+        ".mlmodel": "CoreML",
+        ".mlpackage": "CoreML",
+        ".tflite": "TFLite",
+        ".gguf": "GGUF",
+    }
+    fmt = format_map.get(ext, f"Unknown ({ext})")
+    click.echo(f"Format: {fmt}")
+
+    # Size-based compatibility assessment
+    size_mb = file_size / 1024 / 1024
+    click.echo("\nDevice compatibility:")
+    if size_mb < 50:
+        click.echo("  iPhone 15 Pro:  compatible (NPU)")
+        click.echo("  Pixel 8:        compatible (NNAPI)")
+        click.echo("  Raspberry Pi 4: compatible (CPU)")
+    elif size_mb < 500:
+        click.echo("  iPhone 15 Pro:  compatible (NPU)")
+        click.echo("  Pixel 8:        compatible (NNAPI)")
+        click.echo("  Raspberry Pi 4: may require quantization")
+    else:
+        click.echo("  iPhone 15 Pro:  may require quantization")
+        click.echo("  Pixel 8:        may require quantization")
+        click.echo("  Raspberry Pi 4: too large — quantize or prune")
+
+    click.echo("\nRecommendations:")
+    if ext in (".pt", ".pth"):
+        click.echo("  - Convert to ONNX: octomil convert model.pt --target onnx")
         click.echo(
-            "Device compatibility checker not available. "
-            "Run from the fed-learning repo root or install ml_service.",
-            err=True,
+            "  - Convert to CoreML (iOS): octomil convert model.pt --target coreml"
         )
-        sys.exit(1)
-
-    checker = DeviceCompatibilityChecker()
-    target_devices = devices.split(",") if devices else None
-
-    click.echo(f"Checking compatibility: {model_path}")
-    report = checker.check_compatibility(model_path, target_devices)
-
-    click.echo(f"\nModel category: {report.get('category', 'unknown')}")
-    click.echo(f"Summary: {report.get('summary', '')}")
-
-    for rec in report.get("recommendations", []):
-        click.echo(f"  - {rec}")
+        click.echo(
+            "  - Convert to TFLite (Android): octomil convert model.pt --target tflite"
+        )
+    elif ext == ".onnx":
+        click.echo("  - ONNX is cross-platform — ready for deployment")
+        click.echo(
+            "  - Convert to CoreML (iOS): octomil convert model.onnx --target coreml"
+        )
+    elif ext == ".gguf":
+        click.echo("  - GGUF models work with llama.cpp backend")
+        click.echo("  - Serve locally: octomil serve model.gguf")
+    else:
+        click.echo("  - No specific recommendations for this format")
 
 
 # ---------------------------------------------------------------------------
@@ -175,47 +206,113 @@ def check(model_path: str, devices: Optional[str]) -> None:
     help="Comma-separated target formats: onnx, coreml, tflite.",
 )
 @click.option("--output", "-o", default="./converted", help="Output directory.")
-def convert(model_path: str, target: str, output: str) -> None:
+@click.option(
+    "--input-shape",
+    default="1,3,224,224",
+    help="Comma-separated input tensor shape (e.g. 1,3,224,224).",
+)
+def convert(model_path: str, target: str, output: str, input_shape: str) -> None:
     """Convert a model to edge formats locally.
 
-    Converts MODEL_PATH (PyTorch .pt) to target formats. Runs entirely
+    Converts MODEL_PATH (PyTorch .pt/.pth) to target formats. Runs entirely
     on your machine — no account needed.
-    """
-    try:
-        sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
-        from ml_service.conversion.converter import ModelConverter
-    except ImportError:
-        click.echo(
-            "Model converter not available. "
-            "Run from the fed-learning repo root or install ml_service.",
-            err=True,
-        )
-        sys.exit(1)
 
-    formats = [f.strip() for f in target.split(",")]
+    Examples:
+
+        octomil convert model.pt --target onnx
+        octomil convert model.pt --target onnx,coreml --input-shape 1,3,224,224
+    """
+    formats = [f.strip().lower() for f in target.split(",")]
+    shape = [int(d) for d in input_shape.split(",")]
     os.makedirs(output, exist_ok=True)
+    model_name = os.path.splitext(os.path.basename(model_path))[0]
 
     click.echo(f"Converting {model_path} → {', '.join(formats)}")
+    click.echo(f"Input shape: {shape}")
     click.echo(f"Output: {output}")
 
-    converter = ModelConverter()
+    results: dict[str, str] = {}
 
-    import torch
+    if "onnx" in formats:
+        try:
+            import torch
 
-    model = torch.jit.load(model_path)
-    sample = torch.randn(1, 3, 224, 224)  # Default; may need adjustment
+            model = torch.jit.load(model_path)
+            model.eval()
+            sample = torch.randn(*shape)
+            onnx_path = os.path.join(output, f"{model_name}.onnx")
+            torch.onnx.export(model, sample, onnx_path, opset_version=13)
+            results["onnx"] = onnx_path
+        except ImportError:
+            click.echo("  onnx: requires torch — pip install torch", err=True)
+        except Exception as exc:
+            click.echo(f"  onnx: failed — {exc}", err=True)
 
-    results = converter.convert_all(
-        model=model,
-        sample_input=sample,
-        output_dir=output,
-        model_name=os.path.splitext(os.path.basename(model_path))[0],
-    )
+    if "coreml" in formats:
+        try:
+            import coremltools as ct  # type: ignore[import-untyped]
 
-    for fmt, path in results.items():
-        click.echo(f"  {fmt}: {path}")
+            onnx_src = results.get("onnx")
+            if not onnx_src:
+                click.echo(
+                    "  coreml: requires onnx conversion first — "
+                    "include onnx in --target",
+                    err=True,
+                )
+            else:
+                ml_model = ct.converters.onnx.convert(model=onnx_src)
+                coreml_path = os.path.join(output, f"{model_name}.mlmodel")
+                ml_model.save(coreml_path)
+                results["coreml"] = coreml_path
+        except ImportError:
+            click.echo(
+                "  coreml: requires coremltools — pip install coremltools", err=True
+            )
+        except Exception as exc:
+            click.echo(f"  coreml: failed — {exc}", err=True)
 
-    click.echo("Done.")
+    if "tflite" in formats:
+        try:
+            import onnx  # type: ignore[import-untyped]
+            from onnx_tf.backend import prepare  # type: ignore[import-untyped]
+
+            onnx_src = results.get("onnx")
+            if not onnx_src:
+                click.echo(
+                    "  tflite: requires onnx conversion first — "
+                    "include onnx in --target",
+                    err=True,
+                )
+            else:
+                import tensorflow as tf  # type: ignore[import-untyped]
+
+                onnx_model = onnx.load(onnx_src)
+                tf_rep = prepare(onnx_model)
+                tf_dir = os.path.join(output, f"{model_name}_tf")
+                tf_rep.export_graph(tf_dir)
+                converter = tf.lite.TFLiteConverter.from_saved_model(tf_dir)
+                tflite_model = converter.convert()
+                tflite_path = os.path.join(output, f"{model_name}.tflite")
+                with open(tflite_path, "wb") as f:
+                    f.write(tflite_model)
+                results["tflite"] = tflite_path
+        except ImportError:
+            click.echo(
+                "  tflite: requires onnx, onnx-tf, tensorflow — "
+                "pip install onnx onnx-tf tensorflow",
+                err=True,
+            )
+        except Exception as exc:
+            click.echo(f"  tflite: failed — {exc}", err=True)
+
+    if results:
+        click.echo("\nConverted:")
+        for fmt, path in results.items():
+            size_mb = os.path.getsize(path) / 1024 / 1024
+            click.echo(f"  {fmt}: {path} ({size_mb:.1f} MB)")
+    else:
+        click.echo("\nNo conversions succeeded.", err=True)
+        sys.exit(1)
 
 
 # ---------------------------------------------------------------------------
