@@ -152,11 +152,31 @@ class TestDashboardCommand:
 
 class TestDeployCommand:
     @patch("edgeml.cli.webbrowser.open")
-    def test_deploy_phone(self, mock_open):
-        runner = CliRunner()
-        result = runner.invoke(main, ["deploy", "gemma-1b", "--phone"])
+    def test_deploy_phone(self, mock_open, monkeypatch):
+        monkeypatch.setenv("EDGEML_API_KEY", "test-key")
+
+        # Mock httpx for pairing session creation + polling
+        mock_post_resp = MagicMock()
+        mock_post_resp.status_code = 200
+        mock_post_resp.json.return_value = {
+            "code": "ABC123",
+            "expires_at": "2026-02-18T12:00:00Z",
+        }
+
+        mock_poll_resp = MagicMock()
+        mock_poll_resp.status_code = 200
+        mock_poll_resp.json.return_value = {"status": "done"}
+
+        with (
+            patch("httpx.post", return_value=mock_post_resp),
+            patch("httpx.get", return_value=mock_poll_resp),
+            patch("time.sleep"),
+        ):
+            runner = CliRunner()
+            result = runner.invoke(main, ["deploy", "gemma-1b", "--phone"])
+
         assert result.exit_code == 0
-        assert "Deploying gemma-1b to phone" in result.output
+        assert "ABC123" in result.output
         mock_open.assert_called_once()
         call_url = mock_open.call_args[0][0]
         assert "deploy/phone" in call_url

@@ -94,9 +94,7 @@ class TestEchoBackend:
             model="test-model",
             messages=[{"role": "user", "content": "hi"}],
         )
-        chunks = asyncio.get_event_loop().run_until_complete(
-            _collect_stream(self.backend.generate_stream(req))
-        )
+        chunks = asyncio.run(_collect_stream(self.backend.generate_stream(req)))
         assert len(chunks) > 0
         # Last chunk should have finish_reason
         assert chunks[-1].finish_reason == "stop"
@@ -188,7 +186,7 @@ def echo_app():
             ctx = app.router.lifespan_context(app)
             await ctx.__aenter__()
 
-        asyncio.get_event_loop().run_until_complete(_trigger_lifespan())
+        asyncio.run(_trigger_lifespan())
 
     return app
 
