@@ -17,6 +17,7 @@ setup(
         "click>=8.0.0",
         "pandas>=1.5.0",
         "pyarrow>=10.0.0",
+        "qrcode[pil]>=7.0",
     ],
     extras_require={
         "serve": [
