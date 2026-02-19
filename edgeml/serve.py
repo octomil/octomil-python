@@ -76,14 +76,14 @@ _MLX_MODELS: dict[str, str] = {
     "qwen-3b": "mlx-community/Qwen2.5-3B-Instruct-4bit",
     "qwen-7b": "mlx-community/Qwen2.5-7B-Instruct-4bit",
     "mistral-7b": "mlx-community/Mistral-7B-Instruct-v0.3-4bit",
-    "smollm-360m": "mlx-community/SmolLM2-360M-Instruct-4bit",
+    "smollm-360m": "mlx-community/SmolLM-360M-Instruct-4bit",
 }
 
 # GGUF models for llama.cpp (cross-platform)
 _GGUF_MODELS: dict[str, tuple[str, str]] = {
     # (repo_id, filename)
-    "gemma-1b": ("bartowski/gemma-3-1b-it-GGUF", "gemma-3-1b-it-Q4_K_M.gguf"),
-    "gemma-4b": ("bartowski/gemma-3-4b-it-GGUF", "gemma-3-4b-it-Q4_K_M.gguf"),
+    "gemma-1b": ("bartowski/google_gemma-3-1b-it-GGUF", "google_gemma-3-1b-it-Q4_K_M.gguf"),
+    "gemma-4b": ("bartowski/google_gemma-3-4b-it-GGUF", "google_gemma-3-4b-it-Q4_K_M.gguf"),
     "llama-1b": (
         "bartowski/Llama-3.2-1B-Instruct-GGUF",
         "Llama-3.2-1B-Instruct-Q4_K_M.gguf",
@@ -670,6 +670,39 @@ def _detect_backend(
 
 
 
+def _log_startup_error(model_name: str, exc: Exception) -> None:
+    """Print a human-readable startup error instead of a raw traceback."""
+    err_type = type(exc).__name__
+    err_msg = str(exc)
+
+    # HuggingFace auth / repo errors
+    if "RepositoryNotFoundError" in err_type or "401" in err_msg or "403" in err_msg:
+        logger.error(
+            "Failed to load model '%s': HuggingFace authentication required.\n"
+            "  Fix: Run `huggingface-cli login` or set the HF_TOKEN env var.\n"
+            "  Get a token at https://huggingface.co/settings/tokens",
+            model_name,
+        )
+    elif "404" in err_msg or "not found" in err_msg.lower():
+        logger.error(
+            "Failed to load model '%s': model not found on HuggingFace.\n"
+            "  Check the model name and try a full repo ID:\n"
+            "    edgeml serve mlx-community/gemma-3-1b-it-4bit\n"
+            "  List available short names:\n"
+            "    edgeml serve --help",
+            model_name,
+        )
+    elif "Unknown model" in err_msg:
+        logger.error("Failed to load model: %s", err_msg)
+    else:
+        logger.error(
+            "Failed to start server for model '%s': %s\n"
+            "  If this is a HuggingFace model, try: huggingface-cli login",
+            model_name,
+            exc,
+        )
+
+
 def _get_cache_manager(backend: InferenceBackend) -> Any:
     """Extract the KVCacheManager from a backend, if available."""
     if isinstance(backend, MLXBackend):
@@ -790,12 +823,16 @@ def create_app(
 
     @asynccontextmanager
     async def lifespan(app: Any) -> Any:
-        state.backend = _detect_backend(
-            model_name,
-            cache_size_mb=state.cache_size_mb,
-            cache_enabled=state.cache_enabled,
-            engine_override=state.engine_override,
-        )
+        try:
+            state.backend = _detect_backend(
+                model_name,
+                cache_size_mb=state.cache_size_mb,
+                cache_enabled=state.cache_enabled,
+                engine_override=state.engine_override,
+            )
+        except Exception as exc:
+            _log_startup_error(model_name, exc)
+            raise
         state.engine_name = state.backend.name if state.backend else "none"
         state.start_time = time.time()
         yield
