@@ -412,11 +412,13 @@ class LlamaCppBackend(InferenceBackend):
         elapsed = time.monotonic() - start
         text = result["choices"][0]["message"]["content"]
         usage = result.get("usage", {})
-        total_tokens = usage.get("completion_tokens", 0)
+        prompt_tokens = usage.get("prompt_tokens", 0)
+        completion_tokens = usage.get("completion_tokens", 0)
 
         return text, InferenceMetrics(
-            total_tokens=total_tokens,
-            tokens_per_second=total_tokens / elapsed if elapsed > 0 else 0,
+            prompt_tokens=prompt_tokens,
+            total_tokens=completion_tokens,
+            tokens_per_second=completion_tokens / elapsed if elapsed > 0 else 0,
             total_duration_ms=elapsed * 1000,
         )
 
