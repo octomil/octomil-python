@@ -567,8 +567,7 @@ def deploy(
         for d in plan.deployments:
             conv = " (conversion needed)" if d.conversion_needed else ""
             click.echo(
-                f"  {d.device_id}: {d.format} via {d.executor} "
-                f"[{d.quantization}]{conv}"
+                f"  {d.device_id}: {d.format} via {d.executor} [{d.quantization}]{conv}"
             )
         return
 
@@ -869,7 +868,7 @@ def benchmark(model: str, share: bool, iterations: int, max_tokens: int) -> None
         if metrics.total_tokens > 0:
             completion_tokens_list.append(metrics.total_tokens)
         click.echo(
-            f"  [{i+1}/{iterations}] {elapsed:.1f}ms, "
+            f"  [{i + 1}/{iterations}] {elapsed:.1f}ms, "
             f"{metrics.tokens_per_second:.1f} tok/s, "
             f"{metrics.total_tokens} tokens"
         )

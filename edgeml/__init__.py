@@ -11,6 +11,14 @@ import importlib as _importlib
 import sys as _sys
 
 from .client import Client
+from .models import (
+    DeploymentPlan,
+    DeploymentResult,
+    DeviceDeployment,
+    DeviceDeploymentStatus,
+    RollbackResult,
+    TrainingSession,
+)
 from .python.edgeml import (
     EdgeML,
     EdgeMLClientError,
@@ -75,6 +83,12 @@ for _name in _SUBMODULES:
 
 __all__ = [
     "Client",
+    "DeploymentPlan",
+    "DeploymentResult",
+    "DeviceDeployment",
+    "DeviceDeploymentStatus",
+    "RollbackResult",
+    "TrainingSession",
     "EdgeML",
     "EdgeMLClientError",
     "Federation",
