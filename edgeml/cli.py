@@ -87,8 +87,26 @@ def main() -> None:
     is_flag=True,
     help="Default all responses to JSON output (response_format=json_object).",
 )
+@click.option(
+    "--cache-size",
+    default=2048,
+    type=int,
+    help="KV cache size in MB (default: 2048). Caches prompt prefixes to speed up multi-turn conversations.",
+)
+@click.option(
+    "--no-cache",
+    is_flag=True,
+    help="Disable KV cache entirely.",
+)
 def serve(
-    model: str, port: int, host: str, benchmark: bool, share: bool, json_mode: bool
+    model: str,
+    port: int,
+    host: str,
+    benchmark: bool,
+    share: bool,
+    json_mode: bool,
+    cache_size: int,
+    no_cache: bool,
 ) -> None:
     """Start a local OpenAI-compatible inference server.
 
@@ -112,6 +130,7 @@ def serve(
         or os.environ.get("EDGEML_API_BASE")
         or "https://api.edgeml.io/api/v1"
     )
+    cache_enabled = not no_cache
 
     click.echo(f"Starting EdgeML serve on {host}:{port}")
     click.echo(f"Model: {model}")
@@ -119,6 +138,11 @@ def serve(
         click.echo("JSON mode: enabled (all responses default to valid JSON)")
     click.echo(f"OpenAI-compatible API: http://localhost:{port}/v1/chat/completions")
     click.echo(f"Health check: http://localhost:{port}/health")
+    if cache_enabled:
+        click.echo(f"KV cache: enabled ({cache_size} MB)")
+        click.echo(f"Cache stats: http://localhost:{port}/v1/cache/stats")
+    else:
+        click.echo("KV cache: disabled")
 
     if benchmark:
         click.echo("Benchmark mode: will run latency test after model loads.")
@@ -139,6 +163,8 @@ def serve(
         api_key=api_key,
         api_base=api_base,
         json_mode=json_mode,
+        cache_size_mb=cache_size,
+        cache_enabled=cache_enabled,
     )
 
 

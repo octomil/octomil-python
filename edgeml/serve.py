@@ -174,6 +174,7 @@ class InferenceMetrics:
     total_tokens: int = 0
     tokens_per_second: float = 0.0
     total_duration_ms: float = 0.0
+    cache_hit: bool = False
 
 
 class InferenceBackend:
@@ -203,15 +204,24 @@ class MLXBackend(InferenceBackend):
 
     Loads quantized models from HuggingFace (auto-downloads + caches).
     Uses the tokenizer's built-in chat template for proper formatting.
+    Supports KV cache persistence for prefix reuse across requests.
     """
 
     name = "mlx-lm"
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        cache_size_mb: int = 2048,
+        cache_enabled: bool = True,
+    ) -> None:
+        from .cache import KVCacheManager
+
         self._model: Any = None
         self._tokenizer: Any = None
         self._model_name: str = ""
         self._repo_id: str = ""
+        self._cache_enabled = cache_enabled
+        self._kv_cache: KVCacheManager = KVCacheManager(max_cache_size_mb=cache_size_mb)
 
     def load_model(self, model_name: str) -> None:
         import mlx_lm  # type: ignore[import-untyped]
@@ -262,12 +272,27 @@ class MLXBackend(InferenceBackend):
         import mlx_lm  # type: ignore[import-untyped]
 
         prompt = self._apply_chat_template(request.messages)
-        prompt_tokens = len(self._tokenizer.encode(prompt))
+        prompt_token_ids = self._tokenizer.encode(prompt)
+        prompt_tokens = len(prompt_token_ids)
         sampler = self._make_sampler(request.temperature, request.top_p)
         start = time.monotonic()
         first_token_time: Optional[float] = None
         tokens: list[str] = []
         final_tps: float = 0.0
+        cache_hit = False
+
+        # Check KV cache for a matching prefix
+        extra_kwargs: dict[str, Any] = {}
+        if self._cache_enabled:
+            cached = self._kv_cache.get_cached_prefix(prompt_token_ids)
+            if cached is not None:
+                extra_kwargs["prompt_cache"] = cached.kv_state
+                cache_hit = True
+                logger.debug(
+                    "MLX cache hit: reusing %d/%d prompt tokens",
+                    cached.prefix_length,
+                    prompt_tokens,
+                )
 
         for response in mlx_lm.stream_generate(
             self._model,
@@ -275,11 +300,19 @@ class MLXBackend(InferenceBackend):
             prompt=prompt,
             max_tokens=request.max_tokens,
             sampler=sampler,
+            **extra_kwargs,
         ):
             if first_token_time is None:
                 first_token_time = time.monotonic()
             final_tps = response.generation_tps
             if response.finish_reason or self._is_stop_token(response.text):
+                # Capture prompt_cache from the final response for storage
+                if (
+                    self._cache_enabled
+                    and hasattr(response, "prompt_cache")
+                    and response.prompt_cache is not None
+                ):
+                    self._kv_cache.store_prefix(prompt_token_ids, response.prompt_cache)
                 break
             tokens.append(response.text)
 
@@ -293,6 +326,7 @@ class MLXBackend(InferenceBackend):
             total_tokens=len(tokens),
             tokens_per_second=final_tps,
             total_duration_ms=elapsed * 1000,
+            cache_hit=cache_hit,
         )
 
     async def generate_stream(
@@ -304,7 +338,15 @@ class MLXBackend(InferenceBackend):
         import mlx_lm  # type: ignore[import-untyped]
 
         prompt = self._apply_chat_template(request.messages)
+        prompt_token_ids = self._tokenizer.encode(prompt)
         sampler = self._make_sampler(request.temperature, request.top_p)
+
+        # Check KV cache for a matching prefix
+        extra_kwargs: dict[str, Any] = {}
+        if self._cache_enabled:
+            cached = self._kv_cache.get_cached_prefix(prompt_token_ids)
+            if cached is not None:
+                extra_kwargs["prompt_cache"] = cached.kv_state
 
         # mlx_lm.stream_generate is a sync generator that yields
         # GenerationResponse objects as tokens are produced.
@@ -315,6 +357,7 @@ class MLXBackend(InferenceBackend):
             prompt=prompt,
             max_tokens=request.max_tokens,
             sampler=sampler,
+            **extra_kwargs,
         )
 
         loop = asyncio.get_event_loop()
@@ -330,6 +373,13 @@ class MLXBackend(InferenceBackend):
             if response is None:
                 break
             if response.finish_reason or self._is_stop_token(response.text):
+                # Store prompt cache from the final response
+                if (
+                    self._cache_enabled
+                    and hasattr(response, "prompt_cache")
+                    and response.prompt_cache is not None
+                ):
+                    self._kv_cache.store_prefix(prompt_token_ids, response.prompt_cache)
                 yield GenerationChunk(
                     text="",
                     finish_reason="stop",
@@ -341,6 +391,11 @@ class MLXBackend(InferenceBackend):
                 tokens_per_second=response.generation_tps,
             )
 
+    @property
+    def kv_cache(self) -> Any:
+        """Expose cache manager for stats endpoint."""
+        return self._kv_cache
+
     def list_models(self) -> list[str]:
         return [self._model_name] if self._model_name else []
 
@@ -350,13 +405,35 @@ class LlamaCppBackend(InferenceBackend):
 
     Loads GGUF models from HuggingFace via from_pretrained (auto-downloads).
     Chat templates are handled by llama.cpp internally.
+    Supports built-in LlamaCache for automatic KV prefix reuse.
     """
 
     name = "llama.cpp"
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        cache_size_mb: int = 2048,
+        cache_enabled: bool = True,
+    ) -> None:
         self._llm: Any = None
         self._model_name: str = ""
+        self._cache_size_mb = cache_size_mb
+        self._cache_enabled = cache_enabled
+        self._llama_cache: Any = None
+
+    def _attach_cache(self) -> None:
+        """Attach a LlamaCache to the loaded model if caching is enabled."""
+        if not self._cache_enabled or self._llm is None:
+            return
+        try:
+            from llama_cpp import LlamaCache  # type: ignore[import-untyped]
+
+            capacity_bytes = self._cache_size_mb * 1024 * 1024
+            self._llama_cache = LlamaCache(capacity_bytes=capacity_bytes)
+            self._llm.set_cache(self._llama_cache)
+            logger.info("LlamaCache enabled: %d MB capacity", self._cache_size_mb)
+        except (ImportError, AttributeError, TypeError) as exc:
+            logger.debug("LlamaCache not available: %s", exc)
 
     def load_model(self, model_name: str) -> None:
         from llama_cpp import Llama  # type: ignore[import-untyped]
@@ -372,6 +449,7 @@ class LlamaCppBackend(InferenceBackend):
                 n_gpu_layers=-1,  # offload all layers to GPU
                 verbose=False,
             )
+            self._attach_cache()
             return
 
         # Full HuggingFace repo ID (user/repo)
@@ -384,6 +462,7 @@ class LlamaCppBackend(InferenceBackend):
                 n_gpu_layers=-1,
                 verbose=False,
             )
+            self._attach_cache()
             return
 
         # Short name → catalog lookup
@@ -403,6 +482,7 @@ class LlamaCppBackend(InferenceBackend):
             n_gpu_layers=-1,
             verbose=False,
         )
+        self._attach_cache()
         logger.info("Model loaded: %s", model_name)
 
     def _grammar_arg(self, request: GenerationRequest) -> dict[str, Any]:
@@ -520,7 +600,12 @@ class EchoBackend(InferenceBackend):
         return [self._model_name] if self._model_name else []
 
 
-def _detect_backend(model_name: str) -> InferenceBackend:
+def _detect_backend(
+    model_name: str,
+    *,
+    cache_size_mb: int = 2048,
+    cache_enabled: bool = True,
+) -> InferenceBackend:
     """Pick the best available backend and load the model.
 
     Priority: mlx-lm (Apple Silicon) → llama.cpp → echo (fallback).
@@ -534,7 +619,10 @@ def _detect_backend(model_name: str) -> InferenceBackend:
 
             # Check if model is in MLX catalog or is a full repo ID
             if model_name in _MLX_MODELS or "/" in model_name:
-                mlx_backend: InferenceBackend = MLXBackend()
+                mlx_backend: InferenceBackend = MLXBackend(
+                    cache_size_mb=cache_size_mb,
+                    cache_enabled=cache_enabled,
+                )
                 mlx_backend.load_model(model_name)
                 return mlx_backend
             else:
@@ -555,7 +643,10 @@ def _detect_backend(model_name: str) -> InferenceBackend:
             or model_name.endswith(".gguf")
             or "/" in model_name
         ):
-            cpp_backend: InferenceBackend = LlamaCppBackend()
+            cpp_backend: InferenceBackend = LlamaCppBackend(
+                cache_size_mb=cache_size_mb,
+                cache_enabled=cache_enabled,
+            )
             cpp_backend.load_model(model_name)
             return cpp_backend
         else:
@@ -571,6 +662,13 @@ def _detect_backend(model_name: str) -> InferenceBackend:
     echo_backend: InferenceBackend = EchoBackend()
     echo_backend.load_model(model_name)
     return echo_backend
+
+
+def _get_cache_manager(backend: InferenceBackend) -> Any:
+    """Extract the KVCacheManager from a backend, if available."""
+    if isinstance(backend, MLXBackend):
+        return backend.kv_cache
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -589,6 +687,8 @@ class ServerState:
     api_key: Optional[str] = None
     api_base: str = "https://api.edgeml.io/api/v1"
     default_json_mode: bool = False
+    cache_size_mb: int = 2048
+    cache_enabled: bool = True
 
 
 def _resolve_grammar(
@@ -649,6 +749,8 @@ def create_app(
     api_key: Optional[str] = None,
     api_base: str = "https://api.edgeml.io/api/v1",
     json_mode: bool = False,
+    cache_size_mb: int = 2048,
+    cache_enabled: bool = True,
 ) -> Any:
     """Create a FastAPI app with OpenAI-compatible endpoints.
 
@@ -669,11 +771,17 @@ def create_app(
         api_key=api_key,
         api_base=api_base,
         default_json_mode=json_mode,
+        cache_size_mb=cache_size_mb,
+        cache_enabled=cache_enabled,
     )
 
     @asynccontextmanager
     async def lifespan(app: Any) -> Any:
-        state.backend = _detect_backend(model_name)
+        state.backend = _detect_backend(
+            model_name,
+            cache_size_mb=state.cache_size_mb,
+            cache_enabled=state.cache_enabled,
+        )
         state.start_time = time.time()
         yield
 
@@ -789,17 +897,57 @@ def create_app(
                 "prompt_tokens": metrics.prompt_tokens,
                 "completion_tokens": metrics.total_tokens,
                 "total_tokens": metrics.prompt_tokens + metrics.total_tokens,
+                "cache_hit": metrics.cache_hit,
             },
+        }
+
+    @app.get("/v1/cache/stats")
+    async def cache_stats() -> dict[str, Any]:
+        """Return KV cache statistics."""
+        if state.backend is None:
+            raise HTTPException(status_code=503, detail="Model not loaded")
+
+        cache_mgr = _get_cache_manager(state.backend)
+        if cache_mgr is None:
+            return {
+                "enabled": False,
+                "hits": 0,
+                "misses": 0,
+                "hit_rate": 0.0,
+                "entries": 0,
+                "memory_mb": 0.0,
+                "max_memory_mb": state.cache_size_mb,
+            }
+
+        stats = cache_mgr.stats()
+        return {
+            "enabled": True,
+            "hits": stats.hits,
+            "misses": stats.misses,
+            "hit_rate": round(stats.hit_rate, 4),
+            "entries": stats.entries,
+            "memory_mb": round(stats.memory_mb, 2),
+            "max_memory_mb": state.cache_size_mb,
         }
 
     @app.get("/health")
     async def health() -> dict[str, Any]:
+        cache_info: dict[str, Any] = {"enabled": state.cache_enabled}
+        cache_mgr = (
+            _get_cache_manager(state.backend) if state.backend is not None else None
+        )
+        if cache_mgr is not None:
+            cs = cache_mgr.stats()
+            cache_info["entries"] = cs.entries
+            cache_info["hit_rate"] = round(cs.hit_rate, 4)
+
         return {
             "status": "ok",
             "model": state.model_name,
             "backend": state.backend.name if state.backend else "none",
             "requests_served": state.request_count,
             "uptime_seconds": int(time.time() - state.start_time),
+            "cache": cache_info,
         }
 
     return app
@@ -840,6 +988,8 @@ def run_server(
     api_key: Optional[str] = None,
     api_base: str = "https://api.edgeml.io/api/v1",
     json_mode: bool = False,
+    cache_size_mb: int = 2048,
+    cache_enabled: bool = True,
 ) -> None:
     """Start the inference server (blocking).
 
@@ -851,6 +1001,11 @@ def run_server(
     import uvicorn
 
     app = create_app(
-        model_name, api_key=api_key, api_base=api_base, json_mode=json_mode
+        model_name,
+        api_key=api_key,
+        api_base=api_base,
+        json_mode=json_mode,
+        cache_size_mb=cache_size_mb,
+        cache_enabled=cache_enabled,
     )
     uvicorn.run(app, host=host, port=port, log_level="info")
