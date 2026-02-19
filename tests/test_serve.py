@@ -116,21 +116,41 @@ async def _collect_stream(gen):
 
 
 class TestDetectBackend:
-    @patch("octomil.serve.platform")
-    def test_falls_back_to_echo_when_no_backends(self, mock_platform):
-        mock_platform.system.return_value = "Linux"
-        mock_platform.machine.return_value = "x86_64"
+    def test_falls_back_to_echo_when_no_backends(self):
+        """With no real engines installed, _detect_backend returns echo."""
+        from octomil.engines import reset_registry
 
+        reset_registry()
         with patch.dict("sys.modules", {"mlx_lm": None, "llama_cpp": None}):
-            backend = _detect_backend("some-model")
+            backend, log = _detect_backend("some-model")
         assert backend.name == "echo"
+        reset_registry()
 
-    @patch("octomil.serve.platform")
-    def test_echo_for_unknown_model_name(self, mock_platform):
-        mock_platform.system.return_value = "Linux"
-        mock_platform.machine.return_value = "x86_64"
-        backend = _detect_backend("totally-unknown-model")
+    def test_echo_for_unknown_model_name(self):
+        """Unknown model name still gets a backend (echo fallback)."""
+        from octomil.engines import reset_registry
+
+        reset_registry()
+        backend, log = _detect_backend("totally-unknown-model")
+        # Should return echo since no real engine supports unknown models
         assert backend.name == "echo"
+        reset_registry()
+
+    def test_detect_backend_returns_tuple(self):
+        """_detect_backend returns (backend, benchmark_log) tuple."""
+        result = _detect_backend("test-model")
+        assert isinstance(result, tuple)
+        assert len(result) == 2
+        backend, log = result
+        assert hasattr(backend, "name")
+        assert isinstance(log, list)
+
+    def test_detect_backend_with_engine_override(self):
+        """_detect_backend with engine_override='echo' returns echo."""
+        backend, log = _detect_backend("test-model", engine_override="echo")
+        assert backend.name == "echo"
+        assert len(log) == 1
+        assert log[0]["engine"] == "echo"
 
 
 # ---------------------------------------------------------------------------
@@ -177,7 +197,7 @@ def echo_app():
     with patch("octomil.serve._detect_backend") as mock_detect:
         echo = EchoBackend()
         echo.load_model("test-model")
-        mock_detect.return_value = echo
+        mock_detect.return_value = (echo, [])
 
         app = create_app("test-model")
 

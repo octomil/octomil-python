@@ -551,7 +551,7 @@ def echo_app():
     with patch("octomil.serve._detect_backend") as mock_detect:
         echo = EchoBackend()
         echo.load_model("test-model")
-        mock_detect.return_value = echo
+        mock_detect.return_value = (echo, [])
         app = create_app("test-model")
 
         async def _trigger_lifespan():
@@ -568,7 +568,7 @@ def json_mode_app():
     with patch("octomil.serve._detect_backend") as mock_detect:
         echo = EchoBackend()
         echo.load_model("test-model")
-        mock_detect.return_value = echo
+        mock_detect.return_value = (echo, [])
         app = create_app("test-model", json_mode=True)
 
         async def _trigger_lifespan():

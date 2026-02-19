@@ -1,15 +1,20 @@
 """
-OpenAI-compatible local inference server.
+OpenAI-compatible local inference server with multi-engine auto-benchmark.
 
-Dispatches to the best available backend:
+Auto-detects available engines, benchmarks each, and picks the fastest:
   1. mlx-lm (Apple Silicon — quantized HuggingFace models)
   2. llama-cpp-python (cross-platform — GGUF models)
-  3. Echo (fallback — for testing the API layer)
+  3. MNN-LLM (Metal/Vulkan/OpenCL/CUDA — via engine plugin)
+  4. ONNX Runtime (CPU/CUDA/DirectML/TensorRT — via engine plugin)
+  5. Echo (fallback — for testing the API layer)
 
 Usage::
 
     from octomil.serve import run_server
     run_server("gemma-2b", port=8080)
+
+    # Override engine selection:
+    run_server("gemma-2b", port=8080, engine="llama.cpp")
 
     # Then:
     # curl localhost:8080/v1/chat/completions \\
@@ -605,63 +610,113 @@ def _detect_backend(
     *,
     cache_size_mb: int = 2048,
     cache_enabled: bool = True,
-) -> InferenceBackend:
-    """Pick the best available backend and load the model.
+    engine_override: Optional[str] = None,
+) -> tuple[InferenceBackend, list[dict[str, Any]]]:
+    """Auto-detect engines, benchmark each, and return the fastest backend.
 
-    Priority: mlx-lm (Apple Silicon) → llama.cpp → echo (fallback).
-    Models are downloaded from HuggingFace automatically on first use.
+    Uses the engine registry plugin system. Each registered engine is:
+    1. Detected (is the library installed? does it support this model?)
+    2. Benchmarked (quick 32-token generation to measure tok/s)
+    3. Ranked (highest tok/s wins)
+
+    Returns (backend, benchmark_results) where benchmark_results is a list
+    of dicts with engine name, tok/s, and status for display.
+
+    If engine_override is set, skip benchmarking and use that engine directly.
     """
+    from .engines import get_registry
 
-    # Apple Silicon → mlx-lm (best perf for quantized models)
-    if platform.system() == "Darwin" and platform.machine() == "arm64":
-        try:
-            import mlx_lm  # type: ignore[import-untyped] # noqa: F401
+    registry = get_registry()
+    benchmark_log: list[dict[str, Any]] = []
 
-            # Check if model is in MLX catalog or is a full repo ID
-            if model_name in _MLX_MODELS or "/" in model_name:
-                mlx_backend: InferenceBackend = MLXBackend(
-                    cache_size_mb=cache_size_mb,
-                    cache_enabled=cache_enabled,
-                )
-                mlx_backend.load_model(model_name)
-                return mlx_backend
-            else:
-                logger.debug(
-                    "Model '%s' not in MLX catalog, trying llama.cpp", model_name
-                )
-        except ImportError:
-            logger.debug("mlx-lm not installed")
-        except Exception as exc:
-            logger.warning("mlx-lm failed to load '%s': %s", model_name, exc)
+    backend_kwargs = {
+        "cache_size_mb": cache_size_mb,
+        "cache_enabled": cache_enabled,
+    }
 
-    # llama.cpp — cross-platform, GGUF files
-    try:
-        import llama_cpp  # type: ignore[import-untyped] # noqa: F401
-
-        if (
-            model_name in _GGUF_MODELS
-            or model_name.endswith(".gguf")
-            or "/" in model_name
-        ):
-            cpp_backend: InferenceBackend = LlamaCppBackend(
-                cache_size_mb=cache_size_mb,
-                cache_enabled=cache_enabled,
+    if engine_override:
+        engine = registry.get_engine(engine_override)
+        if engine is None:
+            available = [e.name for e in registry.engines]
+            raise ValueError(
+                f"Unknown engine '{engine_override}'. "
+                f"Available: {', '.join(available)}"
             )
-            cpp_backend.load_model(model_name)
-            return cpp_backend
+        backend = engine.create_backend(model_name, **backend_kwargs)
+        benchmark_log.append({
+            "engine": engine.name,
+            "status": "selected (override)",
+            "tokens_per_second": 0,
+        })
+        return backend, benchmark_log
+
+    # Detect all available engines for this model
+    detections = registry.detect_all(model_name)
+    available_engines = [d.engine for d in detections if d.available]
+
+    for d in detections:
+        if d.available:
+            logger.info("Engine detected: %s (%s)", d.engine.name, d.info)
         else:
-            logger.debug(
-                "Model '%s' not in GGUF catalog, falling back to echo", model_name
-            )
-    except ImportError:
-        logger.debug("llama-cpp-python not installed")
-    except Exception as exc:
-        logger.warning("llama.cpp failed to load '%s': %s", model_name, exc)
+            logger.debug("Engine unavailable: %s", d.engine.name)
 
-    # Echo fallback
-    echo_backend: InferenceBackend = EchoBackend()
-    echo_backend.load_model(model_name)
-    return echo_backend
+    if not available_engines:
+        # Fall back to echo
+        echo = EchoBackend()
+        echo.load_model(model_name)
+        benchmark_log.append({
+            "engine": "echo",
+            "status": "fallback (no engines available)",
+            "tokens_per_second": 0,
+        })
+        return echo, benchmark_log
+
+    # If only echo is available, skip benchmarking
+    real_engines = [e for e in available_engines if e.name != "echo"]
+    if not real_engines:
+        echo = EchoBackend()
+        echo.load_model(model_name)
+        benchmark_log.append({
+            "engine": "echo",
+            "status": "fallback (no real engines)",
+            "tokens_per_second": 0,
+        })
+        return echo, benchmark_log
+
+    # Benchmark real engines
+    ranked = registry.benchmark_all(model_name, n_tokens=32, engines=real_engines)
+
+    for r in ranked:
+        if r.result.ok:
+            benchmark_log.append({
+                "engine": r.engine.name,
+                "status": "ok",
+                "tokens_per_second": round(r.result.tokens_per_second, 1),
+                "ttft_ms": round(r.result.ttft_ms, 1),
+            })
+        else:
+            benchmark_log.append({
+                "engine": r.engine.name,
+                "status": f"error: {r.result.error}",
+                "tokens_per_second": 0,
+            })
+
+    best = registry.select_best(ranked)
+    if best is None:
+        echo = EchoBackend()
+        echo.load_model(model_name)
+        benchmark_log.append({
+            "engine": "echo",
+            "status": "fallback (all benchmarks failed)",
+            "tokens_per_second": 0,
+        })
+        return echo, benchmark_log
+
+    # Create the actual backend from the winning engine
+    backend = best.engine.create_backend(model_name, **backend_kwargs)
+    return backend, benchmark_log
+
+
 
 
 def _get_cache_manager(backend: InferenceBackend) -> Any:
@@ -682,6 +737,8 @@ class ServerState:
 
     backend: Optional[InferenceBackend] = None
     model_name: str = ""
+    engine_name: str = ""
+    benchmark_results: list[dict[str, Any]] = field(default_factory=list)
     start_time: float = field(default_factory=time.time)
     request_count: int = 0
     api_key: Optional[str] = None
@@ -689,6 +746,7 @@ class ServerState:
     default_json_mode: bool = False
     cache_size_mb: int = 2048
     cache_enabled: bool = True
+    engine_override: Optional[str] = None
 
 
 def _resolve_grammar(
@@ -751,6 +809,7 @@ def create_app(
     json_mode: bool = False,
     cache_size_mb: int = 2048,
     cache_enabled: bool = True,
+    engine: Optional[str] = None,
 ) -> Any:
     """Create a FastAPI app with OpenAI-compatible endpoints.
 
@@ -759,6 +818,9 @@ def create_app(
     json_mode:
         When ``True``, all requests default to ``response_format={"type": "json_object"}``
         unless the caller explicitly sets a different ``response_format``.
+    engine:
+        Force a specific engine (e.g. ``"mlx-lm"``, ``"llama.cpp"``).
+        When ``None``, auto-benchmarks all available engines and picks fastest.
     """
     from contextlib import asynccontextmanager
 
@@ -773,15 +835,20 @@ def create_app(
         default_json_mode=json_mode,
         cache_size_mb=cache_size_mb,
         cache_enabled=cache_enabled,
+        engine_override=engine,
     )
 
     @asynccontextmanager
     async def lifespan(app: Any) -> Any:
-        state.backend = _detect_backend(
+        backend, benchmark_results = _detect_backend(
             model_name,
             cache_size_mb=state.cache_size_mb,
             cache_enabled=state.cache_enabled,
+            engine_override=state.engine_override,
         )
+        state.backend = backend
+        state.benchmark_results = benchmark_results
+        state.engine_name = state.backend.name if state.backend else "none"
         state.start_time = time.time()
         yield
 
@@ -930,6 +997,37 @@ def create_app(
             "max_memory_mb": state.cache_size_mb,
         }
 
+    @app.get("/v1/engines")
+    async def list_engines() -> dict[str, Any]:
+        """List detected engines and their benchmark results."""
+        from .engines import get_registry
+
+        registry = get_registry()
+        detections = registry.detect_all(state.model_name)
+
+        engines_list = []
+        for d in detections:
+            entry: dict[str, Any] = {
+                "name": d.engine.name,
+                "display_name": d.engine.display_name,
+                "available": d.available,
+                "info": d.info,
+                "active": (
+                    state.backend is not None and state.backend.name == d.engine.name
+                ),
+            }
+            # Attach benchmark results if available
+            for br in state.benchmark_results:
+                if br["engine"] == d.engine.name:
+                    entry["benchmark"] = br
+                    break
+            engines_list.append(entry)
+
+        return {
+            "active_engine": state.engine_name,
+            "engines": engines_list,
+        }
+
     @app.get("/health")
     async def health() -> dict[str, Any]:
         cache_info: dict[str, Any] = {"enabled": state.cache_enabled}
@@ -944,10 +1042,12 @@ def create_app(
         return {
             "status": "ok",
             "model": state.model_name,
+            "engine": state.engine_name,
             "backend": state.backend.name if state.backend else "none",
             "requests_served": state.request_count,
             "uptime_seconds": int(time.time() - state.start_time),
             "cache": cache_info,
+            "benchmark_results": state.benchmark_results,
         }
 
     return app
@@ -990,6 +1090,7 @@ def run_server(
     json_mode: bool = False,
     cache_size_mb: int = 2048,
     cache_enabled: bool = True,
+    engine: Optional[str] = None,
 ) -> None:
     """Start the inference server (blocking).
 
@@ -997,6 +1098,9 @@ def run_server(
     ----------
     json_mode:
         When ``True``, all requests default to ``response_format={"type": "json_object"}``.
+    engine:
+        Force a specific engine (e.g. ``"mlx-lm"``, ``"llama.cpp"``).
+        When ``None``, auto-benchmarks and picks fastest.
     """
     import uvicorn
 
@@ -1007,5 +1111,6 @@ def run_server(
         json_mode=json_mode,
         cache_size_mb=cache_size_mb,
         cache_enabled=cache_enabled,
+        engine=engine,
     )
     uvicorn.run(app, host=host, port=port, log_level="info")

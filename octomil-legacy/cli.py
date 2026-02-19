@@ -20,7 +20,7 @@ from __future__ import annotations
 import os
 import sys
 import webbrowser
-from typing import Optional
+from typing import Any, Optional
 
 import click
 
@@ -98,6 +98,13 @@ def main() -> None:
     is_flag=True,
     help="Disable KV cache entirely.",
 )
+@click.option(
+    "--engine",
+    "-e",
+    default=None,
+    help="Force a specific engine (mlx-lm, llama.cpp, mnn, onnxruntime). "
+    "Default: auto-benchmark all available engines and pick fastest.",
+)
 def serve(
     model: str,
     port: int,
@@ -107,11 +114,12 @@ def serve(
     json_mode: bool,
     cache_size: int,
     no_cache: bool,
+    engine: str | None,
 ) -> None:
     """Start a local OpenAI-compatible inference server.
 
-    Serves MODEL via the best available backend (mlx-lm on Apple Silicon,
-    llama.cpp on other platforms). No account required.
+    Auto-detects all available inference engines, benchmarks each,
+    and picks the fastest for your hardware. Override with --engine.
 
     Example:
 
@@ -119,6 +127,10 @@ def serve(
 
         curl localhost:8080/v1/chat/completions \\
             -d '{"model":"gemma-1b","messages":[{"role":"user","content":"Hi"}]}'
+
+    Force a specific engine:
+
+        octomil serve gemma-1b --engine llama.cpp
 
     Use --json-mode to default all responses to valid JSON output:
 
@@ -132,11 +144,17 @@ def serve(
     )
     cache_enabled = not no_cache
 
-    click.echo(f"Starting Octomil serve on {host}:{port}")
+    # Show engine detection before starting server
+    _print_engine_detection(model, engine)
+
+    click.echo(f"\nStarting Octomil serve on {host}:{port}")
     click.echo(f"Model: {model}")
+    if engine:
+        click.echo(f"Engine: {engine} (manual override)")
     if json_mode:
         click.echo("JSON mode: enabled (all responses default to valid JSON)")
     click.echo(f"OpenAI-compatible API: http://localhost:{port}/v1/chat/completions")
+    click.echo(f"Engine info: http://localhost:{port}/v1/engines")
     click.echo(f"Health check: http://localhost:{port}/health")
     if cache_enabled:
         click.echo(f"KV cache: enabled ({cache_size} MB)")
@@ -165,7 +183,43 @@ def serve(
         json_mode=json_mode,
         cache_size_mb=cache_size,
         cache_enabled=cache_enabled,
+        engine=engine,
     )
+
+
+def _print_engine_detection(model: str, engine_override: str | None) -> None:
+    """Print engine detection results to terminal."""
+    from .engines import get_registry
+
+    registry = get_registry()
+
+    click.echo("\nDetecting engines...")
+    detections = registry.detect_all(model)
+    for d in detections:
+        if d.available:
+            info = f" ({d.info})" if d.info else ""
+            click.echo(click.style(f"  + {d.engine.display_name}{info}", fg="green"))
+        else:
+            click.echo(click.style(f"  - {d.engine.display_name}", fg="red"))
+
+    if engine_override:
+        click.echo(f"\nUsing {engine_override} (manual override)")
+        return
+
+    # Show which engines will be benchmarked
+    available = [d for d in detections if d.available and d.engine.name != "echo"]
+    if len(available) > 1:
+        click.echo(f"\nBenchmarking {model} across {len(available)} engines...")
+        click.echo("(this runs a quick 32-token generation on each)")
+    elif len(available) == 1:
+        click.echo(f"\nUsing {available[0].engine.display_name} (only available engine)")
+    else:
+        click.echo(
+            click.style(
+                "\nNo inference engines found. Using echo backend (testing only).",
+                fg="yellow",
+            )
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -935,11 +989,33 @@ def _percentile(data: list[float], pct: float) -> float:
 )
 @click.option("--iterations", "-n", default=10, help="Number of inference iterations.")
 @click.option("--max-tokens", default=50, help="Max tokens to generate per iteration.")
-def benchmark(model: str, share: bool, iterations: int, max_tokens: int) -> None:
+@click.option(
+    "--engine",
+    "-e",
+    default=None,
+    help="Force a specific engine for benchmarking. Default: benchmark all available.",
+)
+@click.option(
+    "--all-engines",
+    is_flag=True,
+    help="Benchmark ALL available engines and compare (ignores --engine).",
+)
+def benchmark(
+    model: str,
+    share: bool,
+    iterations: int,
+    max_tokens: int,
+    engine: str | None,
+    all_engines: bool,
+) -> None:
     """Run inference benchmarks on a model.
 
     Measures TTFT, TPOT, latency distribution (min/avg/median/p90/p95/p99/max),
     throughput, and memory usage across multiple iterations.
+
+    Use --all-engines to compare performance across all available engines:
+
+        octomil benchmark gemma-1b --all-engines
 
     Example:
 
@@ -955,9 +1031,14 @@ def benchmark(model: str, share: bool, iterations: int, max_tokens: int) -> None
     )
     click.echo(f"Platform: {_platform.system()} {_platform.machine()}")
 
+    # Quick engine comparison if --all-engines
+    if all_engines:
+        _benchmark_all_engines(model, iterations, max_tokens)
+        return
+
     from .serve import _detect_backend
 
-    backend = _detect_backend(model)
+    backend, _log = _detect_backend(model, engine_override=engine)
     click.echo(f"Backend: {backend.name}")
 
     from .serve import GenerationRequest
@@ -1105,6 +1186,94 @@ def benchmark(model: str, share: bool, iterations: int, max_tokens: int) -> None
                 click.echo(f"Failed to share: {resp.status_code}", err=True)
         except Exception as exc:
             click.echo(f"Failed to share: {exc}", err=True)
+
+
+def _benchmark_all_engines(model: str, iterations: int, max_tokens: int) -> None:
+    """Benchmark all available engines and print a comparison table."""
+    import time
+
+    from .engines import get_registry
+    from .serve import GenerationRequest
+
+    registry = get_registry()
+    detections = registry.detect_all(model)
+    available = [d for d in detections if d.available and d.engine.name != "echo"]
+
+    if not available:
+        click.echo("No inference engines available for this model.", err=True)
+        return
+
+    click.echo(f"\nDetected {len(available)} engine(s):")
+    for d in available:
+        info = f" ({d.info})" if d.info else ""
+        click.echo(f"  + {d.engine.display_name}{info}")
+
+    results: list[dict[str, Any]] = []
+    for d in available:
+        click.echo(f"\nBenchmarking {d.engine.display_name}...")
+        try:
+            backend = d.engine.create_backend(model, cache_enabled=False)
+            req = GenerationRequest(
+                model=model,
+                messages=[{"role": "user", "content": "Hello, how are you?"}],
+                max_tokens=max_tokens,
+            )
+
+            latencies: list[float] = []
+            tps_list: list[float] = []
+            for i in range(iterations):
+                start = time.monotonic()
+                _text, metrics = backend.generate(req)
+                elapsed = (time.monotonic() - start) * 1000
+                latencies.append(elapsed)
+                tps_list.append(metrics.tokens_per_second)
+                click.echo(
+                    f"  [{i + 1}/{iterations}] {elapsed:.1f}ms, "
+                    f"{metrics.tokens_per_second:.1f} tok/s"
+                )
+
+            avg_tps = sum(tps_list) / len(tps_list)
+            avg_lat = sum(latencies) / len(latencies)
+            results.append({
+                "engine": d.engine.display_name,
+                "avg_tps": avg_tps,
+                "avg_latency_ms": avg_lat,
+                "min_latency_ms": min(latencies),
+                "error": None,
+            })
+        except Exception as exc:
+            click.echo(f"  Failed: {exc}")
+            results.append({
+                "engine": d.engine.display_name,
+                "avg_tps": 0,
+                "avg_latency_ms": 0,
+                "min_latency_ms": 0,
+                "error": str(exc),
+            })
+
+    # Print comparison table
+    click.echo("\n" + "=" * 65)
+    click.echo(f"{'Engine':<30s} {'Avg tok/s':>10s} {'Avg latency':>12s} {'Status':>10s}")
+    click.echo("-" * 65)
+
+    # Sort by tok/s descending
+    results.sort(key=lambda r: r["avg_tps"], reverse=True)
+    best = results[0] if results and not results[0]["error"] else None
+
+    for i, r in enumerate(results):
+        if r["error"]:
+            status = "error"
+            click.echo(f"  {r['engine']:<28s} {'---':>10s} {'---':>12s} {status:>10s}")
+        else:
+            marker = " <-- fastest" if i == 0 and best else ""
+            click.echo(
+                f"  {r['engine']:<28s} {r['avg_tps']:>10.1f} "
+                f"{r['avg_latency_ms']:>9.1f}ms {marker}"
+            )
+
+    click.echo("=" * 65)
+    if best:
+        click.echo(f"\nFastest engine: {best['engine']} ({best['avg_tps']:.1f} tok/s)")
 
 
 # ---------------------------------------------------------------------------
