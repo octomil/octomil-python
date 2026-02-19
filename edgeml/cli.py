@@ -82,7 +82,14 @@ def main() -> None:
 @click.option(
     "--share", is_flag=True, help="Share anonymous benchmark data with EdgeML."
 )
-def serve(model: str, port: int, host: str, benchmark: bool, share: bool) -> None:
+@click.option(
+    "--json-mode",
+    is_flag=True,
+    help="Default all responses to JSON output (response_format=json_object).",
+)
+def serve(
+    model: str, port: int, host: str, benchmark: bool, share: bool, json_mode: bool
+) -> None:
     """Start a local OpenAI-compatible inference server.
 
     Serves MODEL via the best available backend (mlx-lm on Apple Silicon,
@@ -94,6 +101,10 @@ def serve(model: str, port: int, host: str, benchmark: bool, share: bool) -> Non
 
         curl localhost:8080/v1/chat/completions \\
             -d '{"model":"gemma-1b","messages":[{"role":"user","content":"Hi"}]}'
+
+    Use --json-mode to default all responses to valid JSON output:
+
+        edgeml serve gemma-1b --json-mode
     """
     api_key = _get_api_key() if share else None
     api_base: str = (
@@ -104,6 +115,8 @@ def serve(model: str, port: int, host: str, benchmark: bool, share: bool) -> Non
 
     click.echo(f"Starting EdgeML serve on {host}:{port}")
     click.echo(f"Model: {model}")
+    if json_mode:
+        click.echo("JSON mode: enabled (all responses default to valid JSON)")
     click.echo(f"OpenAI-compatible API: http://localhost:{port}/v1/chat/completions")
     click.echo(f"Health check: http://localhost:{port}/health")
 
@@ -119,7 +132,14 @@ def serve(model: str, port: int, host: str, benchmark: bool, share: bool) -> Non
 
     from .serve import run_server
 
-    run_server(model, port=port, host=host, api_key=api_key, api_base=api_base)
+    run_server(
+        model,
+        port=port,
+        host=host,
+        api_key=api_key,
+        api_base=api_base,
+        json_mode=json_mode,
+    )
 
 
 # ---------------------------------------------------------------------------

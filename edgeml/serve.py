@@ -48,6 +48,8 @@ class ChatCompletionBody(BaseModel):
     temperature: float = 0.7
     top_p: float = 1.0
     stream: bool = False
+    response_format: Optional[dict[str, Any]] = None
+    grammar: Optional[str] = None
 
 
 # ---------------------------------------------------------------------------
@@ -151,6 +153,8 @@ class GenerationRequest:
     temperature: float = 0.7
     top_p: float = 1.0
     stream: bool = False
+    grammar: Optional[str] = None
+    json_mode: bool = False
 
 
 @dataclass
@@ -401,13 +405,27 @@ class LlamaCppBackend(InferenceBackend):
         )
         logger.info("Model loaded: %s", model_name)
 
+    def _grammar_arg(self, request: GenerationRequest) -> dict[str, Any]:
+        """Build the grammar kwarg for create_chat_completion, if any."""
+        if not request.grammar:
+            return {}
+        try:
+            from llama_cpp import LlamaGrammar  # type: ignore[import-untyped]
+
+            return {"grammar": LlamaGrammar.from_string(request.grammar)}
+        except Exception as exc:
+            logger.warning("Failed to compile GBNF grammar: %s", exc)
+            return {}
+
     def generate(self, request: GenerationRequest) -> tuple[str, InferenceMetrics]:
         start = time.monotonic()
+        grammar_kw = self._grammar_arg(request)
         result = self._llm.create_chat_completion(
             messages=request.messages,
             max_tokens=request.max_tokens,
             temperature=request.temperature,
             top_p=request.top_p,
+            **grammar_kw,
         )
         elapsed = time.monotonic() - start
         text = result["choices"][0]["message"]["content"]
@@ -430,12 +448,14 @@ class LlamaCppBackend(InferenceBackend):
 
         loop = asyncio.get_event_loop()
 
+        grammar_kw = self._grammar_arg(request)
         # create_chat_completion with stream=True returns a sync iterator
         stream = self._llm.create_chat_completion(
             messages=request.messages,
             max_tokens=request.max_tokens,
             temperature=request.temperature,
             stream=True,
+            **grammar_kw,
         )
 
         def _next_chunk() -> Any:
@@ -568,6 +588,59 @@ class ServerState:
     request_count: int = 0
     api_key: Optional[str] = None
     api_base: str = "https://api.edgeml.io/api/v1"
+    default_json_mode: bool = False
+
+
+def _resolve_grammar(
+    body: ChatCompletionBody, default_json_mode: bool = False
+) -> tuple[Optional[str], bool]:
+    """Determine the GBNF grammar string and json_mode flag from a request.
+
+    Returns (grammar_string_or_None, is_json_mode).
+    """
+    from .grammar import json_mode_grammar, json_schema_to_gbnf
+
+    # Explicit grammar takes precedence
+    if body.grammar:
+        return body.grammar, False
+
+    rf = body.response_format
+    if rf is None and default_json_mode:
+        rf = {"type": "json_object"}
+
+    if rf is None:
+        return None, False
+
+    fmt_type = rf.get("type")
+    if fmt_type == "json_object":
+        return json_mode_grammar(), True
+    if fmt_type == "json_schema":
+        schema = rf.get("json_schema") or rf.get("schema")
+        if schema:
+            # The OpenAI API wraps the actual schema under a "schema" key
+            # inside json_schema. Handle both nesting levels.
+            actual_schema = schema.get("schema", schema)
+            return json_schema_to_gbnf(actual_schema), True
+        return json_mode_grammar(), True
+
+    return None, False
+
+
+def _inject_json_system_prompt(
+    messages: list[dict[str, str]],
+    schema: Optional[dict[str, Any]] = None,
+) -> list[dict[str, str]]:
+    """Prepend a JSON-mode system prompt if one isn't already present."""
+    from .grammar import json_system_prompt
+
+    # Don't double-inject
+    if messages and messages[0].get("role") == "system":
+        existing = messages[0].get("content", "")
+        if "JSON" in existing or "json" in existing:
+            return messages
+
+    prompt = json_system_prompt(schema)
+    return [{"role": "system", "content": prompt}] + list(messages)
 
 
 def create_app(
@@ -575,8 +648,16 @@ def create_app(
     *,
     api_key: Optional[str] = None,
     api_base: str = "https://api.edgeml.io/api/v1",
+    json_mode: bool = False,
 ) -> Any:
-    """Create a FastAPI app with OpenAI-compatible endpoints."""
+    """Create a FastAPI app with OpenAI-compatible endpoints.
+
+    Parameters
+    ----------
+    json_mode:
+        When ``True``, all requests default to ``response_format={"type": "json_object"}``
+        unless the caller explicitly sets a different ``response_format``.
+    """
     from contextlib import asynccontextmanager
 
     from fastapi import FastAPI, HTTPException
@@ -587,6 +668,7 @@ def create_app(
         model_name=model_name,
         api_key=api_key,
         api_base=api_base,
+        default_json_mode=json_mode,
     )
 
     @asynccontextmanager
@@ -625,13 +707,30 @@ def create_app(
         if state.backend is None:
             raise HTTPException(status_code=503, detail="Model not loaded")
 
+        grammar_str, is_json = _resolve_grammar(body, state.default_json_mode)
+
+        messages = [{"role": m.role, "content": m.content} for m in body.messages]
+
+        # For backends without native grammar support (MLX, echo),
+        # inject a system prompt nudging JSON output when json_mode is on.
+        uses_grammar_natively = isinstance(state.backend, LlamaCppBackend)
+        schema_for_prompt: Optional[dict[str, Any]] = None
+        if is_json and not uses_grammar_natively:
+            rf = body.response_format or {}
+            if rf.get("type") == "json_schema":
+                raw = rf.get("json_schema") or rf.get("schema")
+                schema_for_prompt = raw.get("schema", raw) if raw else None
+            messages = _inject_json_system_prompt(messages, schema_for_prompt)
+
         gen_req = GenerationRequest(
             model=body.model or state.model_name,
-            messages=[{"role": m.role, "content": m.content} for m in body.messages],
+            messages=messages,
             max_tokens=body.max_tokens,
             temperature=body.temperature,
             top_p=body.top_p,
             stream=body.stream,
+            grammar=grammar_str if uses_grammar_natively else None,
+            json_mode=is_json,
         )
 
         state.request_count += 1
@@ -644,6 +743,36 @@ def create_app(
             )
 
         text, metrics = state.backend.generate(gen_req)
+
+        # JSON validation + retry for non-grammar backends
+        if is_json and not uses_grammar_natively:
+            from .grammar import extract_json, validate_json_output
+
+            if not validate_json_output(text):
+                extracted = extract_json(text)
+                if extracted is not None:
+                    text = json.dumps(extracted)
+                else:
+                    # Retry once with a stronger system prompt
+                    retry_messages = _inject_json_system_prompt(
+                        messages, schema_for_prompt
+                    )
+                    retry_req = GenerationRequest(
+                        model=gen_req.model,
+                        messages=retry_messages,
+                        max_tokens=gen_req.max_tokens,
+                        temperature=max(gen_req.temperature - 0.2, 0.0),
+                        top_p=gen_req.top_p,
+                        stream=False,
+                        json_mode=True,
+                    )
+                    text, metrics = state.backend.generate(retry_req)
+                    # Best-effort extraction on retry
+                    if not validate_json_output(text):
+                        extracted = extract_json(text)
+                        if extracted is not None:
+                            text = json.dumps(extracted)
+
         return {
             "id": req_id,
             "object": "chat.completion",
@@ -710,9 +839,18 @@ def run_server(
     host: str = "0.0.0.0",
     api_key: Optional[str] = None,
     api_base: str = "https://api.edgeml.io/api/v1",
+    json_mode: bool = False,
 ) -> None:
-    """Start the inference server (blocking)."""
+    """Start the inference server (blocking).
+
+    Parameters
+    ----------
+    json_mode:
+        When ``True``, all requests default to ``response_format={"type": "json_object"}``.
+    """
     import uvicorn
 
-    app = create_app(model_name, api_key=api_key, api_base=api_base)
+    app = create_app(
+        model_name, api_key=api_key, api_base=api_base, json_mode=json_mode
+    )
     uvicorn.run(app, host=host, port=port, log_level="info")
