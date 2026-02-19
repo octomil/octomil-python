@@ -21,6 +21,7 @@ def _detect_device_type() -> Optional[str]:
     Override by setting the ``OCTOMIL_DEVICE_TYPE`` environment variable.
     """
     import os
+
     return os.environ.get("OCTOMIL_DEVICE_TYPE")
 
 
@@ -246,7 +247,7 @@ class ModelRegistry:
         for item in data.get("models", []):
             if item.get("name") == name:
                 return item
-        payload = {
+        payload: dict[str, Any] = {
             "name": name,
             "description": description or "",
             "framework": framework,
@@ -313,7 +314,9 @@ class ModelRegistry:
         version: str,
         metrics: dict[str, Any],
     ) -> dict[str, Any]:
-        return self.api.patch(f"/models/{model_id}/versions/{version}/metrics", {"metrics": metrics})
+        return self.api.patch(
+            f"/models/{model_id}/versions/{version}/metrics", {"metrics": metrics}
+        )
 
     def delete_version(self, model_id: str, version: str) -> dict[str, Any]:
         return self.api.delete(f"/models/{model_id}/versions/{version}")
@@ -327,20 +330,13 @@ class ModelRegistry:
         increment_step: int = 10,
         start_immediately: bool = True,
     ) -> dict[str, Any]:
-        payload = {
-            "version": version,
-            "rollout_percentage": rollout_percentage,
-            "target_percentage": target_percentage,
-            "increment_step": increment_step,
-            "start_immediately": start_immediately,
-        }
         return self.rollouts.create(
             model_id=model_id,
-            version=payload["version"],
-            rollout_percentage=float(payload["rollout_percentage"]),
-            target_percentage=float(payload["target_percentage"]),
-            increment_step=float(payload["increment_step"]),
-            start_immediately=bool(payload["start_immediately"]),
+            version=version,
+            rollout_percentage=float(rollout_percentage),
+            target_percentage=float(target_percentage),
+            increment_step=float(increment_step),
+            start_immediately=start_immediately,
         )
 
     def deploy_version(
@@ -424,7 +420,10 @@ class ModelRegistry:
         Prefer :meth:`download` directly.
         """
         return self.download(
-            model_id, version, destination, device_type=device_type,
+            model_id,
+            version,
+            destination,
+            device_type=device_type,
         )
 
     def check_compatibility(

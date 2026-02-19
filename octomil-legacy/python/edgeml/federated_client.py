@@ -12,6 +12,7 @@ from typing import (
     Dict,
     List,
     Optional,
+    Sequence,
     Tuple,
     Union,
 )
@@ -29,6 +30,7 @@ logger = logging.getLogger(__name__)
 
 try:
     import pandas as pd
+
     HAS_PANDAS = True
 except ImportError:
     pd = None  # type: ignore[assignment]
@@ -72,7 +74,7 @@ def _apply_fedprox_correction(delta: Dict[str, Any], mu: float) -> Dict[str, Any
     return corrected
 
 
-def apply_filters(delta: Dict[str, Any], filters: List[Dict[str, Any]]) -> Dict[str, Any]:
+def apply_filters(delta: Dict[str, Any], filters: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
     """Apply a composable filter pipeline to a state-dict delta.
 
     This is a backward-compatible wrapper around :func:`octomil.filters.apply_filters`.
@@ -81,7 +83,7 @@ def apply_filters(delta: Dict[str, Any], filters: List[Dict[str, Any]]) -> Dict[
     For the full API with audit trail and :class:`~octomil.filters.DeltaFilter`
     support, use :func:`octomil.filters.apply_filters` directly.
     """
-    result = _apply_filters_impl(delta, filters)
+    result = _apply_filters_impl(delta, list(filters))
     return result.delta
 
 
@@ -195,8 +197,7 @@ class FederatedClient:
         if target_col not in df.columns:
             available = sorted(df.columns)
             raise OctomilClientError(
-                f"Target column '{target_col}' not found. "
-                f"Available columns: {available}"
+                f"Target column '{target_col}' not found. " f"Available columns: {available}"
             )
 
         if architecture:
@@ -209,9 +210,7 @@ class FederatedClient:
 
         detected_features = [c for c in df.columns if c != target_col]
         sample_count = len(df)
-        logger.info(
-            f"Loaded data: {sample_count} samples, {len(detected_features)} features"
-        )
+        logger.info(f"Loaded data: {sample_count} samples, {len(detected_features)} features")
         return df, detected_features, target_col, sample_count
 
     def train(
@@ -228,14 +227,15 @@ class FederatedClient:
         detected_features = None
         df = None
 
-        is_data_source = (
-            isinstance(data, (str, Path)) or
-            (HAS_PANDAS and isinstance(data, pd.DataFrame))
+        is_data_source = isinstance(data, (str, Path)) or (
+            HAS_PANDAS and isinstance(data, pd.DataFrame)
         )
 
         if is_data_source:
             df, detected_features, target_col, data_count = self._prepare_training_data(
-                model, data, target_col,
+                model,
+                data,
+                target_col,
             )
             self._detected_features = detected_features
             sample_count = sample_count or data_count
@@ -455,6 +455,7 @@ class FederatedClient:
         from .secagg import SecAggConfig as _SAConfig
 
         # Fetch session parameters from the server.
+        assert self.device_id is not None, "Device must be registered before SecAgg"
         session_info = self.api.secagg_get_session(round_id, self.device_id)
 
         sa_config = _SAConfig(
@@ -538,8 +539,8 @@ class FederatedClient:
             g_tensor = global_model.get(key)
             if torch.is_tensor(p_tensor) and g_tensor is not None and torch.is_tensor(g_tensor):
                 # Proximal step: move personal weights toward global
-                personal_updated[key] = (
-                    p_tensor - lambda_ditto * (p_tensor.detach() - g_tensor.detach())
+                personal_updated[key] = p_tensor - lambda_ditto * (
+                    p_tensor.detach() - g_tensor.detach()
                 )
             else:
                 personal_updated[key] = p_tensor
@@ -607,6 +608,7 @@ class FederatedClient:
 
         try:
             import numpy as np
+
             if isinstance(weights, np.ndarray):
                 buffer = io.BytesIO()
                 np.save(buffer, weights)
@@ -663,4 +665,3 @@ def compute_state_dict_delta(
         if torch.is_tensor(base_tensor) and torch.is_tensor(updated_tensor):
             delta[key] = updated_tensor.detach().cpu() - base_tensor.detach().cpu()
     return delta
-

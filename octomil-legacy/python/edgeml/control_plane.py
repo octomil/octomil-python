@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any, Optional
+from typing import Any, List, Optional
 
 from .api_client import _ApiClient
 
@@ -29,11 +29,11 @@ class RolloutsAPI:
         }
         return self.api.post(f"/models/{model_id}/rollouts", payload)
 
-    def list(self, model_id: str, status_filter: Optional[str] = None) -> list[dict[str, Any]]:
+    def list(self, model_id: str, status_filter: Optional[str] = None) -> List[dict[str, Any]]:
         params = {"status_filter": status_filter} if status_filter else None
         return self.api.get(f"/models/{model_id}/rollouts", params=params)
 
-    def list_active(self, model_id: str) -> list[dict[str, Any]]:
+    def list_active(self, model_id: str) -> List[dict[str, Any]]:
         return self.api.get(f"/models/{model_id}/rollouts/active")
 
     def get(self, model_id: str, rollout_id: int) -> dict[str, Any]:
@@ -71,7 +71,7 @@ class RolloutsAPI:
             payload["reason"] = reason
         return self.api.post(f"/models/{model_id}/rollouts/{rollout_id}/update-percentage", payload)
 
-    def get_status_history(self, model_id: str, rollout_id: int) -> list[dict[str, Any]]:
+    def get_status_history(self, model_id: str, rollout_id: int) -> List[dict[str, Any]]:
         return self.api.get(f"/models/{model_id}/rollouts/{rollout_id}/status-history")
 
     def get_affected_devices(self, model_id: str, rollout_id: int) -> dict[str, Any]:
@@ -228,7 +228,7 @@ class ExperimentsAPI:
         status_filter: Optional[str] = None,
         limit: int = 100,
         offset: int = 0,
-    ) -> list[dict[str, Any]]:
+    ) -> List[dict[str, Any]]:
         params: dict[str, Any] = {
             "org_id": self.org_id,
             "limit": limit,
@@ -258,13 +258,15 @@ class ExperimentsAPI:
     def cancel(self, experiment_id: str) -> dict[str, Any]:
         return self.api.post(f"/experiments/{experiment_id}/cancel", {})
 
-    def update_allocations(self, experiment_id: str, variants: list[dict[str, Any]]) -> dict[str, Any]:
+    def update_allocations(
+        self, experiment_id: str, variants: List[dict[str, Any]]
+    ) -> dict[str, Any]:
         return self.api.patch(f"/experiments/{experiment_id}/allocations", {"variants": variants})
 
     def get_target_groups(self, experiment_id: str) -> dict[str, Any]:
         return self.api.get(f"/experiments/{experiment_id}/target-groups")
 
-    def set_target_groups(self, experiment_id: str, group_ids: list[str]) -> dict[str, Any]:
+    def set_target_groups(self, experiment_id: str, group_ids: List[str]) -> dict[str, Any]:
         return self.api.put(f"/experiments/{experiment_id}/target-groups", {"group_ids": group_ids})
 
     def add_target_group(self, experiment_id: str, group_id: str) -> dict[str, Any]:
@@ -281,4 +283,3 @@ class ExperimentsAPI:
 
     def get_analytics_timeseries(self, experiment_id: str) -> dict[str, Any]:
         return self.api.get(f"/experiments/{experiment_id}/analytics/timeseries")
-

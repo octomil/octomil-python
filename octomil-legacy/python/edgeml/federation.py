@@ -90,8 +90,9 @@ class Federation:
                 "output_dim": output_dim,
             }
             result = self.api.post("/training/aggregate", payload)
-            current_base = result.get("new_version")
-            self.last_version = current_base
+            if result is not None:
+                current_base = result.get("new_version")
+                self.last_version = current_base
             new_version = None
 
         return result or {}
@@ -126,4 +127,3 @@ class Federation:
             increment_step=float(increment_step),
             start_immediately=start_immediately,
         )
-
