@@ -480,6 +480,7 @@ def deploy(
                 f"({ollama_model.size_display}, {ollama_model.quantization})"
             )
 
+
         api_key = _require_api_key()
         api_base = os.environ.get("OCTOMIL_API_BASE", "https://api.octomil.io/api/v1")
         dashboard_url = os.environ.get("OCTOMIL_DASHBOARD_URL", "https://app.octomil.io")
