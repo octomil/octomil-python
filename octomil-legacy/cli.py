@@ -468,11 +468,66 @@ def deploy(
         octomil deploy sentiment-v1 --rollout 10 --strategy canary
     """
     if phone:
-        click.echo(f"Deploying {name} to phone...")
-        click.echo("Scan the QR code in your Octomil dashboard to connect your device.")
-        click.echo("Opening dashboard...")
+        import httpx
+
+        api_key = _require_api_key()
+        api_base = os.environ.get("OCTOMIL_API_BASE", "https://api.octomil.io/api/v1")
         dashboard_url = os.environ.get("OCTOMIL_DASHBOARD_URL", "https://app.octomil.io")
-        webbrowser.open(f"{dashboard_url}/deploy/phone?model={name}")
+
+        click.echo(f"Creating pairing session for {name}...")
+        resp = httpx.post(
+            f"{api_base}/deploy/pair",
+            json={"model_name": name, "model_version": version},
+            headers={"Authorization": f"Bearer {api_key}"},
+            timeout=10.0,
+        )
+        if resp.status_code >= 400:
+            click.echo(
+                f"Failed to create pairing session: {resp.status_code}", err=True
+            )
+            click.echo(resp.text, err=True)
+            sys.exit(1)
+
+        session = resp.json()
+        code = session["code"]
+
+        click.echo(f"\nPairing code: {code}")
+        click.echo("Enter this code in the Octomil app on your phone.")
+        click.echo(f"Expires: {session['expires_at']}")
+        click.echo("\nOpening dashboard...")
+        webbrowser.open(f"{dashboard_url}/deploy/phone?code={code}&model={name}")
+
+        click.echo("\nWaiting for device to connect (Ctrl+C to cancel)...")
+        try:
+            while True:
+                import time
+
+                time.sleep(2)
+                poll = httpx.get(f"{api_base}/deploy/pair/{code}", timeout=5.0)
+                if poll.status_code != 200:
+                    continue
+                data = poll.json()
+                status_val = data.get("status", "pending")
+                if status_val == "connected":
+                    device = data.get("device_name") or data.get("device_id", "unknown")
+                    platform = data.get("device_platform", "unknown")
+                    click.echo(f"Device connected: {device} ({platform})")
+                    click.echo("Deployment in progress...")
+                elif status_val == "deploying":
+                    click.echo("Deploying...")
+                elif status_val == "done":
+                    click.echo("Deployment complete.")
+                    break
+                elif status_val in ("expired", "cancelled"):
+                    click.echo(f"Session {status_val}.", err=True)
+                    sys.exit(1)
+        except KeyboardInterrupt:
+            click.echo("\nCancelled.")
+            httpx.post(
+                f"{api_base}/deploy/pair/{code}/cancel",
+                headers={"Authorization": f"Bearer {api_key}"},
+                timeout=5.0,
+            )
         return
 
     client = _get_client()
@@ -487,6 +542,101 @@ def deploy(
 
     click.echo(f"Rollout created: {result.get('id', 'ok')}")
     click.echo(f"Status: {result.get('status', 'started')}")
+
+
+# ---------------------------------------------------------------------------
+# octomil pair (device-side: connect to a pairing session)
+# ---------------------------------------------------------------------------
+
+
+@main.command()
+@click.argument("code")
+@click.option(
+    "--device-id", default=None, help="Device identifier. Auto-generated if omitted."
+)
+@click.option(
+    "--platform",
+    "-p",
+    default=None,
+    help="Device platform (ios, android, python). Auto-detected if omitted.",
+)
+@click.option("--device-name", default=None, help="Friendly device name.")
+def pair(
+    code: str,
+    device_id: Optional[str],
+    platform: Optional[str],
+    device_name: Optional[str],
+) -> None:
+    """Connect to a pairing session as a device.
+
+    Enter the CODE displayed by `octomil deploy --phone` to pair
+    this device and receive the model deployment.
+
+    Example:
+
+        octomil pair ABC123
+    """
+    import platform as _platform
+    import uuid
+
+    import httpx
+
+    api_base = os.environ.get("OCTOMIL_API_BASE", "https://api.octomil.io/api/v1")
+    device_id = device_id or f"device-{uuid.uuid4().hex[:8]}"
+    platform = platform or f"python-{_platform.system().lower()}"
+    device_name = device_name or f"{_platform.node()}"
+
+    click.echo(f"Connecting to pairing session {code.upper()}...")
+    click.echo(f"Device: {device_name} ({platform})")
+
+    resp = httpx.post(
+        f"{api_base}/deploy/pair/{code}/connect",
+        json={
+            "device_id": device_id,
+            "platform": platform,
+            "device_name": device_name,
+        },
+        timeout=10.0,
+    )
+
+    if resp.status_code == 404:
+        click.echo("Pairing session not found. Check the code and try again.", err=True)
+        sys.exit(1)
+    elif resp.status_code == 410:
+        click.echo("Pairing session has expired.", err=True)
+        sys.exit(1)
+    elif resp.status_code == 409:
+        click.echo(
+            f"Session conflict: {resp.json().get('detail', 'already connected')}",
+            err=True,
+        )
+        sys.exit(1)
+    elif resp.status_code >= 400:
+        click.echo(f"Failed to connect: {resp.status_code}", err=True)
+        sys.exit(1)
+
+    session = resp.json()
+    click.echo(f"Connected to session for model: {session['model_name']}")
+    click.echo(f"Status: {session['status']}")
+    click.echo("Waiting for deployment...")
+
+    import time
+
+    while True:
+        time.sleep(2)
+        poll = httpx.get(f"{api_base}/deploy/pair/{code}", timeout=5.0)
+        if poll.status_code != 200:
+            continue
+        data = poll.json()
+        st = data.get("status", "connected")
+        if st == "deploying":
+            click.echo("Deployment in progress...")
+        elif st == "done":
+            click.echo("Deployment complete. Model received.")
+            break
+        elif st in ("expired", "cancelled"):
+            click.echo(f"Session {st}.", err=True)
+            sys.exit(1)
 
 
 # ---------------------------------------------------------------------------
