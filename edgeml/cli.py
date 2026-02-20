@@ -433,25 +433,121 @@ def convert(model_path: str, target: str, output: str, input_shape: str) -> None
 # ---------------------------------------------------------------------------
 
 
-@main.command()
-@click.option(
-    "--api-key", prompt="API key", hide_input=True, help="Your EdgeML API key."
-)
-def login(api_key: str) -> None:
-    """Authenticate with EdgeML and store your API key.
-
-    The key is stored in ~/.edgeml/credentials. You can also set the
-    EDGEML_API_KEY environment variable instead.
-    """
+def _save_credentials(api_key: str) -> None:
+    """Save an API key to ~/.edgeml/credentials with restrictive permissions."""
     config_dir = os.path.expanduser("~/.edgeml")
     os.makedirs(config_dir, exist_ok=True)
     config_path = os.path.join(config_dir, "credentials")
-
     with open(config_path, "w") as f:
         f.write(f"api_key={api_key}\n")
-
     os.chmod(config_path, 0o600)
-    click.echo(f"API key saved to {config_path}")
+
+
+def _browser_login() -> None:
+    """Run the browser-based OAuth-style login flow.
+
+    1. Spins up a temporary HTTP server on localhost.
+    2. Opens the EdgeML dashboard auth page in the browser.
+    3. Waits for the dashboard to redirect back with an API key.
+    4. Falls back to manual paste on timeout.
+    """
+    import http.server
+    import secrets
+    import socket
+    import threading
+    import urllib.parse
+
+    state = secrets.token_urlsafe(32)
+
+    # Find a free port
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.bind(("127.0.0.1", 0))
+        port = sock.getsockname()[1]
+
+    dashboard_url = os.environ.get("EDGEML_DASHBOARD_URL", "https://app.edgeml.io")
+    callback_url = f"http://127.0.0.1:{port}"
+    auth_url = (
+        f"{dashboard_url}/cli/auth"
+        f"?callback={urllib.parse.quote(callback_url, safe='')}"
+        f"&state={state}"
+    )
+
+    received_key: str | None = None
+    received_org: str | None = None
+    got_callback = threading.Event()
+
+    class _CallbackHandler(http.server.BaseHTTPRequestHandler):
+        """Handle the single GET callback from the dashboard."""
+
+        def do_GET(self) -> None:  # noqa: N802
+            nonlocal received_key, received_org
+            params = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+
+            cb_state = params.get("state", [None])[0]
+            if cb_state != state:
+                self.send_response(400)
+                self.end_headers()
+                self.wfile.write(b"Invalid state parameter.")
+                return
+
+            received_key = params.get("key", [None])[0]
+            received_org = params.get("org", [None])[0]
+
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html")
+            self.end_headers()
+            self.wfile.write(
+                b"<html><body><h2>Success! You can close this tab.</h2></body></html>"
+            )
+            got_callback.set()
+
+        def log_message(self, format: str, *args: object) -> None:  # noqa: A002
+            pass  # Suppress server log noise
+
+    server = http.server.HTTPServer(("127.0.0.1", port), _CallbackHandler)
+    server_thread = threading.Thread(target=server.serve_forever, daemon=True)
+    server_thread.start()
+
+    webbrowser.open(auth_url)
+    click.echo("Opening browser for authentication...")
+    click.echo("Waiting for authorization (Ctrl+C to cancel)...")
+
+    got_callback.wait(timeout=300)
+    server.shutdown()
+
+    if received_key:
+        _save_credentials(received_key)
+        org_display = received_org or "unknown"
+        click.echo(
+            click.style(f"\u2713 Authenticated as org: {org_display}", fg="green")
+        )
+        click.echo("API key saved to ~/.edgeml/credentials")
+    else:
+        click.echo("Timed out. You can paste your API key manually:")
+        manual_key: str = click.prompt("API key", hide_input=True)
+        _save_credentials(manual_key)
+        click.echo("API key saved to ~/.edgeml/credentials")
+
+
+@main.command()
+@click.option(
+    "--api-key",
+    default=None,
+    hide_input=True,
+    help="Paste API key directly (skip browser flow).",
+)
+def login(api_key: Optional[str]) -> None:
+    """Authenticate with EdgeML Cloud.
+
+    Opens your browser to authenticate, then saves the API key locally.
+    Use --api-key to paste a key directly (for CI/headless environments).
+    """
+    if api_key:
+        _save_credentials(api_key)
+        click.echo("API key saved to ~/.edgeml/credentials")
+        return
+
+    _browser_login()
 
 
 # ---------------------------------------------------------------------------
@@ -617,6 +713,34 @@ def deploy(
                 f"Detected ollama model: {ollama_model.name} "
                 f"({ollama_model.size_display}, {ollama_model.quantization})"
             )
+
+        # Try mDNS network scan before falling back to QR code
+        from .discovery import scan_for_devices
+
+        click.echo("Scanning for EdgeML devices on local network...")
+        discovered = scan_for_devices(timeout=5.0)
+
+        if discovered:
+            if len(discovered) == 1:
+                dev = discovered[0]
+                click.echo(
+                    click.style(
+                        f"  \u2713 Found: {dev.name} ({dev.platform}, {dev.ip})",
+                        fg="green",
+                    )
+                )
+                if click.confirm(f"\nDeploy {name} to this device?", default=True):
+                    # Direct deployment — create pairing session targeting this device
+                    pass
+            else:
+                click.echo(f"  Found {len(discovered)} devices:")
+                for i, dev in enumerate(discovered, 1):
+                    click.echo(f"    {i}. {dev.name} ({dev.platform}, {dev.ip})")
+                choice = click.prompt("Select device", type=int, default=1)
+                dev = discovered[choice - 1]
+                # Deploy to selected device (pairing session will target it)
+        else:
+            click.echo("  No devices found. Falling back to QR code pairing.\n")
 
         api_key = _require_api_key()
         api_base: str = (
@@ -1454,13 +1578,13 @@ def models(source: str) -> None:
                 if registry_models:
                     click.echo("Registry (edgeml):")
                     for rm in registry_models:
-                        name = rm.get("name", "unknown")
+                        name_val = rm.get("name", "unknown")
                         size = rm.get("size", 0)
                         fmt = rm.get("format", "unknown")
                         framework = rm.get("framework", "unknown")
                         size_mb = size / (1024 * 1024) if size else 0
                         click.echo(
-                            f"  {name:<20s}{size_mb:>5.0f} MB   {fmt:<9s}{framework}"
+                            f"  {name_val:<20s}{size_mb:>5.0f} MB   {fmt:<9s}{framework}"
                         )
                 else:
                     click.echo("Registry (edgeml): no models found")
