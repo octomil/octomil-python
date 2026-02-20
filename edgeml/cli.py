@@ -13,6 +13,13 @@ Usage::
     edgeml status sentiment-v1
     edgeml benchmark gemma-1b --share
     edgeml login
+    edgeml init "Acme Corp" --compliance hipaa --region us
+    edgeml team add alice@acme.com --role admin
+    edgeml team list
+    edgeml team set-policy --require-mfa --session-hours 8
+    edgeml keys create deploy-key --scope devices:write --scope models:read
+    edgeml keys list
+    edgeml keys revoke <key-id>
 """
 
 from __future__ import annotations
@@ -1451,6 +1458,408 @@ def models(source: str) -> None:
                 click.echo("Registry (edgeml): unable to fetch", err=True)
         elif source == "registry":
             click.echo("Registry (edgeml): no API key — run `edgeml login` first")
+
+
+# ---------------------------------------------------------------------------
+# Enterprise helpers
+# ---------------------------------------------------------------------------
+
+
+def _get_enterprise_client(api_base: Optional[str] = None):  # type: ignore[no-untyped-def]
+    """Build an EnterpriseClient with the current API key."""
+    from .enterprise import EnterpriseClient
+
+    key = _require_api_key()
+    return EnterpriseClient(api_key=key, api_base=api_base)
+
+
+def _require_org_id() -> str:
+    """Read org_id from config/env or exit."""
+    from .enterprise import get_org_id
+
+    org_id = get_org_id()
+    if not org_id:
+        click.echo(
+            "No org_id configured. Run `edgeml init <name>` first, or "
+            "set EDGEML_ORG_ID.",
+            err=True,
+        )
+        sys.exit(1)
+    return org_id
+
+
+# ---------------------------------------------------------------------------
+# edgeml init
+# ---------------------------------------------------------------------------
+
+
+@main.command()
+@click.argument("org_name")
+@click.option(
+    "--compliance",
+    type=click.Choice(["hipaa", "gdpr", "pci", "soc2"]),
+    default=None,
+    help="Enable a compliance preset (hipaa, gdpr, pci, soc2).",
+)
+@click.option("--region", default="us", help="Data region (us, eu, ap).")
+@click.option("--api-base", default=None, help="Override API base URL.")
+def init(
+    org_name: str,
+    compliance: Optional[str],
+    region: str,
+    api_base: Optional[str],
+) -> None:
+    """Initialize an EdgeML organization for enterprise use.
+
+    Creates a new organization, optionally applies a compliance preset,
+    and saves the org_id to ~/.edgeml/config.json for subsequent commands.
+
+    Examples:
+
+        edgeml init "Acme Corp" --compliance hipaa --region us
+        edgeml init "Startup Inc" --region eu
+    """
+    from .enterprise import EnterpriseClient, save_config, load_config
+
+    key = _get_api_key()
+    if not key:
+        click.echo("No API key found. Run `edgeml login` first.", err=True)
+        sys.exit(1)
+
+    client = EnterpriseClient(api_key=key, api_base=api_base)
+
+    # 1. Create org
+    click.echo(f"Creating organization: {org_name} (region={region})")
+    try:
+        result = client.create_org(org_name, region=region, workspace_type="enterprise")
+    except Exception as exc:
+        click.echo(f"Failed to create organization: {exc}", err=True)
+        sys.exit(1)
+
+    org_id = result.get("org_id", "")
+    click.echo(click.style(f"  Organization created: {org_id}", fg="green"))
+
+    # 2. Apply compliance preset if specified
+    if compliance:
+        click.echo(f"Applying {compliance.upper()} compliance preset...")
+        try:
+            client.set_compliance(org_id, compliance)
+            click.echo(click.style(f"  {compliance.upper()} compliance applied", fg="green"))
+        except Exception as exc:
+            click.echo(f"  Warning: compliance preset failed: {exc}", err=True)
+
+    # 3. Save org_id to config
+    config = load_config()
+    config["org_id"] = org_id
+    config["org_name"] = org_name
+    config["region"] = region
+    if compliance:
+        config["compliance"] = compliance
+    save_config(config)
+    click.echo(f"  Config saved to ~/.edgeml/config.json")
+
+    # 4. Print next steps
+    click.echo("")
+    click.echo("Next steps:")
+    click.echo(f"  1. Invite team members:  edgeml team add alice@{org_name.lower().replace(' ', '')}.com --role admin")
+    click.echo(f"  2. Create an API key:    edgeml keys create deploy-key")
+    click.echo(f"  3. Set security policy:  edgeml team set-policy --require-mfa")
+    click.echo(f"  4. Push a model:         edgeml push model.pt --name my-model --version 1.0.0")
+
+
+# ---------------------------------------------------------------------------
+# edgeml org (informational)
+# ---------------------------------------------------------------------------
+
+
+@main.command("org")
+def org_info() -> None:
+    """Show current organization info and settings."""
+    from .enterprise import get_org_id, load_config
+
+    org_id = get_org_id()
+    if not org_id:
+        click.echo("No organization configured. Run `edgeml init <name>` first.")
+        return
+
+    config = load_config()
+    click.echo(f"Organization: {config.get('org_name', org_id)}")
+    click.echo(f"Org ID: {org_id}")
+    click.echo(f"Region: {config.get('region', 'unknown')}")
+    if config.get("compliance"):
+        click.echo(f"Compliance: {config['compliance'].upper()}")
+
+    # Try to fetch live settings
+    key = _get_api_key()
+    if key:
+        try:
+            client = _get_enterprise_client()
+            settings = client.get_settings(org_id)
+            click.echo("")
+            click.echo("Settings:")
+            click.echo(f"  Audit retention:     {settings.get('audit_retention_days', '?')} days")
+            click.echo(f"  Require MFA:         {settings.get('require_mfa_for_admin', '?')}")
+            click.echo(f"  Admin approval:      {settings.get('require_admin_approval', '?')}")
+            click.echo(f"  Model approval:      {settings.get('require_model_approval', '?')}")
+            click.echo(f"  Auto rollback:       {settings.get('auto_rollback_enabled', '?')}")
+            click.echo(f"  Session duration:    {settings.get('session_duration_hours', '?')}h")
+            click.echo(f"  Reauth interval:     {settings.get('reauth_interval_minutes', '?')}min")
+        except Exception:
+            click.echo("\n  (unable to fetch live settings)")
+
+
+# ---------------------------------------------------------------------------
+# edgeml team
+# ---------------------------------------------------------------------------
+
+
+@main.group()
+def team() -> None:
+    """Manage organization team members."""
+
+
+@team.command("add")
+@click.argument("email")
+@click.option(
+    "--role",
+    type=click.Choice(["member", "admin", "owner"]),
+    default="member",
+    help="Role to assign.",
+)
+@click.option("--name", default=None, help="Display name for the member.")
+def team_add(email: str, role: str, name: Optional[str]) -> None:
+    """Invite a team member to the organization.
+
+    Example:
+
+        edgeml team add alice@acme.com --role admin
+    """
+    org_id = _require_org_id()
+    client = _get_enterprise_client()
+
+    click.echo(f"Inviting {email} as {role}...")
+    try:
+        result = client.invite_member(org_id, email, role=role, name=name)
+        click.echo(click.style(f"  Invited: {result.get('email', email)} ({result.get('role', role)})", fg="green"))
+    except Exception as exc:
+        click.echo(f"Failed to invite member: {exc}", err=True)
+        sys.exit(1)
+
+
+@team.command("list")
+def team_list() -> None:
+    """List team members.
+
+    Example:
+
+        edgeml team list
+    """
+    org_id = _require_org_id()
+    client = _get_enterprise_client()
+
+    try:
+        members = client.list_members(org_id)
+    except Exception as exc:
+        click.echo(f"Failed to list members: {exc}", err=True)
+        sys.exit(1)
+
+    if not members:
+        click.echo("No team members found.")
+        return
+
+    # Table header
+    click.echo(f"{'Email':<35s} {'Role':<10s} {'Name':<20s}")
+    click.echo("-" * 65)
+    for m in members:
+        email = m.get("email", "?")
+        role = m.get("role", "?")
+        name = m.get("name", "") or ""
+        click.echo(f"{email:<35s} {role:<10s} {name:<20s}")
+    click.echo(f"\nTotal: {len(members)} member(s)")
+
+
+@team.command("set-policy")
+@click.option("--min-privacy-budget", type=float, default=None, help="Minimum DP epsilon budget.")
+@click.option("--require-mfa", is_flag=True, default=None, help="Require MFA for admins.")
+@click.option("--no-require-mfa", is_flag=True, default=None, help="Disable MFA requirement for admins.")
+@click.option("--auto-rollback/--no-auto-rollback", default=None, help="Auto-rollback on model drift.")
+@click.option("--session-hours", type=int, default=None, help="Session duration in hours.")
+@click.option("--reauth-minutes", type=int, default=None, help="Re-authentication interval in minutes.")
+@click.option("--audit-retention-days", type=int, default=None, help="Audit log retention in days.")
+@click.option("--require-model-approval", is_flag=True, default=None, help="Require approval for model deployments.")
+@click.option("--no-require-model-approval", is_flag=True, default=None, help="Disable model deployment approval.")
+def team_set_policy(
+    min_privacy_budget: Optional[float],
+    require_mfa: Optional[bool],
+    no_require_mfa: Optional[bool],
+    auto_rollback: Optional[bool],
+    session_hours: Optional[int],
+    reauth_minutes: Optional[int],
+    audit_retention_days: Optional[int],
+    require_model_approval: Optional[bool],
+    no_require_model_approval: Optional[bool],
+) -> None:
+    """Set organization security policies.
+
+    Examples:
+
+        edgeml team set-policy --require-mfa --session-hours 8
+        edgeml team set-policy --auto-rollback --audit-retention-days 365
+    """
+    org_id = _require_org_id()
+    client = _get_enterprise_client()
+
+    updates: dict[str, Any] = {}
+
+    # Resolve MFA flag (--require-mfa / --no-require-mfa)
+    if require_mfa:
+        updates["require_mfa_for_admin"] = True
+    elif no_require_mfa:
+        updates["require_mfa_for_admin"] = False
+
+    if auto_rollback is not None:
+        updates["auto_rollback_enabled"] = auto_rollback
+
+    if session_hours is not None:
+        updates["session_duration_hours"] = session_hours
+
+    if reauth_minutes is not None:
+        updates["reauth_interval_minutes"] = reauth_minutes
+
+    if audit_retention_days is not None:
+        updates["audit_retention_days"] = audit_retention_days
+
+    # Resolve model approval flag
+    if require_model_approval:
+        updates["require_model_approval"] = True
+    elif no_require_model_approval:
+        updates["require_model_approval"] = False
+
+    if not updates:
+        click.echo("No policy changes specified. Use --help to see options.")
+        return
+
+    click.echo("Updating security policies...")
+    try:
+        client.update_settings(org_id, **updates)
+        for key, value in updates.items():
+            label = key.replace("_", " ").title()
+            click.echo(click.style(f"  {label}: {value}", fg="green"))
+    except Exception as exc:
+        click.echo(f"Failed to update policies: {exc}", err=True)
+        sys.exit(1)
+
+
+# ---------------------------------------------------------------------------
+# edgeml keys
+# ---------------------------------------------------------------------------
+
+
+@main.group()
+def keys() -> None:
+    """Manage API keys."""
+
+
+@keys.command("create")
+@click.argument("name")
+@click.option(
+    "--scope",
+    multiple=True,
+    help="Key scopes (e.g., devices:write, models:read). Repeat for multiple.",
+)
+def keys_create(name: str, scope: tuple[str, ...]) -> None:
+    """Create a new API key.
+
+    Examples:
+
+        edgeml keys create deploy-key --scope devices:write --scope models:read
+        edgeml keys create admin-key
+    """
+    org_id = _require_org_id()
+    client = _get_enterprise_client()
+
+    # Convert scope tuple to dict format expected by the API
+    scopes: dict[str, Any] | None = None
+    if scope:
+        scopes = {}
+        for s in scope:
+            if ":" in s:
+                resource, permission = s.split(":", 1)
+                scopes[resource] = permission
+            else:
+                scopes[s] = "read"
+
+    click.echo(f"Creating API key: {name}")
+    try:
+        result = client.create_api_key(org_id, name, scopes=scopes)
+        raw_key = result.get("api_key", "")
+        prefix = result.get("prefix", "")
+        click.echo(click.style(f"  Key created: {prefix}...", fg="green"))
+        click.echo("")
+        click.echo(click.style(f"  API Key: {raw_key}", fg="yellow", bold=True))
+        click.echo("")
+        click.echo("  Save this key securely — it will not be shown again.")
+        click.echo(f"  Set it as: export EDGEML_API_KEY={raw_key}")
+    except Exception as exc:
+        click.echo(f"Failed to create API key: {exc}", err=True)
+        sys.exit(1)
+
+
+@keys.command("list")
+def keys_list() -> None:
+    """List API keys.
+
+    Example:
+
+        edgeml keys list
+    """
+    org_id = _require_org_id()
+    client = _get_enterprise_client()
+
+    try:
+        api_keys = client.list_api_keys(org_id)
+    except Exception as exc:
+        click.echo(f"Failed to list API keys: {exc}", err=True)
+        sys.exit(1)
+
+    if not api_keys:
+        click.echo("No API keys found.")
+        return
+
+    click.echo(f"{'Name':<25s} {'Prefix':<15s} {'Created':<20s} {'Status':<10s}")
+    click.echo("-" * 70)
+    for k in api_keys:
+        name = k.get("name", "?")
+        prefix = k.get("prefix", "?")
+        created = k.get("created_at", "?")[:10]
+        revoked = k.get("revoked_at")
+        status_str = click.style("revoked", fg="red") if revoked else click.style("active", fg="green")
+        click.echo(f"{name:<25s} {prefix:<15s} {created:<20s} {status_str}")
+    click.echo(f"\nTotal: {len(api_keys)} key(s)")
+
+
+@keys.command("revoke")
+@click.argument("key_id")
+@click.confirmation_option(prompt="Are you sure you want to revoke this API key?")
+def keys_revoke(key_id: str) -> None:
+    """Revoke an API key.
+
+    Example:
+
+        edgeml keys revoke abc-123-def
+    """
+    client = _get_enterprise_client()
+
+    click.echo(f"Revoking API key: {key_id}")
+    try:
+        result = client.revoke_api_key(key_id)
+        click.echo(click.style(
+            f"  Revoked: {result.get('name', key_id)} (prefix: {result.get('prefix', '?')})",
+            fg="yellow",
+        ))
+    except Exception as exc:
+        click.echo(f"Failed to revoke API key: {exc}", err=True)
+        sys.exit(1)
 
 
 if __name__ == "__main__":

@@ -18,6 +18,14 @@ from typing import Optional as _Optional
 from .telemetry import TelemetryReporter
 
 from .client import Client
+from .enterprise import (
+    COMPLIANCE_PRESETS,
+    EnterpriseClient,
+    EnterpriseClientError,
+    get_org_id,
+    load_config,
+    save_config,
+)
 from .models import (
     DeploymentPlan,
     DeploymentResult,
@@ -173,6 +181,12 @@ def get_reporter() -> _Optional[TelemetryReporter]:
 
 __all__ = [
     "Client",
+    "COMPLIANCE_PRESETS",
+    "EnterpriseClient",
+    "EnterpriseClientError",
+    "get_org_id",
+    "load_config",
+    "save_config",
     "DeploymentPlan",
     "DeploymentResult",
     "DeviceDeployment",
