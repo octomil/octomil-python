@@ -124,10 +124,12 @@ def init(
     """
     global _config, _reporter  # noqa: PLW0603
 
-    resolved_key = api_key or _os.environ.get("EDGEML_API_KEY", "")
-    resolved_org = org_id or _os.environ.get("EDGEML_ORG_ID", "default")
-    resolved_base = api_base or _os.environ.get(
-        "EDGEML_API_BASE", "https://api.edgeml.io/api/v1"
+    resolved_key = api_key if api_key else _os.environ.get("EDGEML_API_KEY", "")
+    resolved_org = org_id if org_id else _os.environ.get("EDGEML_ORG_ID", "default")
+    resolved_base = (
+        api_base
+        if api_base
+        else _os.environ.get("EDGEML_API_BASE", "https://api.edgeml.io/api/v1")
     )
 
     if not resolved_key:

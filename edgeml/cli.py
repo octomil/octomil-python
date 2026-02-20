@@ -1449,14 +1449,15 @@ def models(source: str) -> None:
         if api_key:
             try:
                 client = _get_client()
-                registry_models = client.list_models()
+                registry_data = client.list_models()
+                registry_models: list[dict[str, Any]] = registry_data.get("models", [])
                 if registry_models:
                     click.echo("Registry (edgeml):")
-                    for m in registry_models:
-                        name = m.get("name", "unknown")
-                        size = m.get("size", 0)
-                        fmt = m.get("format", "unknown")
-                        framework = m.get("framework", "unknown")
+                    for rm in registry_models:
+                        name = rm.get("name", "unknown")
+                        size = rm.get("size", 0)
+                        fmt = rm.get("format", "unknown")
+                        framework = rm.get("framework", "unknown")
                         size_mb = size / (1024 * 1024) if size else 0
                         click.echo(
                             f"  {name:<20s}{size_mb:>5.0f} MB   {fmt:<9s}{framework}"
@@ -1467,6 +1468,66 @@ def models(source: str) -> None:
                 click.echo("Registry (edgeml): unable to fetch", err=True)
         elif source == "registry":
             click.echo("Registry (edgeml): no API key — run `edgeml login` first")
+
+
+# ---------------------------------------------------------------------------
+# edgeml demo
+# ---------------------------------------------------------------------------
+
+
+@main.group()
+def demo() -> None:
+    """Run interactive demos showcasing EdgeML capabilities."""
+
+
+@demo.command("code-assistant")
+@click.option(
+    "--model",
+    "-m",
+    default=None,
+    help="Model to serve (default: gemma-2b, or EDGEML_MODEL env var).",
+)
+@click.option(
+    "--url",
+    default=None,
+    help="Connect to an existing edgeml serve instance instead of auto-starting.",
+)
+@click.option(
+    "--port",
+    "-p",
+    type=int,
+    default=8099,
+    help="Port for auto-started server (default: 8099).",
+)
+@click.option(
+    "--no-auto-start",
+    is_flag=True,
+    help="Don't auto-start edgeml serve; fail if no server is running.",
+)
+def demo_code_assistant(
+    model: Optional[str],
+    url: Optional[str],
+    port: int,
+    no_auto_start: bool,
+) -> None:
+    """Local code assistant — 100% on-device, zero cloud, zero cost.
+
+    Starts an interactive chat powered by a local LLM through edgeml serve.
+    Shows real-time performance metrics: latency, throughput, cost savings.
+
+    \b
+    Examples:
+        edgeml demo code-assistant
+        edgeml demo code-assistant --model phi-3-mini
+        edgeml demo code-assistant --url http://localhost:8080
+    """
+    from .demos.code_assistant import run_demo
+
+    effective_model: str = (
+        model if model else os.environ.get("EDGEML_MODEL", "gemma-2b")
+    )
+    effective_url: str = url if url else f"http://localhost:{port}"
+    run_demo(url=effective_url, model=effective_model, auto_start=not no_auto_start)
 
 
 # ---------------------------------------------------------------------------
@@ -1553,7 +1614,9 @@ def init(
         click.echo(f"Applying {compliance.upper()} compliance preset...")
         try:
             client.set_compliance(org_id, compliance)
-            click.echo(click.style(f"  {compliance.upper()} compliance applied", fg="green"))
+            click.echo(
+                click.style(f"  {compliance.upper()} compliance applied", fg="green")
+            )
         except Exception as exc:
             click.echo(f"  Warning: compliance preset failed: {exc}", err=True)
 
@@ -1565,15 +1628,19 @@ def init(
     if compliance:
         config["compliance"] = compliance
     save_config(config)
-    click.echo(f"  Config saved to ~/.edgeml/config.json")
+    click.echo("  Config saved to ~/.edgeml/config.json")
 
     # 4. Print next steps
     click.echo("")
     click.echo("Next steps:")
-    click.echo(f"  1. Invite team members:  edgeml team add alice@{org_name.lower().replace(' ', '')}.com --role admin")
-    click.echo(f"  2. Create an API key:    edgeml keys create deploy-key")
-    click.echo(f"  3. Set security policy:  edgeml team set-policy --require-mfa")
-    click.echo(f"  4. Push a model:         edgeml push model.pt --name my-model --version 1.0.0")
+    click.echo(
+        f"  1. Invite team members:  edgeml team add alice@{org_name.lower().replace(' ', '')}.com --role admin"
+    )
+    click.echo("  2. Create an API key:    edgeml keys create deploy-key")
+    click.echo("  3. Set security policy:  edgeml team set-policy --require-mfa")
+    click.echo(
+        "  4. Push a model:         edgeml push model.pt --name my-model --version 1.0.0"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1606,13 +1673,27 @@ def org_info() -> None:
             settings = client.get_settings(org_id)
             click.echo("")
             click.echo("Settings:")
-            click.echo(f"  Audit retention:     {settings.get('audit_retention_days', '?')} days")
-            click.echo(f"  Require MFA:         {settings.get('require_mfa_for_admin', '?')}")
-            click.echo(f"  Admin approval:      {settings.get('require_admin_approval', '?')}")
-            click.echo(f"  Model approval:      {settings.get('require_model_approval', '?')}")
-            click.echo(f"  Auto rollback:       {settings.get('auto_rollback_enabled', '?')}")
-            click.echo(f"  Session duration:    {settings.get('session_duration_hours', '?')}h")
-            click.echo(f"  Reauth interval:     {settings.get('reauth_interval_minutes', '?')}min")
+            click.echo(
+                f"  Audit retention:     {settings.get('audit_retention_days', '?')} days"
+            )
+            click.echo(
+                f"  Require MFA:         {settings.get('require_mfa_for_admin', '?')}"
+            )
+            click.echo(
+                f"  Admin approval:      {settings.get('require_admin_approval', '?')}"
+            )
+            click.echo(
+                f"  Model approval:      {settings.get('require_model_approval', '?')}"
+            )
+            click.echo(
+                f"  Auto rollback:       {settings.get('auto_rollback_enabled', '?')}"
+            )
+            click.echo(
+                f"  Session duration:    {settings.get('session_duration_hours', '?')}h"
+            )
+            click.echo(
+                f"  Reauth interval:     {settings.get('reauth_interval_minutes', '?')}min"
+            )
         except Exception:
             click.echo("\n  (unable to fetch live settings)")
 
@@ -1649,7 +1730,12 @@ def team_add(email: str, role: str, name: Optional[str]) -> None:
     click.echo(f"Inviting {email} as {role}...")
     try:
         result = client.invite_member(org_id, email, role=role, name=name)
-        click.echo(click.style(f"  Invited: {result.get('email', email)} ({result.get('role', role)})", fg="green"))
+        click.echo(
+            click.style(
+                f"  Invited: {result.get('email', email)} ({result.get('role', role)})",
+                fg="green",
+            )
+        )
     except Exception as exc:
         click.echo(f"Failed to invite member: {exc}", err=True)
         sys.exit(1)
@@ -1688,15 +1774,50 @@ def team_list() -> None:
 
 
 @team.command("set-policy")
-@click.option("--min-privacy-budget", type=float, default=None, help="Minimum DP epsilon budget.")
-@click.option("--require-mfa", is_flag=True, default=None, help="Require MFA for admins.")
-@click.option("--no-require-mfa", is_flag=True, default=None, help="Disable MFA requirement for admins.")
-@click.option("--auto-rollback/--no-auto-rollback", default=None, help="Auto-rollback on model drift.")
-@click.option("--session-hours", type=int, default=None, help="Session duration in hours.")
-@click.option("--reauth-minutes", type=int, default=None, help="Re-authentication interval in minutes.")
-@click.option("--audit-retention-days", type=int, default=None, help="Audit log retention in days.")
-@click.option("--require-model-approval", is_flag=True, default=None, help="Require approval for model deployments.")
-@click.option("--no-require-model-approval", is_flag=True, default=None, help="Disable model deployment approval.")
+@click.option(
+    "--min-privacy-budget", type=float, default=None, help="Minimum DP epsilon budget."
+)
+@click.option(
+    "--require-mfa", is_flag=True, default=None, help="Require MFA for admins."
+)
+@click.option(
+    "--no-require-mfa",
+    is_flag=True,
+    default=None,
+    help="Disable MFA requirement for admins.",
+)
+@click.option(
+    "--auto-rollback/--no-auto-rollback",
+    default=None,
+    help="Auto-rollback on model drift.",
+)
+@click.option(
+    "--session-hours", type=int, default=None, help="Session duration in hours."
+)
+@click.option(
+    "--reauth-minutes",
+    type=int,
+    default=None,
+    help="Re-authentication interval in minutes.",
+)
+@click.option(
+    "--audit-retention-days",
+    type=int,
+    default=None,
+    help="Audit log retention in days.",
+)
+@click.option(
+    "--require-model-approval",
+    is_flag=True,
+    default=None,
+    help="Require approval for model deployments.",
+)
+@click.option(
+    "--no-require-model-approval",
+    is_flag=True,
+    default=None,
+    help="Disable model deployment approval.",
+)
 def team_set_policy(
     min_privacy_budget: Optional[float],
     require_mfa: Optional[bool],
@@ -1842,7 +1963,11 @@ def keys_list() -> None:
         prefix = k.get("prefix", "?")
         created = k.get("created_at", "?")[:10]
         revoked = k.get("revoked_at")
-        status_str = click.style("revoked", fg="red") if revoked else click.style("active", fg="green")
+        status_str = (
+            click.style("revoked", fg="red")
+            if revoked
+            else click.style("active", fg="green")
+        )
         click.echo(f"{name:<25s} {prefix:<15s} {created:<20s} {status_str}")
     click.echo(f"\nTotal: {len(api_keys)} key(s)")
 
@@ -1862,10 +1987,12 @@ def keys_revoke(key_id: str) -> None:
     click.echo(f"Revoking API key: {key_id}")
     try:
         result = client.revoke_api_key(key_id)
-        click.echo(click.style(
-            f"  Revoked: {result.get('name', key_id)} (prefix: {result.get('prefix', '?')})",
-            fg="yellow",
-        ))
+        click.echo(
+            click.style(
+                f"  Revoked: {result.get('name', key_id)} (prefix: {result.get('prefix', '?')})",
+                fg="yellow",
+            )
+        )
     except Exception as exc:
         click.echo(f"Failed to revoke API key: {exc}", err=True)
         sys.exit(1)
