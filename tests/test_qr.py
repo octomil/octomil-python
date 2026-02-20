@@ -189,9 +189,8 @@ class TestDeployPhoneQr:
         assert result.exit_code == 0
         mock_open.assert_called_once()
         url = mock_open.call_args[0][0]
-        assert "deploy/phone" in url
+        assert "edgeml.io/pair" in url
         assert "code=QR1234" in url
-        assert "model=test-model" in url
 
     @patch("edgeml.cli.webbrowser.open")
     def test_deploy_phone_session_expired(self, mock_open, monkeypatch):

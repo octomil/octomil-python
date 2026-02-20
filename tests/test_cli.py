@@ -179,8 +179,8 @@ class TestDeployCommand:
         assert "ABC123" in result.output
         mock_open.assert_called_once()
         call_url = mock_open.call_args[0][0]
-        assert "deploy/phone" in call_url
-        assert "model=gemma-1b" in call_url
+        assert "edgeml.io/pair" in call_url
+        assert "code=ABC123" in call_url
 
     @patch("edgeml.cli._get_client")
     def test_deploy_rollout(self, mock_get_client, monkeypatch):
@@ -293,9 +293,18 @@ class TestPullCommand:
 class TestTrainStartCommand:
     @patch("edgeml.cli._get_client")
     def test_train_start_basic(self, mock_get_client, monkeypatch):
+        from edgeml.models import TrainingSession
+
         monkeypatch.setenv("EDGEML_API_KEY", "test-key")
         mock_client = MagicMock()
-        mock_client.train.return_value = {"training_id": "tr-123"}
+        mock_client.train.return_value = TrainingSession(
+            session_id="tr-123",
+            model_name="sentiment-v1",
+            group="default",
+            strategy="fedavg",
+            rounds=10,
+            status="created",
+        )
         mock_get_client.return_value = mock_client
 
         runner = CliRunner()
@@ -307,9 +316,18 @@ class TestTrainStartCommand:
 
     @patch("edgeml.cli._get_client")
     def test_train_start_with_options(self, mock_get_client, monkeypatch):
+        from edgeml.models import TrainingSession
+
         monkeypatch.setenv("EDGEML_API_KEY", "test-key")
         mock_client = MagicMock()
-        mock_client.train.return_value = {"training_id": "tr-456"}
+        mock_client.train.return_value = TrainingSession(
+            session_id="tr-456",
+            model_name="sentiment-v1",
+            group="default",
+            strategy="fedprox",
+            rounds=50,
+            status="created",
+        )
         mock_get_client.return_value = mock_client
 
         runner = CliRunner()
@@ -351,9 +369,18 @@ class TestTrainStartCommand:
 
     @patch("edgeml.cli._get_client")
     def test_train_start_with_group(self, mock_get_client, monkeypatch):
+        from edgeml.models import TrainingSession
+
         monkeypatch.setenv("EDGEML_API_KEY", "test-key")
         mock_client = MagicMock()
-        mock_client.train.return_value = {"training_id": "tr-789"}
+        mock_client.train.return_value = TrainingSession(
+            session_id="tr-789",
+            model_name="sentiment-v1",
+            group="us-west",
+            strategy="fedavg",
+            rounds=10,
+            status="created",
+        )
         mock_get_client.return_value = mock_client
 
         runner = CliRunner()

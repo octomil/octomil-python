@@ -258,29 +258,34 @@ class TestClientTrain:
     @patch("edgeml.client._ApiClient")
     def test_train_basic(self, mock_api_cls, mock_registry_cls, mock_rollouts):
         from edgeml.client import Client
+        from edgeml.models import TrainingSession
 
         mock_registry = mock_registry_cls.return_value
         mock_api = mock_api_cls.return_value
         mock_registry.resolve_model_id.return_value = "model-abc"
-        mock_api.post.return_value = {"training_id": "tr-123"}
+        mock_api.post.return_value = {"session_id": "sess-001", "status": "created"}
 
         c = Client(api_key="key")
         result = c.train("my-model")
 
         mock_registry.resolve_model_id.assert_called_once_with("my-model")
         mock_api.post.assert_called_once_with(
-            "/training/start",
+            "/training/sessions",
             {
                 "model_id": "model-abc",
+                "group": "default",
                 "strategy": "fedavg",
-                "num_rounds": 10,
-                "device_group": None,
-                "privacy_mechanism": None,
-                "epsilon": None,
-                "min_devices": 2,
+                "rounds": 10,
+                "min_updates": 1,
             },
         )
-        assert result["training_id"] == "tr-123"
+        assert isinstance(result, TrainingSession)
+        assert result.session_id == "sess-001"
+        assert result.model_name == "my-model"
+        assert result.strategy == "fedavg"
+        assert result.rounds == 10
+        assert result.group == "default"
+        assert result.status == "created"
 
     @patch("edgeml.client.RolloutsAPI")
     @patch("edgeml.client.ModelRegistry")
@@ -289,11 +294,12 @@ class TestClientTrain:
         self, mock_api_cls, mock_registry_cls, mock_rollouts
     ):
         from edgeml.client import Client
+        from edgeml.models import TrainingSession
 
         mock_registry = mock_registry_cls.return_value
         mock_api = mock_api_cls.return_value
         mock_registry.resolve_model_id.return_value = "model-xyz"
-        mock_api.post.return_value = {"training_id": "tr-456"}
+        mock_api.post.return_value = {"session_id": "sess-002", "status": "started"}
 
         c = Client(api_key="key")
         result = c.train(
@@ -307,18 +313,23 @@ class TestClientTrain:
         )
 
         mock_api.post.assert_called_once_with(
-            "/training/start",
+            "/training/sessions",
             {
                 "model_id": "model-xyz",
+                "group": "us-west",
                 "strategy": "fedprox",
-                "num_rounds": 50,
-                "device_group": "us-west",
-                "privacy_mechanism": "dp-sgd",
+                "rounds": 50,
+                "min_updates": 1,
+                "privacy": "dp-sgd",
                 "epsilon": 1.0,
                 "min_devices": 5,
             },
         )
-        assert result["training_id"] == "tr-456"
+        assert isinstance(result, TrainingSession)
+        assert result.session_id == "sess-002"
+        assert result.group == "us-west"
+        assert result.strategy == "fedprox"
+        assert result.rounds == 50
 
 
 class TestClientTrainStatus:

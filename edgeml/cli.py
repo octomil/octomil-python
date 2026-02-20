@@ -219,7 +219,9 @@ def _print_engine_detection(model: str, engine_override: str | None) -> None:
         click.echo(f"\nBenchmarking {model} across {len(available)} engines...")
         click.echo("(this runs a quick 32-token generation on each)")
     elif len(available) == 1:
-        click.echo(f"\nUsing {available[0].engine.display_name} (only available engine)")
+        click.echo(
+            f"\nUsing {available[0].engine.display_name} (only available engine)"
+        )
     else:
         click.echo(
             click.style(
@@ -1241,26 +1243,32 @@ def _benchmark_all_engines(model: str, iterations: int, max_tokens: int) -> None
 
             avg_tps = sum(tps_list) / len(tps_list)
             avg_lat = sum(latencies) / len(latencies)
-            results.append({
-                "engine": d.engine.display_name,
-                "avg_tps": avg_tps,
-                "avg_latency_ms": avg_lat,
-                "min_latency_ms": min(latencies),
-                "error": None,
-            })
+            results.append(
+                {
+                    "engine": d.engine.display_name,
+                    "avg_tps": avg_tps,
+                    "avg_latency_ms": avg_lat,
+                    "min_latency_ms": min(latencies),
+                    "error": None,
+                }
+            )
         except Exception as exc:
             click.echo(f"  Failed: {exc}")
-            results.append({
-                "engine": d.engine.display_name,
-                "avg_tps": 0,
-                "avg_latency_ms": 0,
-                "min_latency_ms": 0,
-                "error": str(exc),
-            })
+            results.append(
+                {
+                    "engine": d.engine.display_name,
+                    "avg_tps": 0,
+                    "avg_latency_ms": 0,
+                    "min_latency_ms": 0,
+                    "error": str(exc),
+                }
+            )
 
     # Print comparison table
     click.echo("\n" + "=" * 65)
-    click.echo(f"{'Engine':<30s} {'Avg tok/s':>10s} {'Avg latency':>12s} {'Status':>10s}")
+    click.echo(
+        f"{'Engine':<30s} {'Avg tok/s':>10s} {'Avg latency':>12s} {'Status':>10s}"
+    )
     click.echo("-" * 65)
 
     # Sort by tok/s descending
@@ -1356,7 +1364,8 @@ def train_start(
         epsilon=epsilon,
         min_devices=min_devices,
     )
-    click.echo(f"Training started: {result.get('training_id', 'ok')}")
+    click.echo(f"Training started: {result.session_id}")
+    click.echo(f"Status: {result.status}")
     click.echo(f"Monitor: edgeml train status {name}")
 
 
