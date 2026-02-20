@@ -270,8 +270,7 @@ class Client:
     ) -> TrainingSession:
         """Start a federated training session.
 
-        Wires to the training round management endpoint to create
-        a new training session.
+        Creates a training session via the round management endpoint.
 
         Args:
             name: Model name or ID.
@@ -383,51 +382,11 @@ class Client:
             "active_rollouts": rollouts,
         }
 
-    # ------------------------------------------------------------------
-    # Train — federated training
-    # ------------------------------------------------------------------
-
-    def train(
-        self,
-        name: str,
-        *,
-        strategy: str = "fedavg",
-        rounds: int = 10,
-        group: Optional[str] = None,
-        privacy: Optional[str] = None,
-        epsilon: Optional[float] = None,
-        min_devices: int = 2,
-    ) -> dict[str, Any]:
-        """Start federated training across deployed devices.
-
-        Args:
-            name: Model name or ID.
-            strategy: Aggregation strategy (fedavg, fedprox, etc.).
-            rounds: Number of training rounds.
-            group: Device group to train on.
-            privacy: Privacy mechanism (dp-sgd, none).
-            epsilon: Privacy budget (lower = more private).
-            min_devices: Minimum devices required per round.
-
-        Returns:
-            Training start response with training_id.
-        """
-        model_id = self._registry.resolve_model_id(name)
-        return self._api.post(
-            "/training/start",
-            {
-                "model_id": model_id,
-                "strategy": strategy,
-                "num_rounds": rounds,
-                "device_group": group,
-                "privacy_mechanism": privacy,
-                "epsilon": epsilon,
-                "min_devices": min_devices,
-            },
-        )
-
     def train_status(self, name: str) -> dict[str, Any]:
         """Get training status for a model.
+
+        Queries ``GET /training/{model_id}/status`` for the current
+        round progress, active devices, and metrics.
 
         Args:
             name: Model name or ID.
@@ -441,6 +400,9 @@ class Client:
 
     def train_stop(self, name: str) -> dict[str, Any]:
         """Stop active training for a model.
+
+        Calls ``POST /training/{model_id}/stop`` to cancel the
+        currently running training round.
 
         Args:
             name: Model name or ID.
