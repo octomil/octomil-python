@@ -29,7 +29,10 @@ import platform
 import time
 import uuid
 from dataclasses import dataclass, field
-from typing import Any, AsyncIterator, Optional
+from typing import TYPE_CHECKING, Any, AsyncIterator, Optional
+
+if TYPE_CHECKING:
+    from .telemetry import TelemetryReporter
 
 from pydantic import BaseModel, Field
 
@@ -730,6 +733,7 @@ class ServerState:
     cache_size_mb: int = 2048
     cache_enabled: bool = True
     engine_override: Optional[str] = None
+    reporter: Optional["TelemetryReporter"] = None
 
 
 def _resolve_grammar(
@@ -835,7 +839,26 @@ def create_app(
             raise
         state.engine_name = state.backend.name if state.backend else "none"
         state.start_time = time.time()
+
+        # Create telemetry reporter when an API key is configured
+        if state.api_key:
+            try:
+                from .telemetry import TelemetryReporter as _TR
+
+                state.reporter = _TR(
+                    api_key=state.api_key,
+                    api_base=state.api_base,
+                    org_id="default",
+                )
+                logger.info("Telemetry enabled — reporting to %s", state.api_base)
+            except Exception as exc:
+                logger.warning("Failed to initialise telemetry: %s", exc)
+
         yield
+
+        # Graceful shutdown: drain pending telemetry events
+        if state.reporter is not None:
+            state.reporter.close()
 
     app = FastAPI(title="Octomil Serve", version="1.0.0", lifespan=lifespan)
 
@@ -895,14 +918,42 @@ def create_app(
 
         state.request_count += 1
         req_id = f"chatcmpl-{uuid.uuid4().hex[:12]}"
+        session_id = uuid.uuid4().hex
+        model_version = "latest"
+        _reporter = state.reporter
+
+        # Report generation_started (best-effort)
+        if _reporter is not None:
+            try:
+                _reporter.report_generation_started(
+                    model_id=gen_req.model,
+                    version=model_version,
+                    session_id=session_id,
+                )
+            except Exception:
+                pass
 
         if gen_req.stream:
             return StreamingResponse(
-                _stream_response(state, gen_req, req_id),
+                _stream_response(state, gen_req, req_id, session_id),
                 media_type="text/event-stream",
             )
 
-        text, metrics = state.backend.generate(gen_req)
+        gen_start = time.monotonic()
+        try:
+            text, metrics = state.backend.generate(gen_req)
+        except Exception:
+            if _reporter is not None:
+                try:
+                    _reporter.report_generation_failed(
+                        session_id=session_id,
+                        model_id=gen_req.model,
+                        version=model_version,
+                    )
+                except Exception:
+                    pass
+            raise
+        gen_elapsed_ms = (time.monotonic() - gen_start) * 1000
 
         # JSON validation + retry for non-grammar backends
         if is_json and not uses_grammar_natively:
@@ -932,6 +983,27 @@ def create_app(
                         extracted = extract_json(text)
                         if extracted is not None:
                             text = json.dumps(extracted)
+
+        # Report generation_completed (best-effort)
+        if _reporter is not None:
+            try:
+                total_tokens = metrics.total_tokens
+                throughput = (
+                    total_tokens / (gen_elapsed_ms / 1000)
+                    if gen_elapsed_ms > 0
+                    else 0.0
+                )
+                _reporter.report_generation_completed(
+                    session_id=session_id,
+                    model_id=gen_req.model,
+                    version=model_version,
+                    total_chunks=total_tokens,
+                    total_duration_ms=gen_elapsed_ms,
+                    ttfc_ms=metrics.ttfc_ms,
+                    throughput=throughput,
+                )
+            except Exception:
+                pass
 
         return {
             "id": req_id,
@@ -1036,27 +1108,102 @@ async def _stream_response(
     state: ServerState,
     request: GenerationRequest,
     req_id: str,
+    session_id: str = "",
 ) -> AsyncIterator[str]:
     """Yield SSE chunks in OpenAI streaming format."""
     assert state.backend is not None
 
-    async for chunk in state.backend.generate_stream(request):
-        data = {
-            "id": req_id,
-            "object": "chat.completion.chunk",
-            "created": int(time.time()),
-            "model": request.model,
-            "choices": [
-                {
-                    "index": 0,
-                    "delta": {"content": chunk.text} if chunk.text else {},
-                    "finish_reason": chunk.finish_reason,
-                }
-            ],
-        }
-        yield f"data: {json.dumps(data)}\n\n"
+    _reporter = state.reporter
+    model_version = "latest"
+    chunk_index = 0
+    stream_start = time.monotonic()
+    first_chunk_time: Optional[float] = None
+    prev_chunk_time = stream_start
+    failed = False
+
+    try:
+        async for chunk in state.backend.generate_stream(request):
+            now = time.monotonic()
+            chunk_latency_ms = (now - prev_chunk_time) * 1000
+            prev_chunk_time = now
+
+            if first_chunk_time is None and chunk.text:
+                first_chunk_time = now
+
+            # Report each chunk (best-effort)
+            if _reporter is not None and chunk.text:
+                try:
+                    ttfc = (
+                        (first_chunk_time - stream_start) * 1000
+                        if first_chunk_time is not None and chunk_index == 0
+                        else None
+                    )
+                    _reporter.report_chunk_produced(
+                        session_id=session_id,
+                        model_id=request.model,
+                        version=model_version,
+                        chunk_index=chunk_index,
+                        ttfc_ms=ttfc,
+                        chunk_latency_ms=chunk_latency_ms,
+                    )
+                except Exception:
+                    pass
+                chunk_index += 1
+
+            data = {
+                "id": req_id,
+                "object": "chat.completion.chunk",
+                "created": int(time.time()),
+                "model": request.model,
+                "choices": [
+                    {
+                        "index": 0,
+                        "delta": {"content": chunk.text} if chunk.text else {},
+                        "finish_reason": chunk.finish_reason,
+                    }
+                ],
+            }
+            yield f"data: {json.dumps(data)}\n\n"
+    except Exception:
+        failed = True
+        if _reporter is not None:
+            try:
+                _reporter.report_generation_failed(
+                    session_id=session_id,
+                    model_id=request.model,
+                    version=model_version,
+                )
+            except Exception:
+                pass
+        raise
 
     yield "data: [DONE]\n\n"
+
+    # Report generation_completed (best-effort)
+    if _reporter is not None and not failed:
+        try:
+            total_duration_ms = (time.monotonic() - stream_start) * 1000
+            ttfc_ms = (
+                (first_chunk_time - stream_start) * 1000
+                if first_chunk_time is not None
+                else 0.0
+            )
+            throughput = (
+                chunk_index / (total_duration_ms / 1000)
+                if total_duration_ms > 0
+                else 0.0
+            )
+            _reporter.report_generation_completed(
+                session_id=session_id,
+                model_id=request.model,
+                version=model_version,
+                total_chunks=chunk_index,
+                total_duration_ms=total_duration_ms,
+                ttfc_ms=ttfc_ms,
+                throughput=throughput,
+            )
+        except Exception:
+            pass
 
 
 def run_server(
