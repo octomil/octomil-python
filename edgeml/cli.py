@@ -2293,5 +2293,55 @@ def federation_members(federation_name: str) -> None:
         click.echo(f"{org:<40s} {status:<15s} {joined:<25s}")
 
 
+@federation.command("share")
+@click.argument("model_name")
+@click.option(
+    "--federation",
+    "-f",
+    "federation_name",
+    required=True,
+    help="Federation name or ID to share the model with.",
+)
+def federation_share(model_name: str, federation_name: str) -> None:
+    """Share a model with a federation for cross-org training.
+
+    The model must belong to the federation owner's organization.
+    Once shared, all active federation members can contribute training
+    updates and deploy the model.
+
+    Example:
+
+        edgeml federation share radiology-v1 --federation healthcare-consortium
+    """
+    client = _get_client()
+    fed_id = _resolve_federation_id(client, federation_name)
+
+    # Resolve model name to model ID via the registry
+    models = client._api.get("/models", params={"org_id": client._org_id})
+    model_id = None
+    if isinstance(models, list):
+        for m in models:
+            if m.get("name") == model_name:
+                model_id = m.get("id")
+                break
+    if not model_id:
+        click.echo(
+            f"Model '{model_name}' not found in your organization. "
+            "Push it first with `edgeml push`.",
+            err=True,
+        )
+        sys.exit(1)
+
+    client._api.post(
+        f"/federations/{fed_id}/models",
+        {"model_id": model_id},
+    )
+    click.echo(f"Model '{model_name}' shared with federation '{federation_name}'")
+    click.echo(
+        "Active federation members can now contribute training updates "
+        "and deploy this model."
+    )
+
+
 if __name__ == "__main__":
     main()

@@ -439,6 +439,94 @@ class TestFederationMembers:
 
 
 # ---------------------------------------------------------------------------
+# federation share
+# ---------------------------------------------------------------------------
+
+
+class TestFederationShare:
+    @patch("edgeml.cli._get_client")
+    def test_share_model_success(self, mock_get_client, monkeypatch):
+        monkeypatch.setenv("EDGEML_API_KEY", "test-key")
+        client = _mock_client()
+
+        call_count = [0]
+
+        def _get_side_effect(path, params=None):
+            call_count[0] += 1
+            if "/federations" in path and params and "name" in params:
+                return [{"id": "fed_abc", "name": "my-fed"}]
+            if "/models" in path:
+                return [{"id": "model_123", "name": "radiology-v1"}]
+            return []
+
+        client._api.get.side_effect = _get_side_effect
+        client._api.post.return_value = {"id": "model_123", "federation_id": "fed_abc"}
+        mock_get_client.return_value = client
+
+        runner = CliRunner()
+        result = runner.invoke(
+            main,
+            ["federation", "share", "radiology-v1", "--federation", "my-fed"],
+        )
+
+        assert result.exit_code == 0
+        assert "shared with federation" in result.output
+
+    @patch("edgeml.cli._get_client")
+    def test_share_model_not_found(self, mock_get_client, monkeypatch):
+        monkeypatch.setenv("EDGEML_API_KEY", "test-key")
+        client = _mock_client()
+
+        def _get_side_effect(path, params=None):
+            if "/federations" in path and params and "name" in params:
+                return [{"id": "fed_abc", "name": "my-fed"}]
+            if "/models" in path:
+                return []  # no models
+            return []
+
+        client._api.get.side_effect = _get_side_effect
+        mock_get_client.return_value = client
+
+        runner = CliRunner()
+        result = runner.invoke(
+            main,
+            ["federation", "share", "nonexistent", "--federation", "my-fed"],
+        )
+
+        assert result.exit_code != 0
+        assert "not found" in result.output
+
+    @patch("edgeml.cli._get_client")
+    def test_share_calls_correct_api(self, mock_get_client, monkeypatch):
+        monkeypatch.setenv("EDGEML_API_KEY", "test-key")
+        client = _mock_client()
+
+        def _get_side_effect(path, params=None):
+            if "/federations" in path and params and "name" in params:
+                return [{"id": "fed_xyz", "name": "test-fed"}]
+            if "/models" in path:
+                return [{"id": "model_456", "name": "my-model"}]
+            return []
+
+        client._api.get.side_effect = _get_side_effect
+        client._api.post.return_value = {}
+        mock_get_client.return_value = client
+
+        runner = CliRunner()
+        result = runner.invoke(
+            main,
+            ["federation", "share", "my-model", "--federation", "test-fed"],
+        )
+
+        assert result.exit_code == 0
+        # Verify the POST call to share the model
+        post_calls = client._api.post.call_args_list
+        assert len(post_calls) == 1
+        assert post_calls[0][0][0] == "/federations/fed_xyz/models"
+        assert post_calls[0][0][1] == {"model_id": "model_456"}
+
+
+# ---------------------------------------------------------------------------
 # federation help
 # ---------------------------------------------------------------------------
 
@@ -454,9 +542,16 @@ class TestFederationHelp:
         assert "list" in result.output
         assert "show" in result.output
         assert "members" in result.output
+        assert "share" in result.output
 
     def test_federation_create_help(self):
         runner = CliRunner()
         result = runner.invoke(main, ["federation", "create", "--help"])
         assert result.exit_code == 0
         assert "--description" in result.output
+
+    def test_federation_share_help(self):
+        runner = CliRunner()
+        result = runner.invoke(main, ["federation", "share", "--help"])
+        assert result.exit_code == 0
+        assert "--federation" in result.output

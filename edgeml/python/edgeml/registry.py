@@ -43,10 +43,28 @@ class ModelRegistry:
         self.experiments = ExperimentsAPI(self.api, org_id=self.org_id)
 
     def resolve_model_id(self, model: str) -> str:
+        # Check own org's models first
         data = self.api.get(_MODELS_PATH, params={"org_id": self.org_id})
         for item in data.get("models", []):
             if item.get("name") == model:
                 return item["id"]
+
+        # Fallback: check models shared via federations the org belongs to
+        try:
+            federations = self.api.get("/federations", params={"org_id": self.org_id})
+            if isinstance(federations, list):
+                for fed in federations:
+                    fed_id = fed.get("id")
+                    if not fed_id:
+                        continue
+                    fed_models = self.api.get(f"/federations/{fed_id}/models")
+                    if isinstance(fed_models, list):
+                        for fm in fed_models:
+                            if fm.get("name") == model:
+                                return fm["id"]
+        except Exception:
+            pass  # Federation lookup is best-effort
+
         return model
 
     def get_latest_version_info(self, model_id: str) -> dict[str, Any]:
