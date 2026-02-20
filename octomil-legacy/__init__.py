@@ -11,6 +11,14 @@ import importlib as _importlib
 import sys as _sys
 
 from .client import Client
+from .enterprise import (
+    COMPLIANCE_PRESETS,
+    EnterpriseClient,
+    EnterpriseClientError,
+    get_org_id,
+    load_config,
+    save_config,
+)
 from .models import (
     DeploymentPlan,
     DeploymentResult,
@@ -83,6 +91,12 @@ for _name in _SUBMODULES:
 
 __all__ = [
     "Client",
+    "COMPLIANCE_PRESETS",
+    "EnterpriseClient",
+    "EnterpriseClientError",
+    "get_org_id",
+    "load_config",
+    "save_config",
     "DeploymentPlan",
     "DeploymentResult",
     "DeviceDeployment",
