@@ -1871,5 +1871,177 @@ def keys_revoke(key_id: str) -> None:
         sys.exit(1)
 
 
+# ---------------------------------------------------------------------------
+# edgeml federation
+# ---------------------------------------------------------------------------
+
+
+def _get_org_id() -> str:
+    """Read org_id from EDGEML_ORG_ID env var, defaulting to 'default'."""
+    return os.environ.get("EDGEML_ORG_ID", "default")
+
+
+def _resolve_federation_id(client, name_or_id: str) -> str:
+    """Resolve a federation name or ID to an ID.
+
+    First tries listing federations filtered by name.  If no match,
+    assumes ``name_or_id`` is already an ID and returns it as-is.
+    """
+    org_id = client._org_id
+    results = client._api.get(
+        "/federations",
+        params={"org_id": org_id, "name": name_or_id},
+    )
+    if results:
+        return results[0]["id"]
+    return name_or_id
+
+
+@main.group()
+def federation() -> None:
+    """Manage cross-org federations."""
+
+
+@federation.command("create")
+@click.argument("name")
+@click.option("--description", "-d", default=None, help="Federation description.")
+def federation_create(name: str, description: Optional[str]) -> None:
+    """Create a new federation.
+
+    Example:
+
+        edgeml federation create healthcare-consortium --description "Cross-hospital FL"
+    """
+    client = _get_client()
+    payload: dict[str, Any] = {
+        "name": name,
+        "org_id": client._org_id,
+    }
+    if description:
+        payload["description"] = description
+
+    result = client._api.post("/federations", payload)
+    fed_id = result.get("id", "unknown")
+    click.echo(f"Federation created: {name}")
+    click.echo(f"ID: {fed_id}")
+
+
+@federation.command("invite")
+@click.argument("federation_name")
+@click.option(
+    "--org",
+    "org_ids",
+    multiple=True,
+    required=True,
+    help="Org ID to invite (repeatable).",
+)
+def federation_invite(federation_name: str, org_ids: tuple[str, ...]) -> None:
+    """Invite organisations to a federation.
+
+    Example:
+
+        edgeml federation invite healthcare-consortium --org org_abc --org org_def
+    """
+    client = _get_client()
+    fed_id = _resolve_federation_id(client, federation_name)
+    result = client._api.post(
+        f"/federations/{fed_id}/invite",
+        {"org_ids": list(org_ids)},
+    )
+    invited = result if isinstance(result, list) else result.get("invited", [])
+    click.echo(f"Invited {len(invited)} org(s) to federation {federation_name}")
+
+
+@federation.command("join")
+@click.argument("federation_name")
+def federation_join(federation_name: str) -> None:
+    """Accept an invitation and join a federation.
+
+    Example:
+
+        edgeml federation join healthcare-consortium
+    """
+    client = _get_client()
+    fed_id = _resolve_federation_id(client, federation_name)
+    client._api.post(
+        f"/federations/{fed_id}/join",
+        {"org_id": client._org_id},
+    )
+    click.echo(f"Joined federation: {federation_name}")
+
+
+@federation.command("list")
+def federation_list() -> None:
+    """List federations visible to your organisation.
+
+    Example:
+
+        edgeml federation list
+    """
+    client = _get_client()
+    results = client._api.get(
+        "/federations",
+        params={"org_id": client._org_id},
+    )
+
+    if not results:
+        click.echo("No federations found.")
+        return
+
+    click.echo(f"{'Name':<30s} {'ID':<40s} {'Description':<30s}")
+    click.echo("-" * 100)
+    for fed in results:
+        name = fed.get("name", "")
+        fed_id = fed.get("id", "")
+        desc = fed.get("description", "") or ""
+        click.echo(f"{name:<30s} {fed_id:<40s} {desc:<30s}")
+
+
+@federation.command("show")
+@click.argument("federation_name")
+def federation_show(federation_name: str) -> None:
+    """Show details of a federation.
+
+    Example:
+
+        edgeml federation show healthcare-consortium
+    """
+    client = _get_client()
+    fed_id = _resolve_federation_id(client, federation_name)
+    data = client._api.get(f"/federations/{fed_id}")
+
+    click.echo(f"Name:        {data.get('name', '')}")
+    click.echo(f"ID:          {data.get('id', '')}")
+    click.echo(f"Description: {data.get('description', '') or '-'}")
+    click.echo(f"Created:     {data.get('created_at', '')}")
+    click.echo(f"Org ID:      {data.get('org_id', '')}")
+
+
+@federation.command("members")
+@click.argument("federation_name")
+def federation_members(federation_name: str) -> None:
+    """List members of a federation.
+
+    Example:
+
+        edgeml federation members healthcare-consortium
+    """
+    client = _get_client()
+    fed_id = _resolve_federation_id(client, federation_name)
+    members = client._api.get(f"/federations/{fed_id}/members")
+
+    if not members:
+        click.echo("No members found.")
+        return
+
+    click.echo(f"{'Org ID':<40s} {'Status':<15s} {'Joined':<25s}")
+    click.echo("-" * 80)
+    for m in members:
+        org = m.get("org_id", "")
+        status = m.get("status", "")
+        joined = m.get("joined_at", "") or "-"
+        click.echo(f"{org:<40s} {status:<15s} {joined:<25s}")
+
+
 if __name__ == "__main__":
     main()
