@@ -1,10 +1,14 @@
 """
-Query routing for multi-model serving.
+Query routing for multi-model serving with tier-0 deterministic answers.
 
 Routes incoming queries to the most appropriate model based on estimated
 complexity.  Simple queries (greetings, short factual questions) go to
 the smallest/fastest model; complex queries (code generation, multi-step
 reasoning) go to the largest/most capable model.
+
+**Tier 0 (deterministic)**: Intercepts arithmetic, unit conversions, and
+other queries that can be answered without invoking any model.  Uses safe
+AST-based evaluation -- never ``eval()`` or ``exec()``.
 
 The complexity heuristic is pure Python — no ML model required.
 
@@ -19,12 +23,20 @@ Usage::
     }
     router = QueryRouter(models, strategy="complexity")
     chosen = router.route(messages)
+
+    # Tier-0 deterministic routing:
+    from octomil.routing import check_deterministic
+    result = check_deterministic("what is 2+2?")
+    if result is not None:
+        print(result.answer)  # "4"
 """
 
 from __future__ import annotations
 
+import ast
 import logging
 import math
+import operator
 import re
 from dataclasses import dataclass, field
 from typing import Optional
@@ -57,6 +69,25 @@ class ModelInfo:
             return 1  # default to balanced
 
 
+# ---------------------------------------------------------------------------
+# Deterministic result
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class DeterministicResult:
+    """Result from a deterministic (no-model) computation."""
+
+    answer: str
+    method: str  # e.g. "arithmetic", "unit_conversion"
+    confidence: float = 1.0
+
+
+# ---------------------------------------------------------------------------
+# Routing decision
+# ---------------------------------------------------------------------------
+
+
 @dataclass
 class RoutingDecision:
     """Result of a routing decision with metadata for telemetry."""
@@ -66,6 +97,7 @@ class RoutingDecision:
     tier: str
     strategy: str
     fallback_chain: list[str] = field(default_factory=list)
+    deterministic_result: Optional[DeterministicResult] = None
 
 
 # ---------------------------------------------------------------------------
@@ -230,12 +262,313 @@ def _estimate_complexity(
 
 
 # ---------------------------------------------------------------------------
+# Safe AST-based arithmetic evaluator (Tier-0 deterministic)
+# ---------------------------------------------------------------------------
+
+# Whitelisted AST node types for safe arithmetic evaluation
+_SAFE_NODES = (
+    ast.Expression,
+    ast.Constant,
+    ast.Num,  # Python 3.7 compat (deprecated but still parsed)
+    ast.UnaryOp,
+    ast.UAdd,
+    ast.USub,
+    ast.BinOp,
+    ast.Add,
+    ast.Sub,
+    ast.Mult,
+    ast.Div,
+    ast.FloorDiv,
+    ast.Mod,
+    ast.Pow,
+    ast.Call,
+    ast.Name,
+    ast.Load,
+)
+
+# Allowed function names in expressions
+_SAFE_FUNCTIONS: dict[str, callable] = {
+    "sqrt": math.sqrt,
+    "abs": abs,
+    "round": round,
+    "ceil": math.ceil,
+    "floor": math.floor,
+    "log": math.log,
+    "log2": math.log2,
+    "log10": math.log10,
+    "sin": math.sin,
+    "cos": math.cos,
+    "tan": math.tan,
+    "pi": math.pi,
+    "e": math.e,
+}
+
+# Allowed constants (names that resolve to values, not functions)
+_SAFE_CONSTANTS: dict[str, float] = {
+    "pi": math.pi,
+    "e": math.e,
+}
+
+
+def _safe_eval_node(node: ast.AST) -> float:
+    """Recursively evaluate an AST node, allowing only arithmetic operations.
+
+    Raises ``ValueError`` for any disallowed node type.
+    """
+    if isinstance(node, ast.Expression):
+        return _safe_eval_node(node.body)
+
+    if isinstance(node, ast.Constant):
+        if isinstance(node.value, (int, float)):
+            return float(node.value)
+        raise ValueError(f"Disallowed constant type: {type(node.value).__name__}")
+
+    # Python 3.7 ast.Num (deprecated but still emitted by some parsers)
+    if isinstance(node, ast.Num):
+        return float(node.n)
+
+    if isinstance(node, ast.UnaryOp):
+        operand = _safe_eval_node(node.operand)
+        if isinstance(node.op, ast.UAdd):
+            return +operand
+        if isinstance(node.op, ast.USub):
+            return -operand
+        raise ValueError(f"Disallowed unary op: {type(node.op).__name__}")
+
+    if isinstance(node, ast.BinOp):
+        left = _safe_eval_node(node.left)
+        right = _safe_eval_node(node.right)
+        ops = {
+            ast.Add: operator.add,
+            ast.Sub: operator.sub,
+            ast.Mult: operator.mul,
+            ast.Div: operator.truediv,
+            ast.FloorDiv: operator.floordiv,
+            ast.Mod: operator.mod,
+            ast.Pow: operator.pow,
+        }
+        op_func = ops.get(type(node.op))
+        if op_func is None:
+            raise ValueError(f"Disallowed binary op: {type(node.op).__name__}")
+
+        # Guard against exponent bombs (e.g. 2**999999999)
+        if isinstance(node.op, ast.Pow) and abs(right) > 10000:
+            raise ValueError("Exponent too large")
+
+        return op_func(left, right)
+
+    if isinstance(node, ast.Call):
+        # Only allow whitelisted function names
+        if not isinstance(node.func, ast.Name):
+            raise ValueError("Only simple function calls allowed")
+        func_name = node.func.id
+        if func_name not in _SAFE_FUNCTIONS:
+            raise ValueError(f"Disallowed function: {func_name}")
+        func = _SAFE_FUNCTIONS[func_name]
+        if not callable(func):
+            raise ValueError(f"{func_name} is not callable")
+        args = [_safe_eval_node(arg) for arg in node.args]
+        if node.keywords:
+            raise ValueError("Keyword arguments not allowed")
+        return func(*args)
+
+    if isinstance(node, ast.Name):
+        name = node.id
+        if name in _SAFE_CONSTANTS:
+            return _SAFE_CONSTANTS[name]
+        raise ValueError(f"Disallowed name: {name}")
+
+    raise ValueError(f"Disallowed AST node: {type(node).__name__}")
+
+
+def _safe_arithmetic_eval(expr: str) -> Optional[float]:
+    """Safely evaluate a pure arithmetic expression string.
+
+    Returns the numeric result, or ``None`` if the expression is not
+    valid arithmetic.  Never uses ``eval()``/``exec()``.
+    """
+    try:
+        tree = ast.parse(expr, mode="eval")
+    except SyntaxError:
+        return None
+
+    # Reject any node type not in our whitelist
+    for node in ast.walk(tree):
+        if not isinstance(node, _SAFE_NODES):
+            return None
+
+    try:
+        result = _safe_eval_node(tree)
+    except (ValueError, TypeError, ZeroDivisionError, OverflowError, ArithmeticError):
+        return None
+
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Query normalisation helpers
+# ---------------------------------------------------------------------------
+
+# Phrases to strip from the beginning of queries to extract the core expression
+_STRIP_PREFIXES = [
+    r"what\s+is\s+",
+    r"what's\s+",
+    r"calculate\s+",
+    r"compute\s+",
+    r"evaluate\s+",
+    r"how\s+much\s+is\s+",
+    r"solve\s+",
+    r"find\s+",
+]
+
+# Compiled pattern that matches any prefix (case-insensitive)
+_PREFIX_PATTERN = re.compile(
+    r"^(?:" + "|".join(_STRIP_PREFIXES) + r")",
+    re.IGNORECASE,
+)
+
+# Percentage pattern: "N% of M"
+_PERCENTAGE_PATTERN = re.compile(
+    r"^([\d.]+)\s*%\s*(?:of)\s+([\d.]+)$",
+    re.IGNORECASE,
+)
+
+# Caret exponent: "2^10" → "2**10"
+_CARET_PATTERN = re.compile(r"(\d+)\s*\^\s*(\d+)")
+
+
+def _normalise_query(query: str) -> str:
+    """Strip natural language wrappers to get the core arithmetic expression."""
+    text = query.strip()
+
+    # Remove trailing question mark / period
+    text = text.rstrip("?.")
+
+    # Remove common prefixes ("what is", "calculate", etc.)
+    text = _PREFIX_PATTERN.sub("", text).strip()
+
+    return text
+
+
+def _try_percentage(expr: str) -> Optional[float]:
+    """Try to evaluate 'N% of M' patterns."""
+    m = _PERCENTAGE_PATTERN.match(expr)
+    if m:
+        pct = float(m.group(1))
+        base = float(m.group(2))
+        return (pct / 100.0) * base
+    return None
+
+
+def _prepare_expression(expr: str) -> str:
+    """Convert human-friendly math notation into Python-parseable expressions.
+
+    Handles:
+    - ``^`` → ``**``  (exponentiation)
+    - Implicit multiplication before parentheses: ``2(3)`` → ``2*(3)``
+    """
+    # Replace ^ with **
+    result = _CARET_PATTERN.sub(r"\1**\2", expr)
+    # Implicit multiplication: digit followed by '(' → digit * '('
+    result = re.sub(r"(\d)\s*\(", r"\1*(", result)
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Format result
+# ---------------------------------------------------------------------------
+
+
+def _format_number(value: float) -> str:
+    """Format a numeric result for display.
+
+    Integers are shown without decimals. Floats are rounded to 10 significant
+    digits and trailing zeros are stripped.
+    """
+    if value == float("inf") or value == float("-inf") or math.isnan(value):
+        return str(value)
+
+    # If it's effectively an integer, display without decimal
+    if value == int(value) and abs(value) < 1e15:
+        return str(int(value))
+
+    # Otherwise, use reasonable precision
+    formatted = f"{value:.10g}"
+    return formatted
+
+
+# ---------------------------------------------------------------------------
+# Main deterministic checker
+# ---------------------------------------------------------------------------
+
+
+def check_deterministic(query: str) -> Optional[DeterministicResult]:
+    """Check if a query can be answered deterministically (no model needed).
+
+    Handles:
+    - Pure arithmetic: ``2+2``, ``15*3``, ``100/4``
+    - Exponents: ``2^10``, ``2**10``
+    - Functions: ``sqrt(16)``, ``abs(-5)``
+    - Percentages: ``15% of 200``
+
+    Returns a ``DeterministicResult`` if the query is answerable, or ``None``
+    if a model is needed.
+
+    Security: uses AST parsing only. No ``eval()`` or ``exec()``.
+    """
+    normalised = _normalise_query(query)
+
+    if not normalised:
+        return None
+
+    # Quick heuristic: if the normalised expression contains letters that
+    # aren't function names or constants, it's probably a natural language
+    # query that needs a model.
+    # Allow: digits, operators, parens, dots, whitespace, known function/const names
+    # Check by removing known function names and seeing what letters remain
+    check_str = normalised
+    for name in sorted(_SAFE_FUNCTIONS.keys(), key=len, reverse=True):
+        check_str = check_str.replace(name, "")
+    # Remove 'of' (used in percentage patterns)
+    check_str = re.sub(r"\bof\b", "", check_str, flags=re.IGNORECASE)
+    # If there are still alphabetic characters, this isn't pure arithmetic
+    if re.search(r"[a-zA-Z_]", check_str):
+        return None
+
+    # Try percentage pattern first
+    pct_result = _try_percentage(normalised)
+    if pct_result is not None:
+        return DeterministicResult(
+            answer=_format_number(pct_result),
+            method="percentage",
+            confidence=1.0,
+        )
+
+    # Prepare expression (convert ^ to **, etc.)
+    prepared = _prepare_expression(normalised)
+
+    # Try safe arithmetic evaluation
+    result = _safe_arithmetic_eval(prepared)
+    if result is not None:
+        return DeterministicResult(
+            answer=_format_number(result),
+            method="arithmetic",
+            confidence=1.0,
+        )
+
+    return None
+
+
+# ---------------------------------------------------------------------------
 # QueryRouter
 # ---------------------------------------------------------------------------
 
 
 class QueryRouter:
     """Routes queries to the best model based on complexity.
+
+    Supports an optional tier-0 deterministic layer that intercepts simple
+    arithmetic and returns answers without invoking any model.
 
     Parameters
     ----------
@@ -248,6 +581,9 @@ class QueryRouter:
         Two-element tuple ``(low, high)`` defining tier boundaries.
         Complexity in ``[0, low)`` → fast, ``[low, high)`` → balanced,
         ``[high, 1.0]`` → quality.
+    enable_deterministic:
+        If ``True`` (default), check for tier-0 deterministic answers
+        before scoring complexity.
     """
 
     def __init__(
@@ -255,6 +591,7 @@ class QueryRouter:
         models: dict[str, ModelInfo],
         strategy: str = "complexity",
         thresholds: tuple[float, float] = (0.3, 0.7),
+        enable_deterministic: bool = True,
     ) -> None:
         if not models:
             raise ValueError("At least one model must be provided")
@@ -267,6 +604,7 @@ class QueryRouter:
         self.models = models
         self.strategy = strategy
         self.thresholds = thresholds
+        self.enable_deterministic = enable_deterministic
 
         # Build tier → model mapping (pick first model per tier)
         self._tier_models: dict[str, str] = {}
@@ -281,10 +619,11 @@ class QueryRouter:
         )
 
         logger.info(
-            "QueryRouter initialised: strategy=%s, models=%s, thresholds=%s",
+            "QueryRouter initialised: strategy=%s, models=%s, thresholds=%s, deterministic=%s",
             strategy,
             list(models.keys()),
             thresholds,
+            enable_deterministic,
         )
 
     def route(self, messages: list[dict[str, str]]) -> RoutingDecision:
@@ -298,7 +637,8 @@ class QueryRouter:
         Returns
         -------
         RoutingDecision with the chosen model name, complexity score,
-        tier, and fallback chain.
+        tier, and fallback chain.  If the query is answered deterministically,
+        ``deterministic_result`` is populated and ``tier`` is ``"deterministic"``.
         """
         # Extract relevant text
         user_text = ""
@@ -313,6 +653,24 @@ class QueryRouter:
             elif role == "user":
                 user_text = content  # use the last user message
                 turn_count += 1
+
+        # Tier 0: deterministic (no model needed)
+        if self.enable_deterministic and user_text:
+            det = check_deterministic(user_text)
+            if det is not None:
+                logger.debug(
+                    "Deterministic hit: %r -> %s (method=%s)",
+                    user_text,
+                    det.answer,
+                    det.method,
+                )
+                return RoutingDecision(
+                    model_name="",
+                    complexity_score=0.0,
+                    tier="deterministic",
+                    strategy=self.strategy,
+                    deterministic_result=det,
+                )
 
         complexity = _estimate_complexity(
             user_text,

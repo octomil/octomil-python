@@ -1,4 +1,4 @@
-"""Tests for octomil.routing — query routing and complexity estimation."""
+"""Tests for octomil.routing — query routing, complexity estimation, and tier-0 deterministic answers."""
 
 from __future__ import annotations
 
@@ -10,10 +10,18 @@ from httpx import ASGITransport, AsyncClient
 
 from octomil.routing import (
     TIER_ORDER,
+    DeterministicResult,
     ModelInfo,
     QueryRouter,
+    RoutingDecision,
     _estimate_complexity,
+    _format_number,
+    _normalise_query,
+    _prepare_expression,
+    _safe_arithmetic_eval,
+    _try_percentage,
     assign_tiers,
+    check_deterministic,
 )
 
 
@@ -41,6 +49,221 @@ class TestModelInfo:
 
     def test_tier_order_constant(self):
         assert TIER_ORDER == ["fast", "balanced", "quality"]
+
+
+# ---------------------------------------------------------------------------
+# DeterministicResult dataclass
+# ---------------------------------------------------------------------------
+
+
+class TestDeterministicResult:
+    def test_basic_fields(self):
+        r = DeterministicResult(answer="4", method="arithmetic")
+        assert r.answer == "4"
+        assert r.method == "arithmetic"
+        assert r.confidence == 1.0
+
+    def test_custom_confidence(self):
+        r = DeterministicResult(answer="42", method="test", confidence=0.9)
+        assert r.confidence == 0.9
+
+
+# ---------------------------------------------------------------------------
+# _normalise_query
+# ---------------------------------------------------------------------------
+
+
+class TestNormaliseQuery:
+    def test_strips_whitespace(self):
+        assert _normalise_query("  2+2  ") == "2+2"
+
+    def test_strips_question_mark(self):
+        assert _normalise_query("2+2?") == "2+2"
+
+    def test_strips_period(self):
+        assert _normalise_query("2+2.") == "2+2"
+
+    def test_strips_what_is(self):
+        assert _normalise_query("what is 2+2") == "2+2"
+
+    def test_strips_calculate(self):
+        assert _normalise_query("calculate 15*3") == "15*3"
+
+    def test_strips_how_much_is(self):
+        assert _normalise_query("how much is 100/4") == "100/4"
+
+    def test_strips_whats(self):
+        assert _normalise_query("what's 5+5") == "5+5"
+
+    def test_case_insensitive(self):
+        assert _normalise_query("WHAT IS 2+2") == "2+2"
+
+    def test_no_prefix(self):
+        assert _normalise_query("2+2") == "2+2"
+
+
+# ---------------------------------------------------------------------------
+# _prepare_expression
+# ---------------------------------------------------------------------------
+
+
+class TestPrepareExpression:
+    def test_caret_to_pow(self):
+        assert _prepare_expression("2^10") == "2**10"
+
+    def test_implicit_multiplication(self):
+        assert _prepare_expression("2(3)") == "2*(3)"
+
+    def test_no_change(self):
+        assert _prepare_expression("2+3") == "2+3"
+
+    def test_multiple_carets(self):
+        assert _prepare_expression("2^3+4^5") == "2**3+4**5"
+
+
+# ---------------------------------------------------------------------------
+# _try_percentage
+# ---------------------------------------------------------------------------
+
+
+class TestTryPercentage:
+    def test_basic_percentage(self):
+        assert _try_percentage("15% of 200") == 30.0
+
+    def test_decimal_percentage(self):
+        result = _try_percentage("7.5% of 400")
+        assert result == pytest.approx(30.0)
+
+    def test_hundred_percent(self):
+        assert _try_percentage("100% of 50") == 50.0
+
+    def test_no_match(self):
+        assert _try_percentage("2+2") is None
+
+    def test_no_match_text(self):
+        assert _try_percentage("hello world") is None
+
+
+# ---------------------------------------------------------------------------
+# _safe_arithmetic_eval
+# ---------------------------------------------------------------------------
+
+
+class TestSafeArithmeticEval:
+    def test_addition(self):
+        assert _safe_arithmetic_eval("2+2") == 4.0
+
+    def test_subtraction(self):
+        assert _safe_arithmetic_eval("10-3") == 7.0
+
+    def test_multiplication(self):
+        assert _safe_arithmetic_eval("15*3") == 45.0
+
+    def test_division(self):
+        assert _safe_arithmetic_eval("100/4") == 25.0
+
+    def test_floor_division(self):
+        assert _safe_arithmetic_eval("7//2") == 3.0
+
+    def test_modulo(self):
+        assert _safe_arithmetic_eval("10%3") == 1.0
+
+    def test_exponent(self):
+        assert _safe_arithmetic_eval("2**10") == 1024.0
+
+    def test_negative(self):
+        assert _safe_arithmetic_eval("-5") == -5.0
+
+    def test_unary_plus(self):
+        assert _safe_arithmetic_eval("+5") == 5.0
+
+    def test_parentheses(self):
+        assert _safe_arithmetic_eval("(2+3)*4") == 20.0
+
+    def test_nested_parentheses(self):
+        assert _safe_arithmetic_eval("((2+3)*4)/5") == 4.0
+
+    def test_sqrt(self):
+        assert _safe_arithmetic_eval("sqrt(16)") == 4.0
+
+    def test_abs(self):
+        assert _safe_arithmetic_eval("abs(-5)") == 5.0
+
+    def test_float_literal(self):
+        assert _safe_arithmetic_eval("3.14") == pytest.approx(3.14)
+
+    def test_complex_expression(self):
+        assert _safe_arithmetic_eval("2+3*4-1") == 13.0
+
+    def test_division_by_zero(self):
+        assert _safe_arithmetic_eval("1/0") is None
+
+    def test_syntax_error(self):
+        assert _safe_arithmetic_eval("2++") is None
+
+    def test_empty_string(self):
+        assert _safe_arithmetic_eval("") is None
+
+    def test_string_literal_rejected(self):
+        assert _safe_arithmetic_eval("'hello'") is None
+
+    def test_import_rejected(self):
+        assert _safe_arithmetic_eval("__import__('os')") is None
+
+    def test_attribute_access_rejected(self):
+        assert _safe_arithmetic_eval("os.system('ls')") is None
+
+    def test_list_comprehension_rejected(self):
+        assert _safe_arithmetic_eval("[x for x in range(10)]") is None
+
+    def test_exponent_bomb_rejected(self):
+        """Exponents larger than 10000 are rejected to prevent DoS."""
+        assert _safe_arithmetic_eval("2**999999999") is None
+
+    def test_keyword_args_rejected(self):
+        assert _safe_arithmetic_eval("round(3.14, ndigits=1)") is None
+
+    def test_unknown_function_rejected(self):
+        assert _safe_arithmetic_eval("print(42)") is None
+
+    def test_pi_constant(self):
+        result = _safe_arithmetic_eval("pi")
+        assert result is not None
+        assert result == pytest.approx(3.14159265, rel=1e-5)
+
+    def test_e_constant(self):
+        result = _safe_arithmetic_eval("e")
+        assert result is not None
+        assert result == pytest.approx(2.71828182, rel=1e-5)
+
+
+# ---------------------------------------------------------------------------
+# _format_number
+# ---------------------------------------------------------------------------
+
+
+class TestFormatNumber:
+    def test_integer_result(self):
+        assert _format_number(4.0) == "4"
+
+    def test_large_integer(self):
+        assert _format_number(1024.0) == "1024"
+
+    def test_float_result(self):
+        result = _format_number(33.333333333)
+        assert "33.333" in result
+
+    def test_negative_integer(self):
+        assert _format_number(-5.0) == "-5"
+
+    def test_zero(self):
+        assert _format_number(0.0) == "0"
+
+    def test_infinity(self):
+        assert _format_number(float("inf")) == "inf"
+
+    def test_nan(self):
+        assert _format_number(float("nan")) == "nan"
 
 
 # ---------------------------------------------------------------------------
@@ -150,6 +373,127 @@ class TestComplexityEstimation:
 
 
 # ---------------------------------------------------------------------------
+# check_deterministic -- main function
+# ---------------------------------------------------------------------------
+
+
+class TestCheckDeterministic:
+    def test_basic_addition(self):
+        result = check_deterministic("2+2")
+        assert result is not None
+        assert result.answer == "4"
+        assert result.method == "arithmetic"
+
+    def test_basic_subtraction(self):
+        result = check_deterministic("10-3")
+        assert result is not None
+        assert result.answer == "7"
+
+    def test_basic_multiplication(self):
+        result = check_deterministic("15*3")
+        assert result is not None
+        assert result.answer == "45"
+
+    def test_basic_division(self):
+        result = check_deterministic("100/4")
+        assert result is not None
+        assert result.answer == "25"
+
+    def test_division_with_decimal(self):
+        result = check_deterministic("100/3")
+        assert result is not None
+        # Should be a reasonable decimal representation
+        assert "33.333" in result.answer
+
+    def test_exponent_caret(self):
+        result = check_deterministic("2^10")
+        assert result is not None
+        assert result.answer == "1024"
+
+    def test_exponent_double_star(self):
+        result = check_deterministic("2**10")
+        assert result is not None
+        assert result.answer == "1024"
+
+    def test_percentage(self):
+        result = check_deterministic("15% of 200")
+        assert result is not None
+        assert result.answer == "30"
+        assert result.method == "percentage"
+
+    def test_sqrt(self):
+        result = check_deterministic("sqrt(16)")
+        assert result is not None
+        assert result.answer == "4"
+
+    def test_what_is_prefix(self):
+        result = check_deterministic("what is 2+2")
+        assert result is not None
+        assert result.answer == "4"
+
+    def test_what_is_prefix_with_question_mark(self):
+        result = check_deterministic("what is 2+2?")
+        assert result is not None
+        assert result.answer == "4"
+
+    def test_calculate_prefix(self):
+        result = check_deterministic("calculate 15*3")
+        assert result is not None
+        assert result.answer == "45"
+
+    def test_how_much_is_prefix(self):
+        result = check_deterministic("how much is 100/4?")
+        assert result is not None
+        assert result.answer == "25"
+
+    # --- Should NOT match ---
+
+    def test_rejects_natural_language(self):
+        result = check_deterministic("explain quantum computing")
+        assert result is None
+
+    def test_rejects_poem_request(self):
+        result = check_deterministic("write a poem about math")
+        assert result is None
+
+    def test_rejects_code_injection(self):
+        result = check_deterministic("__import__('os').system('rm -rf /')")
+        assert result is None
+
+    def test_rejects_import_attempt(self):
+        result = check_deterministic("import os; os.system('ls')")
+        assert result is None
+
+    def test_rejects_class_access(self):
+        result = check_deterministic("().__class__.__bases__[0]")
+        assert result is None
+
+    def test_rejects_eval_attempt(self):
+        result = check_deterministic("eval('2+2')")
+        assert result is None
+
+    def test_rejects_exec_attempt(self):
+        result = check_deterministic("exec('print(1)')")
+        assert result is None
+
+    def test_rejects_empty_string(self):
+        result = check_deterministic("")
+        assert result is None
+
+    def test_rejects_only_whitespace(self):
+        result = check_deterministic("   ")
+        assert result is None
+
+    def test_rejects_mixed_text_and_math(self):
+        result = check_deterministic("the answer to 2+2 is four")
+        assert result is None
+
+    def test_rejects_complex_question_about_math(self):
+        result = check_deterministic("what is the derivative of x^2")
+        assert result is None
+
+
+# ---------------------------------------------------------------------------
 # assign_tiers
 # ---------------------------------------------------------------------------
 
@@ -195,7 +539,7 @@ class TestAssignTiers:
 
 
 # ---------------------------------------------------------------------------
-# QueryRouter
+# QueryRouter (model-based complexity routing)
 # ---------------------------------------------------------------------------
 
 
@@ -210,7 +554,7 @@ class TestQueryRouter:
 
     @pytest.fixture
     def router(self, three_models: dict[str, ModelInfo]) -> QueryRouter:
-        return QueryRouter(three_models, strategy="complexity")
+        return QueryRouter(three_models, strategy="complexity", enable_deterministic=False)
 
     def test_init_requires_models(self):
         with pytest.raises(ValueError, match="At least one model"):
@@ -293,7 +637,7 @@ class TestQueryRouter:
 
     def test_custom_thresholds(self, three_models):
         # Very permissive fast tier (0-0.8)
-        router = QueryRouter(three_models, thresholds=(0.8, 0.95))
+        router = QueryRouter(three_models, thresholds=(0.8, 0.95), enable_deterministic=False)
         decision = router.route(
             [{"role": "user", "content": "Explain how binary search works"}]
         )
@@ -320,6 +664,7 @@ class TestQueryRouter:
     def test_single_model_routes_everything(self):
         router = QueryRouter(
             {"only": ModelInfo(name="only", tier="balanced")},
+            enable_deterministic=False,
         )
         for text in ["hi", "write a compiler", "prove P=NP"]:
             decision = router.route([{"role": "user", "content": text}])
@@ -330,7 +675,7 @@ class TestQueryRouter:
             "fast": ModelInfo(name="fast", tier="fast"),
             "smart": ModelInfo(name="smart", tier="quality"),
         }
-        router = QueryRouter(models)
+        router = QueryRouter(models, enable_deterministic=False)
         simple = router.route([{"role": "user", "content": "hello"}])
         assert simple.model_name == "fast"
 
@@ -340,7 +685,7 @@ class TestQueryRouter:
             "small": ModelInfo(name="small", tier="fast"),
             "big": ModelInfo(name="big", tier="quality"),
         }
-        router = QueryRouter(models)
+        router = QueryRouter(models, enable_deterministic=False)
         # A medium-complexity query targets "balanced", but no balanced model exists
         # Should fall back to quality
         decision = router.route(
@@ -353,6 +698,29 @@ class TestQueryRouter:
         )
         # The model should be resolved (either fast or quality, not crash)
         assert decision.model_name in ("small", "big")
+
+    def test_deterministic_routing_in_query_router(self):
+        """QueryRouter with enable_deterministic=True intercepts arithmetic."""
+        models = {
+            "small": ModelInfo(name="small", tier="fast"),
+            "big": ModelInfo(name="big", tier="quality"),
+        }
+        router = QueryRouter(models, enable_deterministic=True)
+        decision = router.route([{"role": "user", "content": "2+2"}])
+        assert decision.tier == "deterministic"
+        assert decision.deterministic_result is not None
+        assert decision.deterministic_result.answer == "4"
+
+    def test_deterministic_disabled_in_query_router(self):
+        """QueryRouter with enable_deterministic=False skips arithmetic check."""
+        models = {
+            "small": ModelInfo(name="small", tier="fast"),
+            "big": ModelInfo(name="big", tier="quality"),
+        }
+        router = QueryRouter(models, enable_deterministic=False)
+        decision = router.route([{"role": "user", "content": "2+2"}])
+        assert decision.tier != "deterministic"
+        assert decision.deterministic_result is None
 
 
 # ---------------------------------------------------------------------------
@@ -426,7 +794,7 @@ class TestMultiModelServeApp:
         assert "x-octomil-routed-model" in resp.headers
         assert "x-octomil-complexity" in resp.headers
         assert "x-octomil-tier" in resp.headers
-        # Simple query → small model
+        # Simple query -> small model
         assert resp.headers["x-octomil-routed-model"] == "small-model"
         assert resp.headers["x-octomil-tier"] == "fast"
 
@@ -720,3 +1088,131 @@ class TestServeCliMultiModel:
             ],
         )
         assert result.exit_code != 0
+
+
+# ---------------------------------------------------------------------------
+# Integration: serve.py deterministic endpoint
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def echo_app_with_routing():
+    """Create a FastAPI app with EchoBackend for testing deterministic routing."""
+    from octomil.serve import EchoBackend, create_app
+
+    with patch("octomil.serve._detect_backend") as mock_detect:
+        echo = EchoBackend()
+        echo.load_model("test-model")
+        mock_detect.return_value = echo
+
+        app = create_app("test-model")
+
+        # Trigger lifespan startup
+        import asyncio
+
+        async def _trigger_lifespan():
+            ctx = app.router.lifespan_context(app)
+            await ctx.__aenter__()
+
+        asyncio.run(_trigger_lifespan())
+
+    return app
+
+
+@pytest.mark.asyncio
+async def test_serve_deterministic_arithmetic(echo_app_with_routing):
+    """Chat completions endpoint returns deterministic result for arithmetic."""
+    transport = ASGITransport(app=echo_app_with_routing)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(
+            "/v1/chat/completions",
+            json={
+                "model": "test-model",
+                "messages": [{"role": "user", "content": "2+2"}],
+            },
+        )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["object"] == "chat.completion"
+    assert data["choices"][0]["message"]["content"] == "4"
+    assert data["choices"][0]["message"]["role"] == "assistant"
+    assert data["choices"][0]["finish_reason"] == "stop"
+    # Should indicate deterministic
+    assert data["usage"]["deterministic"] is True
+    assert data["usage"]["deterministic_method"] == "arithmetic"
+
+
+@pytest.mark.asyncio
+async def test_serve_deterministic_percentage(echo_app_with_routing):
+    """Chat completions endpoint handles percentage queries deterministically."""
+    transport = ASGITransport(app=echo_app_with_routing)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(
+            "/v1/chat/completions",
+            json={
+                "model": "test-model",
+                "messages": [{"role": "user", "content": "what is 15% of 200?"}],
+            },
+        )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["choices"][0]["message"]["content"] == "30"
+    assert data["usage"]["deterministic"] is True
+    assert data["usage"]["deterministic_method"] == "percentage"
+
+
+@pytest.mark.asyncio
+async def test_serve_non_deterministic_falls_through(echo_app_with_routing):
+    """Non-arithmetic queries fall through to the model backend."""
+    transport = ASGITransport(app=echo_app_with_routing)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(
+            "/v1/chat/completions",
+            json={
+                "model": "test-model",
+                "messages": [{"role": "user", "content": "tell me a joke"}],
+            },
+        )
+    assert resp.status_code == 200
+    data = resp.json()
+    # Should NOT be deterministic -- should use the echo backend
+    assert "deterministic" not in data.get("usage", {}) or not data["usage"].get(
+        "deterministic"
+    )
+    assert "[echo:test-model]" in data["choices"][0]["message"]["content"]
+
+
+@pytest.mark.asyncio
+async def test_serve_streaming_skips_deterministic(echo_app_with_routing):
+    """Streaming requests bypass deterministic routing (stream to model)."""
+    transport = ASGITransport(app=echo_app_with_routing)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(
+            "/v1/chat/completions",
+            json={
+                "model": "test-model",
+                "messages": [{"role": "user", "content": "2+2"}],
+                "stream": True,
+            },
+        )
+    assert resp.status_code == 200
+    # Should be SSE streaming, not a deterministic JSON response
+    assert "data:" in resp.text
+
+
+@pytest.mark.asyncio
+async def test_serve_deterministic_model_field(echo_app_with_routing):
+    """Deterministic response uses the correct model name."""
+    transport = ASGITransport(app=echo_app_with_routing)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(
+            "/v1/chat/completions",
+            json={
+                "model": "custom-model",
+                "messages": [{"role": "user", "content": "sqrt(16)"}],
+            },
+        )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["model"] == "custom-model"
+    assert data["choices"][0]["message"]["content"] == "4"

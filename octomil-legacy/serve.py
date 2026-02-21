@@ -913,6 +913,46 @@ def create_app(
         if state.backend is None:
             raise HTTPException(status_code=503, detail="Model not loaded")
 
+        # --- Tier-0: deterministic routing (arithmetic, etc.) ---
+        # Check the last user message for a query that can be answered
+        # without invoking any model.
+        if body.messages and not body.stream:
+            last_user_msg = ""
+            for msg in reversed(body.messages):
+                if msg.role == "user":
+                    last_user_msg = msg.content
+                    break
+            if last_user_msg:
+                from .routing import check_deterministic
+
+                det = check_deterministic(last_user_msg)
+                if det is not None:
+                    state.request_count += 1
+                    req_id = f"chatcmpl-{uuid.uuid4().hex[:12]}"
+                    return {
+                        "id": req_id,
+                        "object": "chat.completion",
+                        "created": int(time.time()),
+                        "model": body.model or state.model_name,
+                        "choices": [
+                            {
+                                "index": 0,
+                                "message": {
+                                    "role": "assistant",
+                                    "content": det.answer,
+                                },
+                                "finish_reason": "stop",
+                            }
+                        ],
+                        "usage": {
+                            "prompt_tokens": 0,
+                            "completion_tokens": 0,
+                            "total_tokens": 0,
+                            "deterministic": True,
+                            "deterministic_method": det.method,
+                        },
+                    }
+
         grammar_str, is_json = _resolve_grammar(body, state.default_json_mode)
 
         messages = [{"role": m.role, "content": m.content} for m in body.messages]
