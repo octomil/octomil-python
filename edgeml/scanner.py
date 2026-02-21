@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import os
 import re
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass
 from typing import Optional
 
 
@@ -382,17 +382,96 @@ _COMMENT_PREFIXES: dict[str, list[str]] = {
 }
 
 
-def _is_comment_or_string(line: str, ext: str) -> bool:
-    """Best-effort check: return True if the line is likely a comment or string literal."""
+def _is_comment_line(line: str, ext: str) -> bool:
+    """Return True if the line is a single-line comment."""
     stripped = line.lstrip()
     for prefix in _COMMENT_PREFIXES.get(ext, []):
         if stripped.startswith(prefix):
             return True
-    # Rough heuristic: if the line is a Python/Swift/Kotlin docstring or
-    # multi-line string delimiter we skip it.  This is intentionally simple.
-    if stripped.startswith('"""') or stripped.startswith("'''"):
-        return True
     return False
+
+
+# Multi-line comment/string delimiters by extension.
+_MULTILINE_DELIMITERS: dict[str, list[str]] = {
+    ".py": ['"""', "'''"],
+    ".pyx": ['"""', "'''"],
+    ".swift": ["/*"],
+    ".m": ["/*"],
+    ".mm": ["/*"],
+    ".kt": ["/*"],
+    ".java": ["/*"],
+}
+
+_MULTILINE_CLOSE: dict[str, str] = {
+    '"""': '"""',
+    "'''": "'''",
+    "/*": "*/",
+}
+
+
+def _scan_lines(
+    lines: list[str],
+    ext: str,
+    file_patterns: list[_Pattern],
+    rel_path: str,
+) -> list[InferencePoint]:
+    """Scan lines of a single file, tracking multi-line string/comment state."""
+    results: list[InferencePoint] = []
+    in_block: str | None = None  # The closing delimiter we're looking for
+    delimiters = _MULTILINE_DELIMITERS.get(ext, [])
+
+    for lineno, line in enumerate(lines, start=1):
+        stripped = line.lstrip()
+
+        # If we're inside a multi-line block, look for the close.
+        if in_block is not None:
+            if in_block in line:
+                in_block = None
+            continue
+
+        # Check if this line opens a multi-line block.
+        opened_block = False
+        for delim in delimiters:
+            if delim in stripped:
+                count = stripped.count(delim)
+                if count == 1:
+                    # Opens a block that isn't closed on the same line.
+                    close = _MULTILINE_CLOSE[delim]
+                    # For triple-quote, the open and close are the same string,
+                    # so a single occurrence means it opens and doesn't close.
+                    in_block = close
+                    opened_block = True
+                    break
+                # count >= 2 means it opens and closes on the same line (e.g.
+                # '''docstring on one line''').  We skip the line but don't
+                # enter a block.
+                if count >= 2:
+                    opened_block = True
+                    break
+
+        if opened_block:
+            continue
+
+        # Skip single-line comments.
+        if _is_comment_line(line, ext):
+            continue
+
+        # Match patterns.
+        for pat in file_patterns:
+            if pat.regex.search(line):
+                results.append(
+                    InferencePoint(
+                        file=rel_path,
+                        line=lineno,
+                        pattern=pat.display,
+                        type=pat.type,
+                        platform=pat.platform,
+                        suggestion=pat.suggestion,
+                        context=line.rstrip(),
+                    )
+                )
+
+    return results
 
 
 # ---------------------------------------------------------------------------
@@ -447,7 +526,7 @@ def scan_directory(
                         pattern=fname,
                         type=type_label,
                         platform=plat,
-                        suggestion=f"Register with EdgeML for deployment tracking",
+                        suggestion="Register with EdgeML for deployment tracking",
                         context=f"[model file] {fname}",
                     )
                 )
@@ -462,30 +541,14 @@ def scan_directory(
                 continue
 
             # Further narrow patterns to those matching this file's platform.
-            file_patterns = [
-                p for p in active_patterns if p.platform == file_platform
-            ]
+            file_patterns = [p for p in active_patterns if p.platform == file_platform]
             if not file_patterns:
                 continue
 
             try:
                 with open(full, encoding="utf-8", errors="replace") as fh:
-                    for lineno, line in enumerate(fh, start=1):
-                        if _is_comment_or_string(line, ext):
-                            continue
-                        for pat in file_patterns:
-                            if pat.regex.search(line):
-                                results.append(
-                                    InferencePoint(
-                                        file=rel,
-                                        line=lineno,
-                                        pattern=pat.display,
-                                        type=pat.type,
-                                        platform=pat.platform,
-                                        suggestion=pat.suggestion,
-                                        context=line.rstrip(),
-                                    )
-                                )
+                    file_lines = fh.readlines()
+                results.extend(_scan_lines(file_lines, ext, file_patterns, rel))
             except (OSError, UnicodeDecodeError):
                 # Skip files that can't be read.
                 continue
@@ -516,7 +579,9 @@ def format_text(points: list[InferencePoint]) -> str:
 
     # Summary
     files = {pt.file for pt in points}
-    lines.append(f"Summary: {len(points)} inference point(s) found across {len(files)} file(s)")
+    lines.append(
+        f"Summary: {len(points)} inference point(s) found across {len(files)} file(s)"
+    )
 
     # Per-platform breakdown
     platform_counts: dict[str, int] = {}
