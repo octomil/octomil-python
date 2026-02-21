@@ -476,3 +476,122 @@ class TestTrainStopCommand:
         assert result.exit_code == 0
         assert "stopped" in result.output.lower()
         assert "23" in result.output
+
+
+# ---------------------------------------------------------------------------
+# edgeml benchmark
+# ---------------------------------------------------------------------------
+
+
+def _make_benchmark_mocks():
+    """Return mocks for _detect_backend, psutil, and GenerationRequest."""
+    mock_metrics = MagicMock()
+    mock_metrics.tokens_per_second = 42.0
+    mock_metrics.ttfc_ms = 10.0
+    mock_metrics.prompt_tokens = 5
+    mock_metrics.total_tokens = 20
+
+    mock_backend = MagicMock()
+    mock_backend.name = "echo"
+    mock_backend.generate.return_value = ("hello", mock_metrics)
+
+    mock_process = MagicMock()
+    mem_info = MagicMock()
+    mem_info.rss = 500 * 1024 * 1024
+    mock_process.memory_info.return_value = mem_info
+
+    mock_vm = MagicMock()
+    mock_vm.total = 16 * 1024 * 1024 * 1024
+
+    return mock_backend, mock_process, mock_vm
+
+
+class TestBenchmarkCommand:
+    """Tests for the benchmark command's --local / default-share behaviour."""
+
+    def _run_benchmark(self, monkeypatch, cli_args, api_key="test-key"):
+        """Helper that patches all heavy benchmark deps and invokes the CLI."""
+        if api_key:
+            monkeypatch.setenv("EDGEML_API_KEY", api_key)
+        else:
+            monkeypatch.delenv("EDGEML_API_KEY", raising=False)
+
+        mock_backend, mock_process, mock_vm = _make_benchmark_mocks()
+
+        with (
+            patch("edgeml.cli._get_api_key", return_value=api_key or ""),
+            patch("edgeml.serve._detect_backend", return_value=mock_backend),
+            patch("psutil.Process", return_value=mock_process),
+            patch("psutil.virtual_memory", return_value=mock_vm),
+        ):
+            runner = CliRunner()
+            result = runner.invoke(main, ["benchmark", *cli_args])
+        return result
+
+    def test_default_shares_with_api_key(self, monkeypatch):
+        """Without --local and with an API key, benchmark data is shared."""
+        mock_backend, mock_process, mock_vm = _make_benchmark_mocks()
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+
+        with (
+            patch("edgeml.cli._get_api_key", return_value="test-key"),
+            patch("edgeml.serve._detect_backend", return_value=mock_backend),
+            patch("psutil.Process", return_value=mock_process),
+            patch("psutil.virtual_memory", return_value=mock_vm),
+            patch("httpx.post", return_value=mock_resp) as mock_post,
+        ):
+            runner = CliRunner()
+            result = runner.invoke(main, ["benchmark", "gemma-1b", "--iterations", "1"])
+
+        assert result.exit_code == 0
+        assert "Sharing anonymous benchmark data" in result.output
+        assert "Benchmark data shared successfully" in result.output
+        mock_post.assert_called_once()
+
+    def test_default_shares_warns_no_api_key(self, monkeypatch):
+        """Without --local and without an API key, warns about missing key."""
+        monkeypatch.delenv("EDGEML_API_KEY", raising=False)
+        mock_backend, mock_process, mock_vm = _make_benchmark_mocks()
+
+        with (
+            patch("edgeml.cli._get_api_key", return_value=""),
+            patch("edgeml.serve._detect_backend", return_value=mock_backend),
+            patch("psutil.Process", return_value=mock_process),
+            patch("psutil.virtual_memory", return_value=mock_vm),
+        ):
+            runner = CliRunner()
+            result = runner.invoke(main, ["benchmark", "gemma-1b", "--iterations", "1"])
+
+        assert result.exit_code == 0
+        assert "Skipping share: no API key" in result.output
+        assert "--local" in result.output
+
+    def test_local_flag_skips_share(self, monkeypatch):
+        """With --local, no upload attempt is made."""
+        monkeypatch.setenv("EDGEML_API_KEY", "test-key")
+        mock_backend, mock_process, mock_vm = _make_benchmark_mocks()
+
+        with (
+            patch("edgeml.cli._get_api_key", return_value="test-key"),
+            patch("edgeml.serve._detect_backend", return_value=mock_backend),
+            patch("psutil.Process", return_value=mock_process),
+            patch("psutil.virtual_memory", return_value=mock_vm),
+        ):
+            runner = CliRunner()
+            result = runner.invoke(
+                main, ["benchmark", "gemma-1b", "--local", "--iterations", "1"]
+            )
+
+        assert result.exit_code == 0
+        assert "Results kept local (--local)" in result.output
+        assert "Sharing anonymous benchmark data" not in result.output
+
+    def test_benchmark_help_shows_local_flag(self):
+        """--local flag is documented in help output."""
+        runner = CliRunner()
+        result = runner.invoke(main, ["benchmark", "--help"])
+        assert result.exit_code == 0
+        assert "--local" in result.output
+        # --share should no longer appear
+        assert "--share" not in result.output

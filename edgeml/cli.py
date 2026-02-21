@@ -11,7 +11,8 @@ Usage::
     edgeml check model.pt
     edgeml convert model.pt --target ios,android
     edgeml status sentiment-v1
-    edgeml benchmark gemma-1b --share
+    edgeml benchmark gemma-1b
+    edgeml benchmark gemma-1b --local
     edgeml login
     edgeml init "Acme Corp" --compliance hipaa --region us
     edgeml team add alice@acme.com --role admin
@@ -1231,7 +1232,9 @@ def _percentile(data: list[float], pct: float) -> float:
 @main.command()
 @click.argument("model")
 @click.option(
-    "--share", is_flag=True, help="Upload anonymous benchmark results to EdgeML."
+    "--local",
+    is_flag=True,
+    help="Keep results local — do not upload to EdgeML Cloud.",
 )
 @click.option("--iterations", "-n", default=10, help="Number of inference iterations.")
 @click.option("--max-tokens", default=50, help="Max tokens to generate per iteration.")
@@ -1248,7 +1251,7 @@ def _percentile(data: list[float], pct: float) -> float:
 )
 def benchmark(
     model: str,
-    share: bool,
+    local: bool,
     iterations: int,
     max_tokens: int,
     engine: str | None,
@@ -1259,13 +1262,17 @@ def benchmark(
     Measures TTFT, TPOT, latency distribution (min/avg/median/p90/p95/p99/max),
     throughput, and memory usage across multiple iterations.
 
+    By default, anonymous benchmark data (model name, hardware, throughput — no
+    PII) is shared with EdgeML Cloud.  Use --local to opt out.
+
     Use --all-engines to compare performance across all available engines:
 
         edgeml benchmark gemma-1b --all-engines
 
     Example:
 
-        edgeml benchmark gemma-1b --share --iterations 20
+        edgeml benchmark gemma-1b --iterations 20
+        edgeml benchmark gemma-1b --local
     """
     import platform as _platform
     import time
@@ -1378,11 +1385,12 @@ def benchmark(
         f"  Peak memory:      {peak_mem / 1024 / 1024:.0f} MB (+{peak_mem_delta / 1024 / 1024:.0f} MB)"
     )
 
-    if share:
+    if not local:
         api_key = _get_api_key()
         if not api_key:
             click.echo(
-                "\nSkipping share: no API key. Run `edgeml login` first.",
+                "\nSkipping share: no API key. Run `edgeml login` first, "
+                "or use --local to keep results local.",
                 err=True,
             )
             return
@@ -1432,6 +1440,8 @@ def benchmark(
                 click.echo(f"Failed to share: {resp.status_code}", err=True)
         except Exception as exc:
             click.echo(f"Failed to share: {exc}", err=True)
+    else:
+        click.echo("\nResults kept local (--local).")
 
 
 def _benchmark_all_engines(model: str, iterations: int, max_tokens: int) -> None:

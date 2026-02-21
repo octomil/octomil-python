@@ -209,7 +209,7 @@ class TestDeployPhoneQr:
             patch("httpx.get", side_effect=poll_responses),
             patch("time.sleep"),
         ):
-            runner = CliRunner(mix_stderr=False)
+            runner = CliRunner()
             result = runner.invoke(main, ["deploy", "gemma-1b", "--phone"])
 
         assert result.exit_code == 0
