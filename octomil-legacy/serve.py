@@ -35,6 +35,12 @@ if TYPE_CHECKING:
 
 from pydantic import BaseModel, Field
 
+from .model_registry import (
+    MODEL_FAMILIES,
+    ModelResolutionError,
+    resolve_model,
+)
+
 logger = logging.getLogger(__name__)
 
 
@@ -60,94 +66,69 @@ class ChatCompletionBody(BaseModel):
 
 
 # ---------------------------------------------------------------------------
-# Model catalog — short names → HuggingFace repo IDs
+# Model catalog — powered by the model registry
 # ---------------------------------------------------------------------------
 
-# MLX-community quantized models (Apple Silicon)
-_MLX_MODELS: dict[str, str] = {
-    "gemma-1b": "mlx-community/gemma-3-1b-it-4bit",
-    "gemma-4b": "mlx-community/gemma-3-4b-it-4bit",
-    "gemma-12b": "mlx-community/gemma-3-12b-it-4bit",
-    "gemma-27b": "mlx-community/gemma-3-27b-it-4bit",
-    "llama-1b": "mlx-community/Llama-3.2-1B-Instruct-4bit",
-    "llama-3b": "mlx-community/Llama-3.2-3B-Instruct-4bit",
-    "llama-8b": "mlx-community/Meta-Llama-3.1-8B-Instruct-4bit",
-    "phi-4": "mlx-community/phi-4-4bit",
-    "phi-mini": "mlx-community/Phi-3.5-mini-instruct-4bit",
-    "qwen-1.5b": "mlx-community/Qwen2.5-1.5B-Instruct-4bit",
-    "qwen-3b": "mlx-community/Qwen2.5-3B-Instruct-4bit",
-    "qwen-7b": "mlx-community/Qwen2.5-7B-Instruct-4bit",
-    "mistral-7b": "mlx-community/Mistral-7B-Instruct-v0.3-4bit",
-    "smollm-360m": "mlx-community/SmolLM-360M-Instruct-4bit",
-}
+# Backwards-compatible dicts derived from the registry.
+# These are kept for code that references them directly (e.g. tests,
+# LlamaCppBackend.load_model).
+_MLX_MODELS: dict[str, str] = {}
+_GGUF_MODELS: dict[str, tuple[str, str]] = {}
 
-# GGUF models for llama.cpp (cross-platform)
-_GGUF_MODELS: dict[str, tuple[str, str]] = {
-    # (repo_id, filename)
-    "gemma-1b": (
-        "bartowski/google_gemma-3-1b-it-GGUF",
-        "google_gemma-3-1b-it-Q4_K_M.gguf",
-    ),
-    "gemma-4b": (
-        "bartowski/google_gemma-3-4b-it-GGUF",
-        "google_gemma-3-4b-it-Q4_K_M.gguf",
-    ),
-    "llama-1b": (
-        "bartowski/Llama-3.2-1B-Instruct-GGUF",
-        "Llama-3.2-1B-Instruct-Q4_K_M.gguf",
-    ),
-    "llama-3b": (
-        "bartowski/Llama-3.2-3B-Instruct-GGUF",
-        "Llama-3.2-3B-Instruct-Q4_K_M.gguf",
-    ),
-    "llama-8b": (
-        "bartowski/Meta-Llama-3.1-8B-Instruct-GGUF",
-        "Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf",
-    ),
-    "phi-mini": (
-        "bartowski/Phi-3.5-mini-instruct-GGUF",
-        "Phi-3.5-mini-instruct-Q4_K_M.gguf",
-    ),
-    "qwen-1.5b": (
-        "Qwen/Qwen2.5-1.5B-Instruct-GGUF",
-        "qwen2.5-1.5b-instruct-q4_k_m.gguf",
-    ),
-    "qwen-3b": ("Qwen/Qwen2.5-3B-Instruct-GGUF", "qwen2.5-3b-instruct-q4_k_m.gguf"),
-    "mistral-7b": (
-        "bartowski/Mistral-7B-Instruct-v0.3-GGUF",
-        "Mistral-7B-Instruct-v0.3-Q4_K_M.gguf",
-    ),
-    "smollm-360m": (
-        "bartowski/SmolLM2-360M-Instruct-GGUF",
-        "SmolLM2-360M-Instruct-Q4_K_M.gguf",
-    ),
-}
+for _family_key, _family in MODEL_FAMILIES.items():
+    _default_variant = _family.variants.get(_family.default_tag)
+    if _default_variant is None:
+        continue
+    # Populate MLX lookup
+    if _default_variant.mlx:
+        _MLX_MODELS[_family_key] = _default_variant.mlx
+    # Populate GGUF lookup
+    for _src in _default_variant.sources:
+        if _src.type == "huggingface" and _src.file and _src.file.endswith(".gguf"):
+            _GGUF_MODELS[_family_key] = (_src.ref, _src.file)
+            break
 
 
 def resolve_model_name(name: str, backend: str) -> str:
-    """Resolve a short model name to a HuggingFace repo ID.
+    """Resolve a short model name (with optional :tag) to a HuggingFace repo ID.
 
-    If the name contains '/' it's assumed to be a full repo ID already.
+    Uses the model registry for structured resolution. Full repo paths
+    (containing ``/``) pass through unchanged.
     """
+    # Local .gguf file path
+    if name.endswith(".gguf"):
+        return name
+
+    # Full repo path — pass through
     if "/" in name:
         return name
 
+    try:
+        resolved = resolve_model(name, backend=backend)
+    except ModelResolutionError as exc:
+        raise ValueError(str(exc)) from exc
+
     if backend == "mlx":
-        if name in _MLX_MODELS:
-            return _MLX_MODELS[name]
+        if resolved.mlx_repo:
+            return resolved.mlx_repo
+        # Fallback to source ref if no MLX-specific repo
+        if resolved.source:
+            return resolved.source.ref
         raise ValueError(
-            f"Unknown model '{name}' for mlx backend. "
-            f"Available: {', '.join(sorted(_MLX_MODELS))}\n"
-            f"Or pass a full HuggingFace repo ID (e.g. mlx-community/gemma-3-1b-it-4bit)"
+            f"No MLX source found for '{name}'. "
+            f"Pass a full HuggingFace repo ID (e.g. mlx-community/gemma-3-1b-it-4bit)"
         )
 
     if backend == "gguf":
-        if name in _GGUF_MODELS:
-            return name  # resolved at download time
+        # For GGUF, return the short name — resolved at download time
+        # via _GGUF_MODELS or the registry
+        if resolved.family and resolved.family in _GGUF_MODELS:
+            return resolved.family
+        if resolved.source and resolved.source.file:
+            return resolved.family or name
         raise ValueError(
-            f"Unknown model '{name}' for llama.cpp backend. "
-            f"Available: {', '.join(sorted(_GGUF_MODELS))}\n"
-            f"Or pass a path to a local .gguf file"
+            f"No GGUF source found for '{name}'. "
+            f"Pass a path to a local .gguf file or a HuggingFace repo ID."
         )
 
     return name
