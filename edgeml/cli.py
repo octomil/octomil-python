@@ -21,6 +21,8 @@ Usage::
     edgeml keys create deploy-key --scope devices:write --scope models:read
     edgeml keys list
     edgeml keys revoke <key-id>
+    edgeml scan ./MyApp
+    edgeml scan ./MyApp --format json --platform ios
 """
 
 from __future__ import annotations
@@ -418,6 +420,60 @@ def check(model_path: str, devices: Optional[str]) -> None:
         click.echo("  - Serve locally: edgeml serve model.gguf")
     else:
         click.echo("  - No specific recommendations for this format")
+
+
+# ---------------------------------------------------------------------------
+# edgeml scan
+# ---------------------------------------------------------------------------
+
+
+@main.command()
+@click.argument("path", type=click.Path(exists=True))
+@click.option(
+    "--format",
+    "-f",
+    "output_format",
+    default="text",
+    type=click.Choice(["text", "json"]),
+    help="Output format (text or json).",
+)
+@click.option(
+    "--platform",
+    "-p",
+    default=None,
+    type=click.Choice(["ios", "android", "python"]),
+    help="Filter by platform. Default: scan all platforms.",
+)
+def scan(path: str, output_format: str, platform: str | None) -> None:
+    """Scan a codebase for ML inference points.
+
+    Walks PATH looking for model loading, inference calls, and model files
+    across iOS (CoreML), Android (TFLite), and Python (PyTorch, ONNX,
+    OpenAI, HuggingFace, MLX).
+
+    Reports where you can add EdgeML.wrap() for telemetry.
+
+    \b
+    Examples:
+        edgeml scan ./MyApp
+        edgeml scan ./MyApp --format json
+        edgeml scan ./MyApp --platform ios
+        edgeml scan ./MyApp --platform android
+    """
+    from .scanner import format_json, format_text, scan_directory
+
+    click.echo("Scanning for inference points...\n")
+
+    try:
+        points = scan_directory(path, platform=platform)
+    except FileNotFoundError as exc:
+        click.echo(str(exc), err=True)
+        sys.exit(1)
+
+    if output_format == "json":
+        click.echo(format_json(points))
+    else:
+        click.echo(format_text(points))
 
 
 # ---------------------------------------------------------------------------
