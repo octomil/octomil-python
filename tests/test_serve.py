@@ -50,8 +50,16 @@ class TestResolveModelName:
         with pytest.raises(ValueError, match="Unknown model 'nonexistent'"):
             resolve_model_name("nonexistent", "gguf")
 
-    def test_unknown_backend_passthrough(self):
-        assert resolve_model_name("anything", "other") == "anything"
+    def test_unknown_backend_unknown_model_raises(self):
+        # With the model registry, unknown model names raise even with
+        # unknown backends (stricter validation than before).
+        with pytest.raises(ValueError, match="Unknown model 'anything'"):
+            resolve_model_name("anything", "other")
+
+    def test_unknown_backend_known_model_passthrough(self):
+        # Known models still resolve even with unknown backend names
+        result = resolve_model_name("gemma-1b", "other")
+        assert result == "gemma-1b"
 
 
 # ---------------------------------------------------------------------------

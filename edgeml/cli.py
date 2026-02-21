@@ -1661,6 +1661,87 @@ def train_stop_cmd(name: str) -> None:
 
 
 # ---------------------------------------------------------------------------
+# edgeml list
+# ---------------------------------------------------------------------------
+
+
+@main.command("list")
+@click.argument("model_family", required=False, default=None)
+def list_models_cmd(model_family: Optional[str]) -> None:
+    """List available model families and their variants.
+
+    Without arguments, shows all available model families with
+    default tag and parameter count.
+
+    With a model family name, shows all variants/tags for that
+    family including sources and trust levels.
+
+    Examples:
+
+        edgeml list
+        edgeml list gemma-4b
+        edgeml list llama-8b
+    """
+    from .model_registry import MODEL_FAMILIES, get_family
+
+    if model_family is None:
+        # Show all families
+        click.echo(
+            f"{'Model':<18s} {'Publisher':<14s} {'Params':<8s} "
+            f"{'Default Tag':<12s} {'Variants'}"
+        )
+        click.echo("-" * 70)
+        for name, family in sorted(MODEL_FAMILIES.items()):
+            variant_tags = ", ".join(sorted(family.variants.keys()))
+            click.echo(
+                f"  {name:<16s} {family.publisher:<14s} {family.params:<8s} "
+                f"{family.default_tag:<12s} {variant_tags}"
+            )
+        click.echo(f"\n{len(MODEL_FAMILIES)} model families available.")
+        click.echo("Use `edgeml list <model>` to see variants and sources.")
+    else:
+        family = get_family(model_family)
+        if family is None:
+            # Try to suggest close matches
+            import difflib
+
+            suggestions = difflib.get_close_matches(
+                model_family, MODEL_FAMILIES.keys(), n=3, cutoff=0.4
+            )
+            click.echo(f"Unknown model family: {model_family}", err=True)
+            if suggestions:
+                click.echo(f"Did you mean: {', '.join(suggestions)}?", err=True)
+            click.echo(
+                f"Available: {', '.join(sorted(MODEL_FAMILIES))}",
+                err=True,
+            )
+            sys.exit(1)
+
+        click.echo(f"{model_family} ({family.publisher}, {family.params})")
+        click.echo(f"Default tag: {family.default_tag}")
+        click.echo("")
+
+        for tag, variant in sorted(family.variants.items()):
+            default_marker = " (default)" if tag == family.default_tag else ""
+            mlx_str = f"  MLX: {variant.mlx}" if variant.mlx else ""
+            click.echo(f"  {tag}{default_marker} [{variant.quantization_family}]")
+            if mlx_str:
+                click.echo(f"    {mlx_str}")
+            for src in variant.sources:
+                trust_color = {
+                    "official": "green",
+                    "curated": "yellow",
+                    "community": "white",
+                }.get(src.trust, "white")
+                file_str = f" ({src.file})" if src.file else ""
+                click.echo(
+                    f"    {src.type:<14s} {src.ref}{file_str}  "
+                    + click.style(f"[{src.trust}]", fg=trust_color)
+                )
+            click.echo("")
+
+
+# ---------------------------------------------------------------------------
 # edgeml models
 # ---------------------------------------------------------------------------
 
