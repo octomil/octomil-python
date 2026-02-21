@@ -83,10 +83,14 @@ class EngineRegistry:
                 if available and model_name:
                     available = engine.supports_model(model_name)
                 info = engine.detect_info() if available else ""
-                results.append(DetectionResult(engine=engine, available=available, info=info))
+                results.append(
+                    DetectionResult(engine=engine, available=available, info=info)
+                )
             except Exception as exc:
                 logger.debug("Engine %s detection failed: %s", engine.name, exc)
-                results.append(DetectionResult(engine=engine, available=False, info=str(exc)))
+                results.append(
+                    DetectionResult(engine=engine, available=False, info=str(exc))
+                )
         return results
 
     def benchmark_all(
@@ -208,9 +212,13 @@ def reset_registry() -> None:
 def _auto_register(registry: EngineRegistry) -> None:
     """Register all built-in engines."""
     from .echo_engine import EchoEngine
+    from .executorch_engine import ExecuTorchEngine
     from .llamacpp_engine import LlamaCppEngine
     from .mlx_engine import MLXEngine
+    from .mnn_engine import MNNEngine
 
     registry.register(MLXEngine())
+    registry.register(MNNEngine())
     registry.register(LlamaCppEngine())
+    registry.register(ExecuTorchEngine())
     registry.register(EchoEngine())
