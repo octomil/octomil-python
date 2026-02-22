@@ -34,6 +34,7 @@ class VariantSpec:
 
     mlx: Optional[str] = None
     gguf: Optional[GGUFSource] = None
+    ort: Optional[str] = None  # ONNX Runtime model repo ID
     source_repo: Optional[str] = None  # original (fp16/bf16) repo
 
 
@@ -60,7 +61,7 @@ CATALOG: dict[str, ModelEntry] = {
         publisher="Google",
         params="1B",
         default_quant="4bit",
-        engines=frozenset({"mlx-lm", "llama.cpp", "mnn", "executorch"}),
+        engines=frozenset({"mlx-lm", "llama.cpp", "mnn", "executorch", "onnxruntime"}),
         variants={
             "4bit": VariantSpec(
                 mlx="mlx-community/gemma-3-1b-it-4bit",
@@ -87,7 +88,7 @@ CATALOG: dict[str, ModelEntry] = {
         publisher="Google",
         params="4B",
         default_quant="4bit",
-        engines=frozenset({"mlx-lm", "llama.cpp", "mnn", "executorch"}),
+        engines=frozenset({"mlx-lm", "llama.cpp", "mnn", "executorch", "onnxruntime"}),
         variants={
             "4bit": VariantSpec(
                 mlx="mlx-community/gemma-3-4b-it-4bit",
@@ -145,7 +146,7 @@ CATALOG: dict[str, ModelEntry] = {
         publisher="Meta",
         params="1B",
         default_quant="4bit",
-        engines=frozenset({"mlx-lm", "llama.cpp", "mnn", "executorch"}),
+        engines=frozenset({"mlx-lm", "llama.cpp", "mnn", "executorch", "onnxruntime"}),
         variants={
             "4bit": VariantSpec(
                 mlx="mlx-community/Llama-3.2-1B-Instruct-4bit",
@@ -172,7 +173,7 @@ CATALOG: dict[str, ModelEntry] = {
         publisher="Meta",
         params="3B",
         default_quant="4bit",
-        engines=frozenset({"mlx-lm", "llama.cpp", "mnn", "executorch"}),
+        engines=frozenset({"mlx-lm", "llama.cpp", "mnn", "executorch", "onnxruntime"}),
         variants={
             "4bit": VariantSpec(
                 mlx="mlx-community/Llama-3.2-3B-Instruct-4bit",
@@ -196,7 +197,7 @@ CATALOG: dict[str, ModelEntry] = {
         publisher="Meta",
         params="8B",
         default_quant="4bit",
-        engines=frozenset({"mlx-lm", "llama.cpp", "mnn", "executorch"}),
+        engines=frozenset({"mlx-lm", "llama.cpp", "mnn", "executorch", "onnxruntime"}),
         variants={
             "4bit": VariantSpec(
                 mlx="mlx-community/Meta-Llama-3.1-8B-Instruct-4bit",
@@ -235,7 +236,7 @@ CATALOG: dict[str, ModelEntry] = {
         publisher="Microsoft",
         params="3.8B",
         default_quant="4bit",
-        engines=frozenset({"mlx-lm", "llama.cpp", "mnn", "executorch"}),
+        engines=frozenset({"mlx-lm", "llama.cpp", "mnn", "executorch", "onnxruntime"}),
         variants={
             "4bit": VariantSpec(
                 mlx="mlx-community/Phi-3.5-mini-instruct-4bit",

@@ -30,6 +30,9 @@ setup(
         "llama": [
             "llama-cpp-python>=0.2.0",
         ],
+        "onnx": [
+            "onnxruntime>=1.16.0",
+        ],
         "ml": [
             "torch>=2.0.0",
             "numpy>=1.24.0",
