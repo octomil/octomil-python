@@ -219,11 +219,13 @@ def _auto_register(registry: EngineRegistry) -> None:
     from .mlx_engine import MLXEngine
     from .mnn_engine import MNNEngine
     from .ort_engine import ONNXRuntimeEngine
+    from .samsung_one_engine import SamsungOneEngine
     from .whisper_engine import WhisperCppEngine
 
     registry.register(MLXEngine())
     registry.register(MNNEngine())
     registry.register(MLCEngine())
+    registry.register(SamsungOneEngine())  # NPU-accelerated on Samsung/Exynos
     registry.register(LlamaCppEngine())
     registry.register(CactusEngine())
     registry.register(ExecuTorchEngine())
