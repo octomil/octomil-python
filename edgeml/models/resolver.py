@@ -17,7 +17,7 @@ import difflib
 from dataclasses import dataclass
 from typing import Optional
 
-from .catalog import CATALOG, ModelEntry, _resolve_alias
+from .catalog import CATALOG, MoEMetadata, ModelEntry, _resolve_alias
 from .parser import normalize_variant, parse
 
 
@@ -33,10 +33,17 @@ class ResolvedModel:
     mlx_repo: Optional[str] = None
     source_repo: Optional[str] = None
     raw: str = ""
+    architecture: str = "dense"
+    moe: Optional[MoEMetadata] = None
 
     @property
     def is_gguf(self) -> bool:
         return self.filename is not None and self.filename.endswith(".gguf")
+
+    @property
+    def is_moe(self) -> bool:
+        """True if this model uses Mixture of Experts architecture."""
+        return self.architecture == "moe" and self.moe is not None
 
 
 class ModelResolutionError(ValueError):
@@ -250,4 +257,6 @@ def resolve(
         mlx_repo=mlx_repo,
         source_repo=variant.source_repo,
         raw=name,
+        architecture=entry.architecture,
+        moe=entry.moe,
     )
