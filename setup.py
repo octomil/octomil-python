@@ -57,6 +57,9 @@ setup(
             "uvicorn[standard]>=0.20.0",
             "flwr-datasets>=0.3.0",
         ],
+        "interactive": [
+            "prompt_toolkit>=3.0.0",
+        ],
         "dev": [
             "pytest>=7.0.0",
             "pytest-cov>=4.0.0",

@@ -79,6 +79,76 @@ def _get_client():  # type: ignore[no-untyped-def]
 
 
 # ---------------------------------------------------------------------------
+# Auto-optimization helper
+# ---------------------------------------------------------------------------
+
+# Quant variants that can appear after ":" in a model tag
+_KNOWN_QUANT_SUFFIXES = frozenset(
+    {
+        "q2_k",
+        "q3_k_s",
+        "q3_k_m",
+        "q4_0",
+        "q4_k_s",
+        "q4_k_m",
+        "q5_0",
+        "q5_k_s",
+        "q5_k_m",
+        "q6_k",
+        "q8_0",
+        "4bit",
+        "8bit",
+        "fp16",
+        "f16",
+        "f32",
+    }
+)
+
+
+def _has_explicit_quant(model_tag: str) -> bool:
+    """Check if the model tag already specifies a quantization variant."""
+    if ":" not in model_tag:
+        return False
+    variant = model_tag.rsplit(":", 1)[1].lower().replace("-", "_")
+    return variant in _KNOWN_QUANT_SUFFIXES
+
+
+def _auto_optimize(model_tag: str, context_length: int = 4096) -> str | None:
+    """Run hardware-aware optimization and print results.
+
+    Returns the recommended quantization string (e.g. "Q6_K"), or ``None``
+    if the model size cannot be determined.  Does NOT modify *model_tag*.
+    """
+    from .hardware import detect_hardware
+    from .model_optimizer import ModelOptimizer, _resolve_model_size
+
+    model_size_b = _resolve_model_size(model_tag)
+    if model_size_b is None:
+        return None
+
+    hw = detect_hardware()
+    opt = ModelOptimizer(hw)
+    config = opt.pick_quant_and_offload(model_size_b, context_length)
+    speed = opt.predict_speed(model_size_b, config)
+
+    click.echo()
+    click.secho("  Hardware optimization", bold=True)
+    click.echo(f"    Quantization: {config.quantization}")
+    click.echo(
+        f"    Strategy: {config.strategy.value} ({config.gpu_layers} GPU layers)"
+    )
+    click.echo(f"    VRAM: {config.vram_gb:.1f} GB  RAM: {config.ram_gb:.1f} GB")
+    click.echo(
+        f"    Est. speed: {speed.tokens_per_second:.1f} tok/s"
+        f" ({speed.confidence} confidence)"
+    )
+    if config.warning:
+        click.secho(f"    Warning: {config.warning}", fg="yellow")
+
+    return config.quantization
+
+
+# ---------------------------------------------------------------------------
 # CLI group
 # ---------------------------------------------------------------------------
 
@@ -239,10 +309,13 @@ def serve(
     MODEL accepts Ollama-style model:variant syntax:
 
     \b
-        edgeml serve gemma-1b              # default (4bit)
-        edgeml serve gemma-1b:8bit         # 8-bit quantization
-        edgeml serve llama-8b:fp16         # full precision
-        edgeml serve llama-3b:q4_k_m       # engine-specific quant
+        edgeml serve gemma-1b              # auto-picks best quant for your hw
+        edgeml serve gemma-1b:8bit         # explicit 8-bit quantization
+        edgeml serve llama-8b:fp16         # full precision (no auto-optimize)
+        edgeml serve llama-3b:q4_k_m       # engine-specific quant (explicit)
+
+    Without an explicit quantization variant, EdgeML detects your GPU/RAM
+    and picks the best quantization automatically.
 
     Auto-detects all available inference engines, benchmarks each,
     and picks the fastest for your hardware. Override with --engine.
@@ -310,6 +383,13 @@ def serve(
     from .engines.whisper_engine import is_whisper_model
 
     is_whisper = is_whisper_model(model)
+
+    # Auto-optimize: pick best quantization for hardware if not explicit
+    if not is_whisper and not _has_explicit_quant(model):
+        best_quant = _auto_optimize(model, context_length=cache_size)
+        if best_quant:
+            model = f"{model}:{best_quant.lower()}"
+            click.echo(f"    Serving as: {model}")
 
     # Single-model mode (original behaviour)
     _print_engine_detection(model, engine)
@@ -1038,10 +1118,17 @@ def pull(name: str, version: Optional[str], fmt: Optional[str], output: str) -> 
     NAME accepts Ollama-style model:variant syntax:
 
     \b
-        edgeml pull gemma-1b                  # default variant
-        edgeml pull gemma-1b:8bit             # 8-bit quantization
+        edgeml pull gemma-1b                  # auto-picks best quant for your hw
+        edgeml pull gemma-1b:8bit             # 8-bit quantization (explicit)
         edgeml pull sentiment-v1 --version 1.0.0 --format coreml
     """
+    # Auto-optimize: pick best quantization variant for hardware
+    if not _has_explicit_quant(name):
+        best_quant = _auto_optimize(name)
+        if best_quant:
+            name = f"{name}:{best_quant.lower()}"
+            click.echo(f"    Pulling as: {name}")
+
     client = _get_client()
     ver_str = version or "latest"
     click.echo(f"Pulling {name} v{ver_str}...")
@@ -2887,6 +2974,15 @@ def launch(agent: str, model: Optional[str], port: int) -> None:
     from .agents.launcher import launch_agent
 
     launch_agent(agent, model=model, port=port)
+
+
+# ---------------------------------------------------------------------------
+# Interactive command
+# ---------------------------------------------------------------------------
+
+from .cli_hw import interactive_cmd_factory  # noqa: E402
+
+main.add_command(interactive_cmd_factory(main), "interactive")
 
 
 if __name__ == "__main__":
