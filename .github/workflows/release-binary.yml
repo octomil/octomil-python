@@ -41,7 +41,7 @@ jobs:
       - name: Install dependencies
         run: |
           pip install --upgrade pip
-          pip install -e .
+          pip install -e ".[serve]"
           pip install pyinstaller
 
       - name: Build binary
@@ -50,7 +50,11 @@ jobs:
       - name: Verify binary
         run: |
           ./dist/edgeml --version
+          ./dist/edgeml --help
           echo "Binary size: $(du -sh dist/edgeml | cut -f1)"
+          # Smoke-test serve startup (will exit with error since no model,
+          # but must not crash with ModuleNotFoundError)
+          ./dist/edgeml serve --help
 
       - name: Create archive
         run: |

@@ -41,6 +41,25 @@ hidden_imports = [
     # Other runtime deps
     "psutil",
     "qrcode",
+    # Serve deps (fastapi + uvicorn + pydantic)
+    "fastapi",
+    "fastapi.middleware",
+    "fastapi.middleware.cors",
+    "fastapi.responses",
+    "starlette",
+    "starlette.routing",
+    "starlette.responses",
+    "starlette.middleware",
+    "uvicorn",
+    "uvicorn.config",
+    "uvicorn.main",
+    "uvicorn.lifespan",
+    "uvicorn.lifespan.on",
+    "pydantic",
+    "pydantic._internal",
+    "anyio",
+    "anyio._backends",
+    "anyio._backends._asyncio",
 ]
 
 # ---------------------------------------------------------------------------
