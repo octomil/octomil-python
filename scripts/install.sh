@@ -84,10 +84,10 @@ get_version() {
 
     if command -v curl >/dev/null 2>&1; then
         VERSION=$(curl -fsSL "https://api.github.com/repos/${REPO}/releases/latest" | \
-            grep '"tag_name"' | head -1 | sed -E 's/.*"tag_name":\s*"([^"]+)".*/\1/')
+            grep '"tag_name"' | head -1 | sed -E 's/.*"tag_name":[[:space:]]*"([^"]+)".*/\1/')
     elif command -v wget >/dev/null 2>&1; then
         VERSION=$(wget -qO- "https://api.github.com/repos/${REPO}/releases/latest" | \
-            grep '"tag_name"' | head -1 | sed -E 's/.*"tag_name":\s*"([^"]+)".*/\1/')
+            grep '"tag_name"' | head -1 | sed -E 's/.*"tag_name":[[:space:]]*"([^"]+)".*/\1/')
     else
         error "curl or wget is required to download octomil."
     fi
