@@ -39,6 +39,22 @@ class VariantSpec:
     source_repo: Optional[str] = None  # original (fp16/bf16) repo
 
 
+@dataclass(frozen=True)
+class MoEMetadata:
+    """Mixture of Experts model metadata.
+
+    Captures the sparse activation pattern that defines MoE models:
+    only ``active_experts`` out of ``num_experts`` are activated per token,
+    meaning RAM usage is closer to ``active_params`` than ``total_params``.
+    """
+
+    num_experts: int
+    active_experts: int
+    expert_size: str  # human-readable, e.g. "7B"
+    total_params: str  # total parameter count, e.g. "46.7B"
+    active_params: str  # params active per token, e.g. "12.9B"
+
+
 @dataclass
 class ModelEntry:
     """A model family with its per-engine, per-quant variants."""
@@ -48,6 +64,8 @@ class ModelEntry:
     default_quant: str = "4bit"
     variants: dict[str, VariantSpec] = field(default_factory=dict)
     engines: frozenset[str] = frozenset()  # engines this model is known to work on
+    architecture: str = "dense"  # "dense" or "moe"
+    moe: Optional[MoEMetadata] = None  # populated when architecture == "moe"
 
 
 # ---------------------------------------------------------------------------
@@ -366,6 +384,168 @@ CATALOG: dict[str, ModelEntry] = {
         },
     ),
     # -------------------------------------------------------------------
+    # Mistral AI — MoE models
+    # -------------------------------------------------------------------
+    "mixtral-8x7b": ModelEntry(
+        publisher="Mistral AI",
+        params="46.7B",
+        default_quant="4bit",
+        architecture="moe",
+        moe=MoEMetadata(
+            num_experts=8,
+            active_experts=2,
+            expert_size="7B",
+            total_params="46.7B",
+            active_params="12.9B",
+        ),
+        engines=frozenset({"mlx-lm", "llama.cpp"}),
+        variants={
+            "4bit": VariantSpec(
+                mlx="mlx-community/Mixtral-8x7B-Instruct-v0.1-4bit",
+                gguf=GGUFSource(
+                    "TheBloke/Mixtral-8x7B-Instruct-v0.1-GGUF",
+                    "mixtral-8x7b-instruct-v0.1.Q4_K_M.gguf",
+                ),
+                source_repo="mistralai/Mixtral-8x7B-Instruct-v0.1",
+            ),
+            "8bit": VariantSpec(
+                mlx="mlx-community/Mixtral-8x7B-Instruct-v0.1-8bit",
+                gguf=GGUFSource(
+                    "TheBloke/Mixtral-8x7B-Instruct-v0.1-GGUF",
+                    "mixtral-8x7b-instruct-v0.1.Q8_0.gguf",
+                ),
+                source_repo="mistralai/Mixtral-8x7B-Instruct-v0.1",
+            ),
+        },
+    ),
+    "mixtral-8x22b": ModelEntry(
+        publisher="Mistral AI",
+        params="141B",
+        default_quant="4bit",
+        architecture="moe",
+        moe=MoEMetadata(
+            num_experts=8,
+            active_experts=2,
+            expert_size="22B",
+            total_params="141B",
+            active_params="39B",
+        ),
+        engines=frozenset({"mlx-lm", "llama.cpp"}),
+        variants={
+            "4bit": VariantSpec(
+                mlx="mlx-community/Mixtral-8x22B-Instruct-v0.1-4bit",
+                gguf=GGUFSource(
+                    "bartowski/Mixtral-8x22B-Instruct-v0.1-GGUF",
+                    "Mixtral-8x22B-Instruct-v0.1-Q4_K_M.gguf",
+                ),
+                source_repo="mistralai/Mixtral-8x22B-Instruct-v0.1",
+            ),
+        },
+    ),
+    # -------------------------------------------------------------------
+    # Databricks DBRX
+    # -------------------------------------------------------------------
+    "dbrx": ModelEntry(
+        publisher="Databricks",
+        params="132B",
+        default_quant="4bit",
+        architecture="moe",
+        moe=MoEMetadata(
+            num_experts=16,
+            active_experts=4,
+            expert_size="8B",
+            total_params="132B",
+            active_params="36B",
+        ),
+        engines=frozenset({"mlx-lm", "llama.cpp"}),
+        variants={
+            "4bit": VariantSpec(
+                mlx="mlx-community/DBRX-Instruct-4bit",
+                gguf=GGUFSource(
+                    "bartowski/dbrx-instruct-GGUF",
+                    "dbrx-instruct-Q4_K_M.gguf",
+                ),
+                source_repo="databricks/dbrx-instruct",
+            ),
+        },
+    ),
+    # -------------------------------------------------------------------
+    # DeepSeek MoE models
+    # -------------------------------------------------------------------
+    "deepseek-v3": ModelEntry(
+        publisher="DeepSeek",
+        params="671B",
+        default_quant="4bit",
+        architecture="moe",
+        moe=MoEMetadata(
+            num_experts=256,
+            active_experts=8,
+            expert_size="2B",
+            total_params="671B",
+            active_params="37B",
+        ),
+        engines=frozenset({"mlx-lm", "llama.cpp"}),
+        variants={
+            "4bit": VariantSpec(
+                mlx="mlx-community/DeepSeek-V3-4bit",
+                gguf=GGUFSource(
+                    "bartowski/DeepSeek-V3-GGUF",
+                    "DeepSeek-V3-Q4_K_M.gguf",
+                ),
+                source_repo="deepseek-ai/DeepSeek-V3",
+            ),
+        },
+    ),
+    "deepseek-v2-lite": ModelEntry(
+        publisher="DeepSeek",
+        params="15.7B",
+        default_quant="4bit",
+        architecture="moe",
+        moe=MoEMetadata(
+            num_experts=64,
+            active_experts=6,
+            expert_size="0.2B",
+            total_params="15.7B",
+            active_params="2.4B",
+        ),
+        engines=frozenset({"mlx-lm", "llama.cpp"}),
+        variants={
+            "4bit": VariantSpec(
+                gguf=GGUFSource(
+                    "bartowski/DeepSeek-V2-Lite-Chat-GGUF",
+                    "DeepSeek-V2-Lite-Chat-Q4_K_M.gguf",
+                ),
+                source_repo="deepseek-ai/DeepSeek-V2-Lite-Chat",
+            ),
+        },
+    ),
+    # -------------------------------------------------------------------
+    # Qwen MoE models
+    # -------------------------------------------------------------------
+    "qwen-moe-14b": ModelEntry(
+        publisher="Qwen",
+        params="14.3B",
+        default_quant="4bit",
+        architecture="moe",
+        moe=MoEMetadata(
+            num_experts=60,
+            active_experts=4,
+            expert_size="0.2B",
+            total_params="14.3B",
+            active_params="2.7B",
+        ),
+        engines=frozenset({"mlx-lm", "llama.cpp"}),
+        variants={
+            "4bit": VariantSpec(
+                gguf=GGUFSource(
+                    "Qwen/Qwen1.5-MoE-A2.7B-Chat-GGUF",
+                    "qwen1_5-moe-a2.7b-chat-q4_k_m.gguf",
+                ),
+                source_repo="Qwen/Qwen1.5-MoE-A2.7B-Chat",
+            ),
+        },
+    ),
+    # -------------------------------------------------------------------
     # HuggingFace SmolLM
     # -------------------------------------------------------------------
     "smollm-360m": ModelEntry(
@@ -472,6 +652,14 @@ MODEL_ALIASES: dict[str, str] = {
     "qwen-2.5-7b": "qwen-7b",
     "phi4": "phi-4",
     "phi4-mini": "phi-mini",
+    # MoE aliases
+    "mixtral": "mixtral-8x7b",
+    "mixtral-instruct": "mixtral-8x7b",
+    "mixtral-8x22b-instruct": "mixtral-8x22b",
+    "dbrx-instruct": "dbrx",
+    "deepseek-v2-lite-chat": "deepseek-v2-lite",
+    "qwen-1.5-moe": "qwen-moe-14b",
+    "qwen-moe": "qwen-moe-14b",
 }
 
 
@@ -497,3 +685,26 @@ def supports_engine(name: str, engine: str) -> bool:
     if entry is None:
         return False
     return engine in entry.engines
+
+
+def is_moe_model(name: str) -> bool:
+    """Check if a model uses Mixture of Experts architecture."""
+    entry = get_model(name)
+    if entry is None:
+        return False
+    return entry.architecture == "moe"
+
+
+def list_moe_models() -> list[str]:
+    """Return sorted list of all MoE model family names."""
+    return sorted(
+        name for name, entry in CATALOG.items() if entry.architecture == "moe"
+    )
+
+
+def get_moe_metadata(name: str) -> Optional[MoEMetadata]:
+    """Get MoE metadata for a model, or None if not an MoE model."""
+    entry = get_model(name)
+    if entry is None:
+        return None
+    return entry.moe

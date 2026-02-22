@@ -38,6 +38,47 @@ def _generate_device_id() -> str:
     return hashlib.sha256(raw.encode()).hexdigest()[:16]
 
 
+def _compute_load_balance(
+    activation_counts: dict[int, int],
+    num_experts: int,
+) -> float:
+    """Compute a load balance score from expert activation counts.
+
+    Returns a value between 0.0 (all tokens routed to one expert)
+    and 1.0 (perfectly uniform distribution across experts).
+
+    Uses coefficient of variation normalized against the worst case
+    (all tokens to one expert).
+    """
+    if not activation_counts or num_experts <= 1:
+        return 1.0
+
+    total = sum(activation_counts.values())
+    if total == 0:
+        return 1.0
+
+    # Expected count per expert if perfectly balanced
+    expected = total / num_experts
+
+    # Compute variance across all experts (including those with 0 activations)
+    counts = [activation_counts.get(i, 0) for i in range(num_experts)]
+    variance = sum((c - expected) ** 2 for c in counts) / num_experts
+    std_dev = variance**0.5
+
+    # Normalize: cv=0 means perfect balance, cv grows with imbalance
+    if expected == 0:
+        return 1.0
+    cv = std_dev / expected
+
+    # Convert to 0-1 score where 1.0 = perfect balance
+    # Maximum CV for N experts (all to one) is sqrt(N-1)
+    max_cv = (num_experts - 1) ** 0.5
+    if max_cv == 0:
+        return 1.0
+    score = max(0.0, 1.0 - cv / max_cv)
+    return score
+
+
 class TelemetryReporter:
     """Best-effort telemetry reporter for inference events.
 
@@ -212,6 +253,68 @@ class TelemetryReporter:
             version=version,
             session_id=session_id,
             modality=modality,
+        )
+
+    def report_moe_routing(
+        self,
+        session_id: str,
+        model_id: str,
+        version: str,
+        num_experts: int,
+        active_experts: int,
+        expert_activation_counts: dict[int, int] | None = None,
+        load_balance_score: float | None = None,
+        expert_memory_mb: float | None = None,
+        total_tokens_routed: int = 0,
+    ) -> None:
+        """Report MoE expert routing telemetry for a generation.
+
+        Parameters
+        ----------
+        session_id:
+            The generation session this routing data belongs to.
+        model_id:
+            Model identifier.
+        version:
+            Model version.
+        num_experts:
+            Total number of experts in the MoE model.
+        active_experts:
+            Number of experts activated per token.
+        expert_activation_counts:
+            Map of expert index to number of tokens routed to it.
+            Used to compute load balancing statistics.
+        load_balance_score:
+            Load balance score (0.0 = worst, 1.0 = perfectly balanced).
+            If not provided, computed from expert_activation_counts.
+        expert_memory_mb:
+            Memory used by loaded experts in MB.
+        total_tokens_routed:
+            Total number of tokens processed through expert routing.
+        """
+        metrics: dict[str, Any] = {
+            "num_experts": num_experts,
+            "active_experts": active_experts,
+            "total_tokens_routed": total_tokens_routed,
+        }
+        if expert_activation_counts is not None:
+            metrics["expert_activation_counts"] = expert_activation_counts
+            if load_balance_score is None:
+                load_balance_score = _compute_load_balance(
+                    expert_activation_counts, num_experts
+                )
+        if load_balance_score is not None:
+            metrics["load_balance_score"] = round(load_balance_score, 4)
+        if expert_memory_mb is not None:
+            metrics["expert_memory_mb"] = round(expert_memory_mb, 2)
+
+        self._enqueue(
+            event_type="moe_routing",
+            model_id=model_id,
+            version=version,
+            session_id=session_id,
+            modality="text",
+            metrics=metrics,
         )
 
     def report_prompt_compressed(

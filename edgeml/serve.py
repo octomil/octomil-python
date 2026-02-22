@@ -749,6 +749,22 @@ def _get_cache_manager(backend: InferenceBackend) -> Any:
 
 
 @dataclass
+class MoEConfig:
+    """Configuration for Mixture of Experts models.
+
+    Controls expert memory management and telemetry behaviour.
+    Both llama.cpp and MLX handle MoE natively, so these settings
+    primarily control detection, logging, and telemetry — not
+    the actual expert routing algorithm.
+    """
+
+    enabled: bool = True  # enable MoE-aware features (detection, telemetry)
+    expert_memory_limit_mb: int = 0  # 0 = no limit; cap RAM for experts
+    log_expert_routing: bool = False  # log per-request expert activation
+    offload_inactive: bool = False  # hint to offload inactive experts to disk
+
+
+@dataclass
 class ServerState:
     """Shared mutable state for the serve app."""
 
@@ -767,6 +783,9 @@ class ServerState:
     reporter: Optional["TelemetryReporter"] = None
     max_queue_depth: int = 32
     request_queue: Any = None  # RequestQueue instance
+    moe_config: MoEConfig = field(default_factory=MoEConfig)
+    is_moe_model: bool = False
+    moe_metadata: Any = None  # MoEMetadata from catalog
     compressor: Any = None  # PromptCompressor instance
     early_exit_config: Optional["EarlyExitConfig"] = None
     early_exit_monitor: Optional["EarlyExitMonitor"] = None
@@ -856,6 +875,7 @@ def create_app(
     cache_enabled: bool = True,
     engine: Optional[str] = None,
     max_queue_depth: int = 32,
+    moe_config: Optional[MoEConfig] = None,
     compress_context: bool = False,
     compression_strategy: str = "token_pruning",
     compression_ratio: float = 0.5,
@@ -876,6 +896,9 @@ def create_app(
     max_queue_depth:
         Maximum number of pending requests in the queue.  When full, new
         requests get a 503 response.  Set to 0 to disable queueing.
+    moe_config:
+        Configuration for Mixture of Experts model features.
+        When ``None``, uses defaults (auto-detection enabled).
     compress_context:
         Enable prompt compression.  Long prompts are compressed before
         inference to reduce context window usage and speed up prefill.
@@ -896,6 +919,12 @@ def create_app(
     from fastapi import FastAPI, HTTPException
     from fastapi.middleware.cors import CORSMiddleware
     from fastapi.responses import StreamingResponse
+
+    # Detect MoE model from catalog
+    from .models.catalog import get_moe_metadata, is_moe_model as _is_moe
+
+    _moe_detected = _is_moe(model_name)
+    _moe_meta = get_moe_metadata(model_name)
 
     # Build compressor if enabled
     _compressor = None
@@ -921,12 +950,27 @@ def create_app(
         cache_enabled=cache_enabled,
         engine_override=engine,
         max_queue_depth=max_queue_depth,
+        moe_config=moe_config or MoEConfig(),
+        is_moe_model=_moe_detected,
+        moe_metadata=_moe_meta,
         compressor=_compressor,
         early_exit_config=early_exit_config,
     )
 
     @asynccontextmanager
     async def lifespan(app: Any) -> Any:
+        if state.is_moe_model and state.moe_metadata and state.moe_config.enabled:
+            _m = state.moe_metadata
+            logger.info(
+                "MoE model detected: %s (%d experts, %d active per token, "
+                "%s total params, %s active params)",
+                model_name,
+                _m.num_experts,
+                _m.active_experts,
+                _m.total_params,
+                _m.active_params,
+            )
+
         # Check if this is a whisper (speech-to-text) model
         from .engines.whisper_engine import is_whisper_model
 
@@ -1014,17 +1058,29 @@ def create_app(
     @app.get("/v1/models")
     async def list_models() -> dict[str, Any]:
         models = state.backend.list_models() if state.backend else []
+        data = []
+        for m in models:
+            entry: dict[str, Any] = {
+                "id": m,
+                "object": "model",
+                "created": int(state.start_time),
+                "owned_by": "edgeml",
+            }
+            if state.is_moe_model and state.moe_metadata:
+                entry["architecture"] = "moe"
+                entry["moe"] = {
+                    "num_experts": state.moe_metadata.num_experts,
+                    "active_experts": state.moe_metadata.active_experts,
+                    "expert_size": state.moe_metadata.expert_size,
+                    "total_params": state.moe_metadata.total_params,
+                    "active_params": state.moe_metadata.active_params,
+                }
+            else:
+                entry["architecture"] = "dense"
+            data.append(entry)
         return {
             "object": "list",
-            "data": [
-                {
-                    "id": m,
-                    "object": "model",
-                    "created": int(state.start_time),
-                    "owned_by": "edgeml",
-                }
-                for m in models
-            ],
+            "data": data,
         }
 
     @app.post("/v1/chat/completions")
@@ -1639,6 +1695,7 @@ def run_server(
     cache_enabled: bool = True,
     engine: Optional[str] = None,
     max_queue_depth: int = 32,
+    moe_config: Optional[MoEConfig] = None,
     compress_context: bool = False,
     compression_strategy: str = "token_pruning",
     compression_ratio: float = 0.5,
@@ -1658,6 +1715,9 @@ def run_server(
     max_queue_depth:
         Maximum number of pending requests in the queue (default 32).
         Set to 0 to disable queueing.
+    moe_config:
+        Configuration for Mixture of Experts model features.
+        When ``None``, uses defaults (auto-detection enabled).
     compress_context:
         Enable prompt compression before inference.
     compression_strategy:
@@ -1682,6 +1742,7 @@ def run_server(
         cache_enabled=cache_enabled,
         engine=engine,
         max_queue_depth=max_queue_depth,
+        moe_config=moe_config,
         compress_context=compress_context,
         compression_strategy=compression_strategy,
         compression_ratio=compression_ratio,
