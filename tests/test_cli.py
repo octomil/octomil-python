@@ -26,22 +26,32 @@ class TestGetApiKey:
         )
         assert _get_api_key() == ""
 
-    def test_from_credentials_file(self, monkeypatch, tmp_path):
+    def test_from_credentials_file_json(self, monkeypatch, tmp_path):
+        import json
+
         monkeypatch.delenv("EDGEML_API_KEY", raising=False)
         cred_dir = tmp_path / ".edgeml"
         cred_dir.mkdir()
         cred_file = cred_dir / "credentials"
-        cred_file.write_text("api_key=file-key-456\n")
+        cred_file.write_text(json.dumps({"api_key": "file-key-456", "org": "acme"}))
 
-        monkeypatch.setattr(
-            "edgeml.cli.os.path.expanduser",
-            lambda x: str(cred_file) if "credentials" in x else x,
-        )
-        # Need to also patch os.path.exists and open to use the right path
         monkeypatch.setattr(
             "edgeml.cli.os.path.expanduser", lambda x: str(cred_dir / "credentials")
         )
         assert _get_api_key() == "file-key-456"
+
+    def test_from_credentials_file_legacy(self, monkeypatch, tmp_path):
+        """Backward compat: reads legacy key=value format."""
+        monkeypatch.delenv("EDGEML_API_KEY", raising=False)
+        cred_dir = tmp_path / ".edgeml"
+        cred_dir.mkdir()
+        cred_file = cred_dir / "credentials"
+        cred_file.write_text("api_key=legacy-key-789\n")
+
+        monkeypatch.setattr(
+            "edgeml.cli.os.path.expanduser", lambda x: str(cred_dir / "credentials")
+        )
+        assert _get_api_key() == "legacy-key-789"
 
     def test_env_takes_priority(self, monkeypatch):
         monkeypatch.setenv("EDGEML_API_KEY", "env-key")
@@ -105,6 +115,8 @@ class TestServeCommand:
 
 class TestLoginCommand:
     def test_login_saves_credentials(self, tmp_path, monkeypatch):
+        import json
+
         cred_dir = tmp_path / ".edgeml"
         monkeypatch.setattr(
             "edgeml.cli.os.path.expanduser",
@@ -116,10 +128,11 @@ class TestLoginCommand:
         assert result.exit_code == 0
         assert "API key saved" in result.output
 
-        # Verify file was created
+        # Verify file was created with JSON format
         cred_file = cred_dir / "credentials"
         assert cred_file.exists()
-        assert "api_key=test-key-789" in cred_file.read_text()
+        data = json.loads(cred_file.read_text())
+        assert data["api_key"] == "test-key-789"
 
 
 # ---------------------------------------------------------------------------
