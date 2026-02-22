@@ -49,17 +49,16 @@ jobs:
 
       - name: Verify binary
         run: |
-          ./dist/edgeml --version
-          ./dist/edgeml --help
-          echo "Binary size: $(du -sh dist/edgeml | cut -f1)"
-          # Smoke-test serve startup (will exit with error since no model,
-          # but must not crash with ModuleNotFoundError)
-          ./dist/edgeml serve --help
+          ./dist/edgeml/edgeml --version
+          ./dist/edgeml/edgeml --help
+          echo "Binary size: $(du -sh dist/edgeml/ | cut -f1)"
+          # Smoke-test serve startup (must not crash with ModuleNotFoundError)
+          ./dist/edgeml/edgeml serve --help
 
       - name: Create archive
         run: |
           cd dist
-          tar -czf "edgeml-${{ matrix.target }}.tar.gz" edgeml
+          tar -czf "edgeml-${{ matrix.target }}.tar.gz" edgeml/
 
       - name: Generate SHA256
         id: sha

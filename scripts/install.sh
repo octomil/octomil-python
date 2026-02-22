@@ -107,7 +107,7 @@ get_install_dir() {
         return
     fi
 
-    # Prefer /usr/local/bin if writable, otherwise ~/.local/bin
+    # bin dir: symlink target (must be on PATH)
     if [ -w "/usr/local/bin" ]; then
         INSTALL_DIR="/usr/local/bin"
     elif [ "$(id -u)" = "0" ]; then
@@ -115,6 +115,9 @@ get_install_dir() {
     else
         INSTALL_DIR="${HOME}/.local/bin"
     fi
+
+    # lib dir: where the full binary bundle lives
+    LIB_DIR="${HOME}/.local/lib/edgeml"
 }
 
 # ---------------------------------------------------------------------------
@@ -150,19 +153,28 @@ download_and_install() {
     info "Extracting..."
     tar -xzf "${TMPDIR_PATH}/${ARCHIVE_NAME}" -C "$TMPDIR_PATH"
 
-    if [ ! -f "${TMPDIR_PATH}/${BINARY_NAME}" ]; then
-        error "Archive did not contain expected binary '${BINARY_NAME}'."
+    if [ ! -f "${TMPDIR_PATH}/${BINARY_NAME}/${BINARY_NAME}" ]; then
+        error "Archive did not contain expected binary '${BINARY_NAME}/${BINARY_NAME}'."
     fi
 
-    # Create install directory if needed
+    # Remove previous installation
+    if [ -d "$LIB_DIR" ]; then
+        rm -rf "$LIB_DIR"
+    fi
+
+    # Install bundle to lib dir
+    mkdir -p "$(dirname "$LIB_DIR")"
+    mv "${TMPDIR_PATH}/${BINARY_NAME}" "$LIB_DIR"
+    chmod +x "${LIB_DIR}/${BINARY_NAME}"
+
+    # Create bin directory and symlink
     if [ ! -d "$INSTALL_DIR" ]; then
         info "Creating ${INSTALL_DIR}..."
         mkdir -p "$INSTALL_DIR"
     fi
 
-    info "Installing to ${INSTALL_DIR}/${BINARY_NAME}..."
-    mv "${TMPDIR_PATH}/${BINARY_NAME}" "${INSTALL_DIR}/${BINARY_NAME}"
-    chmod +x "${INSTALL_DIR}/${BINARY_NAME}"
+    ln -sf "${LIB_DIR}/${BINARY_NAME}" "${INSTALL_DIR}/${BINARY_NAME}"
+    info "Installed to ${INSTALL_DIR}/${BINARY_NAME}"
 }
 
 # ---------------------------------------------------------------------------
