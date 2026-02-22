@@ -2765,5 +2765,35 @@ def federation_share(model_name: str, federation_name: str) -> None:
     )
 
 
+# ---------------------------------------------------------------------------
+# edgeml launch
+# ---------------------------------------------------------------------------
+
+
+@main.command()
+@click.argument(
+    "agent",
+    type=click.Choice(["claude", "codex", "openclaw", "aider"], case_sensitive=False),
+)
+@click.option("--model", "-m", default=None, help="Model to serve (default: qwen3).")
+@click.option("--port", "-p", default=8080, help="Port for local server.")
+def launch(agent: str, model: Optional[str], port: int) -> None:
+    """Launch a coding agent powered by a local model.
+
+    Starts edgeml serve in the background (if not already running),
+    configures the agent's environment to point at the local
+    OpenAI-compatible endpoint, and execs the agent.
+
+    \b
+    Examples:
+        edgeml launch claude
+        edgeml launch codex --model codestral
+        edgeml launch aider --model deepseek-coder-v2
+    """
+    from .agents.launcher import launch_agent
+
+    launch_agent(agent, model=model, port=port)
+
+
 if __name__ == "__main__":
     main()
