@@ -214,6 +214,36 @@ class TelemetryReporter:
             modality=modality,
         )
 
+    def report_prompt_compressed(
+        self,
+        session_id: str,
+        model_id: str,
+        version: str,
+        original_tokens: int,
+        compressed_tokens: int,
+        compression_ratio: float,
+        strategy: str,
+        duration_ms: float,
+        modality: str = "text",
+    ) -> None:
+        """Report that a prompt was compressed before inference."""
+        metrics: dict[str, Any] = {
+            "original_tokens": original_tokens,
+            "compressed_tokens": compressed_tokens,
+            "compression_ratio": compression_ratio,
+            "tokens_saved": original_tokens - compressed_tokens,
+            "strategy": strategy,
+            "compression_duration_ms": duration_ms,
+        }
+        self._enqueue(
+            event_type="prompt_compressed",
+            model_id=model_id,
+            version=version,
+            session_id=session_id,
+            modality=modality,
+            metrics=metrics,
+        )
+
     # ------------------------------------------------------------------
     # Shutdown
     # ------------------------------------------------------------------
