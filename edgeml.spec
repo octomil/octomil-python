@@ -53,7 +53,7 @@ datas = []
 # Analysis
 # ---------------------------------------------------------------------------
 a = Analysis(
-    ["edgeml/cli.py"],
+    ["edgeml/__main__.py"],
     pathex=[],
     binaries=[],
     datas=datas,
