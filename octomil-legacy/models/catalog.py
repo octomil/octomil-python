@@ -372,6 +372,64 @@ CATALOG: dict[str, ModelEntry] = {
             ),
         },
     ),
+    # -------------------------------------------------------------------
+    # OpenAI Whisper (Speech-to-Text)
+    # -------------------------------------------------------------------
+    "whisper-tiny": ModelEntry(
+        publisher="OpenAI",
+        params="39M",
+        default_quant="fp16",
+        engines=frozenset({"whisper.cpp"}),
+        variants={
+            "fp16": VariantSpec(
+                source_repo="openai/whisper-tiny",
+            ),
+        },
+    ),
+    "whisper-base": ModelEntry(
+        publisher="OpenAI",
+        params="74M",
+        default_quant="fp16",
+        engines=frozenset({"whisper.cpp"}),
+        variants={
+            "fp16": VariantSpec(
+                source_repo="openai/whisper-base",
+            ),
+        },
+    ),
+    "whisper-small": ModelEntry(
+        publisher="OpenAI",
+        params="244M",
+        default_quant="fp16",
+        engines=frozenset({"whisper.cpp"}),
+        variants={
+            "fp16": VariantSpec(
+                source_repo="openai/whisper-small",
+            ),
+        },
+    ),
+    "whisper-medium": ModelEntry(
+        publisher="OpenAI",
+        params="769M",
+        default_quant="fp16",
+        engines=frozenset({"whisper.cpp"}),
+        variants={
+            "fp16": VariantSpec(
+                source_repo="openai/whisper-medium",
+            ),
+        },
+    ),
+    "whisper-large-v3": ModelEntry(
+        publisher="OpenAI",
+        params="1.55B",
+        default_quant="fp16",
+        engines=frozenset({"whisper.cpp"}),
+        variants={
+            "fp16": VariantSpec(
+                source_repo="openai/whisper-large-v3",
+            ),
+        },
+    ),
 }
 
 
