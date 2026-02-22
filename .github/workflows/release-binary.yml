@@ -49,17 +49,16 @@ jobs:
 
       - name: Verify binary
         run: |
-          ./dist/octomil --version
-          ./dist/octomil --help
-          echo "Binary size: $(du -sh dist/octomil | cut -f1)"
-          # Smoke-test serve startup (will exit with error since no model,
-          # but must not crash with ModuleNotFoundError)
-          ./dist/octomil serve --help
+          ./dist/octomil/octomil --version
+          ./dist/octomil/octomil --help
+          echo "Binary size: $(du -sh dist/octomil/ | cut -f1)"
+          # Smoke-test serve startup (must not crash with ModuleNotFoundError)
+          ./dist/octomil/octomil serve --help
 
       - name: Create archive
         run: |
           cd dist
-          tar -czf "octomil-${{ matrix.target }}.tar.gz" octomil
+          tar -czf "octomil-${{ matrix.target }}.tar.gz" octomil/
 
       - name: Generate SHA256
         id: sha

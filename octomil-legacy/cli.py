@@ -456,6 +456,38 @@ def _serve_multi_model(
     )
 
 
+def _get_engine_install_hint() -> str:
+    """Return platform-aware install instructions for inference engines."""
+    import platform as _platform
+
+    system = _platform.system()
+    machine = _platform.machine()
+
+    if system == "Darwin" and machine == "arm64":
+        return (
+            "  Recommended for Apple Silicon:\n"
+            "\n"
+            "    pip install mlx-lm          # Best performance (MLX)\n"
+            "    pip install llama-cpp-python # Good alternative (llama.cpp)\n"
+        )
+    elif system == "Darwin":
+        return (
+            "  Recommended for macOS (Intel):\n"
+            "\n"
+            "    pip install llama-cpp-python # llama.cpp\n"
+            "    pip install onnxruntime      # ONNX Runtime\n"
+        )
+    elif system == "Linux":
+        return (
+            "  Recommended for Linux:\n"
+            "\n"
+            "    pip install llama-cpp-python # llama.cpp\n"
+            "    pip install onnxruntime      # ONNX Runtime\n"
+        )
+    else:
+        return "  pip install llama-cpp-python\n"
+
+
 def _print_engine_detection(model: str, engine_override: str | None) -> None:
     """Print engine detection results to terminal."""
     from .engines import get_registry
@@ -465,11 +497,13 @@ def _print_engine_detection(model: str, engine_override: str | None) -> None:
     click.echo("\nDetecting engines...")
     detections = registry.detect_all(model)
     for d in detections:
+        if d.engine.name == "echo":
+            continue  # Don't clutter output with echo
         if d.available:
             info = f" ({d.info})" if d.info else ""
             click.echo(click.style(f"  + {d.engine.display_name}{info}", fg="green"))
         else:
-            click.echo(click.style(f"  - {d.engine.display_name}", fg="red"))
+            click.echo(click.style(f"  - {d.engine.display_name}", dim=True))
 
     if engine_override:
         click.echo(f"\nUsing {engine_override} (manual override)")
@@ -487,8 +521,15 @@ def _print_engine_detection(model: str, engine_override: str | None) -> None:
     else:
         click.echo(
             click.style(
-                "\nNo inference engines found. Using echo backend (testing only).",
+                "\nNo inference engines found. Install one to get started:\n",
                 fg="yellow",
+            )
+        )
+        click.echo(_get_engine_install_hint())
+        click.echo(
+            click.style(
+                "  Using echo backend for now (mirrors input, no real inference).\n",
+                dim=True,
             )
         )
 
