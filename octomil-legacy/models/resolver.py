@@ -54,12 +54,15 @@ _ENGINE_ALIASES: dict[str, str] = {
     "mnn": "mnn",
     "mnn-llm": "mnn",
     "executorch": "executorch",
+    "onnxruntime": "onnxruntime",
+    "onnx": "onnxruntime",
+    "ort": "onnxruntime",
     "echo": "echo",
 }
 
 # Engine priority order — used when picking the best engine automatically.
 # Lower index = higher priority.
-_ENGINE_PRIORITY = ["mlx-lm", "mnn", "llama.cpp", "executorch", "echo"]
+_ENGINE_PRIORITY = ["mlx-lm", "mnn", "llama.cpp", "executorch", "onnxruntime", "echo"]
 
 
 def _normalize_engine(engine: str) -> str:
@@ -102,6 +105,8 @@ def _pick_engine(
         if engine == "llama.cpp" and variant.gguf:
             return engine
         if engine in ("mnn", "executorch") and (variant.gguf or variant.source_repo):
+            return engine
+        if engine == "onnxruntime" and (variant.ort or variant.source_repo):
             return engine
         if engine == "echo":
             return engine
@@ -201,6 +206,8 @@ def resolve(
     elif resolved_engine == "llama.cpp" and variant.gguf:
         hf_repo = variant.gguf.repo
         filename = variant.gguf.filename
+    elif resolved_engine == "onnxruntime" and variant.ort:
+        hf_repo = variant.ort
     elif variant.gguf:
         # Fallback to GGUF for engines that can consume GGUF (mnn, etc.)
         hf_repo = variant.gguf.repo
