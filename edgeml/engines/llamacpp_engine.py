@@ -1,7 +1,8 @@
 """llama.cpp engine plugin — cross-platform GGUF inference.
 
-Works on any platform with CPU, and supports Metal (macOS) and CUDA (NVIDIA)
-GPU offloading. Uses GGUF quantized models from HuggingFace.
+Works on any platform with CPU, and supports Metal (macOS), CUDA (NVIDIA),
+and ROCm/hipBLAS (AMD) GPU offloading. Uses GGUF quantized models from
+HuggingFace.
 
 MoE models (Mixtral, DBRX, DeepSeek) are handled natively by llama.cpp
 via GGUF format. No special configuration is needed — the expert routing
@@ -11,7 +12,9 @@ is embedded in the GGUF weights and executed by the llama.cpp runtime.
 from __future__ import annotations
 
 import logging
+import os
 import platform
+import shutil
 import time
 from typing import Any
 
@@ -45,7 +48,14 @@ class LlamaCppEngine(EnginePlugin):
     def display_name(self) -> str:
         sys = platform.system()
         machine = platform.machine()
-        accel = "Metal" if sys == "Darwin" else "CUDA" if self._has_cuda() else "CPU"
+        if sys == "Darwin":
+            accel = "Metal"
+        elif self._has_cuda():
+            accel = "CUDA"
+        elif self._has_rocm():
+            accel = "ROCm"
+        else:
+            accel = "CPU"
         return f"llama.cpp ({accel}, {machine})"
 
     @property
@@ -62,6 +72,23 @@ class LlamaCppEngine(EnginePlugin):
         except ImportError:
             return False
 
+    @staticmethod
+    def _has_rocm() -> bool:
+        """Detect AMD ROCm/hipBLAS availability on Linux.
+
+        Checks three indicators (any one is sufficient):
+        1. HIP_VISIBLE_DEVICES env var is set
+        2. /opt/rocm directory exists
+        3. rocminfo CLI tool is on PATH
+        """
+        if os.environ.get("HIP_VISIBLE_DEVICES"):
+            return True
+        if os.path.isdir("/opt/rocm"):
+            return True
+        if shutil.which("rocminfo") is not None:
+            return True
+        return False
+
     def detect(self) -> bool:
         try:
             import llama_cpp  # type: ignore[import-untyped]  # noqa: F401
@@ -74,7 +101,11 @@ class LlamaCppEngine(EnginePlugin):
         sys = platform.system()
         if sys == "Darwin":
             return "CPU + Metal"
-        return "CPU" + (" + CUDA" if self._has_cuda() else "")
+        if self._has_cuda():
+            return "CPU + CUDA"
+        if self._has_rocm():
+            return "CPU + ROCm"
+        return "CPU"
 
     def supports_model(self, model_name: str) -> bool:
         # Supports catalog names, .gguf files, and HuggingFace repo IDs
