@@ -789,6 +789,7 @@ class ServerState:
     compressor: Any = None  # PromptCompressor instance
     early_exit_config: Optional["EarlyExitConfig"] = None
     early_exit_monitor: Optional["EarlyExitMonitor"] = None
+    tool_use: bool = False  # pre-load coding agent tool schemas
 
 
 @dataclass
@@ -881,6 +882,7 @@ def create_app(
     compression_ratio: float = 0.5,
     compression_max_turns: int = 4,
     compression_threshold: int = 256,
+    tool_use: bool = False,
     early_exit_config: Optional["EarlyExitConfig"] = None,
 ) -> Any:
     """Create a FastAPI app with OpenAI-compatible endpoints.
@@ -910,6 +912,10 @@ def create_app(
         Number of recent turns to keep verbatim (sliding_window strategy).
     compression_threshold:
         Minimum estimated token count before compression activates.
+    tool_use:
+        When ``True``, pre-load coding agent tool schemas and expose
+        them at ``/v1/tool-schemas``.  Tools include ``read_file``,
+        ``write_file``, ``edit_file``, ``run_command``, ``search_files``.
     early_exit_config:
         Configuration for early exit / adaptive computation depth.
         When ``None`` or not enabled, early exit monitoring is disabled.
@@ -955,6 +961,7 @@ def create_app(
         moe_metadata=_moe_meta,
         compressor=_compressor,
         early_exit_config=early_exit_config,
+        tool_use=tool_use,
     )
 
     @asynccontextmanager
@@ -1055,6 +1062,23 @@ def create_app(
         allow_headers=["*"],
     )
 
+    @app.middleware("http")
+    async def agent_context_middleware(request, call_next):  # type: ignore[no-untyped-def]
+        """Log and store agent context from the X-Octomil-Agent-Context header.
+
+        Coding agents (Aider, Goose, OpenCode) can send this header to
+        identify themselves and provide context for smarter routing decisions.
+        """
+        agent_ctx = request.headers.get("X-Octomil-Agent-Context")
+        if agent_ctx:
+            logger.info("Agent context: %s", agent_ctx)
+            # Store on request state for downstream use
+            request.state.agent_context = agent_ctx
+        else:
+            request.state.agent_context = None
+        response = await call_next(request)
+        return response
+
     @app.get("/v1/models")
     async def list_models() -> dict[str, Any]:
         models = state.backend.list_models() if state.backend else []
@@ -1082,6 +1106,21 @@ def create_app(
             "object": "list",
             "data": data,
         }
+
+    @app.get("/v1/tool-schemas")
+    async def tool_schemas() -> dict[str, Any]:
+        """Return pre-loaded coding agent tool schemas.
+
+        Only populated when the server is started with ``--tool-use``.
+        Coding agents (Aider, Goose, OpenCode) can discover tools here
+        and use them for structured output enforcement.
+        """
+        if not state.tool_use:
+            return {"tools": [], "enabled": False}
+
+        from .tool_schemas import get_tool_use_tools
+
+        return {"tools": get_tool_use_tools(), "enabled": True}
 
     @app.post("/v1/chat/completions")
     async def chat_completions(body: ChatCompletionBody) -> Any:
@@ -1318,7 +1357,6 @@ def create_app(
             "total_tokens": metrics.prompt_tokens + metrics.total_tokens,
             "cache_hit": metrics.cache_hit,
         }
-
 
         # Include compression stats when compression was applied
         if compression_stats is not None and compression_stats.strategy != "none":
@@ -1701,6 +1739,7 @@ def run_server(
     compression_ratio: float = 0.5,
     compression_max_turns: int = 4,
     compression_threshold: int = 256,
+    tool_use: bool = False,
     early_exit_config: Optional["EarlyExitConfig"] = None,
 ) -> None:
     """Start the inference server (blocking).
@@ -1728,6 +1767,8 @@ def run_server(
         Number of recent turns to keep verbatim (sliding_window).
     compression_threshold:
         Minimum token count before compression activates.
+    tool_use:
+        Pre-load coding agent tool schemas for structured output.
     early_exit_config:
         Configuration for early exit / adaptive computation depth.
     """
@@ -1748,6 +1789,7 @@ def run_server(
         compression_ratio=compression_ratio,
         compression_max_turns=compression_max_turns,
         compression_threshold=compression_threshold,
+        tool_use=tool_use,
         early_exit_config=early_exit_config,
     )
     uvicorn.run(app, host=host, port=port, log_level="info")

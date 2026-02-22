@@ -184,6 +184,15 @@ def main() -> None:
     help="Minimum estimated token count before compression kicks in (default: 256).",
 )
 @click.option(
+    "--tool-use",
+    is_flag=True,
+    default=False,
+    help="Pre-load coding agent tool schemas for structured output. "
+    "Exposes tool definitions (read_file, write_file, edit_file, run_command, "
+    "search_files) at /v1/tool-schemas for coding agents like Aider, Goose, "
+    "and OpenCode.",
+)
+@click.option(
     "--early-exit-threshold",
     default=None,
     type=float,
@@ -221,6 +230,7 @@ def serve(
     compression_ratio: float,
     compression_max_turns: int,
     compression_threshold: int,
+    tool_use: bool,
     early_exit_threshold: float | None,
     speed_quality: str | None,
 ) -> None:
@@ -337,6 +347,9 @@ def serve(
                 f"ratio={compression_ratio}, "
                 f"threshold={compression_threshold} tokens)"
             )
+        if tool_use:
+            click.echo("Tool-use mode: enabled (coding agent tool schemas loaded)")
+            click.echo(f"Tool schemas: http://localhost:{port}/v1/tool-schemas")
 
     # Build early exit config
     from .early_exit import config_from_cli as _ee_config_from_cli
@@ -385,6 +398,7 @@ def serve(
         compression_ratio=compression_ratio,
         compression_max_turns=compression_max_turns,
         compression_threshold=compression_threshold,
+        tool_use=tool_use,
         early_exit_config=ee_config if ee_config.enabled else None,
     )
 
