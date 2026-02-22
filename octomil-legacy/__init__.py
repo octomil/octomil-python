@@ -31,8 +31,12 @@ from .models import (
     DeploymentResult,
     DeviceDeployment,
     DeviceDeploymentStatus,
+    MoEMetadata,
     RollbackResult,
     TrainingSession,
+    get_moe_metadata,
+    is_moe_model,
+    list_moe_models,
 )
 from .decomposer import (
     DecompositionResult,
@@ -233,6 +237,10 @@ __all__ = [
     "HKDF_INFO_PAIRWISE_MASK",
     "HKDF_INFO_SHARE_ENCRYPTION",
     "HKDF_INFO_SELF_MASK",
+    "MoEMetadata",
+    "get_moe_metadata",
+    "is_moe_model",
+    "list_moe_models",
     "TelemetryReporter",
     "init",
     "get_reporter",

@@ -7,6 +7,10 @@ Attention: MLX uses Metal fused attention automatically on Apple Silicon.
 No explicit ``flash_attn`` flag is needed — the Metal Performance Shaders
 backend fuses multi-head attention into a single GPU kernel.  Reported as
 ``metal_fused`` in telemetry.
+
+MoE models (Mixtral, DBRX, DeepSeek) are handled natively by MLX — the
+framework loads all expert weights into unified memory and routes tokens
+through the sparse gating network automatically.
 """
 
 from __future__ import annotations
@@ -25,6 +29,13 @@ from ..models.catalog import CATALOG as _UNIFIED_CATALOG
 
 _MLX_CATALOG = {
     name for name, entry in _UNIFIED_CATALOG.items() if "mlx-lm" in entry.engines
+}
+
+# MoE models in the catalog that MLX supports natively
+_MOE_MODELS = {
+    name
+    for name, entry in _UNIFIED_CATALOG.items()
+    if entry.architecture == "moe" and "mlx-lm" in entry.engines
 }
 
 
@@ -121,8 +132,23 @@ class MLXEngine(EnginePlugin):
         except Exception as exc:
             return BenchmarkResult(engine_name=self.name, error=str(exc))
 
+    def is_moe_model(self, model_name: str) -> bool:
+        """Check if the model is a known MoE model.
+
+        MLX handles MoE natively — expert routing is part of the model's
+        computation graph in unified memory.
+        """
+        return model_name in _MOE_MODELS
+
     def create_backend(self, model_name: str, **kwargs: Any) -> Any:
         from ..serve import MLXBackend
+
+        if self.is_moe_model(model_name):
+            logger.info(
+                "MoE model '%s' detected — MLX handles expert "
+                "routing natively in unified memory",
+                model_name,
+            )
 
         backend = MLXBackend(
             cache_size_mb=kwargs.get("cache_size_mb", 2048),

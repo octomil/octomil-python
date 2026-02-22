@@ -14,7 +14,14 @@ Usage::
     resolved = resolve("gemma-3b:4bit", available_engines=["mlx-lm", "llama.cpp"])
 """
 
-from .catalog import CATALOG, list_models
+from .catalog import (
+    CATALOG,
+    MoEMetadata,
+    get_moe_metadata,
+    is_moe_model,
+    list_models,
+    list_moe_models,
+)
 from .parser import ParsedModel, parse
 from .resolver import ResolvedModel, resolve
 
@@ -31,9 +38,13 @@ from ._types import (
 __all__ = [
     # New model resolution API
     "CATALOG",
+    "MoEMetadata",
     "ParsedModel",
     "ResolvedModel",
+    "get_moe_metadata",
+    "is_moe_model",
     "list_models",
+    "list_moe_models",
     "parse",
     "resolve",
     # Legacy data classes

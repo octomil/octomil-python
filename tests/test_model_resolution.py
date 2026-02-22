@@ -146,9 +146,9 @@ class TestNormalizeVariant:
 class TestCatalog:
     """Tests for the unified model catalog."""
 
-    def test_has_19_models(self) -> None:
-        """Catalog should have all 19 model families (14 LLM + 5 Whisper)."""
-        assert len(CATALOG) == 19
+    def test_has_25_models(self) -> None:
+        """Catalog should have all 25 model families (14 LLM + 6 MoE + 5 Whisper)."""
+        assert len(CATALOG) == 25
 
     def test_all_families_have_default_variant(self) -> None:
         """Every family must have its default_quant variant."""
@@ -246,12 +246,12 @@ class TestCatalogGGUFCoverage:
         for name in self.EXPECTED_GGUF_MODELS:
             entry = CATALOG[name]
             default = entry.variants[entry.default_quant]
-            assert (
-                default.gguf is not None
-            ), f"{name} default variant missing GGUF source"
-            assert default.gguf.filename.endswith(
-                ".gguf"
-            ), f"{name} GGUF filename does not end with .gguf"
+            assert default.gguf is not None, (
+                f"{name} default variant missing GGUF source"
+            )
+            assert default.gguf.filename.endswith(".gguf"), (
+                f"{name} GGUF filename does not end with .gguf"
+            )
 
 
 # =====================================================================
@@ -301,9 +301,9 @@ class TestModelAliases:
     def test_all_aliases_map_to_valid_catalog_entries(self) -> None:
         """Every alias must point to a real catalog key."""
         for alias, canonical in MODEL_ALIASES.items():
-            assert (
-                canonical in CATALOG
-            ), f"Alias '{alias}' maps to '{canonical}' which is not in CATALOG"
+            assert canonical in CATALOG, (
+                f"Alias '{alias}' maps to '{canonical}' which is not in CATALOG"
+            )
 
     def test_resolve_with_alias(self) -> None:
         """resolve() works with aliased model names."""
@@ -581,7 +581,7 @@ class TestListCLI:
         assert result.exit_code == 0
         assert "gemma-4b" in result.output
         assert "llama-8b" in result.output
-        assert "19 model families" in result.output
+        assert "25 model families" in result.output
         assert "model:variant" in result.output or "model>:<variant>" in result.output
 
     def test_list_specific_family(self) -> None:
