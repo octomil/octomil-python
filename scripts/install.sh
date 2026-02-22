@@ -52,6 +52,17 @@ detect_platform() {
     esac
 
     PLATFORM="${OS}-${ARCH}"
+
+    # Intel macOS: no pre-built binary — fall back to pip
+    if [ "$PLATFORM" = "darwin-amd64" ]; then
+        warn "Pre-built binaries are only available for Apple Silicon (arm64)."
+        echo ""
+        echo "  Install via pip instead:"
+        echo ""
+        echo "    pip install edgeml[serve]"
+        echo ""
+        exit 0
+    fi
 }
 
 # ---------------------------------------------------------------------------
@@ -133,7 +144,7 @@ download_and_install() {
     - Version ${VERSION} does not have a binary for ${PLATFORM}
     - The release has not been published yet
 
-  Available platforms: darwin-arm64, darwin-amd64, linux-amd64"
+  Available platforms: darwin-arm64, linux-amd64"
     fi
 
     info "Extracting..."
