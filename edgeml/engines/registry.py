@@ -214,6 +214,7 @@ def _auto_register(registry: EngineRegistry) -> None:
     from .echo_engine import EchoEngine
     from .executorch_engine import ExecuTorchEngine
     from .llamacpp_engine import LlamaCppEngine
+    from .mlc_engine import MLCEngine
     from .mlx_engine import MLXEngine
     from .mnn_engine import MNNEngine
     from .ort_engine import ONNXRuntimeEngine
@@ -221,6 +222,7 @@ def _auto_register(registry: EngineRegistry) -> None:
 
     registry.register(MLXEngine())
     registry.register(MNNEngine())
+    registry.register(MLCEngine())
     registry.register(LlamaCppEngine())
     registry.register(ExecuTorchEngine())
     registry.register(ONNXRuntimeEngine())

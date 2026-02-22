@@ -57,6 +57,9 @@ _ENGINE_ALIASES: dict[str, str] = {
     "onnxruntime": "onnxruntime",
     "onnx": "onnxruntime",
     "ort": "onnxruntime",
+    "mlc-llm": "mlc-llm",
+    "mlc": "mlc-llm",
+    "mlcllm": "mlc-llm",
     "whisper.cpp": "whisper.cpp",
     "whisper": "whisper.cpp",
     "whispercpp": "whisper.cpp",
@@ -68,6 +71,7 @@ _ENGINE_ALIASES: dict[str, str] = {
 _ENGINE_PRIORITY = [
     "mlx-lm",
     "mnn",
+    "mlc-llm",
     "llama.cpp",
     "executorch",
     "onnxruntime",
@@ -112,6 +116,8 @@ def _pick_engine(
 
         # Check that this engine has an artifact for this quant
         if engine == "mlx-lm" and variant.mlx:
+            return engine
+        if engine == "mlc-llm" and (variant.mlc or variant.source_repo):
             return engine
         if engine == "llama.cpp" and variant.gguf:
             return engine
@@ -213,6 +219,8 @@ def resolve(
 
     if resolved_engine == "mlx-lm" and variant.mlx:
         hf_repo = variant.mlx
+    elif resolved_engine == "mlc-llm" and variant.mlc:
+        hf_repo = variant.mlc
     elif resolved_engine == "llama.cpp" and variant.gguf:
         hf_repo = variant.gguf.repo
         filename = variant.gguf.filename

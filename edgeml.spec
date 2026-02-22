@@ -8,8 +8,6 @@ Build with::
 The resulting binary lands in ``dist/edgeml``.
 """
 
-import sys
-from pathlib import Path
 
 block_cipher = None
 
@@ -18,6 +16,7 @@ block_cipher = None
 # ---------------------------------------------------------------------------
 hidden_imports = [
     "edgeml.engines.mlx_engine",
+    "edgeml.engines.mlc_engine",
     "edgeml.engines.llamacpp_engine",
     "edgeml.engines.mnn_engine",
     "edgeml.engines.executorch_engine",
@@ -71,6 +70,7 @@ a = Analysis(
         "onnxruntime",
         "mlx",
         "mlx_lm",
+        "mlc_llm",
         "llama_cpp",
         "pywhispercpp",
         "executorch",
