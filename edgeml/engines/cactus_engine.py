@@ -20,6 +20,7 @@ import json
 import logging
 import platform
 import time
+from dataclasses import dataclass
 from typing import Any, Optional
 
 from .base import BenchmarkResult, EnginePlugin
@@ -34,6 +35,15 @@ _CACTUS_CATALOG = {
     for name, entry in _UNIFIED_CATALOG.items()
     if "llama.cpp" in entry.engines
 }
+
+
+@dataclass
+class CactusMetrics:
+    """Inference metrics returned alongside generated text."""
+
+    total_tokens: int = 0
+    tokens_per_second: float = 0.0
+    ttfc_ms: float = 0.0
 
 
 def _try_import_cactus() -> Optional[Any]:
@@ -153,13 +163,14 @@ class CactusEngine(EnginePlugin):
                 [{"role": "user", "content": "Hello, how are you?"}]
             )
 
-            start = time.monotonic()
-            response_json = cactus.cactus_complete(
-                handle, messages, max_tokens=n_tokens
-            )
-            elapsed = time.monotonic() - start
-
-            cactus.cactus_destroy(handle)
+            try:
+                start = time.monotonic()
+                response_json = cactus.cactus_complete(
+                    handle, messages, max_tokens=n_tokens
+                )
+                elapsed = time.monotonic() - start
+            finally:
+                cactus.cactus_destroy(handle)
 
             # Parse Cactus response for metrics
             try:
@@ -291,15 +302,11 @@ class _CactusBackend:
         if tps == 0 and total_tokens > 0 and elapsed > 0:
             tps = total_tokens / elapsed
 
-        from dataclasses import dataclass
-
-        @dataclass
-        class Metrics:
-            total_tokens: int = total_tokens
-            tokens_per_second: float = tps
-            ttfc_ms: float = ttft
-
-        return text, Metrics()
+        return text, CactusMetrics(
+            total_tokens=total_tokens,
+            tokens_per_second=tps,
+            ttfc_ms=ttft,
+        )
 
     def list_models(self) -> list[str]:
         return [self.model_name] if self.model_name else []

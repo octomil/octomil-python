@@ -19,6 +19,7 @@ from __future__ import annotations
 import logging
 import os
 import time
+from dataclasses import dataclass
 from typing import Any, Optional
 
 from .base import BenchmarkResult, EnginePlugin
@@ -44,6 +45,15 @@ def _get_onert_version() -> Optional[str]:
         return getattr(onert, "__version__", None)
     except ImportError:
         return None
+
+
+@dataclass
+class SamsungOneMetrics:
+    """Inference metrics returned alongside generated text."""
+
+    total_tokens: int = 0
+    tokens_per_second: float = 0.0
+    ttfc_ms: float = 0.0
 
 
 def _select_backend() -> str:
@@ -244,6 +254,13 @@ class _SamsungOneBackend:
         )
 
     def generate(self, request: Any) -> tuple[str, Any]:
+        """Run a single inference pass and return (text, metrics).
+
+        The *request* parameter is currently unused — Samsung ONE models
+        operate on fixed tensor shapes defined by the model.  It is
+        accepted as a placeholder for future input wiring (e.g. mapping
+        request fields to model input tensors).
+        """
         import numpy as np
 
         if self._session is None:
@@ -260,16 +277,12 @@ class _SamsungOneBackend:
         outputs = self._session.infer(inputs)
         elapsed = time.monotonic() - start
 
-        from dataclasses import dataclass
-
-        @dataclass
-        class Metrics:
-            total_tokens: int = 1
-            tokens_per_second: float = 1 / elapsed if elapsed > 0 else 0.0
-            ttfc_ms: float = elapsed * 1000
-
         text = str(outputs[0]) if outputs else ""
-        return text, Metrics()
+        return text, SamsungOneMetrics(
+            total_tokens=1,
+            tokens_per_second=1 / elapsed if elapsed > 0 else 0.0,
+            ttfc_ms=elapsed * 1000,
+        )
 
     def list_models(self) -> list[str]:
         return [self.model_name] if self.model_name else []
