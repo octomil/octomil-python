@@ -149,12 +149,16 @@ def serve(
 ) -> None:
     """Start a local OpenAI-compatible inference server.
 
-    Auto-detects all available inference engines, benchmarks each,
-    and picks the fastest for your hardware. Override with --engine.
+    MODEL accepts Ollama-style model:variant syntax:
 
     \b
-    Single-model mode:
-        edgeml serve gemma-1b --port 8080
+        edgeml serve gemma-1b              # default (4bit)
+        edgeml serve gemma-1b:8bit         # 8-bit quantization
+        edgeml serve llama-8b:fp16         # full precision
+        edgeml serve llama-3b:q4_k_m       # engine-specific quant
+
+    Auto-detects all available inference engines, benchmarks each,
+    and picks the fastest for your hardware. Override with --engine.
 
     \b
     Multi-model with auto-routing:
@@ -790,10 +794,11 @@ def push(
 def pull(name: str, version: Optional[str], fmt: Optional[str], output: str) -> None:
     """Download a model from the registry.
 
-    Downloads NAME at VERSION in the specified FORMAT to OUTPUT directory.
+    NAME accepts Ollama-style model:variant syntax:
 
-    Example:
-
+    \b
+        edgeml pull gemma-1b                  # default variant
+        edgeml pull gemma-1b:8bit             # 8-bit quantization
         edgeml pull sentiment-v1 --version 1.0.0 --format coreml
     """
     client = _get_client()
@@ -1315,6 +1320,13 @@ def benchmark(
 ) -> None:
     """Run inference benchmarks on a model.
 
+    MODEL accepts Ollama-style model:variant syntax:
+
+    \b
+        edgeml benchmark gemma-1b            # default (4bit)
+        edgeml benchmark gemma-1b:8bit       # 8-bit quantization
+        edgeml benchmark llama-8b:fp16       # full precision
+
     Measures TTFT, TPOT, latency distribution (min/avg/median/p90/p95/p99/max),
     throughput, and memory usage across multiple iterations.
 
@@ -1727,73 +1739,73 @@ def list_models_cmd(model_family: Optional[str]) -> None:
     """List available model families and their variants.
 
     Without arguments, shows all available model families with
-    default tag and parameter count.
+    default variant, parameter count, and supported engines.
 
-    With a model family name, shows all variants/tags for that
-    family including sources and trust levels.
+    With a model family name, shows all variants for that family
+    with engine-specific artifacts (MLX repos, GGUF files).
 
+    \b
     Examples:
-
         edgeml list
         edgeml list gemma-4b
         edgeml list llama-8b
+
+    \b
+    Use model:variant syntax with serve/benchmark/pull:
+        edgeml serve gemma-4b:8bit
+        edgeml benchmark llama-8b:fp16
     """
-    from .model_registry import MODEL_FAMILIES, get_family
+    from .models.catalog import CATALOG, get_model
 
     if model_family is None:
         # Show all families
         click.echo(
             f"{'Model':<18s} {'Publisher':<14s} {'Params':<8s} "
-            f"{'Default Tag':<12s} {'Variants'}"
+            f"{'Default':<10s} {'Variants'}"
         )
-        click.echo("-" * 70)
-        for name, family in sorted(MODEL_FAMILIES.items()):
-            variant_tags = ", ".join(sorted(family.variants.keys()))
+        click.echo("-" * 76)
+        for name, entry in sorted(CATALOG.items()):
+            variant_tags = ", ".join(sorted(entry.variants.keys()))
             click.echo(
-                f"  {name:<16s} {family.publisher:<14s} {family.params:<8s} "
-                f"{family.default_tag:<12s} {variant_tags}"
+                f"  {name:<16s} {entry.publisher:<14s} {entry.params:<8s} "
+                f"{entry.default_quant:<10s} {variant_tags}"
             )
-        click.echo(f"\n{len(MODEL_FAMILIES)} model families available.")
-        click.echo("Use `edgeml list <model>` to see variants and sources.")
+        click.echo(f"\n{len(CATALOG)} model families available.")
+        click.echo("Use `edgeml list <model>` to see variants and engine artifacts.")
+        click.echo("Use `edgeml serve <model>:<variant>` to serve a specific variant.")
     else:
-        family = get_family(model_family)
-        if family is None:
+        entry = get_model(model_family)
+        if entry is None:
             # Try to suggest close matches
             import difflib
 
             suggestions = difflib.get_close_matches(
-                model_family, MODEL_FAMILIES.keys(), n=3, cutoff=0.4
+                model_family, CATALOG.keys(), n=3, cutoff=0.4
             )
             click.echo(f"Unknown model family: {model_family}", err=True)
             if suggestions:
                 click.echo(f"Did you mean: {', '.join(suggestions)}?", err=True)
             click.echo(
-                f"Available: {', '.join(sorted(MODEL_FAMILIES))}",
+                f"Available: {', '.join(sorted(CATALOG))}",
                 err=True,
             )
             sys.exit(1)
 
-        click.echo(f"{model_family} ({family.publisher}, {family.params})")
-        click.echo(f"Default tag: {family.default_tag}")
+        click.echo(f"{model_family} ({entry.publisher}, {entry.params})")
+        click.echo(f"Default variant: {entry.default_quant}")
+        engines_str = ", ".join(sorted(entry.engines))
+        click.echo(f"Engines: {engines_str}")
         click.echo("")
 
-        for tag, variant in sorted(family.variants.items()):
-            default_marker = " (default)" if tag == family.default_tag else ""
-            mlx_str = f"  MLX: {variant.mlx}" if variant.mlx else ""
-            click.echo(f"  {tag}{default_marker} [{variant.quantization_family}]")
-            if mlx_str:
-                click.echo(f"    {mlx_str}")
-            for src in variant.sources:
-                trust_color = {
-                    "official": "green",
-                    "curated": "yellow",
-                    "community": "white",
-                }.get(src.trust, "white")
-                file_str = f" ({src.file})" if src.file else ""
-                click.echo(
-                    f"    {src.type:<14s} {src.ref}{file_str}  "
-                    + click.style(f"[{src.trust}]", fg=trust_color)
-                )
+        for quant, variant in sorted(entry.variants.items()):
+            default_marker = " (default)" if quant == entry.default_quant else ""
+            click.echo(f"  {model_family}:{quant}{default_marker}")
+            if variant.mlx:
+                click.echo(f"    mlx-lm:    {variant.mlx}")
+            if variant.gguf:
+                click.echo(f"    llama.cpp: {variant.gguf.repo} ({variant.gguf.filename})")
+            if variant.source_repo:
+                click.echo(f"    source:    {variant.source_repo}")
             click.echo("")
 
 
