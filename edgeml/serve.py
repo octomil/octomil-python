@@ -36,11 +36,6 @@ if TYPE_CHECKING:
 
 from pydantic import BaseModel, Field
 
-from .model_registry import (
-    MODEL_FAMILIES,
-    ModelResolutionError,
-    resolve_model,
-)
 from .models.catalog import CATALOG as _UNIFIED_CATALOG
 from .models.resolver import ModelResolutionError as _NewResolutionError
 from .models.resolver import resolve as _resolve_new
@@ -83,7 +78,10 @@ for _name, _entry in _UNIFIED_CATALOG.items():
     if _default_variant.mlx:
         _MLX_MODELS[_name] = _default_variant.mlx
     if _default_variant.gguf:
-        _GGUF_MODELS[_name] = (_default_variant.gguf.repo, _default_variant.gguf.filename)
+        _GGUF_MODELS[_name] = (
+            _default_variant.gguf.repo,
+            _default_variant.gguf.filename,
+        )
 
 
 def resolve_model_name(name: str, backend: str) -> str:
@@ -471,7 +469,9 @@ class LlamaCppBackend(InferenceBackend):
                 filename = resolved.filename
                 logger.info(
                     "Loading %s from %s (%s)...",
-                    model_name, repo_id, filename,
+                    model_name,
+                    repo_id,
+                    filename,
                 )
                 self._llm = Llama.from_pretrained(
                     repo_id=repo_id,
@@ -900,9 +900,7 @@ def create_app(
 
             state.request_queue = RequestQueue(max_depth=state.max_queue_depth)
             state.request_queue.start()
-            logger.info(
-                "Request queue enabled (max_depth=%d)", state.max_queue_depth
-            )
+            logger.info("Request queue enabled (max_depth=%d)", state.max_queue_depth)
 
         # Create telemetry reporter when an API key is configured
         if state.api_key:
@@ -1048,9 +1046,7 @@ def create_app(
             if _queue is not None:
                 # Stream through the request queue
                 return StreamingResponse(
-                    _queued_stream_response(
-                        state, gen_req, req_id, session_id, _queue
-                    ),
+                    _queued_stream_response(state, gen_req, req_id, session_id, _queue),
                     media_type="text/event-stream",
                 )
             return StreamingResponse(
@@ -1541,7 +1537,13 @@ def create_multi_model_app(
     from fastapi.middleware.cors import CORSMiddleware
     from fastapi.responses import JSONResponse, StreamingResponse
 
-    from .routing import QueryRouter, RoutingDecision, assign_tiers
+    from .decomposer import ResultMerger, SubTaskResult
+    from .routing import (
+        DecomposedRoutingDecision,
+        QueryRouter,
+        RoutingDecision,
+        assign_tiers,
+    )
 
     state = MultiModelServerState(
         model_names=model_names,
@@ -1635,8 +1637,14 @@ def create_multi_model_app(
 
         messages = [{"role": m.role, "content": m.content} for m in body.messages]
 
-        # Route the request
+        # Attempt query decomposition for non-streaming requests
         assert state.router is not None
+        if not body.stream:
+            decomp_decision = state.router.route_decomposed(messages)
+            if isinstance(decomp_decision, DecomposedRoutingDecision):
+                return await _handle_decomposed(state, body, messages, decomp_decision)
+
+        # Standard single-task routing
         decision: RoutingDecision = state.router.route(messages)
 
         routed_model = decision.model_name
@@ -1845,6 +1853,139 @@ def create_multi_model_app(
             "fallback_count": state.fallback_counts,
             "uptime_seconds": int(time.time() - state.start_time),
         }
+
+    async def _handle_decomposed(
+        mm_state: MultiModelServerState,
+        body: ChatCompletionBody,
+        messages: list[dict[str, str]],
+        decomp: DecomposedRoutingDecision,
+    ) -> Any:
+        """Execute a decomposed multi-task query with parallel dispatch.
+
+        Independent sub-tasks are executed concurrently via asyncio.gather.
+        Dependent sub-tasks wait for their prerequisites before executing.
+        """
+        import asyncio
+
+        decomposer_merger = ResultMerger()
+        sub_task_results: dict[int, SubTaskResult] = {}
+
+        async def _execute_subtask(
+            task_idx: int,
+        ) -> SubTaskResult:
+            task = decomp.tasks[task_idx]
+            decision = decomp.sub_decisions[task_idx]
+            model_name = decision.model_name
+            backend = mm_state.backends.get(model_name)
+
+            if backend is None:
+                # Use first available backend as fallback
+                model_name = next(iter(mm_state.backends))
+                backend = mm_state.backends[model_name]
+
+            sub_messages: list[dict[str, str]] = []
+            # Carry over system prompt
+            for msg in messages:
+                if msg.get("role") == "system":
+                    sub_messages.append(msg)
+                    break
+            sub_messages.append({"role": "user", "content": task.text})
+
+            grammar_str, is_json = _resolve_grammar(body, mm_state.default_json_mode)
+            uses_grammar_natively = isinstance(backend, LlamaCppBackend)
+
+            req_messages = list(sub_messages)
+            if is_json and not uses_grammar_natively:
+                rf = body.response_format or {}
+                schema_for_prompt = None
+                if rf.get("type") == "json_schema":
+                    raw = rf.get("json_schema") or rf.get("schema")
+                    schema_for_prompt = raw.get("schema", raw) if raw else None
+                req_messages = _inject_json_system_prompt(
+                    req_messages, schema_for_prompt
+                )
+
+            gen_req = GenerationRequest(
+                model=model_name,
+                messages=req_messages,
+                max_tokens=body.max_tokens,
+                temperature=body.temperature,
+                top_p=body.top_p,
+                stream=False,
+                grammar=grammar_str if uses_grammar_natively else None,
+                json_mode=is_json,
+            )
+
+            mm_state.request_count += 1
+            mm_state.routed_counts[model_name] = (
+                mm_state.routed_counts.get(model_name, 0) + 1
+            )
+
+            try:
+                text, _metrics = backend.generate(gen_req)
+            except Exception as exc:
+                logger.warning(
+                    "Sub-task %d failed on model %s: %s",
+                    task_idx,
+                    model_name,
+                    exc,
+                )
+                text = f"[Error processing sub-task {task_idx + 1}]"
+
+            return SubTaskResult(
+                task=task,
+                response=text,
+                model_used=model_name,
+                tier=decision.tier,
+            )
+
+        # Build execution order respecting dependencies
+        # Phase 1: execute independent tasks in parallel
+        independent = [i for i, t in enumerate(decomp.tasks) if not t.depends_on]
+        dependent = [i for i, t in enumerate(decomp.tasks) if t.depends_on]
+
+        # Execute independent tasks concurrently
+        if independent:
+            results = await asyncio.gather(*[_execute_subtask(i) for i in independent])
+            for result in results:
+                sub_task_results[result.task.index] = result
+
+        # Execute dependent tasks sequentially (in index order)
+        for idx in sorted(dependent):
+            # Wait for prerequisites (they should already be done)
+            result = await _execute_subtask(idx)
+            sub_task_results[result.task.index] = result
+
+        # Merge results
+        ordered_results = [sub_task_results[i] for i in range(len(decomp.tasks))]
+        merged_text = decomposer_merger.merge(ordered_results)
+
+        req_id = f"chatcmpl-{uuid.uuid4().hex[:12]}"
+        response_data = {
+            "id": req_id,
+            "object": "chat.completion",
+            "created": int(time.time()),
+            "model": ordered_results[0].model_used,
+            "choices": [
+                {
+                    "index": 0,
+                    "message": {"role": "assistant", "content": merged_text},
+                    "finish_reason": "stop",
+                }
+            ],
+            "usage": {
+                "prompt_tokens": 0,
+                "completion_tokens": 0,
+                "total_tokens": 0,
+            },
+        }
+
+        resp = JSONResponse(content=response_data)
+        resp.headers["X-EdgeML-Decomposed"] = "true"
+        resp.headers["X-EdgeML-Subtasks"] = str(len(decomp.tasks))
+        resp.headers["X-EdgeML-Routed-Model"] = ordered_results[0].model_used
+        resp.headers["X-EdgeML-Tier"] = ordered_results[0].tier
+        return resp
 
     return app
 

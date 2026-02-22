@@ -34,7 +34,15 @@ from .models import (
     RollbackResult,
     TrainingSession,
 )
+from .decomposer import (
+    DecompositionResult,
+    QueryDecomposer,
+    ResultMerger,
+    SubTask,
+    SubTaskResult,
+)
 from .routing import (
+    DecomposedRoutingDecision,
     ModelInfo,
     QueryRouter,
     RoutingDecision,
@@ -228,8 +236,14 @@ __all__ = [
     "TelemetryReporter",
     "init",
     "get_reporter",
+    "DecomposedRoutingDecision",
+    "DecompositionResult",
     "ModelInfo",
+    "QueryDecomposer",
     "QueryRouter",
+    "ResultMerger",
     "RoutingDecision",
+    "SubTask",
+    "SubTaskResult",
     "assign_tiers",
 ]

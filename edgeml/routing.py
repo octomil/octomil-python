@@ -39,7 +39,7 @@ import math
 import operator
 import re
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Optional, Union
 
 logger = logging.getLogger(__name__)
 
@@ -98,6 +98,20 @@ class RoutingDecision:
     strategy: str
     fallback_chain: list[str] = field(default_factory=list)
     deterministic_result: Optional[DeterministicResult] = None
+
+
+@dataclass
+class DecomposedRoutingDecision:
+    """Routing decision for a decomposed multi-task query.
+
+    Contains one ``RoutingDecision`` per sub-task, allowing each
+    sub-task to be routed to a different model tier.
+    """
+
+    sub_decisions: list[RoutingDecision]
+    tasks: list  # list[SubTask] — typed loosely to avoid circular import
+    original_query: str
+    decomposed: bool = True
 
 
 # ---------------------------------------------------------------------------
@@ -757,6 +771,42 @@ class QueryRouter:
             if n != primary and self.models[n].tier_index == primary_idx
         ]
         return higher + same + lower
+
+    def route_decomposed(
+        self,
+        messages: list[dict[str, str]],
+    ) -> Union[RoutingDecision, DecomposedRoutingDecision]:
+        """Route with optional query decomposition.
+
+        If the query contains multiple independent sub-tasks, returns a
+        ``DecomposedRoutingDecision`` with per-task routing.  Otherwise
+        returns a standard ``RoutingDecision``.
+        """
+        from .decomposer import QueryDecomposer
+
+        decomposer = QueryDecomposer()
+        decomposition = decomposer.decompose(messages)
+
+        if not decomposition.decomposed:
+            return self.route(messages)
+
+        # Route each sub-task independently
+        sub_decisions: list[RoutingDecision] = []
+        for task in decomposition.tasks:
+            sub_messages = [{"role": "user", "content": task.text}]
+            # Carry over any system prompt from the original messages
+            for msg in messages:
+                if msg.get("role") == "system":
+                    sub_messages.insert(0, msg)
+                    break
+            decision = self.route(sub_messages)
+            sub_decisions.append(decision)
+
+        return DecomposedRoutingDecision(
+            sub_decisions=sub_decisions,
+            tasks=decomposition.tasks,
+            original_query=decomposition.original_query,
+        )
 
     def get_fallback(self, failed_model: str) -> Optional[str]:
         """Return the next model to try after ``failed_model`` fails.
