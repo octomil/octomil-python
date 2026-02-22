@@ -33,6 +33,9 @@ setup(
         "onnx": [
             "onnxruntime>=1.16.0",
         ],
+        "whisper": [
+            "pywhispercpp>=1.0.0",
+        ],
         "ml": [
             "torch>=2.0.0",
             "numpy>=1.24.0",

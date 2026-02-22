@@ -236,28 +236,38 @@ def serve(
         )
         return
 
+    # Check if this is a whisper (speech-to-text) model
+    from .engines.whisper_engine import is_whisper_model
+
+    is_whisper = is_whisper_model(model)
+
     # Single-model mode (original behaviour)
     _print_engine_detection(model, engine)
 
     click.echo(f"\nStarting EdgeML serve on {host}:{port}")
-    click.echo(f"Model: {model}")
-    if engine:
-        click.echo(f"Engine: {engine} (manual override)")
-    if json_mode:
-        click.echo("JSON mode: enabled (all responses default to valid JSON)")
-    click.echo(f"OpenAI-compatible API: http://localhost:{port}/v1/chat/completions")
+    if is_whisper:
+        click.echo(f"Model: {model} (speech-to-text)")
+        click.echo(f"POST http://localhost:{port}/v1/audio/transcriptions")
+    else:
+        click.echo(f"Model: {model}")
+        if engine:
+            click.echo(f"Engine: {engine} (manual override)")
+        if json_mode:
+            click.echo("JSON mode: enabled (all responses default to valid JSON)")
+        click.echo(f"OpenAI-compatible API: http://localhost:{port}/v1/chat/completions")
     click.echo(f"Engine info: http://localhost:{port}/v1/engines")
     click.echo(f"Health check: http://localhost:{port}/health")
-    if cache_enabled:
-        click.echo(f"KV cache: enabled ({cache_size} MB)")
-        click.echo(f"Cache stats: http://localhost:{port}/v1/cache/stats")
-    else:
-        click.echo("KV cache: disabled")
-    if max_queue > 0:
-        click.echo(f"Request queue: enabled (max_depth={max_queue})")
-        click.echo(f"Queue stats: http://localhost:{port}/v1/queue/stats")
-    else:
-        click.echo("Request queue: disabled")
+    if not is_whisper:
+        if cache_enabled:
+            click.echo(f"KV cache: enabled ({cache_size} MB)")
+            click.echo(f"Cache stats: http://localhost:{port}/v1/cache/stats")
+        else:
+            click.echo("KV cache: disabled")
+        if max_queue > 0:
+            click.echo(f"Request queue: enabled (max_depth={max_queue})")
+            click.echo(f"Queue stats: http://localhost:{port}/v1/queue/stats")
+        else:
+            click.echo("Request queue: disabled")
 
     if benchmark:
         click.echo("Benchmark mode: will run latency test after model loads.")

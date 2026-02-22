@@ -57,12 +57,15 @@ _ENGINE_ALIASES: dict[str, str] = {
     "onnxruntime": "onnxruntime",
     "onnx": "onnxruntime",
     "ort": "onnxruntime",
+    "whisper.cpp": "whisper.cpp",
+    "whisper": "whisper.cpp",
+    "whispercpp": "whisper.cpp",
     "echo": "echo",
 }
 
 # Engine priority order — used when picking the best engine automatically.
 # Lower index = higher priority.
-_ENGINE_PRIORITY = ["mlx-lm", "mnn", "llama.cpp", "executorch", "onnxruntime", "echo"]
+_ENGINE_PRIORITY = ["mlx-lm", "mnn", "llama.cpp", "executorch", "onnxruntime", "whisper.cpp", "echo"]
 
 
 def _normalize_engine(engine: str) -> str:

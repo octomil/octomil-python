@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -731,6 +732,7 @@ class ServerState:
     """Shared mutable state for the serve app."""
 
     backend: Optional[InferenceBackend] = None
+    whisper_backend: Any = None  # _WhisperBackend instance (speech-to-text)
     model_name: str = ""
     engine_name: str = ""
     start_time: float = field(default_factory=time.time)
@@ -863,17 +865,33 @@ def create_app(
 
     @asynccontextmanager
     async def lifespan(app: Any) -> Any:
-        try:
-            state.backend = _detect_backend(
-                model_name,
-                cache_size_mb=state.cache_size_mb,
-                cache_enabled=state.cache_enabled,
-                engine_override=state.engine_override,
-            )
-        except Exception as exc:
-            _log_startup_error(model_name, exc)
-            raise
-        state.engine_name = state.backend.name if state.backend else "none"
+        # Check if this is a whisper (speech-to-text) model
+        from .engines.whisper_engine import is_whisper_model
+
+        if is_whisper_model(model_name):
+            from .engines.whisper_engine import WhisperCppEngine
+
+            whisper_engine = WhisperCppEngine()
+            whisper_backend = whisper_engine.create_backend(model_name)
+            try:
+                whisper_backend.load_model(model_name)
+            except Exception as exc:
+                _log_startup_error(model_name, exc)
+                raise
+            state.whisper_backend = whisper_backend
+            state.engine_name = "whisper.cpp"
+        else:
+            try:
+                state.backend = _detect_backend(
+                    model_name,
+                    cache_size_mb=state.cache_size_mb,
+                    cache_enabled=state.cache_enabled,
+                    engine_override=state.engine_override,
+                )
+            except Exception as exc:
+                _log_startup_error(model_name, exc)
+                raise
+            state.engine_name = state.backend.name if state.backend else "none"
         state.start_time = time.time()
 
         # Initialise request queue
@@ -1230,15 +1248,59 @@ def create_app(
             cache_info["entries"] = cs.entries
             cache_info["hit_rate"] = round(cs.hit_rate, 4)
 
+        backend_name = "none"
+        if state.whisper_backend is not None:
+            backend_name = state.whisper_backend.name
+        elif state.backend is not None:
+            backend_name = state.backend.name
+
         return {
             "status": "ok",
             "model": state.model_name,
             "engine": state.engine_name,
-            "backend": state.backend.name if state.backend else "none",
+            "backend": backend_name,
             "requests_served": state.request_count,
             "uptime_seconds": int(time.time() - state.start_time),
             "cache": cache_info,
         }
+
+    @app.post("/v1/audio/transcriptions")
+    async def transcribe_audio(
+        file: Any = None,
+        model: str = "",
+    ) -> dict[str, Any]:
+        """OpenAI Whisper API-compatible audio transcription endpoint.
+
+        Accepts a multipart file upload and returns transcribed text
+        with segment-level timestamps.
+        """
+        if state.whisper_backend is None:
+            raise HTTPException(
+                status_code=503,
+                detail="No whisper model loaded. Start server with a whisper model: "
+                "edgeml serve whisper-base",
+            )
+
+        if file is None:
+            raise HTTPException(status_code=400, detail="No audio file provided")
+
+        # Save uploaded file to a temp location
+        import tempfile
+
+        filename = getattr(file, "filename", "audio.wav") or "audio.wav"
+        suffix = os.path.splitext(filename)[1] or ".wav"
+        fd, tmp_path = tempfile.mkstemp(suffix=suffix)
+        try:
+            content = await file.read()
+            os.write(fd, content)
+            os.close(fd)
+
+            state.request_count += 1
+            result = state.whisper_backend.transcribe(tmp_path)
+            return result
+        finally:
+            if os.path.exists(tmp_path):
+                os.unlink(tmp_path)
 
     return app
 
