@@ -2,7 +2,7 @@
 # Update Homebrew formula SHA256 hashes after a release.
 # Usage: ./scripts/update-homebrew.sh v0.1.0
 
-set -eu
+set -euo pipefail
 
 VERSION="${1:?Usage: $0 <version>}"
 TAG="${VERSION#v}"
@@ -11,19 +11,28 @@ BASE_URL="https://github.com/edgeml-ai/edgeml-python/releases/download/${VERSION
 
 echo "Updating formula for ${VERSION}..."
 
-for platform in darwin-arm64 darwin-amd64 linux-amd64; do
-    URL="${BASE_URL}/edgeml-${platform}.tar.gz"
-    echo "  Fetching SHA256 for ${platform}..."
-    SHA=$(curl -fsSL "${URL}" | shasum -a 256 | cut -d' ' -f1)
+# Fetch SHA256 hashes for each platform binary
+echo "  Fetching SHA256 for darwin-arm64..."
+SHA_ARM64=$(curl -fsSL "${BASE_URL}/edgeml-darwin-arm64.tar.gz" | shasum -a 256 | cut -d' ' -f1)
 
-    case "${platform}" in
-        darwin-arm64) PLACEHOLDER="PLACEHOLDER_SHA256_ARM64" ;;
-        darwin-amd64) PLACEHOLDER="PLACEHOLDER_SHA256_AMD64" ;;
-        linux-amd64)  PLACEHOLDER="PLACEHOLDER_SHA256_LINUX" ;;
-    esac
+echo "  Fetching SHA256 for darwin-amd64..."
+SHA_AMD64=$(curl -fsSL "${BASE_URL}/edgeml-darwin-amd64.tar.gz" | shasum -a 256 | cut -d' ' -f1)
 
-    sed -i.bak "s/${PLACEHOLDER}/${SHA}/" "${FORMULA}"
-done
+echo "  Fetching SHA256 for linux-amd64..."
+SHA_LINUX=$(curl -fsSL "${BASE_URL}/edgeml-linux-amd64.tar.gz" | shasum -a 256 | cut -d' ' -f1)
+
+# Replace sha256 values positionally (1st = arm64, 2nd = amd64, 3rd = linux).
+# Matches any existing sha256 "..." value including placeholders, making the
+# script idempotent across releases.
+awk -v arm64="${SHA_ARM64}" -v amd64="${SHA_AMD64}" -v linux="${SHA_LINUX}" '
+  /sha256 "/ {
+    n++
+    if (n == 1) sub(/sha256 ".*"/, "sha256 \"" arm64 "\"")
+    else if (n == 2) sub(/sha256 ".*"/, "sha256 \"" amd64 "\"")
+    else if (n == 3) sub(/sha256 ".*"/, "sha256 \"" linux "\"")
+  }
+  { print }
+' "${FORMULA}" > "${FORMULA}.tmp" && mv "${FORMULA}.tmp" "${FORMULA}"
 
 sed -i.bak "s/version \".*\"/version \"${TAG}\"/" "${FORMULA}"
 rm -f "${FORMULA}.bak"

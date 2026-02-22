@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import shlex
 import subprocess
 import sys
 import time
@@ -64,7 +65,7 @@ def launch_agent(
         click.echo(f"{agent.display_name} is not installed.")
         click.echo(f"  Install: {agent.install_cmd}")
         if click.confirm("Install now?"):
-            subprocess.run(agent.install_cmd, shell=True, check=True)
+            subprocess.run(shlex.split(agent.install_cmd), check=True)
         else:
             raise SystemExit(1)
 
@@ -88,8 +89,9 @@ def launch_agent(
 
     try:
         click.echo(f"Launching {agent.display_name}...\n")
-        result = subprocess.run([agent.exec_cmd], env=env)
-        sys.exit(result.returncode)
+        result = subprocess.run(shlex.split(agent.exec_cmd), env=env)
     finally:
         if serve_proc is not None:
             serve_proc.terminate()
+
+    sys.exit(result.returncode)
