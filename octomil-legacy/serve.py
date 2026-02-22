@@ -742,6 +742,8 @@ class ServerState:
     cache_enabled: bool = True
     engine_override: Optional[str] = None
     reporter: Optional["TelemetryReporter"] = None
+    max_queue_depth: int = 32
+    request_queue: Any = None  # RequestQueue instance
 
 
 @dataclass
@@ -826,6 +828,7 @@ def create_app(
     cache_size_mb: int = 2048,
     cache_enabled: bool = True,
     engine: Optional[str] = None,
+    max_queue_depth: int = 32,
 ) -> Any:
     """Create a FastAPI app with OpenAI-compatible endpoints.
 
@@ -837,6 +840,9 @@ def create_app(
     engine:
         Force a specific engine (e.g. ``"mlx-lm"``, ``"llama.cpp"``).
         When ``None``, auto-benchmarks all available engines and picks fastest.
+    max_queue_depth:
+        Maximum number of pending requests in the queue.  When full, new
+        requests get a 503 response.  Set to 0 to disable queueing.
     """
     from contextlib import asynccontextmanager
 
@@ -852,6 +858,7 @@ def create_app(
         cache_size_mb=cache_size_mb,
         cache_enabled=cache_enabled,
         engine_override=engine,
+        max_queue_depth=max_queue_depth,
     )
 
     @asynccontextmanager
@@ -869,6 +876,16 @@ def create_app(
         state.engine_name = state.backend.name if state.backend else "none"
         state.start_time = time.time()
 
+        # Initialise request queue
+        if state.max_queue_depth > 0:
+            from .batch import RequestQueue
+
+            state.request_queue = RequestQueue(max_depth=state.max_queue_depth)
+            state.request_queue.start()
+            logger.info(
+                "Request queue enabled (max_depth=%d)", state.max_queue_depth
+            )
+
         # Create telemetry reporter when an API key is configured
         if state.api_key:
             try:
@@ -884,6 +901,10 @@ def create_app(
                 logger.warning("Failed to initialise telemetry: %s", exc)
 
         yield
+
+        # Graceful shutdown: stop request queue
+        if state.request_queue is not None:
+            await state.request_queue.stop()
 
         # Graceful shutdown: drain pending telemetry events
         if state.reporter is not None:
@@ -1002,7 +1023,18 @@ def create_app(
             except Exception:
                 pass
 
+        # --- Queue-aware dispatch ---
+        _queue = state.request_queue
+
         if gen_req.stream:
+            if _queue is not None:
+                # Stream through the request queue
+                return StreamingResponse(
+                    _queued_stream_response(
+                        state, gen_req, req_id, session_id, _queue
+                    ),
+                    media_type="text/event-stream",
+                )
             return StreamingResponse(
                 _stream_response(state, gen_req, req_id, session_id),
                 media_type="text/event-stream",
@@ -1010,7 +1042,27 @@ def create_app(
 
         gen_start = time.monotonic()
         try:
-            text, metrics = state.backend.generate(gen_req)
+            if _queue is not None:
+                from .batch import QueueFullError, QueueTimeoutError
+
+                try:
+                    text, metrics = await _queue.submit_generate(
+                        gen_req, state.backend.generate
+                    )
+                except QueueFullError:
+                    raise HTTPException(
+                        status_code=503,
+                        detail="Server busy — request queue full. Try again later.",
+                    )
+                except QueueTimeoutError:
+                    raise HTTPException(
+                        status_code=504,
+                        detail="Request timed out waiting in queue.",
+                    )
+            else:
+                text, metrics = state.backend.generate(gen_req)
+        except HTTPException:
+            raise
         except Exception:
             if _reporter is not None:
                 try:
@@ -1121,6 +1173,24 @@ def create_app(
             "entries": stats.entries,
             "memory_mb": round(stats.memory_mb, 2),
             "max_memory_mb": state.cache_size_mb,
+        }
+
+    @app.get("/v1/queue/stats")
+    async def queue_stats() -> dict[str, Any]:
+        """Return request queue statistics."""
+        if state.request_queue is None:
+            return {
+                "pending": 0,
+                "active": 0,
+                "max_depth": 0,
+                "enabled": False,
+            }
+        qs = state.request_queue.stats()
+        return {
+            "pending": qs.pending,
+            "active": qs.active,
+            "max_depth": qs.max_depth,
+            "enabled": True,
         }
 
     @app.get("/v1/engines")
@@ -1275,6 +1345,68 @@ async def _stream_response(
             pass
 
 
+async def _queued_stream_response(
+    state: Any,
+    request: GenerationRequest,
+    req_id: str,
+    session_id: str,
+    queue: Any,
+) -> AsyncIterator[str]:
+    """Yield SSE chunks after waiting in the request queue.
+
+    Submits a streaming request to the queue.  Once the request reaches
+    the front, chunks are forwarded as SSE events.  Queue errors (full,
+    timeout) are surfaced as SSE error events so the client gets useful
+    feedback even on a streaming connection.
+    """
+    from .batch import QueueFullError, QueueTimeoutError
+
+    assert state.backend is not None
+
+    try:
+        chunk_iter = queue.submit_generate_stream(
+            request, state.backend.generate_stream
+        )
+        # Build SSE events from the chunk iterator (same format as _stream_response)
+        chunk_index = 0
+        async for chunk in chunk_iter:
+            data = {
+                "id": req_id,
+                "object": "chat.completion.chunk",
+                "created": int(time.time()),
+                "model": request.model,
+                "choices": [
+                    {
+                        "index": 0,
+                        "delta": {"content": chunk.text} if chunk.text else {},
+                        "finish_reason": chunk.finish_reason,
+                    }
+                ],
+            }
+            yield f"data: {json.dumps(data)}\n\n"
+            chunk_index += 1
+
+        yield "data: [DONE]\n\n"
+    except QueueFullError:
+        error_data = {
+            "error": {
+                "message": "Server busy — request queue full. Try again later.",
+                "type": "server_error",
+                "code": 503,
+            }
+        }
+        yield f"data: {json.dumps(error_data)}\n\n"
+    except QueueTimeoutError:
+        error_data = {
+            "error": {
+                "message": "Request timed out waiting in queue.",
+                "type": "server_error",
+                "code": 504,
+            }
+        }
+        yield f"data: {json.dumps(error_data)}\n\n"
+
+
 def run_server(
     model_name: str,
     *,
@@ -1286,6 +1418,7 @@ def run_server(
     cache_size_mb: int = 2048,
     cache_enabled: bool = True,
     engine: Optional[str] = None,
+    max_queue_depth: int = 32,
 ) -> None:
     """Start the inference server (blocking).
 
@@ -1296,6 +1429,9 @@ def run_server(
     engine:
         Force a specific engine (e.g. ``"mlx-lm"``, ``"llama.cpp"``).
         When ``None``, auto-benchmarks and picks fastest.
+    max_queue_depth:
+        Maximum number of pending requests in the queue (default 32).
+        Set to 0 to disable queueing.
     """
     import uvicorn
 
@@ -1307,6 +1443,7 @@ def run_server(
         cache_size_mb=cache_size_mb,
         cache_enabled=cache_enabled,
         engine=engine,
+        max_queue_depth=max_queue_depth,
     )
     uvicorn.run(app, host=host, port=port, log_level="info")
 

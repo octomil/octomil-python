@@ -133,6 +133,12 @@ def main() -> None:
     type=click.Choice(["complexity"]),
     help="Routing strategy for --auto-route (default: complexity).",
 )
+@click.option(
+    "--max-queue",
+    default=32,
+    type=int,
+    help="Max pending requests in the queue (default: 32). Set to 0 to disable.",
+)
 def serve(
     model: str,
     port: int,
@@ -146,6 +152,7 @@ def serve(
     models: str | None,
     auto_route: bool,
     route_strategy: str,
+    max_queue: int,
 ) -> None:
     """Start a local OpenAI-compatible inference server.
 
@@ -236,6 +243,11 @@ def serve(
         click.echo(f"Cache stats: http://localhost:{port}/v1/cache/stats")
     else:
         click.echo("KV cache: disabled")
+    if max_queue > 0:
+        click.echo(f"Request queue: enabled (max_depth={max_queue})")
+        click.echo(f"Queue stats: http://localhost:{port}/v1/queue/stats")
+    else:
+        click.echo("Request queue: disabled")
 
     if benchmark:
         click.echo("Benchmark mode: will run latency test after model loads.")
@@ -259,6 +271,7 @@ def serve(
         cache_size_mb=cache_size,
         cache_enabled=cache_enabled,
         engine=engine,
+        max_queue_depth=max_queue,
     )
 
 
