@@ -16,7 +16,6 @@ to raw ``onnxruntime`` InferenceSession for non-LLM models.
 from __future__ import annotations
 
 import logging
-import platform
 import time
 from typing import Any, AsyncIterator, Optional
 
@@ -245,6 +244,7 @@ class _ORTBackend:
     """
 
     name = "onnxruntime"
+    attention_backend = "sdpa"
 
     def __init__(self, model_name: str, **kwargs: Any) -> None:
         self._model_name = model_name
@@ -350,6 +350,7 @@ class _ORTBackend:
             total_tokens=len(output_tokens),
             tokens_per_second=tps,
             total_duration_ms=elapsed * 1000,
+            attention_backend="sdpa",  # ORT GenAI uses scaled dot-product attention
         )
 
     def _generate_session(
@@ -380,6 +381,7 @@ class _ORTBackend:
             total_tokens=1,
             tokens_per_second=1 / elapsed if elapsed > 0 else 0.0,
             total_duration_ms=elapsed * 1000,
+            attention_backend="sdpa",  # ORT session uses SDPA when available
         )
 
     async def generate_stream(
@@ -388,7 +390,7 @@ class _ORTBackend:
     ) -> AsyncIterator[Any]:
         import asyncio
 
-        from ..serve import GenerationChunk, InferenceMetrics
+        from ..serve import GenerationChunk
 
         if self._model is None and self._session is None:
             self.load_model(self._model_name)

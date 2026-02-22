@@ -83,14 +83,19 @@ class TelemetryReporter:
         version: str,
         session_id: str,
         modality: str = "text",
+        attention_backend: str | None = None,
     ) -> None:
         """Report that a new generation has started."""
+        metrics: dict[str, Any] | None = None
+        if attention_backend is not None:
+            metrics = {"attention_backend": attention_backend}
         self._enqueue(
             event_type="generation_started",
             model_id=model_id,
             version=version,
             session_id=session_id,
             modality=modality,
+            metrics=metrics,
         )
 
     def report_chunk_produced(
@@ -128,20 +133,24 @@ class TelemetryReporter:
         ttfc_ms: float,
         throughput: float,
         modality: str = "text",
+        attention_backend: str | None = None,
     ) -> None:
         """Report that a generation finished successfully."""
+        metrics: dict[str, Any] = {
+            "total_chunks": total_chunks,
+            "total_duration_ms": total_duration_ms,
+            "ttfc_ms": ttfc_ms,
+            "throughput": throughput,
+        }
+        if attention_backend is not None:
+            metrics["attention_backend"] = attention_backend
         self._enqueue(
             event_type="generation_completed",
             model_id=model_id,
             version=version,
             session_id=session_id,
             modality=modality,
-            metrics={
-                "total_chunks": total_chunks,
-                "total_duration_ms": total_duration_ms,
-                "ttfc_ms": ttfc_ms,
-                "throughput": throughput,
-            },
+            metrics=metrics,
         )
 
     def report_generation_failed(

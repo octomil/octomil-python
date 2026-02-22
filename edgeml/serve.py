@@ -36,11 +36,6 @@ if TYPE_CHECKING:
 
 from pydantic import BaseModel, Field
 
-from .model_registry import (
-    MODEL_FAMILIES,
-    ModelResolutionError,
-    resolve_model,
-)
 from .models.catalog import CATALOG as _UNIFIED_CATALOG
 from .models.resolver import ModelResolutionError as _NewResolutionError
 from .models.resolver import resolve as _resolve_new
@@ -173,12 +168,14 @@ class InferenceMetrics:
     tokens_per_second: float = 0.0
     total_duration_ms: float = 0.0
     cache_hit: bool = False
+    attention_backend: str = "standard"
 
 
 class InferenceBackend:
     """Base class for inference backends."""
 
     name: str = "base"
+    attention_backend: str = "standard"
 
     def load_model(self, model_name: str) -> None:
         raise NotImplementedError
@@ -203,9 +200,13 @@ class MLXBackend(InferenceBackend):
     Loads quantized models from HuggingFace (auto-downloads + caches).
     Uses the tokenizer's built-in chat template for proper formatting.
     Supports KV cache persistence for prefix reuse across requests.
+
+    MLX uses Metal fused attention automatically on Apple Silicon — no
+    explicit configuration needed.  Reported as ``metal_fused``.
     """
 
     name = "mlx-lm"
+    attention_backend = "metal_fused"
 
     def __init__(
         self,
@@ -325,6 +326,7 @@ class MLXBackend(InferenceBackend):
             tokens_per_second=final_tps,
             total_duration_ms=elapsed * 1000,
             cache_hit=cache_hit,
+            attention_backend="metal_fused",  # MLX uses Metal fused attention automatically
         )
 
     async def generate_stream(
@@ -404,9 +406,12 @@ class LlamaCppBackend(InferenceBackend):
     Loads GGUF models from HuggingFace via from_pretrained (auto-downloads).
     Chat templates are handled by llama.cpp internally.
     Supports built-in LlamaCache for automatic KV prefix reuse.
+    Flash attention is enabled by default (``flash_attn=True``) for better
+    performance on long sequences.
     """
 
     name = "llama.cpp"
+    attention_backend = "flash_attention"
 
     def __init__(
         self,
@@ -445,6 +450,7 @@ class LlamaCppBackend(InferenceBackend):
                 model_path=model_name,
                 n_ctx=4096,
                 n_gpu_layers=-1,  # offload all layers to GPU
+                flash_attn=True,  # fused attention kernels for better perf on long sequences
                 verbose=False,
             )
             self._attach_cache()
@@ -458,6 +464,7 @@ class LlamaCppBackend(InferenceBackend):
                 filename="*Q4_K_M.gguf",
                 n_ctx=4096,
                 n_gpu_layers=-1,
+                flash_attn=True,
                 verbose=False,
             )
             self._attach_cache()
@@ -478,6 +485,7 @@ class LlamaCppBackend(InferenceBackend):
                     filename=filename,
                     n_ctx=4096,
                     n_gpu_layers=-1,
+                    flash_attn=True,
                     verbose=False,
                 )
                 self._attach_cache()
@@ -500,6 +508,7 @@ class LlamaCppBackend(InferenceBackend):
             filename=filename,
             n_ctx=4096,
             n_gpu_layers=-1,
+            flash_attn=True,
             verbose=False,
         )
         self._attach_cache()
@@ -538,6 +547,7 @@ class LlamaCppBackend(InferenceBackend):
             total_tokens=completion_tokens,
             tokens_per_second=completion_tokens / elapsed if elapsed > 0 else 0,
             total_duration_ms=elapsed * 1000,
+            attention_backend="flash_attention",
         )
 
     async def generate_stream(
@@ -1140,6 +1150,7 @@ def create_app(
                     total_duration_ms=gen_elapsed_ms,
                     ttfc_ms=metrics.ttfc_ms,
                     throughput=throughput,
+                    attention_backend=metrics.attention_backend,
                 )
             except Exception:
                 pass
@@ -1402,6 +1413,11 @@ async def _stream_response(
                 total_duration_ms=total_duration_ms,
                 ttfc_ms=ttfc_ms,
                 throughput=throughput,
+                attention_backend=(
+                    state.backend.attention_backend
+                    if state.backend is not None
+                    else None
+                ),
             )
         except Exception:
             pass
@@ -1779,6 +1795,7 @@ def create_multi_model_app(
                         total_duration_ms=gen_elapsed_ms,
                         ttfc_ms=metrics.ttfc_ms,
                         throughput=throughput,
+                        attention_backend=metrics.attention_backend,
                     )
                 except Exception:
                     pass

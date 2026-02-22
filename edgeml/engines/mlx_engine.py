@@ -2,6 +2,11 @@
 
 Highest-performance backend on Apple Silicon Macs. Uses unified memory
 for zero-copy GPU access and quantized HuggingFace models.
+
+Attention: MLX uses Metal fused attention automatically on Apple Silicon.
+No explicit ``flash_attn`` flag is needed — the Metal Performance Shaders
+backend fuses multi-head attention into a single GPU kernel.  Reported as
+``metal_fused`` in telemetry.
 """
 
 from __future__ import annotations
@@ -63,7 +68,7 @@ class MLXEngine(EnginePlugin):
         try:
             import mlx_lm  # type: ignore[import-untyped]
 
-            from ..serve import MLXBackend, resolve_model_name
+            from ..serve import resolve_model_name
 
             repo_id = resolve_model_name(model_name, "mlx")
             model, tokenizer = mlx_lm.load(repo_id)
