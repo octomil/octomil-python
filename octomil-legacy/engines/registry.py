@@ -211,6 +211,7 @@ def reset_registry() -> None:
 
 def _auto_register(registry: EngineRegistry) -> None:
     """Register all built-in engines."""
+    from .cactus_engine import CactusEngine
     from .echo_engine import EchoEngine
     from .executorch_engine import ExecuTorchEngine
     from .llamacpp_engine import LlamaCppEngine
@@ -224,6 +225,7 @@ def _auto_register(registry: EngineRegistry) -> None:
     registry.register(MNNEngine())
     registry.register(MLCEngine())
     registry.register(LlamaCppEngine())
+    registry.register(CactusEngine())
     registry.register(ExecuTorchEngine())
     registry.register(ONNXRuntimeEngine())
     registry.register(WhisperCppEngine())
