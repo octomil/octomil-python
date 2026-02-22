@@ -81,8 +81,7 @@ class RequestQueue:
     ) -> None:
         self._max_depth = max_depth
         self._timeout = timeout
-        self._queue: asyncio.Queue[_QueuedRequest] = asyncio.Queue(maxsize=max_depth)
-        self._semaphore = asyncio.Semaphore(1)
+        self._queue: Optional[asyncio.Queue[_QueuedRequest]] = None
         self._active: int = 0
         self._started = False
         self._worker_task: Optional[asyncio.Task[None]] = None
@@ -92,11 +91,28 @@ class RequestQueue:
     # ------------------------------------------------------------------
 
     def start(self) -> None:
-        """Start the background worker that drains the queue."""
-        if self._started:
-            return
+        """Mark the queue as started.
+
+        The background worker is lazily created on the first submit call
+        so that it runs on the correct event loop (important for test
+        environments where lifespan and request handling may use different
+        loops).
+        """
         self._started = True
-        self._worker_task = asyncio.get_event_loop().create_task(self._worker())
+
+    def _ensure_worker(self) -> None:
+        """Create the queue and background worker task if not already running.
+
+        Both the ``asyncio.Queue`` and the worker ``Task`` are created
+        lazily here so they bind to the event loop that is actually
+        processing requests (important in test environments where
+        lifespan may run on a throwaway loop).
+        """
+        if self._queue is None:
+            self._queue = asyncio.Queue(maxsize=self._max_depth)
+        if self._worker_task is None or self._worker_task.done():
+            loop = asyncio.get_event_loop()
+            self._worker_task = loop.create_task(self._worker())
 
     async def stop(self) -> None:
         """Cancel the worker and drain remaining requests."""
@@ -110,15 +126,16 @@ class RequestQueue:
             self._worker_task = None
 
         # Fail any remaining queued requests
-        while not self._queue.empty():
-            try:
-                item = self._queue.get_nowait()
-                if not item.future.done():
-                    item.future.set_exception(
-                        QueueTimeoutError("Queue shutting down")
-                    )
-            except asyncio.QueueEmpty:
-                break
+        if self._queue is not None:
+            while not self._queue.empty():
+                try:
+                    item = self._queue.get_nowait()
+                    if not item.future.done():
+                        item.future.set_exception(
+                            QueueTimeoutError("Queue shutting down")
+                        )
+                except asyncio.QueueEmpty:
+                    break
 
     # ------------------------------------------------------------------
     # Public API — submit requests
@@ -142,6 +159,7 @@ class RequestQueue:
         asyncio.CancelledError
             If the caller cancels (e.g. client disconnect).
         """
+        self._ensure_worker()
         loop = asyncio.get_event_loop()
         future: asyncio.Future[Any] = loop.create_future()
         entry = _QueuedRequest(
@@ -187,6 +205,7 @@ class RequestQueue:
         QueueTimeoutError
             If the request waited longer than ``self._timeout``.
         """
+        self._ensure_worker()
         loop = asyncio.get_event_loop()
         future: asyncio.Future[Any] = loop.create_future()
         entry = _QueuedRequest(
@@ -227,7 +246,7 @@ class RequestQueue:
     def stats(self) -> QueueStats:
         """Return a snapshot of queue state."""
         return QueueStats(
-            pending=self._queue.qsize(),
+            pending=self._queue.qsize() if self._queue is not None else 0,
             active=self._active,
             max_depth=self._max_depth,
         )
