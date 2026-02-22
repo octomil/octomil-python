@@ -157,8 +157,6 @@ class _WhisperBackend:
 
     def load_model(self, model_name: str) -> None:
         """Download (if needed) and load a Whisper model."""
-        from pywhispercpp.model import Model  # type: ignore[import-untyped]
-
         self._model_name = model_name
         whisper_size = _WHISPER_MODELS.get(model_name.lower())
         if whisper_size is None:
@@ -166,6 +164,8 @@ class _WhisperBackend:
                 f"Unknown whisper model '{model_name}'. "
                 f"Available: {', '.join(sorted(_WHISPER_MODELS))}"
             )
+
+        from pywhispercpp.model import Model  # type: ignore[import-untyped]
 
         logger.info("Loading whisper model: %s (%s)", model_name, whisper_size)
         self._model = Model(whisper_size)

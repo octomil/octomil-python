@@ -139,9 +139,9 @@ class TestNormalizeVariant:
 class TestCatalog:
     """Tests for the unified model catalog."""
 
-    def test_has_14_models(self) -> None:
-        """Catalog should have all 14 model families."""
-        assert len(CATALOG) == 14
+    def test_has_19_models(self) -> None:
+        """Catalog should have all 19 model families (14 LLM + 5 Whisper)."""
+        assert len(CATALOG) == 19
 
     def test_all_families_have_default_variant(self) -> None:
         """Every family must have its default_quant variant."""
@@ -503,7 +503,7 @@ class TestListCLI:
         assert result.exit_code == 0
         assert "gemma-4b" in result.output
         assert "llama-8b" in result.output
-        assert "14 model families" in result.output
+        assert "19 model families" in result.output
         assert "model:variant" in result.output or "model>:<variant>" in result.output
 
     def test_list_specific_family(self) -> None:
