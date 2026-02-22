@@ -65,7 +65,7 @@ class ModelRecommendation:
 # ---------------------------------------------------------------------------
 
 # Bytes per parameter for each quantization level
-BYTES_PER_PARAM: dict[str, float] = {
+_BYTES_PER_PARAM: dict[str, float] = {
     "Q2_K": 0.3125,
     "Q3_K_S": 0.375,
     "Q3_K_M": 0.4375,
@@ -82,7 +82,7 @@ BYTES_PER_PARAM: dict[str, float] = {
 }
 
 # Speed multiplier relative to Q4_K_M baseline (1.0)
-QUANT_SPEED_FACTORS: dict[str, float] = {
+_QUANT_SPEED_FACTORS: dict[str, float] = {
     "Q2_K": 1.4,
     "Q3_K_S": 1.25,
     "Q3_K_M": 1.15,
@@ -100,7 +100,7 @@ QUANT_SPEED_FACTORS: dict[str, float] = {
 
 # KV cache memory per 1K context tokens (GB) keyed by model-parameter threshold.
 # Look up the largest key <= model_size_b.
-KV_CACHE_PER_1K_TOKENS: dict[int, float] = {
+_KV_CACHE_PER_1K_TOKENS: dict[int, float] = {
     1: 0.05,
     3: 0.08,
     7: 0.15,
@@ -111,7 +111,7 @@ KV_CACHE_PER_1K_TOKENS: dict[int, float] = {
 }
 
 # Known model sizes in billions of parameters
-MODEL_SIZES: dict[str, float] = {
+_MODEL_SIZES: dict[str, float] = {
     "0.5B": 0.5,
     "1B": 1.0,
     "1.5B": 1.5,
@@ -154,15 +154,15 @@ def _kv_cache_gb(model_size_b: float, context_length: int) -> float:
     """Estimate KV cache memory in GB for a given model size and context."""
     # Find the largest threshold key that does not exceed model_size_b
     per_1k = 0.05  # default for tiny models
-    for threshold in sorted(KV_CACHE_PER_1K_TOKENS):
+    for threshold in sorted(_KV_CACHE_PER_1K_TOKENS):
         if model_size_b >= threshold:
-            per_1k = KV_CACHE_PER_1K_TOKENS[threshold]
+            per_1k = _KV_CACHE_PER_1K_TOKENS[threshold]
     return per_1k * (context_length / 1000.0)
 
 
 def _model_memory_gb(model_size_b: float, quant: str) -> float:
     """Raw model weight memory in GB (before KV cache)."""
-    return model_size_b * BYTES_PER_PARAM[quant]
+    return model_size_b * _BYTES_PER_PARAM[quant]
 
 
 def _total_memory_gb(model_size_b: float, quant: str, context_length: int) -> float:
@@ -388,7 +388,7 @@ class ModelOptimizer:
             )
 
         base_tps = self._speed_coeff / model_size_b
-        quant_factor = QUANT_SPEED_FACTORS.get(config.quantization, 1.0)
+        quant_factor = _QUANT_SPEED_FACTORS.get(config.quantization, 1.0)
         tps = base_tps * quant_factor
 
         # Offload penalties
@@ -432,7 +432,7 @@ class ModelOptimizer:
         """
         recs: list[ModelRecommendation] = []
 
-        for label, size_b in sorted(MODEL_SIZES.items(), key=lambda kv: kv[1]):
+        for label, size_b in sorted(_MODEL_SIZES.items(), key=lambda kv: kv[1]):
             config = self.pick_quant_and_offload(size_b)
             speed = self.predict_speed(size_b, config)
 
@@ -480,7 +480,7 @@ class ModelOptimizer:
 
         if priority == "quality":
             # Larger model + higher-quality quant first; break ties by speed
-            size_order = list(MODEL_SIZES.keys())
+            size_order = list(_MODEL_SIZES.keys())
             quant_order = list(reversed(_QUANT_PREFERENCE_ORDER))
             return sorted(
                 recs,
@@ -503,7 +503,7 @@ class ModelOptimizer:
         fast_enough = [r for r in recs if r.speed.tokens_per_second >= 10.0]
         too_slow = [r for r in recs if r.speed.tokens_per_second < 10.0]
 
-        size_order = list(MODEL_SIZES.keys())
+        size_order = list(_MODEL_SIZES.keys())
         quant_order = list(reversed(_QUANT_PREFERENCE_ORDER))
 
         fast_enough.sort(

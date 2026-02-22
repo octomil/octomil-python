@@ -9,13 +9,13 @@ logger = logging.getLogger(__name__)
 
 
 @dataclass
-class CommandEntry:
+class _CommandEntry:
     name: str
     description: str
     category: str  # "serve", "deploy", "manage", "hardware", etc.
 
 
-def build_command_catalog(group: click.Group) -> list[CommandEntry]:
+def _build_command_catalog(group: click.Group) -> list[_CommandEntry]:
     """Extract commands from a Click group into a sorted catalog."""
     # Category mapping based on command names
     CATEGORY_MAP = {
@@ -41,7 +41,7 @@ def build_command_catalog(group: click.Group) -> list[CommandEntry]:
         "list": "Observe",
         "agents": "Agents",
     }
-    entries: list[CommandEntry] = []
+    entries: list[_CommandEntry] = []
     for name, cmd in sorted(group.commands.items()):
         help_text = ""
         if isinstance(cmd, click.Command) and cmd.help:
@@ -50,17 +50,17 @@ def build_command_catalog(group: click.Group) -> list[CommandEntry]:
             help_text = cmd.help.split("\n")[0].strip() if cmd.help else ""
         category = CATEGORY_MAP.get(name, "Other")
         entries.append(
-            CommandEntry(name=name, description=help_text, category=category)
+            _CommandEntry(name=name, description=help_text, category=category)
         )
     return entries
 
 
-def fuzzy_filter(entries: list[CommandEntry], query: str) -> list[CommandEntry]:
+def _fuzzy_filter(entries: list[_CommandEntry], query: str) -> list[_CommandEntry]:
     """Simple fuzzy filter: all query chars must appear in order in name or description."""
     if not query:
         return entries
     query_lower = query.lower()
-    results: list[CommandEntry] = []
+    results: list[_CommandEntry] = []
     for entry in entries:
         target = f"{entry.name} {entry.description}".lower()
         qi = 0
@@ -72,10 +72,10 @@ def fuzzy_filter(entries: list[CommandEntry], query: str) -> list[CommandEntry]:
     return results
 
 
-def _fallback_interactive(commands: list[CommandEntry]) -> str | None:
+def _fallback_interactive(commands: list[_CommandEntry]) -> str | None:
     """Plain text fallback when prompt_toolkit is not available."""
     # Group by category
-    categories: dict[str, list[CommandEntry]] = {}
+    categories: dict[str, list[_CommandEntry]] = {}
     for cmd in commands:
         categories.setdefault(cmd.category, []).append(cmd)
 
@@ -99,7 +99,7 @@ def _fallback_interactive(commands: list[CommandEntry]) -> str | None:
 
 def launch_interactive(cli_group: click.Group) -> None:
     """Entry point. Falls back to plain list if prompt_toolkit unavailable."""
-    commands = build_command_catalog(cli_group)
+    commands = _build_command_catalog(cli_group)
 
     try:
         from prompt_toolkit import Application  # noqa: F401
@@ -118,7 +118,7 @@ def launch_interactive(cli_group: click.Group) -> None:
             click.echo(f"Unknown command: {choice}", err=True)
 
 
-def _run_tui(cli_group: click.Group, commands: list[CommandEntry]) -> None:
+def _run_tui(cli_group: click.Group, commands: list[_CommandEntry]) -> None:
     """Run the full TUI panel with prompt_toolkit."""
     from prompt_toolkit import Application
     from prompt_toolkit.key_binding import KeyBindings
@@ -142,7 +142,7 @@ def _run_tui(cli_group: click.Group, commands: list[CommandEntry]) -> None:
         )
 
         # Group by category
-        categories: dict[str, list[tuple[int, CommandEntry]]] = {}
+        categories: dict[str, list[tuple[int, _CommandEntry]]] = {}
         for i, cmd in enumerate(filtered[0]):
             categories.setdefault(cmd.category, []).append((i, cmd))
 
@@ -198,7 +198,7 @@ def _run_tui(cli_group: click.Group, commands: list[CommandEntry]) -> None:
             event.app.exit()
         else:
             search_query[0] += "q"
-            filtered[0] = fuzzy_filter(commands, search_query[0])
+            filtered[0] = _fuzzy_filter(commands, search_query[0])
             selected[0] = 0
 
     @bindings.add("c-c")
@@ -209,7 +209,7 @@ def _run_tui(cli_group: click.Group, commands: list[CommandEntry]) -> None:
     def _backspace(event):  # type: ignore[no-untyped-def]
         if search_mode[0] and search_query[0]:
             search_query[0] = search_query[0][:-1]
-            filtered[0] = fuzzy_filter(commands, search_query[0])
+            filtered[0] = _fuzzy_filter(commands, search_query[0])
             selected[0] = 0
 
     # Catch all other keys for search mode
@@ -217,7 +217,7 @@ def _run_tui(cli_group: click.Group, commands: list[CommandEntry]) -> None:
     def _any_key(event):  # type: ignore[no-untyped-def]
         if search_mode[0]:
             search_query[0] += event.data
-            filtered[0] = fuzzy_filter(commands, search_query[0])
+            filtered[0] = _fuzzy_filter(commands, search_query[0])
             selected[0] = 0
 
     layout = Layout(Window(content=control))
