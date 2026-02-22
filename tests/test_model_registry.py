@@ -553,7 +553,7 @@ class TestListCLI:
         assert "model families available" in result.output
 
     def test_list_specific_family(self) -> None:
-        """edgeml list gemma-4b shows variants with sources."""
+        """edgeml list gemma-4b shows variants with engine artifacts."""
         from click.testing import CliRunner
         from edgeml.cli import main
 
@@ -562,8 +562,9 @@ class TestListCLI:
         assert result.exit_code == 0
         assert "gemma-4b" in result.output
         assert "Google" in result.output
-        assert "q4_k_m" in result.output
-        assert "official" in result.output or "[official]" in result.output
+        # Unified catalog uses "4bit" as variant name, Q4_K_M appears in GGUF filename
+        assert "4bit" in result.output
+        assert "mlx-lm:" in result.output or "mlx-community" in result.output
 
     def test_list_unknown_family_error(self) -> None:
         """edgeml list nonexistent shows error with suggestions."""
