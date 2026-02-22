@@ -40,6 +40,9 @@ from .model_registry import (
     ModelResolutionError,
     resolve_model,
 )
+from .models.catalog import CATALOG as _UNIFIED_CATALOG
+from .models.resolver import ModelResolutionError as _NewResolutionError
+from .models.resolver import resolve as _resolve_new
 
 logger = logging.getLogger(__name__)
 
@@ -66,66 +69,66 @@ class ChatCompletionBody(BaseModel):
 
 
 # ---------------------------------------------------------------------------
-# Model catalog — powered by the model registry
+# Model catalog — backwards-compatible dicts derived from unified catalog
 # ---------------------------------------------------------------------------
 
-# Backwards-compatible dicts derived from the registry.
-# These are kept for code that references them directly (e.g. tests,
-# LlamaCppBackend.load_model).
 _MLX_MODELS: dict[str, str] = {}
 _GGUF_MODELS: dict[str, tuple[str, str]] = {}
 
-for _family_key, _family in MODEL_FAMILIES.items():
-    _default_variant = _family.variants.get(_family.default_tag)
+for _name, _entry in _UNIFIED_CATALOG.items():
+    _default_variant = _entry.variants.get(_entry.default_quant)
     if _default_variant is None:
         continue
-    # Populate MLX lookup
     if _default_variant.mlx:
-        _MLX_MODELS[_family_key] = _default_variant.mlx
-    # Populate GGUF lookup
-    for _src in _default_variant.sources:
-        if _src.type == "huggingface" and _src.file and _src.file.endswith(".gguf"):
-            _GGUF_MODELS[_family_key] = (_src.ref, _src.file)
-            break
+        _MLX_MODELS[_name] = _default_variant.mlx
+    if _default_variant.gguf:
+        _GGUF_MODELS[_name] = (_default_variant.gguf.repo, _default_variant.gguf.filename)
 
 
 def resolve_model_name(name: str, backend: str) -> str:
-    """Resolve a short model name (with optional :tag) to a HuggingFace repo ID.
+    """Resolve a short model name (with optional :variant) to a HuggingFace repo ID.
 
-    Uses the model registry for structured resolution. Full repo paths
-    (containing ``/``) pass through unchanged.
+    Uses the unified model catalog for structured resolution. Supports
+    Ollama-style ``model:variant`` syntax (e.g. ``gemma-3b:4bit``).
+
+    Full repo paths (containing ``/``) and local file paths pass through
+    unchanged.
     """
-    # Local .gguf file path
-    if name.endswith(".gguf"):
+    # Local file path
+    if name.endswith((".gguf", ".pte", ".mnn")):
         return name
 
     # Full repo path — pass through
     if "/" in name:
         return name
 
+    # Map backend names to engine names for the resolver
+    engine_map = {"mlx": "mlx-lm", "gguf": "llama.cpp"}
+    engine = engine_map.get(backend, backend)
+
     try:
-        resolved = resolve_model(name, backend=backend)
-    except ModelResolutionError as exc:
+        resolved = _resolve_new(name, engine=engine)
+    except _NewResolutionError as exc:
         raise ValueError(str(exc)) from exc
 
     if backend == "mlx":
         if resolved.mlx_repo:
             return resolved.mlx_repo
-        # Fallback to source ref if no MLX-specific repo
-        if resolved.source:
-            return resolved.source.ref
+        if resolved.hf_repo:
+            return resolved.hf_repo
         raise ValueError(
             f"No MLX source found for '{name}'. "
             f"Pass a full HuggingFace repo ID (e.g. mlx-community/gemma-3-1b-it-4bit)"
         )
 
     if backend == "gguf":
-        # For GGUF, return the short name — resolved at download time
-        # via _GGUF_MODELS or the registry
-        if resolved.family and resolved.family in _GGUF_MODELS:
-            return resolved.family
-        if resolved.source and resolved.source.file:
-            return resolved.family or name
+        # For GGUF, return the short name — LlamaCppBackend resolves via _GGUF_MODELS
+        family = resolved.family
+        if family and family in _GGUF_MODELS:
+            return family
+        # If the resolver found a GGUF artifact, return the family name
+        if resolved.is_gguf and family:
+            return family
         raise ValueError(
             f"No GGUF source found for '{name}'. "
             f"Pass a path to a local .gguf file or a HuggingFace repo ID."
@@ -459,7 +462,29 @@ class LlamaCppBackend(InferenceBackend):
             self._attach_cache()
             return
 
-        # Short name → catalog lookup
+        # Try the new resolver for model:variant syntax and catalog lookup
+        try:
+            resolved = _resolve_new(model_name, engine="llama.cpp")
+            if resolved.is_gguf and resolved.filename:
+                repo_id = resolved.hf_repo
+                filename = resolved.filename
+                logger.info(
+                    "Loading %s from %s (%s)...",
+                    model_name, repo_id, filename,
+                )
+                self._llm = Llama.from_pretrained(
+                    repo_id=repo_id,
+                    filename=filename,
+                    n_ctx=4096,
+                    n_gpu_layers=-1,
+                    verbose=False,
+                )
+                self._attach_cache()
+                return
+        except _NewResolutionError:
+            pass
+
+        # Fallback: short name → legacy catalog lookup
         if model_name not in _GGUF_MODELS:
             raise ValueError(
                 f"Unknown model '{model_name}'. "

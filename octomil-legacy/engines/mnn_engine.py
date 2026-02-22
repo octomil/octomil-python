@@ -18,18 +18,11 @@ from .base import BenchmarkResult, EnginePlugin
 
 logger = logging.getLogger(__name__)
 
-# Models known to work with MNN-LLM
+# Models known to work with MNN-LLM — derived from the unified catalog.
+from ..models.catalog import CATALOG as _UNIFIED_CATALOG
+
 _MNN_CATALOG = {
-    "gemma-1b",
-    "gemma-4b",
-    "llama-1b",
-    "llama-3b",
-    "llama-8b",
-    "phi-mini",
-    "qwen-1.5b",
-    "qwen-3b",
-    "mistral-7b",
-    "smollm-360m",
+    name for name, entry in _UNIFIED_CATALOG.items() if "mnn" in entry.engines
 }
 
 

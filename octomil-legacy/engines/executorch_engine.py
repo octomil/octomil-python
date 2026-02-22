@@ -27,14 +27,11 @@ _DELEGATES = {
     "qnn": {"platforms": {"Linux"}, "description": "Qualcomm QNN (NPU)"},
 }
 
-# Models known to have ExecuTorch exports or can be exported
+# Models known to have ExecuTorch exports — derived from the unified catalog.
+from ..models.catalog import CATALOG as _UNIFIED_CATALOG
+
 _ET_CATALOG = {
-    "llama-1b",
-    "llama-3b",
-    "llama-8b",
-    "phi-mini",
-    "gemma-1b",
-    "gemma-4b",
+    name for name, entry in _UNIFIED_CATALOG.items() if "executorch" in entry.engines
 }
 
 
