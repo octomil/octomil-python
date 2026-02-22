@@ -597,57 +597,6 @@ class ModelOptimizer:
         return " ".join(parts)
 
 
-# ---------------------------------------------------------------------------
-# One-liner API
-# ---------------------------------------------------------------------------
-
-
-def optimize(
-    model: str | float,
-    context_length: int = 4096,
-) -> ModelRecommendation:
-    """One-liner: detect hardware and optimize for a model.
-
-    Args:
-        model: Model name (``"llama3.1:8b"``, ``"phi-mini"``) or size in
-            billions (``8.0``). Names are resolved to sizes automatically.
-        context_length: Context window in tokens (default 4096).
-
-    Example::
-
-        from edgeml.model_optimizer import optimize
-        result = optimize("llama3.1:8b")
-        print(result.serve_command)
-    """
-    from edgeml.hardware import detect_hardware
-
-    if isinstance(model, str):
-        model_tag = model
-        model_size_b = _resolve_model_size(model)
-        if model_size_b is None:
-            raise ValueError(
-                f"Cannot determine model size from '{model}'. "
-                "Use a name with a size (e.g. 'llama3.1:8b') or pass a float."
-            )
-    else:
-        model_tag = f"{model}B"
-        model_size_b = model
-
-    hw = detect_hardware()
-    opt = ModelOptimizer(hw)
-    config = opt.pick_quant_and_offload(model_size_b, context_length)
-    speed = opt.predict_speed(model_size_b, config)
-    cmd = opt.serve_command(model_tag, config)
-    return ModelRecommendation(
-        model_size=f"{model_size_b}B",
-        quantization=config.quantization,
-        reason=opt._recommendation_reason(f"{model_size_b}B", config, speed),
-        config=config,
-        speed=speed,
-        serve_command=cmd,
-    )
-
-
 def _resolve_model_size(model: str) -> float | None:
     """Resolve a model name or tag to parameter count in billions."""
     import re
@@ -688,7 +637,3 @@ def _resolve_model_size(model: str) -> float | None:
             return size
 
     return None
-
-
-# Backward compatibility alias
-OllamaOptimizer = ModelOptimizer

@@ -20,7 +20,6 @@ from edgeml.model_optimizer import (
     _model_memory_gb,
     _resolve_model_size,
     _total_memory_gb,
-    optimize,
 )
 
 
@@ -774,52 +773,6 @@ class TestResolveModelSize:
 
     def test_decimal_size(self) -> None:
         assert _resolve_model_size("model:1.5b") == 1.5
-
-
-# ---------------------------------------------------------------------------
-# optimize() one-liner API
-# ---------------------------------------------------------------------------
-
-
-class TestOptimizeOneliner:
-    def test_optimize_with_string_model(self) -> None:
-        """optimize('llama3.1:8b') returns a recommendation."""
-        from unittest.mock import patch
-
-        profile = _make_profile(vram_gb=24.0, ram_gb=32.0)
-
-        with patch(
-            "edgeml.model_optimizer.shutil.which", return_value="/usr/bin/edgeml"
-        ):
-            with patch(
-                "edgeml.hardware._unified.UnifiedDetector.detect", return_value=profile
-            ):
-                result = optimize("llama3.1:8b")
-
-        assert result.model_size == "8.0B"
-        assert result.quantization in ("Q8_0", "Q6_K", "Q5_K_M", "Q4_K_M")
-        assert result.serve_command  # non-empty
-
-    def test_optimize_with_float(self) -> None:
-        """optimize(7.0) works with numeric size."""
-        from unittest.mock import patch
-
-        profile = _make_profile(vram_gb=24.0, ram_gb=32.0)
-
-        with patch(
-            "edgeml.model_optimizer.shutil.which", return_value="/usr/bin/edgeml"
-        ):
-            with patch(
-                "edgeml.hardware._unified.UnifiedDetector.detect", return_value=profile
-            ):
-                result = optimize(7.0)
-
-        assert result.model_size == "7.0B"
-
-    def test_optimize_unknown_model_raises(self) -> None:
-        """optimize('unknown-xyz') raises ValueError."""
-        with pytest.raises(ValueError, match="Cannot determine model size"):
-            optimize("unknown-xyz-model")
 
 
 # ---------------------------------------------------------------------------

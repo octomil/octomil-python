@@ -2924,12 +2924,11 @@ def launch(agent: str, model: Optional[str], port: int) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Hardware detection & optimization commands
+# Interactive command
 # ---------------------------------------------------------------------------
 
-from .cli_hw import hw, interactive_cmd_factory  # noqa: E402
+from .cli_hw import interactive_cmd_factory  # noqa: E402
 
-main.add_command(hw)
 main.add_command(interactive_cmd_factory(main), "interactive")
 
 

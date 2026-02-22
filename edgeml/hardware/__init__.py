@@ -1,21 +1,15 @@
-"""Hardware detection subsystem for edgeml."""
+"""Hardware detection subsystem for edgeml.
+
+Internal module — used by the model optimizer during ``edgeml serve``
+and ``edgeml pull``.  Not part of the public API.
+"""
 
 from __future__ import annotations
 
-from ._base import GPUBackend, GPUBackendRegistry, get_gpu_registry, reset_gpu_registry
-from ._types import CPUInfo, GPUDetectionResult, GPUInfo, GPUMemory, HardwareProfile
-from ._unified import UnifiedDetector, detect_hardware
+from ._types import HardwareProfile
+from ._unified import detect_hardware
 
 __all__ = [
-    "CPUInfo",
-    "GPUDetectionResult",
-    "GPUInfo",
-    "GPUMemory",
     "HardwareProfile",
-    "GPUBackend",
-    "GPUBackendRegistry",
-    "get_gpu_registry",
-    "reset_gpu_registry",
-    "UnifiedDetector",
     "detect_hardware",
 ]
