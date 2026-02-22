@@ -134,6 +134,7 @@ class TelemetryReporter:
         throughput: float,
         modality: str = "text",
         attention_backend: str | None = None,
+        early_exit_stats: dict[str, Any] | None = None,
     ) -> None:
         """Report that a generation finished successfully."""
         metrics: dict[str, Any] = {
@@ -144,12 +145,56 @@ class TelemetryReporter:
         }
         if attention_backend is not None:
             metrics["attention_backend"] = attention_backend
+        if early_exit_stats is not None:
+            metrics["early_exit"] = early_exit_stats
         self._enqueue(
             event_type="generation_completed",
             model_id=model_id,
             version=version,
             session_id=session_id,
             modality=modality,
+            metrics=metrics,
+        )
+
+    def report_early_exit_stats(
+        self,
+        session_id: str,
+        model_id: str,
+        version: str,
+        total_tokens: int,
+        early_exit_tokens: int,
+        exit_percentage: float,
+        avg_layers_used: float,
+        avg_entropy: float,
+    ) -> None:
+        """Report early exit / adaptive computation depth metrics.
+
+        Parameters
+        ----------
+        total_tokens:
+            Total tokens generated in this request.
+        early_exit_tokens:
+            Number of tokens that exited before the final layer.
+        exit_percentage:
+            Percentage of tokens that exited early (0-100).
+        avg_layers_used:
+            Average number of transformer layers used per token.
+        avg_entropy:
+            Average logit entropy at exit points.
+        """
+        metrics: dict[str, Any] = {
+            "total_tokens": total_tokens,
+            "early_exit_tokens": early_exit_tokens,
+            "exit_percentage": exit_percentage,
+            "avg_layers_used": avg_layers_used,
+            "avg_entropy": avg_entropy,
+        }
+        self._enqueue(
+            event_type="early_exit_stats",
+            model_id=model_id,
+            version=version,
+            session_id=session_id,
+            modality="text",
             metrics=metrics,
         )
 

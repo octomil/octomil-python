@@ -149,6 +149,25 @@ def main() -> None:
     type=int,
     help="Max pending requests in the queue (default: 32). Set to 0 to disable.",
 )
+@click.option(
+    "--early-exit-threshold",
+    default=None,
+    type=float,
+    help="Enable early exit with this entropy threshold (0.0-1.0). "
+    "Tokens exit early when intermediate logit entropy drops below this value. "
+    "Lower = fewer exits (conservative), higher = more exits (aggressive). "
+    "Example: --early-exit-threshold 0.3",
+)
+@click.option(
+    "--speed-quality",
+    default=None,
+    type=click.Choice(["quality", "balanced", "fast"]),
+    help="Speed-quality preset for early exit. "
+    "quality: conservative (threshold=0.1), "
+    "balanced: moderate (threshold=0.3), "
+    "fast: aggressive (threshold=0.5). "
+    "Overridden by --early-exit-threshold if both are set.",
+)
 def serve(
     model: str,
     port: int,
@@ -163,6 +182,8 @@ def serve(
     auto_route: bool,
     route_strategy: str,
     max_queue: int,
+    early_exit_threshold: float | None,
+    speed_quality: str | None,
 ) -> None:
     """Start a local OpenAI-compatible inference server.
 
@@ -254,7 +275,9 @@ def serve(
             click.echo(f"Engine: {engine} (manual override)")
         if json_mode:
             click.echo("JSON mode: enabled (all responses default to valid JSON)")
-        click.echo(f"OpenAI-compatible API: http://localhost:{port}/v1/chat/completions")
+        click.echo(
+            f"OpenAI-compatible API: http://localhost:{port}/v1/chat/completions"
+        )
     click.echo(f"Engine info: http://localhost:{port}/v1/engines")
     click.echo(f"Health check: http://localhost:{port}/health")
     if not is_whisper:
@@ -268,6 +291,25 @@ def serve(
             click.echo(f"Queue stats: http://localhost:{port}/v1/queue/stats")
         else:
             click.echo("Request queue: disabled")
+
+    # Build early exit config
+    from .early_exit import config_from_cli as _ee_config_from_cli
+
+    ee_config = _ee_config_from_cli(
+        early_exit_threshold=early_exit_threshold,
+        speed_quality=speed_quality,
+    )
+
+    if not is_whisper and ee_config.enabled:
+        preset_label = (
+            f" (preset: {ee_config.preset.value})" if ee_config.preset else ""
+        )
+        click.echo(
+            f"Early exit: enabled (threshold={ee_config.effective_threshold:.2f}"
+            f", min_layers_frac={ee_config.effective_min_layers_fraction:.2f}"
+            f"{preset_label})"
+        )
+        click.echo(f"Early exit stats: http://localhost:{port}/v1/early-exit/stats")
 
     if benchmark:
         click.echo("Benchmark mode: will run latency test after model loads.")
@@ -292,6 +334,7 @@ def serve(
         cache_enabled=cache_enabled,
         engine=engine,
         max_queue_depth=max_queue,
+        early_exit_config=ee_config if ee_config.enabled else None,
     )
 
 
@@ -1842,7 +1885,9 @@ def list_models_cmd(model_family: Optional[str]) -> None:
             if variant.mlx:
                 click.echo(f"    mlx-lm:    {variant.mlx}")
             if variant.gguf:
-                click.echo(f"    llama.cpp: {variant.gguf.repo} ({variant.gguf.filename})")
+                click.echo(
+                    f"    llama.cpp: {variant.gguf.repo} ({variant.gguf.filename})"
+                )
             if variant.source_repo:
                 click.echo(f"    source:    {variant.source_repo}")
             click.echo("")

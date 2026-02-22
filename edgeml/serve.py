@@ -32,6 +32,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, AsyncIterator, Optional
 
 if TYPE_CHECKING:
+    from .early_exit import EarlyExitConfig, EarlyExitMonitor
     from .telemetry import TelemetryReporter
 
 from pydantic import BaseModel, Field
@@ -172,6 +173,8 @@ class InferenceMetrics:
     total_duration_ms: float = 0.0
     cache_hit: bool = False
     attention_backend: str = "standard"
+    early_exit_tokens: int = 0
+    avg_layers_used: float = 0.0
 
 
 class InferenceBackend:
@@ -322,14 +325,17 @@ class MLXBackend(InferenceBackend):
         ttfc = ((first_token_time or start) - start) * 1000
         text = "".join(tokens)
 
-        return text, InferenceMetrics(
-            ttfc_ms=ttfc,
-            prompt_tokens=prompt_tokens,
-            total_tokens=len(tokens),
-            tokens_per_second=final_tps,
-            total_duration_ms=elapsed * 1000,
-            cache_hit=cache_hit,
-            attention_backend="metal_fused",  # MLX uses Metal fused attention automatically
+        return (
+            text,
+            InferenceMetrics(
+                ttfc_ms=ttfc,
+                prompt_tokens=prompt_tokens,
+                total_tokens=len(tokens),
+                tokens_per_second=final_tps,
+                total_duration_ms=elapsed * 1000,
+                cache_hit=cache_hit,
+                attention_backend="metal_fused",  # MLX uses Metal fused attention automatically
+            ),
         )
 
     async def generate_stream(
@@ -761,6 +767,8 @@ class ServerState:
     reporter: Optional["TelemetryReporter"] = None
     max_queue_depth: int = 32
     request_queue: Any = None  # RequestQueue instance
+    early_exit_config: Optional["EarlyExitConfig"] = None
+    early_exit_monitor: Optional["EarlyExitMonitor"] = None
 
 
 @dataclass
@@ -846,6 +854,7 @@ def create_app(
     cache_enabled: bool = True,
     engine: Optional[str] = None,
     max_queue_depth: int = 32,
+    early_exit_config: Optional["EarlyExitConfig"] = None,
 ) -> Any:
     """Create a FastAPI app with OpenAI-compatible endpoints.
 
@@ -860,6 +869,9 @@ def create_app(
     max_queue_depth:
         Maximum number of pending requests in the queue.  When full, new
         requests get a 503 response.  Set to 0 to disable queueing.
+    early_exit_config:
+        Configuration for early exit / adaptive computation depth.
+        When ``None`` or not enabled, early exit monitoring is disabled.
     """
     from contextlib import asynccontextmanager
 
@@ -876,6 +888,7 @@ def create_app(
         cache_enabled=cache_enabled,
         engine_override=engine,
         max_queue_depth=max_queue_depth,
+        early_exit_config=early_exit_config,
     )
 
     @asynccontextmanager
@@ -908,6 +921,20 @@ def create_app(
                 raise
             state.engine_name = state.backend.name if state.backend else "none"
         state.start_time = time.time()
+
+        # Initialise early exit monitor
+        if state.early_exit_config is not None and state.early_exit_config.enabled:
+            from .early_exit import EarlyExitMonitor as _EEM
+
+            state.early_exit_monitor = _EEM(config=state.early_exit_config)
+            logger.info(
+                "Early exit enabled (threshold=%.2f, min_layers_frac=%.2f%s)",
+                state.early_exit_config.effective_threshold,
+                state.early_exit_config.effective_min_layers_fraction,
+                f", preset={state.early_exit_config.preset.value}"
+                if state.early_exit_config.preset
+                else "",
+            )
 
         # Initialise request queue
         if state.max_queue_depth > 0:
@@ -1134,6 +1161,23 @@ def create_app(
                         if extracted is not None:
                             text = json.dumps(extracted)
 
+        # Early exit monitoring (best-effort)
+        _ee_monitor = state.early_exit_monitor
+        ee_metrics_dict: Optional[dict[str, Any]] = None
+        if _ee_monitor is not None and _ee_monitor.config.enabled:
+            try:
+                total_layers = _ee_monitor.config.total_layers or 32
+                ee_req_metrics = _ee_monitor.simulate_token_exits(
+                    token_count=metrics.total_tokens,
+                    total_layers=total_layers,
+                )
+                _ee_monitor.record_request(ee_req_metrics)
+                metrics.early_exit_tokens = ee_req_metrics.early_exit_tokens
+                metrics.avg_layers_used = ee_req_metrics.avg_layers_used
+                ee_metrics_dict = ee_req_metrics.to_dict()
+            except Exception:
+                pass
+
         # Report generation_completed (best-effort)
         if _reporter is not None:
             try:
@@ -1152,9 +1196,19 @@ def create_app(
                     ttfc_ms=metrics.ttfc_ms,
                     throughput=throughput,
                     attention_backend=metrics.attention_backend,
+                    early_exit_stats=ee_metrics_dict,
                 )
             except Exception:
                 pass
+
+        usage: dict[str, Any] = {
+            "prompt_tokens": metrics.prompt_tokens,
+            "completion_tokens": metrics.total_tokens,
+            "total_tokens": metrics.prompt_tokens + metrics.total_tokens,
+            "cache_hit": metrics.cache_hit,
+        }
+        if ee_metrics_dict is not None:
+            usage["early_exit"] = ee_metrics_dict
 
         return {
             "id": req_id,
@@ -1168,12 +1222,7 @@ def create_app(
                     "finish_reason": "stop",
                 }
             ],
-            "usage": {
-                "prompt_tokens": metrics.prompt_tokens,
-                "completion_tokens": metrics.total_tokens,
-                "total_tokens": metrics.prompt_tokens + metrics.total_tokens,
-                "cache_hit": metrics.cache_hit,
-            },
+            "usage": usage,
         }
 
     @app.get("/v1/cache/stats")
@@ -1223,6 +1272,24 @@ def create_app(
             "enabled": True,
         }
 
+    @app.get("/v1/early-exit/stats")
+    async def early_exit_stats() -> dict[str, Any]:
+        """Return early exit / adaptive computation depth statistics."""
+        if state.early_exit_monitor is None:
+            return {
+                "enabled": False,
+                "config": {},
+                "stats": {
+                    "total_requests": 0,
+                    "total_tokens": 0,
+                    "total_early_exit_tokens": 0,
+                    "exit_percentage": 0.0,
+                    "avg_layers_used": 0.0,
+                    "avg_entropy": 0.0,
+                },
+            }
+        return state.early_exit_monitor.get_stats_dict()
+
     @app.get("/v1/engines")
     async def list_engines() -> dict[str, Any]:
         """List detected engines and their benchmark results."""
@@ -1266,7 +1333,7 @@ def create_app(
         elif state.backend is not None:
             backend_name = state.backend.name
 
-        return {
+        health_data: dict[str, Any] = {
             "status": "ok",
             "model": state.model_name,
             "engine": state.engine_name,
@@ -1275,6 +1342,14 @@ def create_app(
             "uptime_seconds": int(time.time() - state.start_time),
             "cache": cache_info,
         }
+        if state.early_exit_monitor is not None:
+            ee_stats = state.early_exit_monitor.stats
+            health_data["early_exit"] = {
+                "enabled": True,
+                "exit_percentage": round(ee_stats.exit_percentage, 2),
+                "avg_layers_used": round(ee_stats.avg_layers_used, 2),
+            }
+        return health_data
 
     @app.post("/v1/audio/transcriptions")
     async def transcribe_audio(
@@ -1498,6 +1573,7 @@ def run_server(
     cache_enabled: bool = True,
     engine: Optional[str] = None,
     max_queue_depth: int = 32,
+    early_exit_config: Optional["EarlyExitConfig"] = None,
 ) -> None:
     """Start the inference server (blocking).
 
@@ -1511,6 +1587,8 @@ def run_server(
     max_queue_depth:
         Maximum number of pending requests in the queue (default 32).
         Set to 0 to disable queueing.
+    early_exit_config:
+        Configuration for early exit / adaptive computation depth.
     """
     import uvicorn
 
@@ -1523,6 +1601,7 @@ def run_server(
         cache_enabled=cache_enabled,
         engine=engine,
         max_queue_depth=max_queue_depth,
+        early_exit_config=early_exit_config,
     )
     uvicorn.run(app, host=host, port=port, log_level="info")
 
