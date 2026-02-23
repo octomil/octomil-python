@@ -1,0 +1,150 @@
+name: Build Binaries
+
+on:
+  release:
+    types: [published]
+
+permissions: {}
+
+jobs:
+  build:
+    name: Build ${{ matrix.platform }}
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: write
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-14
+            platform: darwin-arm64
+            pyinstaller_args: ""
+          - os: macos-13
+            platform: darwin-amd64
+            pyinstaller_args: ""
+          - os: ubuntu-latest
+            platform: linux-amd64
+            pyinstaller_args: ""
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          pip install pyinstaller
+          pip install -e ".[serve]"
+
+      - name: Build binary
+        run: |
+          pyinstaller \
+            --name octomil \
+            --onedir \
+            --console \
+            --noconfirm \
+            --clean \
+            ${{ matrix.pyinstaller_args }} \
+            octomil/cli.py
+
+      - name: Create archive
+        run: |
+          cd dist
+          tar -czf octomil-${{ matrix.platform }}.tar.gz octomil/
+          shasum -a 256 octomil-${{ matrix.platform }}.tar.gz > octomil-${{ matrix.platform }}.tar.gz.sha256
+
+      - name: Upload to release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release upload "${{ github.event.release.tag_name }}" \
+            dist/octomil-${{ matrix.platform }}.tar.gz \
+            dist/octomil-${{ matrix.platform }}.tar.gz.sha256 \
+            --clobber
+
+  update-homebrew:
+    name: Update Homebrew Formula
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Download SHA256 files from release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="${{ github.event.release.tag_name }}"
+          VERSION="${TAG#v}"
+          mkdir -p shas
+          for platform in darwin-arm64 darwin-amd64 linux-amd64; do
+            gh release download "$TAG" \
+              --repo octomil/octomil-python \
+              --pattern "octomil-${platform}.tar.gz.sha256" \
+              --dir shas || echo "MISSING" > "shas/octomil-${platform}.tar.gz.sha256"
+          done
+
+          # Parse SHA256 values
+          SHA_DARWIN_ARM64=$(awk '{print $1}' shas/octomil-darwin-arm64.tar.gz.sha256)
+          SHA_DARWIN_AMD64=$(awk '{print $1}' shas/octomil-darwin-amd64.tar.gz.sha256)
+          SHA_LINUX_AMD64=$(awk '{print $1}' shas/octomil-linux-amd64.tar.gz.sha256)
+
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+          echo "SHA_DARWIN_ARM64=$SHA_DARWIN_ARM64" >> "$GITHUB_ENV"
+          echo "SHA_DARWIN_AMD64=$SHA_DARWIN_AMD64" >> "$GITHUB_ENV"
+          echo "SHA_LINUX_AMD64=$SHA_LINUX_AMD64" >> "$GITHUB_ENV"
+
+      - name: Checkout homebrew tap
+        uses: actions/checkout@v4
+        with:
+          repository: octomil/homebrew-octomil
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+
+      - name: Update formula
+        run: |
+          cat > Formula/octomil.rb << FORMULA
+          # typed: false
+          # frozen_string_literal: true
+
+          class Octomil < Formula
+            desc "On-device ML inference — serve models locally with one command"
+            homepage "https://octomil.com"
+            version "$VERSION"
+            license "MIT"
+
+            on_macos do
+              if Hardware::CPU.arm?
+                url "https://github.com/octomil/octomil-python/releases/download/v#{version}/octomil-darwin-arm64.tar.gz"
+                sha256 "$SHA_DARWIN_ARM64"
+              else
+                url "https://github.com/octomil/octomil-python/releases/download/v#{version}/octomil-darwin-amd64.tar.gz"
+                sha256 "$SHA_DARWIN_AMD64"
+              end
+            end
+
+            on_linux do
+              url "https://github.com/octomil/octomil-python/releases/download/v#{version}/octomil-linux-amd64.tar.gz"
+              sha256 "$SHA_LINUX_AMD64"
+            end
+
+            def install
+              libexec.install Dir["*"]
+              bin.install_symlink libexec/"octomil"
+            end
+
+            test do
+              assert_match "octomil", shell_output("#{bin}/octomil --version")
+            end
+          end
+          FORMULA
+
+      - name: Commit and push
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Formula/octomil.rb
+          git commit -m "octomil $VERSION" || echo "No changes"
+          git push
