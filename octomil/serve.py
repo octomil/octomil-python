@@ -1677,6 +1677,12 @@ async def _queued_stream_response(
 
     assert state.backend is not None
 
+    _reporter = state.reporter
+    model_version = "latest"
+    stream_start = time.monotonic()
+    first_chunk_time: Optional[float] = None
+    prev_chunk_time = stream_start
+
     try:
         chunk_iter = queue.submit_generate_stream(
             request, state.backend.generate_stream
@@ -1684,6 +1690,32 @@ async def _queued_stream_response(
         # Build SSE events from the chunk iterator (same format as _stream_response)
         chunk_index = 0
         async for chunk in chunk_iter:
+            now = time.monotonic()
+            chunk_latency_ms = (now - prev_chunk_time) * 1000
+            prev_chunk_time = now
+
+            if first_chunk_time is None and chunk.text:
+                first_chunk_time = now
+
+            # Report each chunk (best-effort)
+            if _reporter is not None and chunk.text:
+                try:
+                    ttfc = (
+                        (first_chunk_time - stream_start) * 1000
+                        if first_chunk_time is not None and chunk_index == 0
+                        else None
+                    )
+                    _reporter.report_chunk_produced(
+                        session_id=session_id,
+                        model_id=request.model,
+                        version=model_version,
+                        chunk_index=chunk_index,
+                        ttfc_ms=ttfc,
+                        chunk_latency_ms=chunk_latency_ms,
+                    )
+                except Exception:
+                    pass
+
             data = {
                 "id": req_id,
                 "object": "chat.completion.chunk",
@@ -1701,6 +1733,32 @@ async def _queued_stream_response(
             chunk_index += 1
 
         yield "data: [DONE]\n\n"
+
+        # Report generation_completed (best-effort)
+        if _reporter is not None:
+            try:
+                total_duration_ms = (time.monotonic() - stream_start) * 1000
+                ttfc_ms = (
+                    (first_chunk_time - stream_start) * 1000
+                    if first_chunk_time is not None
+                    else 0.0
+                )
+                throughput = (
+                    chunk_index / (total_duration_ms / 1000)
+                    if total_duration_ms > 0
+                    else 0.0
+                )
+                _reporter.report_generation_completed(
+                    session_id=session_id,
+                    model_id=request.model,
+                    version=model_version,
+                    total_chunks=chunk_index,
+                    total_duration_ms=total_duration_ms,
+                    ttfc_ms=ttfc_ms,
+                    throughput=throughput,
+                )
+            except Exception:
+                pass
     except QueueFullError:
         error_data = {
             "error": {

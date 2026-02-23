@@ -237,6 +237,7 @@ class TestStateMismatch:
         received_key = None
         got_callback = threading.Event()
         response_code = None
+        server_ready = threading.Event()
 
         class _Handler(http.server.BaseHTTPRequestHandler):
             def do_GET(self) -> None:
@@ -267,8 +268,14 @@ class TestStateMismatch:
             port = sock.getsockname()[1]
 
         server = HTTPServer(("127.0.0.1", port), _Handler)
-        t = threading.Thread(target=server.serve_forever, daemon=True)
+
+        def _serve():
+            server_ready.set()
+            server.serve_forever()
+
+        t = threading.Thread(target=_serve, daemon=True)
         t.start()
+        server_ready.wait(timeout=5.0)
 
         try:
             # Send callback with wrong state
@@ -284,6 +291,7 @@ class TestStateMismatch:
             else:
                 pytest.fail("Expected 400 response for state mismatch")
 
+            got_callback.wait(timeout=5.0)
             assert received_key is None
             assert response_code == 400
         finally:

@@ -35,7 +35,7 @@ class TestPyInstallerSpec:
         ast.parse(spec_content)
 
     def test_spec_entry_point(self, spec_content: str) -> None:
-        assert "octomil/cli.py" in spec_content
+        assert "octomil/__main__.py" in spec_content
 
     def test_spec_output_name(self, spec_content: str) -> None:
         assert 'name="octomil"' in spec_content
@@ -248,7 +248,7 @@ class TestReleaseWorkflow:
         assert "tags: ['v*']" in workflow_content
 
     def test_workflow_matrix_targets(self, workflow_content: str) -> None:
-        for target in ("darwin-arm64", "darwin-amd64", "linux-amd64"):
+        for target in ("darwin-arm64", "linux-amd64"):
             assert target in workflow_content
 
     def test_workflow_uses_python_311(self, workflow_content: str) -> None:
@@ -273,9 +273,8 @@ class TestReleaseWorkflow:
         assert "gh release upload" in workflow_content
 
     def test_workflow_uses_macos_runners(self, workflow_content: str) -> None:
-        """macOS arm64 requires macos-14, intel uses macos-13."""
+        """macOS arm64 requires macos-14."""
         assert "macos-14" in workflow_content
-        assert "macos-13" in workflow_content
 
     def test_workflow_does_not_overwrite_existing_release_yml(self) -> None:
         """The existing release.yml (PyPI) should still exist."""
@@ -295,7 +294,7 @@ class TestConsistency:
         setup_content = (ROOT / "setup.py").read_text()
         assert "octomil.cli:main" in setup_content
         spec_content = (ROOT / "octomil.spec").read_text()
-        assert "octomil/cli.py" in spec_content
+        assert "octomil/__main__.py" in spec_content
 
     def test_all_engines_in_spec(self) -> None:
         """Every engine in the engines directory should be a hidden import."""
@@ -319,8 +318,13 @@ class TestConsistency:
 
     def test_version_in_formula_matches_setup(self) -> None:
         """The formula version should match setup.py version."""
+        import re
+
         setup_content = (ROOT / "setup.py").read_text()
         formula_content = (ROOT / "homebrew" / "octomil.rb").read_text()
-        # Both should have version 1.0.0
-        assert 'version="1.0.0"' in setup_content
-        assert 'version "1.0.0"' in formula_content
+        # Extract version from setup.py and formula, then compare
+        setup_match = re.search(r'version="([^"]+)"', setup_content)
+        formula_match = re.search(r'version "([^"]+)"', formula_content)
+        assert setup_match is not None, "version not found in setup.py"
+        assert formula_match is not None, "version not found in formula"
+        assert setup_match.group(1) == formula_match.group(1)
