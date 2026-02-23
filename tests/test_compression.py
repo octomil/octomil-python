@@ -467,42 +467,41 @@ class TestPromptCompressor:
 class TestCompressionTelemetry:
     def test_report_prompt_compressed_payload(self):
         """Verify TelemetryReporter.report_prompt_compressed enqueues correct payload."""
+        from unittest.mock import patch
         from edgeml.telemetry import TelemetryReporter
 
-        reporter = TelemetryReporter(
-            api_key="test-key",
-            api_base="https://api.example.com/api/v1",
-            org_id="test-org",
-            device_id="dev-001",
-        )
+        sent = []
 
-        reporter.report_prompt_compressed(
-            session_id="sess-001",
-            model_id="gemma-1b",
-            version="1.0",
-            original_tokens=500,
-            compressed_tokens=250,
-            compression_ratio=0.5,
-            strategy="token_pruning",
-            duration_ms=3.5,
-        )
+        def mock_send(client, url, headers, payload):
+            sent.append(payload)
 
-        # Give queue a moment to receive the event
-        time.sleep(0.05)
+        with patch.object(TelemetryReporter, "_send", side_effect=mock_send):
+            reporter = TelemetryReporter(
+                api_key="test-key",
+                api_base="https://api.example.com/api/v1",
+                org_id="test-org",
+                device_id="dev-001",
+            )
+            reporter.report_prompt_compressed(
+                session_id="sess-001",
+                model_id="gemma-1b",
+                version="1.0",
+                original_tokens=500,
+                compressed_tokens=250,
+                compression_ratio=0.5,
+                strategy="token_pruning",
+                duration_ms=3.5,
+            )
+            time.sleep(0.15)
+            reporter.close()
 
-        # Stop the worker and inspect
-        reporter._queue.put(None)
-        reporter._worker.join(timeout=2.0)
-
-        # Drain remaining payloads
-        payloads = []
-        while not reporter._queue.empty():
-            item = reporter._queue.get_nowait()
-            if item is not None:
-                payloads.append(item)
-
-        # The event might have been consumed by the worker already.
-        # Test the enqueue path by mocking _send.
+        assert len(sent) == 1
+        assert sent[0]["event_type"] == "prompt_compressed"
+        assert sent[0]["metrics"]["original_tokens"] == 500
+        assert sent[0]["metrics"]["compressed_tokens"] == 250
+        assert sent[0]["metrics"]["tokens_saved"] == 250
+        assert sent[0]["metrics"]["strategy"] == "token_pruning"
+        assert sent[0]["metrics"]["compression_duration_ms"] == 3.5
 
     def test_report_prompt_compressed_enqueue(self):
         """Verify the payload structure via mock."""
