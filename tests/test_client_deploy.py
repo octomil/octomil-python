@@ -659,7 +659,7 @@ class TestRollback:
         self, mock_api_cls, mock_reg_cls, mock_rollouts_cls
     ):
         from edgeml.client import Client
-        from edgeml.python.edgeml.api_client import EdgeMLClientError
+        from edgeml import EdgeMLClientError
 
         mock_reg = mock_reg_cls.return_value
         mock_reg.resolve_model_id.return_value = "model-abc"
