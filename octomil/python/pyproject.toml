@@ -9,7 +9,7 @@ description = "Octomil Python SDK - Federated Learning Made Simple"
 readme = "README.md"
 requires-python = ">=3.9"
 license = {text = "MIT"}
-keywords = ["federated-learning", "machine-learning", "edge-ml", "privacy"]
+keywords = ["federated-learning", "machine-learning", "octomil", "privacy"]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
@@ -51,7 +51,7 @@ secagg = ["cryptography>=41.0.0"]
 [project.urls]
 Homepage = "https://octomil.com"
 Documentation = "https://docs.octomil.com"
-Repository = "https://github.com/octomil/octomil-sdk"
+Repository = "https://github.com/octomil/octomil-python"
 
 [tool.setuptools.packages.find]
 where = ["."]

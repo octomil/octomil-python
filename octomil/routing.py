@@ -39,7 +39,7 @@ import math
 import operator
 import re
 from dataclasses import dataclass, field
-from typing import Optional, Union
+from typing import Any, Optional, Union
 
 logger = logging.getLogger(__name__)
 
@@ -301,7 +301,7 @@ _SAFE_NODES = (
 )
 
 # Allowed function names in expressions
-_SAFE_FUNCTIONS: dict[str, callable] = {
+_SAFE_FUNCTIONS: dict[str, Any] = {
     "sqrt": math.sqrt,
     "abs": abs,
     "round": round,
@@ -333,13 +333,21 @@ def _safe_eval_node(node: ast.AST) -> float:
         return _safe_eval_node(node.body)
 
     if isinstance(node, ast.Constant):
-        if isinstance(node.value, (int, float)):
-            return float(node.value)
-        raise ValueError(f"Disallowed constant type: {type(node.value).__name__}")
+        v = node.value
+        if isinstance(v, float):
+            return v
+        if isinstance(v, int):
+            return float(v)
+        raise ValueError(f"Disallowed constant type: {type(v).__name__}")
 
     # Python 3.7 ast.Num (deprecated but still emitted by some parsers)
     if isinstance(node, ast.Num):
-        return float(node.n)
+        n = node.n
+        if isinstance(n, float):
+            return n
+        if isinstance(n, int):
+            return float(n)
+        raise ValueError(f"Disallowed constant type: {type(n).__name__}")
 
     if isinstance(node, ast.UnaryOp):
         operand = _safe_eval_node(node.operand)

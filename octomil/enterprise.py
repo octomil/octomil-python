@@ -114,7 +114,7 @@ class EnterpriseClientError(RuntimeError):
 class EnterpriseClient:
     """Client for enterprise org/team management.
 
-    Talks to the fed-learning server's onboarding, org management,
+    Talks to the Octomil server's onboarding, org management,
     settings, and API key endpoints.
 
     Args:
@@ -151,9 +151,7 @@ class EnterpriseClient:
                 detail = resp.json().get("detail", resp.text)
             except Exception:
                 detail = resp.text
-            raise EnterpriseClientError(
-                f"API error {resp.status_code}: {detail}"
-            )
+            raise EnterpriseClientError(f"API error {resp.status_code}: {detail}")
 
     # -- Org creation (onboarding) ----------------------------------------
 
@@ -189,9 +187,7 @@ class EnterpriseClient:
 
     # -- Policy profile ---------------------------------------------------
 
-    def set_policy_profile(
-        self, org_id: str, profile: str
-    ) -> dict[str, Any]:
+    def set_policy_profile(self, org_id: str, profile: str) -> dict[str, Any]:
         """Apply a policy profile (startup, balanced, regulated).
 
         Returns:
@@ -206,9 +202,7 @@ class EnterpriseClient:
 
     # -- Compliance presets -----------------------------------------------
 
-    def set_compliance(
-        self, org_id: str, preset: str
-    ) -> dict[str, Any]:
+    def set_compliance(self, org_id: str, preset: str) -> dict[str, Any]:
         """Apply a named compliance preset to org settings.
 
         Valid presets: hipaa, gdpr, pci, soc2.
@@ -323,9 +317,7 @@ class EnterpriseClient:
         self._raise_for_status(resp)
         return resp.json()
 
-    def update_settings(
-        self, org_id: str, **kwargs: Any
-    ) -> dict[str, Any]:
+    def update_settings(self, org_id: str, **kwargs: Any) -> dict[str, Any]:
         """Update organization settings.
 
         Keyword args are forwarded as the JSON body.

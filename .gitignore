@@ -44,3 +44,18 @@ htmlcov/
 
 # Claude
 .claude
+
+# Environment
+.env
+.env.*
+
+# Caches
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+
+# Build artifacts
+*.whl
+*.tar.gz
+octomil/python/dist/
+edgeml/
