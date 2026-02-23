@@ -3,6 +3,11 @@ name: Build Binaries
 on:
   release:
     types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag (e.g. v1.0.0)"
+        required: true
 
 permissions: {}
 
@@ -54,7 +59,8 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release upload "${{ github.event.release.tag_name }}" \
+          TAG="${{ github.event.release.tag_name || inputs.tag }}"
+          gh release upload "$TAG" \
             dist/octomil-${{ matrix.platform }}.tar.gz \
             dist/octomil-${{ matrix.platform }}.tar.gz.sha256 \
             --clobber
@@ -71,7 +77,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          TAG="${{ github.event.release.tag_name }}"
+          TAG="${{ github.event.release.tag_name || inputs.tag }}"
           VERSION="${TAG#v}"
           mkdir -p shas
           for platform in darwin-arm64 linux-amd64; do
