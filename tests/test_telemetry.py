@@ -51,32 +51,34 @@ class TestTelemetryReporterPayloads:
     def teardown_method(self):
         self.reporter.close()
 
-    def _drain_payloads(self) -> list[dict]:
-        """Drain the internal queue and return collected payloads."""
-        payloads = []
-        while not self.reporter._queue.empty():
-            item = self.reporter._queue.get_nowait()
-            if item is not None:
-                payloads.append(item)
-        return payloads
-
     def test_report_generation_started(self):
-        # Stop the worker so we can inspect the queue directly
-        self.reporter.report_generation_started(
-            model_id="gemma-1b",
-            version="1.0",
-            session_id="sess-001",
-            modality="text",
-        )
-        # Give the queue a moment
-        time.sleep(0.05)
-        # Put sentinel to stop worker, then drain
-        self.reporter._queue.put(None)
-        self.reporter._worker.join(timeout=2.0)
+        """Verify report_generation_started enqueues a correctly-formed payload."""
+        sent = []
 
-        # Re-create reporter for teardown
-        payloads = self._drain_payloads()
-        # The worker may have already consumed the item. Instead, test via mock.
+        def mock_send(client, url, headers, payload):
+            sent.append(payload)
+
+        with patch.object(TelemetryReporter, "_send", side_effect=mock_send):
+            reporter = TelemetryReporter(
+                api_key="key",
+                api_base="https://api.test.com/api/v1",
+                org_id="org-1",
+                device_id="dev-1",
+            )
+            reporter.report_generation_started(
+                model_id="gemma-1b",
+                version="1.0",
+                session_id="sess-001",
+                modality="text",
+            )
+            time.sleep(0.15)
+            reporter.close()
+
+        assert len(sent) == 1
+        assert sent[0]["event_type"] == "generation_started"
+        assert sent[0]["model_id"] == "gemma-1b"
+        assert sent[0]["session_id"] == "sess-001"
+        assert sent[0]["modality"] == "text"
 
     def test_generation_started_payload_structure(self):
         """Verify the payload structure using a mock HTTP client."""
