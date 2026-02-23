@@ -69,73 +69,90 @@ class TestLlamaCppFlashAttn:
     def test_load_model_local_gguf_passes_flash_attn(self):
         """Llama() constructor should receive flash_attn=True for local .gguf files."""
         mock_llama_cls = MagicMock()
-        mock_llama_instance = MagicMock()
-        mock_llama_cls.return_value = mock_llama_instance
+        mock_llama_cls.return_value = MagicMock()
 
-        with patch("edgeml.serve.Llama", mock_llama_cls, create=True):
-            with patch.dict("sys.modules", {"llama_cpp": MagicMock(Llama=mock_llama_cls)}):
-                backend = LlamaCppBackend(cache_enabled=False)
-                # Patch the import inside load_model
-                with patch("edgeml.serve.Llama", mock_llama_cls):
+        mock_llama_module = MagicMock(Llama=mock_llama_cls, LlamaCache=MagicMock())
+        with patch.dict("sys.modules", {"llama_cpp": mock_llama_module}):
+            backend = LlamaCppBackend(cache_enabled=False)
+            backend.load_model("model.gguf")
 
-                    def patched_load(self, model_name):
-                        self._model_name = model_name
-                        self._llm = mock_llama_cls(
-                            model_path=model_name,
-                            n_ctx=4096,
-                            n_gpu_layers=-1,
-                            flash_attn=True,
-                            verbose=False,
-                        )
+        mock_llama_cls.assert_called_once()
+        call_kwargs = mock_llama_cls.call_args
+        assert call_kwargs.kwargs.get("flash_attn") is True, (
+            "Llama() constructor must receive flash_attn=True for local .gguf files"
+        )
+        assert call_kwargs.kwargs.get("model_path") == "model.gguf"
 
-                    with patch.object(LlamaCppBackend, "load_model", patched_load):
-                        backend.load_model("model.gguf")
+    def test_load_model_hf_repo_passes_flash_attn(self):
+        """Llama.from_pretrained() should receive flash_attn=True for HF repo IDs."""
+        mock_llama_cls = MagicMock()
+        mock_from_pretrained = MagicMock(return_value=MagicMock())
+        mock_llama_cls.from_pretrained = mock_from_pretrained
 
-        mock_llama_cls.assert_called_once_with(
-            model_path="model.gguf",
-            n_ctx=4096,
-            n_gpu_layers=-1,
-            flash_attn=True,
-            verbose=False,
+        mock_llama_module = MagicMock(Llama=mock_llama_cls, LlamaCache=MagicMock())
+        with patch.dict("sys.modules", {"llama_cpp": mock_llama_module}):
+            backend = LlamaCppBackend(cache_enabled=False)
+            backend.load_model("user/some-model")
+
+        mock_from_pretrained.assert_called_once()
+        call_kwargs = mock_from_pretrained.call_args
+        assert call_kwargs.kwargs.get("flash_attn") is True, (
+            "Llama.from_pretrained() must receive flash_attn=True for HF repo IDs"
+        )
+        assert call_kwargs.kwargs.get("repo_id") == "user/some-model"
+
+    def test_load_model_resolved_gguf_passes_flash_attn(self):
+        """Llama.from_pretrained() should receive flash_attn=True for resolver-resolved models."""
+        mock_llama_cls = MagicMock()
+        mock_from_pretrained = MagicMock(return_value=MagicMock())
+        mock_llama_cls.from_pretrained = mock_from_pretrained
+
+        mock_resolved = MagicMock()
+        mock_resolved.is_gguf = True
+        mock_resolved.filename = "model-Q4_K_M.gguf"
+        mock_resolved.hf_repo = "test-org/test-model"
+
+        mock_llama_module = MagicMock(Llama=mock_llama_cls, LlamaCache=MagicMock())
+        with (
+            patch.dict("sys.modules", {"llama_cpp": mock_llama_module}),
+            patch("edgeml.serve._resolve_new", return_value=mock_resolved),
+        ):
+            backend = LlamaCppBackend(cache_enabled=False)
+            backend.load_model("short-name")
+
+        mock_from_pretrained.assert_called_once()
+        call_kwargs = mock_from_pretrained.call_args
+        assert call_kwargs.kwargs.get("flash_attn") is True, (
+            "Llama.from_pretrained() must receive flash_attn=True for resolver-resolved models"
         )
 
-    def test_load_model_gguf_source_contains_flash_attn(self):
-        """Verify the source code of load_model passes flash_attn=True."""
-        import inspect
+    def test_load_model_legacy_catalog_passes_flash_attn(self):
+        """Llama.from_pretrained() should receive flash_attn=True for legacy catalog models."""
+        mock_llama_cls = MagicMock()
+        mock_from_pretrained = MagicMock(return_value=MagicMock())
+        mock_llama_cls.from_pretrained = mock_from_pretrained
 
-        source = inspect.getsource(LlamaCppBackend.load_model)
-        assert "flash_attn=True" in source
+        mock_llama_module = MagicMock(Llama=mock_llama_cls, LlamaCache=MagicMock())
+        with (
+            patch.dict("sys.modules", {"llama_cpp": mock_llama_module}),
+            patch(
+                "edgeml.serve._resolve_new",
+                side_effect=__import__(
+                    "edgeml.models.resolver", fromlist=["ModelResolutionError"]
+                ).ModelResolutionError("not found"),
+            ),
+            patch(
+                "edgeml.serve._GGUF_MODELS", {"test-model": ("org/repo", "file.gguf")}
+            ),
+        ):
+            backend = LlamaCppBackend(cache_enabled=False)
+            backend.load_model("test-model")
 
-    def test_all_llama_calls_have_flash_attn(self):
-        """Every Llama() and Llama.from_pretrained() call should include flash_attn=True."""
-        import inspect
-
-        source = inspect.getsource(LlamaCppBackend.load_model)
-        # Count Llama constructor/from_pretrained calls (both direct and via from_pretrained)
-        # Each call block should have flash_attn=True
-        lines = source.split("\n")
-        in_call_block = False
-        call_blocks = []
-        current_block = []
-
-        for line in lines:
-            stripped = line.strip()
-            if "Llama(" in stripped or "Llama.from_pretrained(" in stripped:
-                in_call_block = True
-                current_block = [stripped]
-            elif in_call_block:
-                current_block.append(stripped)
-                if ")" in stripped and stripped.endswith(")"):
-                    call_blocks.append("\n".join(current_block))
-                    in_call_block = False
-
-        # There should be at least 3 call sites (local gguf, HF repo, resolver, legacy)
-        assert len(call_blocks) >= 3, f"Expected >=3 Llama call blocks, found {len(call_blocks)}"
-
-        for i, block in enumerate(call_blocks):
-            assert "flash_attn=True" in block, (
-                f"Llama call block {i + 1} missing flash_attn=True:\n{block}"
-            )
+        mock_from_pretrained.assert_called_once()
+        call_kwargs = mock_from_pretrained.call_args
+        assert call_kwargs.kwargs.get("flash_attn") is True, (
+            "Llama.from_pretrained() must receive flash_attn=True for legacy catalog models"
+        )
 
 
 # ---------------------------------------------------------------------------
