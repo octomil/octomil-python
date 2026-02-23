@@ -16,7 +16,7 @@
 class Octomil < Formula
   desc "Serve, deploy, and observe ML models on edge devices"
   homepage "https://octomil.com"
-  version "1.0.0"
+  version "2.0.3"
   license "MIT"
 
   on_macos do
