@@ -19,13 +19,8 @@ jobs:
         include:
           - os: macos-14
             platform: darwin-arm64
-            pyinstaller_args: ""
-          - os: macos-13
-            platform: darwin-amd64
-            pyinstaller_args: ""
           - os: ubuntu-latest
             platform: linux-amd64
-            pyinstaller_args: ""
 
     steps:
       - uses: actions/checkout@v4
@@ -47,7 +42,6 @@ jobs:
             --console \
             --noconfirm \
             --clean \
-            ${{ matrix.pyinstaller_args }} \
             octomil/cli.py
 
       - name: Create archive
@@ -80,21 +74,18 @@ jobs:
           TAG="${{ github.event.release.tag_name }}"
           VERSION="${TAG#v}"
           mkdir -p shas
-          for platform in darwin-arm64 darwin-amd64 linux-amd64; do
+          for platform in darwin-arm64 linux-amd64; do
             gh release download "$TAG" \
               --repo octomil/octomil-python \
               --pattern "octomil-${platform}.tar.gz.sha256" \
-              --dir shas || echo "MISSING" > "shas/octomil-${platform}.tar.gz.sha256"
+              --dir shas
           done
 
-          # Parse SHA256 values
           SHA_DARWIN_ARM64=$(awk '{print $1}' shas/octomil-darwin-arm64.tar.gz.sha256)
-          SHA_DARWIN_AMD64=$(awk '{print $1}' shas/octomil-darwin-amd64.tar.gz.sha256)
           SHA_LINUX_AMD64=$(awk '{print $1}' shas/octomil-linux-amd64.tar.gz.sha256)
 
           echo "VERSION=$VERSION" >> "$GITHUB_ENV"
           echo "SHA_DARWIN_ARM64=$SHA_DARWIN_ARM64" >> "$GITHUB_ENV"
-          echo "SHA_DARWIN_AMD64=$SHA_DARWIN_AMD64" >> "$GITHUB_ENV"
           echo "SHA_LINUX_AMD64=$SHA_LINUX_AMD64" >> "$GITHUB_ENV"
 
       - name: Checkout homebrew tap
@@ -105,24 +96,22 @@ jobs:
 
       - name: Update formula
         run: |
-          cat > Formula/octomil.rb << FORMULA
+          cat > Formula/octomil.rb << 'RUBY'
           # typed: false
           # frozen_string_literal: true
 
           class Octomil < Formula
             desc "On-device ML inference — serve models locally with one command"
             homepage "https://octomil.com"
+          RUBY
+
+          cat >> Formula/octomil.rb << RUBY
             version "$VERSION"
             license "MIT"
 
             on_macos do
-              if Hardware::CPU.arm?
-                url "https://github.com/octomil/octomil-python/releases/download/v#{version}/octomil-darwin-arm64.tar.gz"
-                sha256 "$SHA_DARWIN_ARM64"
-              else
-                url "https://github.com/octomil/octomil-python/releases/download/v#{version}/octomil-darwin-amd64.tar.gz"
-                sha256 "$SHA_DARWIN_AMD64"
-              end
+              url "https://github.com/octomil/octomil-python/releases/download/v#{version}/octomil-darwin-arm64.tar.gz"
+              sha256 "$SHA_DARWIN_ARM64"
             end
 
             on_linux do
@@ -139,7 +128,7 @@ jobs:
               assert_match "octomil", shell_output("#{bin}/octomil --version")
             end
           end
-          FORMULA
+          RUBY
 
       - name: Commit and push
         run: |
