@@ -1,4 +1,4 @@
-"""Tests for the extensible filter pipeline (edgeml.filters).
+"""Tests for the extensible filter pipeline (octomil.filters).
 
 Covers:
 - DeltaFilter abstract base class
@@ -14,7 +14,7 @@ Covers:
 import unittest
 from typing import List
 
-from edgeml.filters import (
+from octomil.filters import (
     DataKind,
     DeltaFilter,
     FilterRegistry,
@@ -619,7 +619,7 @@ class BackwardCompatibilityTests(unittest.TestCase):
         except ImportError:
             self.skipTest("torch not installed")
 
-        from edgeml.federated_client import apply_filters as compat_apply_filters
+        from octomil.federated_client import apply_filters as compat_apply_filters
 
         delta = {"w": torch.tensor([3.0, 4.0])}
         result = compat_apply_filters(delta, [{"type": "gradient_clip", "max_norm": 1.0}])
@@ -635,7 +635,7 @@ class BackwardCompatibilityTests(unittest.TestCase):
         except ImportError:
             self.skipTest("torch not installed")
 
-        from edgeml.federated_client import apply_filters as compat_apply_filters
+        from octomil.federated_client import apply_filters as compat_apply_filters
 
         delta = {"w": torch.tensor([3.0, 4.0])}
         result = compat_apply_filters(delta, [{"type": "gradient_clip", "max_norm": 1.0}])
@@ -649,7 +649,7 @@ class BackwardCompatibilityTests(unittest.TestCase):
         except ImportError:
             self.skipTest("torch not installed")
 
-        from edgeml.federated_client import apply_filters as compat_apply_filters
+        from octomil.federated_client import apply_filters as compat_apply_filters
 
         delta = {"w": torch.tensor([3.0, 4.0]), "metadata": "some_string"}
         result = compat_apply_filters(delta, [{"type": "gradient_clip", "max_norm": 1.0}])
@@ -662,7 +662,7 @@ class BackwardCompatibilityTests(unittest.TestCase):
         except ImportError:
             self.skipTest("torch not installed")
 
-        from edgeml.federated_client import apply_filters as compat_apply_filters
+        from octomil.federated_client import apply_filters as compat_apply_filters
 
         delta = {"w": torch.tensor([1.0, 2.0])}
         result = compat_apply_filters(delta, [])
@@ -676,10 +676,10 @@ class BackwardCompatibilityTests(unittest.TestCase):
 
 
 class ModuleExportTests(unittest.TestCase):
-    """Verify that filter types are accessible from edgeml package."""
+    """Verify that filter types are accessible from octomil package."""
 
     def test_filters_accessible_from_package(self):
-        from edgeml import DataKind, DeltaFilter, FilterRegistry, FilterResult
+        from octomil import DataKind, DeltaFilter, FilterRegistry, FilterResult
 
         self.assertIsNotNone(DataKind)
         self.assertIsNotNone(DeltaFilter)
@@ -687,13 +687,13 @@ class ModuleExportTests(unittest.TestCase):
         self.assertIsNotNone(FilterResult)
 
     def test_apply_filters_accessible_from_federated_client(self):
-        from edgeml.federated_client import apply_filters
+        from octomil.federated_client import apply_filters
 
         self.assertTrue(callable(apply_filters))
 
     def test_filter_registry_accessible_from_federated_client(self):
         """FilterRegistry re-exported from federated_client for backward compat."""
-        from edgeml.federated_client import FilterRegistry, FilterResult
+        from octomil.federated_client import FilterRegistry, FilterResult
 
         self.assertIsNotNone(FilterRegistry)
         self.assertIsNotNone(FilterResult)

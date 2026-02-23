@@ -9,8 +9,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from edgeml.engines.base import BenchmarkResult
-from edgeml.engines.ort_engine import (
+from octomil.engines.base import BenchmarkResult
+from octomil.engines.ort_engine import (
     ONNXRuntimeEngine,
     _ORTBackend,
     _get_execution_providers,
@@ -116,28 +116,28 @@ class TestONNXRuntimeEngine:
 
     def test_display_name_cpu(self) -> None:
         with patch(
-            "edgeml.engines.ort_engine._get_execution_providers",
+            "octomil.engines.ort_engine._get_execution_providers",
             return_value=["CPUExecutionProvider"],
         ):
             assert "CPU" in self.engine.display_name
 
     def test_display_name_cuda(self) -> None:
         with patch(
-            "edgeml.engines.ort_engine._get_execution_providers",
+            "octomil.engines.ort_engine._get_execution_providers",
             return_value=["CPUExecutionProvider", "CUDAExecutionProvider"],
         ):
             assert "CUDA" in self.engine.display_name
 
     def test_display_name_coreml(self) -> None:
         with patch(
-            "edgeml.engines.ort_engine._get_execution_providers",
+            "octomil.engines.ort_engine._get_execution_providers",
             return_value=["CPUExecutionProvider", "CoreMLExecutionProvider"],
         ):
             assert "CoreML" in self.engine.display_name
 
     def test_display_name_tensorrt(self) -> None:
         with patch(
-            "edgeml.engines.ort_engine._get_execution_providers",
+            "octomil.engines.ort_engine._get_execution_providers",
             return_value=[
                 "CPUExecutionProvider",
                 "CUDAExecutionProvider",
@@ -148,21 +148,21 @@ class TestONNXRuntimeEngine:
 
     def test_display_name_directml(self) -> None:
         with patch(
-            "edgeml.engines.ort_engine._get_execution_providers",
+            "octomil.engines.ort_engine._get_execution_providers",
             return_value=["CPUExecutionProvider", "DmlExecutionProvider"],
         ):
             assert "DirectML" in self.engine.display_name
 
     def test_display_name_openvino(self) -> None:
         with patch(
-            "edgeml.engines.ort_engine._get_execution_providers",
+            "octomil.engines.ort_engine._get_execution_providers",
             return_value=["CPUExecutionProvider", "OpenVINOExecutionProvider"],
         ):
             assert "OpenVINO" in self.engine.display_name
 
     def test_display_name_empty_providers(self) -> None:
         with patch(
-            "edgeml.engines.ort_engine._get_execution_providers",
+            "octomil.engines.ort_engine._get_execution_providers",
             return_value=[],
         ):
             assert "CPU" in self.engine.display_name
@@ -172,24 +172,24 @@ class TestONNXRuntimeEngine:
 
     def test_detect_with_onnxruntime(self) -> None:
         with patch(
-            "edgeml.engines.ort_engine._has_onnxruntime", return_value=True
+            "octomil.engines.ort_engine._has_onnxruntime", return_value=True
         ):
             assert self.engine.detect() is True
 
     def test_detect_without_onnxruntime(self) -> None:
         with patch(
-            "edgeml.engines.ort_engine._has_onnxruntime", return_value=False
+            "octomil.engines.ort_engine._has_onnxruntime", return_value=False
         ):
             assert self.engine.detect() is False
 
     def test_detect_info_with_providers(self) -> None:
         with (
             patch(
-                "edgeml.engines.ort_engine._get_execution_providers",
+                "octomil.engines.ort_engine._get_execution_providers",
                 return_value=["CPUExecutionProvider", "CUDAExecutionProvider"],
             ),
             patch(
-                "edgeml.engines.ort_engine._has_onnxruntime_genai",
+                "octomil.engines.ort_engine._has_onnxruntime_genai",
                 return_value=True,
             ),
         ):
@@ -201,11 +201,11 @@ class TestONNXRuntimeEngine:
     def test_detect_info_without_genai(self) -> None:
         with (
             patch(
-                "edgeml.engines.ort_engine._get_execution_providers",
+                "octomil.engines.ort_engine._get_execution_providers",
                 return_value=["CPUExecutionProvider"],
             ),
             patch(
-                "edgeml.engines.ort_engine._has_onnxruntime_genai",
+                "octomil.engines.ort_engine._has_onnxruntime_genai",
                 return_value=False,
             ),
         ):
@@ -215,7 +215,7 @@ class TestONNXRuntimeEngine:
 
     def test_detect_info_empty(self) -> None:
         with patch(
-            "edgeml.engines.ort_engine._get_execution_providers",
+            "octomil.engines.ort_engine._get_execution_providers",
             return_value=[],
         ):
             assert self.engine.detect_info() == ""
@@ -237,7 +237,7 @@ class TestONNXRuntimeEngine:
     def test_benchmark_genai_preferred(self) -> None:
         with (
             patch(
-                "edgeml.engines.ort_engine._has_onnxruntime_genai",
+                "octomil.engines.ort_engine._has_onnxruntime_genai",
                 return_value=True,
             ),
             patch.object(
@@ -258,11 +258,11 @@ class TestONNXRuntimeEngine:
     def test_benchmark_session_fallback(self) -> None:
         with (
             patch(
-                "edgeml.engines.ort_engine._has_onnxruntime_genai",
+                "octomil.engines.ort_engine._has_onnxruntime_genai",
                 return_value=False,
             ),
             patch(
-                "edgeml.engines.ort_engine._has_onnxruntime",
+                "octomil.engines.ort_engine._has_onnxruntime",
                 return_value=True,
             ),
             patch.object(
@@ -283,11 +283,11 @@ class TestONNXRuntimeEngine:
     def test_benchmark_unavailable(self) -> None:
         with (
             patch(
-                "edgeml.engines.ort_engine._has_onnxruntime_genai",
+                "octomil.engines.ort_engine._has_onnxruntime_genai",
                 return_value=False,
             ),
             patch(
-                "edgeml.engines.ort_engine._has_onnxruntime",
+                "octomil.engines.ort_engine._has_onnxruntime",
                 return_value=False,
             ),
         ):
@@ -298,7 +298,7 @@ class TestONNXRuntimeEngine:
     def test_benchmark_genai_error_returns_result(self) -> None:
         with (
             patch(
-                "edgeml.engines.ort_engine._has_onnxruntime_genai",
+                "octomil.engines.ort_engine._has_onnxruntime_genai",
                 return_value=True,
             ),
             patch.object(
@@ -381,7 +381,7 @@ class TestORTBackend:
 
         with (
             patch(
-                "edgeml.engines.ort_engine._has_onnxruntime_genai",
+                "octomil.engines.ort_engine._has_onnxruntime_genai",
                 return_value=True,
             ),
             patch.dict("sys.modules", {"onnxruntime_genai": mock_og}),
@@ -404,11 +404,11 @@ class TestORTBackend:
 
         with (
             patch(
-                "edgeml.engines.ort_engine._has_onnxruntime_genai",
+                "octomil.engines.ort_engine._has_onnxruntime_genai",
                 return_value=False,
             ),
             patch(
-                "edgeml.engines.ort_engine._has_onnxruntime",
+                "octomil.engines.ort_engine._has_onnxruntime",
                 return_value=True,
             ),
             patch.dict("sys.modules", {"onnxruntime": mock_ort}),
@@ -426,11 +426,11 @@ class TestORTBackend:
     def test_load_model_nothing_available(self) -> None:
         with (
             patch(
-                "edgeml.engines.ort_engine._has_onnxruntime_genai",
+                "octomil.engines.ort_engine._has_onnxruntime_genai",
                 return_value=False,
             ),
             patch(
-                "edgeml.engines.ort_engine._has_onnxruntime",
+                "octomil.engines.ort_engine._has_onnxruntime",
                 return_value=False,
             ),
             patch.object(
@@ -608,7 +608,7 @@ class TestORTBackend:
 
 class TestORTRegistry:
     def test_engine_registered(self) -> None:
-        from edgeml.engines.registry import EngineRegistry
+        from octomil.engines.registry import EngineRegistry
 
         registry = EngineRegistry()
         engine = ONNXRuntimeEngine()
@@ -616,14 +616,14 @@ class TestORTRegistry:
         assert registry.get_engine("onnxruntime") is engine
 
     def test_auto_register_includes_onnxruntime(self) -> None:
-        from edgeml.engines.registry import EngineRegistry, _auto_register
+        from octomil.engines.registry import EngineRegistry, _auto_register
 
         registry = EngineRegistry()
         _auto_register(registry)
         assert registry.get_engine("onnxruntime") is not None
 
     def test_global_registry_has_onnxruntime(self) -> None:
-        from edgeml.engines.registry import get_registry, reset_registry
+        from octomil.engines.registry import get_registry, reset_registry
 
         reset_registry()
         try:
@@ -635,7 +635,7 @@ class TestORTRegistry:
 
     def test_priority_ordering(self) -> None:
         """onnxruntime (30) should be after llama.cpp (20) and before echo (999)."""
-        from edgeml.engines.registry import EngineRegistry, _auto_register
+        from octomil.engines.registry import EngineRegistry, _auto_register
 
         registry = EngineRegistry()
         _auto_register(registry)
@@ -657,7 +657,7 @@ class TestORTRegistry:
 
 class TestORTCatalog:
     def test_ort_in_catalog_engines(self) -> None:
-        from edgeml.models.catalog import CATALOG
+        from octomil.models.catalog import CATALOG
 
         # Check that at least some models have onnxruntime
         ort_models = [
@@ -668,19 +668,19 @@ class TestORTCatalog:
         assert "llama-1b" in ort_models
 
     def test_variant_spec_has_ort_field(self) -> None:
-        from edgeml.models.catalog import VariantSpec
+        from octomil.models.catalog import VariantSpec
 
         spec = VariantSpec(ort="microsoft/model-onnx")
         assert spec.ort == "microsoft/model-onnx"
 
     def test_variant_spec_ort_default_none(self) -> None:
-        from edgeml.models.catalog import VariantSpec
+        from octomil.models.catalog import VariantSpec
 
         spec = VariantSpec()
         assert spec.ort is None
 
     def test_ort_catalog_set_populated(self) -> None:
-        from edgeml.engines.ort_engine import _ORT_CATALOG
+        from octomil.engines.ort_engine import _ORT_CATALOG
 
         assert len(_ORT_CATALOG) > 0
         assert "gemma-1b" in _ORT_CATALOG
@@ -693,19 +693,19 @@ class TestORTCatalog:
 
 class TestORTResolver:
     def test_engine_alias_ort(self) -> None:
-        from edgeml.models.resolver import _normalize_engine
+        from octomil.models.resolver import _normalize_engine
 
         assert _normalize_engine("ort") == "onnxruntime"
         assert _normalize_engine("onnx") == "onnxruntime"
         assert _normalize_engine("onnxruntime") == "onnxruntime"
 
     def test_engine_in_priority(self) -> None:
-        from edgeml.models.resolver import _ENGINE_PRIORITY
+        from octomil.models.resolver import _ENGINE_PRIORITY
 
         assert "onnxruntime" in _ENGINE_PRIORITY
 
     def test_resolve_with_onnxruntime_engine(self) -> None:
-        from edgeml.models.resolver import resolve
+        from octomil.models.resolver import resolve
 
         # gemma-1b has onnxruntime in its engines set and has source_repo
         result = resolve("gemma-1b", engine="onnxruntime")

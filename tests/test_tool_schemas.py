@@ -1,4 +1,4 @@
-"""Tests for edgeml.tool_schemas — coding agent tool-use presets."""
+"""Tests for octomil.tool_schemas — coding agent tool-use presets."""
 
 from __future__ import annotations
 
@@ -8,8 +8,8 @@ from unittest.mock import patch
 import pytest
 from httpx import ASGITransport, AsyncClient
 
-from edgeml.serve import EchoBackend, create_app
-from edgeml.tool_schemas import CODING_TOOL_SCHEMAS, get_tool_use_tools
+from octomil.serve import EchoBackend, create_app
+from octomil.tool_schemas import CODING_TOOL_SCHEMAS, get_tool_use_tools
 
 
 class TestCodingToolSchemas:
@@ -126,7 +126,7 @@ class TestGetToolUseTools:
 
 def _make_echo_app(tool_use: bool):
     """Create a FastAPI app with EchoBackend and lifespan triggered."""
-    with patch("edgeml.serve._detect_backend") as mock_detect:
+    with patch("octomil.serve._detect_backend") as mock_detect:
         echo = EchoBackend()
         echo.load_model("test-model")
         mock_detect.return_value = echo
@@ -184,7 +184,7 @@ async def test_tool_schemas_endpoint_disabled(no_tool_use_app):
 
 @pytest.mark.asyncio
 async def test_agent_context_header_accepted(tool_use_app):
-    """Requests with X-EdgeML-Agent-Context header should succeed normally."""
+    """Requests with X-Octomil-Agent-Context header should succeed normally."""
     transport = ASGITransport(app=tool_use_app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         resp = await client.post(
@@ -193,7 +193,7 @@ async def test_agent_context_header_accepted(tool_use_app):
                 "model": "test-model",
                 "messages": [{"role": "user", "content": "hello"}],
             },
-            headers={"X-EdgeML-Agent-Context": "aider/0.50.0"},
+            headers={"X-Octomil-Agent-Context": "aider/0.50.0"},
         )
     assert resp.status_code == 200
     data = resp.json()
@@ -202,7 +202,7 @@ async def test_agent_context_header_accepted(tool_use_app):
 
 @pytest.mark.asyncio
 async def test_agent_context_header_absent(tool_use_app):
-    """Requests without X-EdgeML-Agent-Context should also succeed."""
+    """Requests without X-Octomil-Agent-Context should also succeed."""
     transport = ASGITransport(app=tool_use_app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         resp = await client.post(

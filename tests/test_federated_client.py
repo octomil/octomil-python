@@ -2,8 +2,8 @@ import unittest
 import io
 from unittest.mock import patch
 
-from edgeml.api_client import EdgeMLClientError
-from edgeml.federated_client import FederatedClient, compute_state_dict_delta, apply_filters, _apply_fedprox_correction
+from octomil.api_client import OctomilClientError
+from octomil.federated_client import FederatedClient, compute_state_dict_delta, apply_filters, _apply_fedprox_correction
 
 
 class _StubApi:
@@ -101,7 +101,7 @@ class FederatedClientTests(unittest.TestCase):
                 return {}
 
         client.api = _BrokenApi()
-        with self.assertRaises(EdgeMLClientError) as ctx:
+        with self.assertRaises(OctomilClientError) as ctx:
             client.register()
         self.assertIn("Device registration failed", str(ctx.exception))
 
@@ -129,7 +129,7 @@ class FederatedClientTests(unittest.TestCase):
             def get(self, path, params=None):
                 self.calls.append(("get", path, params))
                 if "/models/" in path and path != "/models":
-                    raise EdgeMLClientError("Model not found")
+                    raise OctomilClientError("Model not found")
                 return {"models": [{"name": "my_model", "id": "model_456"}]}
 
         client = FederatedClient(auth_token_provider=lambda: "token123", org_id="org_1")
@@ -239,7 +239,7 @@ class FederatedClientTests(unittest.TestCase):
 
     def test_serialize_weights_invalid_type_raises(self):
         client = FederatedClient(auth_token_provider=lambda: "token123", org_id="org_1")
-        with self.assertRaises(EdgeMLClientError) as ctx:
+        with self.assertRaises(OctomilClientError) as ctx:
             client._serialize_weights("invalid_string_data")
         self.assertIn("must be bytes", str(ctx.exception))
 
@@ -317,7 +317,7 @@ class FederatedClientTests(unittest.TestCase):
         torch.testing.assert_close(delta["weight"], expected_weight_delta)
 
     def test_inference_property_returns_streaming_inference_client(self):
-        from edgeml.inference import StreamingInferenceClient
+        from octomil.inference import StreamingInferenceClient
 
         stub = _StubApi()
         client = FederatedClient(auth_token_provider=lambda: "token123", org_id="org_1")
@@ -336,7 +336,7 @@ class FederatedClientTests(unittest.TestCase):
         self.assertIs(inference1, inference2)
 
     def test_inference_property_uses_device_id_when_registered(self):
-        from edgeml.inference import StreamingInferenceClient
+        from octomil.inference import StreamingInferenceClient
 
         stub = _StubApi()
         client = FederatedClient(
@@ -353,7 +353,7 @@ class FederatedClientTests(unittest.TestCase):
         self.assertEqual(inference.device_id, "registered_device_id")
 
     def test_inference_property_uses_device_identifier_when_not_registered(self):
-        from edgeml.inference import StreamingInferenceClient
+        from octomil.inference import StreamingInferenceClient
 
         stub = _StubApi()
         client = FederatedClient(
@@ -375,7 +375,7 @@ class FederatedClientTests(unittest.TestCase):
         client = FederatedClient(auth_token_provider=lambda: "token123", org_id="org_1")
         client.api = stub
 
-        with self.assertRaises(EdgeMLClientError) as ctx:
+        with self.assertRaises(OctomilClientError) as ctx:
             client.train("model_456", data=b"some_weights")
         self.assertIn("Failed to resolve model version", str(ctx.exception))
 
@@ -437,7 +437,7 @@ class FederatedClientTests(unittest.TestCase):
         client = FederatedClient(auth_token_provider=lambda: "token123", org_id="org_1")
         client.api = stub
 
-        with self.assertRaises(EdgeMLClientError) as ctx:
+        with self.assertRaises(OctomilClientError) as ctx:
             client.pull_model("model_456")
         self.assertIn("Failed to resolve model version", str(ctx.exception))
 
@@ -584,16 +584,16 @@ class PrepareTrainingDataTests(unittest.TestCase):
         self.assertEqual(len(result_df), 3)
 
     def test_prepare_training_data_load_error(self):
-        """Mock load_data to raise DataLoadError, verify EdgeMLClientError is raised."""
-        from edgeml.data_loader import DataLoadError
+        """Mock load_data to raise DataLoadError, verify OctomilClientError is raised."""
+        from octomil.data_loader import DataLoadError
 
         client = self._make_client(architecture={})
 
         with patch(
-            "edgeml.federated_client.load_data",
+            "octomil.federated_client.load_data",
             side_effect=DataLoadError("file not found"),
         ):
-            with self.assertRaises(EdgeMLClientError) as ctx:
+            with self.assertRaises(OctomilClientError) as ctx:
                 client._prepare_training_data(
                     model="test_model",
                     data="nonexistent.csv",
@@ -616,7 +616,7 @@ class PrepareTrainingDataTests(unittest.TestCase):
             "beta": [3, 4],
         })
 
-        with self.assertRaises(EdgeMLClientError) as ctx:
+        with self.assertRaises(OctomilClientError) as ctx:
             client._prepare_training_data(
                 model="test_model",
                 data=df,
@@ -680,7 +680,7 @@ class PrepareTrainingDataTests(unittest.TestCase):
         })
 
         with patch(
-            "edgeml.federated_client.validate_target",
+            "octomil.federated_client.validate_target",
             return_value=df,
         ) as mock_validate:
             client._prepare_training_data(
@@ -730,7 +730,7 @@ class RoundManagementTests(unittest.TestCase):
             def get(self, path, params=None):
                 self.calls.append(("get", path, params))
                 if "/training/rounds" in path:
-                    raise EdgeMLClientError("server error")
+                    raise OctomilClientError("server error")
                 return super().get(path, params)
 
         client = FederatedClient(auth_token_provider=lambda: "token123", org_id="org_1")
@@ -882,7 +882,7 @@ class RoundManagementTests(unittest.TestCase):
         client.api = stub
         client.device_id = "device_123"
 
-        with self.assertRaises(EdgeMLClientError) as ctx:
+        with self.assertRaises(OctomilClientError) as ctx:
             client.participate_in_round("r1", lambda s: (s, 0, {}))
         self.assertIn("Failed to resolve model version", str(ctx.exception))
 

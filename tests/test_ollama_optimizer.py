@@ -1,17 +1,17 @@
-"""Tests for edgeml.model_optimizer — pure computation, no mocking needed."""
+"""Tests for octomil.model_optimizer — pure computation, no mocking needed."""
 
 from __future__ import annotations
 
 import pytest
 
-from edgeml.hardware._types import (
+from octomil.hardware._types import (
     CPUInfo,
     GPUDetectionResult,
     GPUInfo,
     GPUMemory,
     HardwareProfile,
 )
-from edgeml.model_optimizer import (
+from octomil.model_optimizer import (
     MemoryStrategy,
     ModelOptimizer,
     QuantOffloadResult,
@@ -348,14 +348,14 @@ class TestRecommendations:
         from unittest.mock import patch
 
         with patch(
-            "edgeml.model_optimizer.shutil.which", return_value="/usr/bin/edgeml"
+            "octomil.model_optimizer.shutil.which", return_value="/usr/bin/octomil"
         ):
             profile = _make_profile(vram_gb=24.0, ram_gb=32.0, available_ram_gb=24.0)
             opt = ModelOptimizer(profile)
         recs = opt.recommend()
 
         for rec in recs:
-            assert "edgeml serve" in rec.serve_command
+            assert "octomil serve" in rec.serve_command
             assert rec.model_size.lower() in rec.serve_command.lower()
 
 
@@ -444,8 +444,8 @@ class TestEnvVars:
 
 
 class TestServeCommand:
-    def test_edgeml_explicit_full_gpu(self):
-        """Explicit edgeml engine → 'edgeml serve tag'."""
+    def test_octomil_explicit_full_gpu(self):
+        """Explicit octomil engine → 'octomil serve tag'."""
         profile = _make_profile(vram_gb=24.0)
         opt = ModelOptimizer(profile)
         config = QuantOffloadResult(
@@ -456,11 +456,11 @@ class TestServeCommand:
             ram_gb=0.0,
             total_gb=5.0,
         )
-        cmd = opt.serve_command("phi-mini", config, engine="edgeml")
-        assert cmd == "edgeml serve phi-mini"
+        cmd = opt.serve_command("phi-mini", config, engine="octomil")
+        assert cmd == "octomil serve phi-mini"
 
-    def test_edgeml_cpu_only(self):
-        """CPU-only → 'edgeml serve tag --engine cpu'."""
+    def test_octomil_cpu_only(self):
+        """CPU-only → 'octomil serve tag --engine cpu'."""
         profile = _make_profile(vram_gb=0.0)
         opt = ModelOptimizer(profile)
         config = QuantOffloadResult(
@@ -471,16 +471,16 @@ class TestServeCommand:
             ram_gb=5.0,
             total_gb=5.0,
         )
-        cmd = opt.serve_command("phi-mini", config, engine="edgeml")
-        assert cmd == "edgeml serve phi-mini --engine cpu"
+        cmd = opt.serve_command("phi-mini", config, engine="octomil")
+        assert cmd == "octomil serve phi-mini --engine cpu"
 
-    def test_auto_detects_edgeml(self):
-        """Auto-detect picks edgeml when on PATH."""
+    def test_auto_detects_octomil(self):
+        """Auto-detect picks octomil when on PATH."""
         from unittest.mock import patch
 
         with patch(
-            "edgeml.model_optimizer.shutil.which",
-            side_effect=lambda x: "/usr/bin/edgeml" if x == "edgeml" else None,
+            "octomil.model_optimizer.shutil.which",
+            side_effect=lambda x: "/usr/bin/octomil" if x == "octomil" else None,
         ):
             profile = _make_profile(vram_gb=24.0)
             opt = ModelOptimizer(profile)
@@ -493,10 +493,10 @@ class TestServeCommand:
             total_gb=5.0,
         )
         cmd = opt.serve_command("phi-mini", config)
-        assert cmd == "edgeml serve phi-mini"
+        assert cmd == "octomil serve phi-mini"
 
     def test_auto_detects_ollama(self):
-        """Auto-detect picks ollama when edgeml not on PATH."""
+        """Auto-detect picks ollama when octomil not on PATH."""
         from unittest.mock import patch
 
         def _which(name: str) -> str | None:
@@ -504,7 +504,7 @@ class TestServeCommand:
                 return "/usr/bin/ollama"
             return None
 
-        with patch("edgeml.model_optimizer.shutil.which", side_effect=_which):
+        with patch("octomil.model_optimizer.shutil.which", side_effect=_which):
             profile = _make_profile(vram_gb=24.0)
             opt = ModelOptimizer(profile)
         config = QuantOffloadResult(
@@ -527,7 +527,7 @@ class TestServeCommand:
                 return "/usr/bin/llama-server"
             return None
 
-        with patch("edgeml.model_optimizer.shutil.which", side_effect=_which):
+        with patch("octomil.model_optimizer.shutil.which", side_effect=_which):
             profile = _make_profile(vram_gb=24.0)
             opt = ModelOptimizer(profile)
         config = QuantOffloadResult(
@@ -782,12 +782,12 @@ class TestResolveModelSize:
 
 class TestHasExplicitQuant:
     def test_no_colon_no_quant(self) -> None:
-        from edgeml.cli import _has_explicit_quant
+        from octomil.cli import _has_explicit_quant
 
         assert _has_explicit_quant("llama3.1") is False
 
     def test_size_variant_not_quant(self) -> None:
-        from edgeml.cli import _has_explicit_quant
+        from octomil.cli import _has_explicit_quant
 
         assert _has_explicit_quant("llama3.1:8b") is False
 
@@ -802,6 +802,6 @@ class TestHasExplicitQuant:
         ],
     )
     def test_explicit_quant_detected(self, tag: str) -> None:
-        from edgeml.cli import _has_explicit_quant
+        from octomil.cli import _has_explicit_quant
 
         assert _has_explicit_quant(tag) is True

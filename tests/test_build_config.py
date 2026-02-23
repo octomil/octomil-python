@@ -21,24 +21,24 @@ ROOT = Path(__file__).resolve().parent.parent
 
 
 class TestPyInstallerSpec:
-    """Validate edgeml.spec contents."""
+    """Validate octomil.spec contents."""
 
     @pytest.fixture()
     def spec_content(self) -> str:
-        return (ROOT / "edgeml.spec").read_text()
+        return (ROOT / "octomil.spec").read_text()
 
     def test_spec_file_exists(self) -> None:
-        assert (ROOT / "edgeml.spec").is_file()
+        assert (ROOT / "octomil.spec").is_file()
 
     def test_spec_is_valid_python(self, spec_content: str) -> None:
         """The spec file must be parseable Python."""
         ast.parse(spec_content)
 
     def test_spec_entry_point(self, spec_content: str) -> None:
-        assert "edgeml/cli.py" in spec_content
+        assert "octomil/cli.py" in spec_content
 
     def test_spec_output_name(self, spec_content: str) -> None:
-        assert 'name="edgeml"' in spec_content
+        assert 'name="octomil"' in spec_content
 
     def test_spec_console_mode(self, spec_content: str) -> None:
         assert "console=True" in spec_content
@@ -52,19 +52,19 @@ class TestPyInstallerSpec:
     def test_spec_hidden_imports_engines(self, spec_content: str) -> None:
         """All engine modules must be listed as hidden imports."""
         expected_engines = [
-            "edgeml.engines.mlx_engine",
-            "edgeml.engines.llamacpp_engine",
-            "edgeml.engines.mnn_engine",
-            "edgeml.engines.executorch_engine",
-            "edgeml.engines.ort_engine",
-            "edgeml.engines.whisper_engine",
-            "edgeml.engines.echo_engine",
+            "octomil.engines.mlx_engine",
+            "octomil.engines.llamacpp_engine",
+            "octomil.engines.mnn_engine",
+            "octomil.engines.executorch_engine",
+            "octomil.engines.ort_engine",
+            "octomil.engines.whisper_engine",
+            "octomil.engines.echo_engine",
         ]
         for engine in expected_engines:
             assert engine in spec_content, f"Missing hidden import: {engine}"
 
     def test_spec_hidden_imports_catalog(self, spec_content: str) -> None:
-        assert "edgeml.models.catalog" in spec_content
+        assert "octomil.models.catalog" in spec_content
 
     def test_spec_excludes_heavy_deps(self, spec_content: str) -> None:
         """Heavy optional deps should be excluded to keep binary small."""
@@ -107,7 +107,7 @@ class TestBuildScript:
 
     def test_build_script_runs_pyinstaller(self, script_content: str) -> None:
         assert "pyinstaller" in script_content
-        assert "edgeml.spec" in script_content
+        assert "octomil.spec" in script_content
 
     def test_build_script_creates_archive(self, script_content: str) -> None:
         assert "tar -czf" in script_content
@@ -159,17 +159,17 @@ class TestInstallScript:
 
     def test_install_script_uses_github_releases(self, script_content: str) -> None:
         assert "github.com" in script_content
-        assert "edgeml-ai/edgeml-python" in script_content
+        assert "octomil/octomil-python" in script_content
 
-    def test_install_script_supports_edgeml_version_env(
+    def test_install_script_supports_octomil_version_env(
         self, script_content: str
     ) -> None:
-        assert "EDGEML_VERSION" in script_content
+        assert "OCTOMIL_VERSION" in script_content
 
-    def test_install_script_supports_edgeml_install_env(
+    def test_install_script_supports_octomil_install_env(
         self, script_content: str
     ) -> None:
-        assert "EDGEML_INSTALL" in script_content
+        assert "OCTOMIL_INSTALL" in script_content
 
     def test_install_script_fallback_install_dir(self, script_content: str) -> None:
         assert "/usr/local/bin" in script_content
@@ -189,23 +189,23 @@ class TestInstallScript:
 
 
 class TestHomebrewFormula:
-    """Validate homebrew/edgeml.rb."""
+    """Validate homebrew/octomil.rb."""
 
     @pytest.fixture()
     def formula_content(self) -> str:
-        return (ROOT / "homebrew" / "edgeml.rb").read_text()
+        return (ROOT / "homebrew" / "octomil.rb").read_text()
 
     def test_formula_exists(self) -> None:
-        assert (ROOT / "homebrew" / "edgeml.rb").is_file()
+        assert (ROOT / "homebrew" / "octomil.rb").is_file()
 
     def test_formula_class_name(self, formula_content: str) -> None:
-        assert "class Edgeml < Formula" in formula_content
+        assert "class Octomil < Formula" in formula_content
 
     def test_formula_has_desc(self, formula_content: str) -> None:
         assert 'desc "' in formula_content
 
     def test_formula_has_homepage(self, formula_content: str) -> None:
-        assert 'homepage "https://edgeml.io"' in formula_content
+        assert 'homepage "https://octomil.com"' in formula_content
 
     def test_formula_has_license(self, formula_content: str) -> None:
         assert 'license "MIT"' in formula_content
@@ -219,14 +219,14 @@ class TestHomebrewFormula:
         assert "on_linux" in formula_content
 
     def test_formula_install_block(self, formula_content: str) -> None:
-        assert 'bin.install "edgeml"' in formula_content
+        assert 'bin.install "octomil"' in formula_content
 
     def test_formula_test_block(self, formula_content: str) -> None:
         assert "assert_match" in formula_content
         assert "--version" in formula_content
 
     def test_formula_uses_github_releases(self, formula_content: str) -> None:
-        assert "github.com/edgeml-ai/edgeml-python/releases" in formula_content
+        assert "github.com/octomil/octomil-python/releases" in formula_content
 
 
 # ---------------------------------------------------------------------------
@@ -258,7 +258,7 @@ class TestReleaseWorkflow:
         assert "pyinstaller" in workflow_content.lower()
 
     def test_workflow_runs_pyinstaller(self, workflow_content: str) -> None:
-        assert "pyinstaller edgeml.spec" in workflow_content
+        assert "pyinstaller octomil.spec" in workflow_content
 
     def test_workflow_verifies_binary(self, workflow_content: str) -> None:
         assert "--version" in workflow_content
@@ -291,28 +291,28 @@ class TestConsistency:
     """Verify files are consistent with each other and the project."""
 
     def test_spec_entry_point_matches_setup_py(self) -> None:
-        """edgeml.spec should use the same entry point as setup.py."""
+        """octomil.spec should use the same entry point as setup.py."""
         setup_content = (ROOT / "setup.py").read_text()
-        assert "edgeml.cli:main" in setup_content
-        spec_content = (ROOT / "edgeml.spec").read_text()
-        assert "edgeml/cli.py" in spec_content
+        assert "octomil.cli:main" in setup_content
+        spec_content = (ROOT / "octomil.spec").read_text()
+        assert "octomil/cli.py" in spec_content
 
     def test_all_engines_in_spec(self) -> None:
         """Every engine in the engines directory should be a hidden import."""
-        spec_content = (ROOT / "edgeml.spec").read_text()
-        engines_dir = ROOT / "edgeml" / "engines"
+        spec_content = (ROOT / "octomil.spec").read_text()
+        engines_dir = ROOT / "octomil" / "engines"
         for py_file in engines_dir.glob("*.py"):
             if py_file.name.startswith("_") or py_file.name == "base.py":
                 continue
-            module = f"edgeml.engines.{py_file.stem}"
+            module = f"octomil.engines.{py_file.stem}"
             assert module in spec_content, f"Engine {module} not in hidden imports"
 
     def test_github_repo_consistent(self) -> None:
         """All files should reference the same GitHub repo."""
-        repo = "edgeml-ai/edgeml-python"
+        repo = "octomil/octomil-python"
         for path in [
             ROOT / "scripts" / "install.sh",
-            ROOT / "homebrew" / "edgeml.rb",
+            ROOT / "homebrew" / "octomil.rb",
         ]:
             content = path.read_text()
             assert repo in content, f"{path.name} missing repo reference"
@@ -320,7 +320,7 @@ class TestConsistency:
     def test_version_in_formula_matches_setup(self) -> None:
         """The formula version should match setup.py version."""
         setup_content = (ROOT / "setup.py").read_text()
-        formula_content = (ROOT / "homebrew" / "edgeml.rb").read_text()
+        formula_content = (ROOT / "homebrew" / "octomil.rb").read_text()
         # Both should have version 1.0.0
         assert 'version="1.0.0"' in setup_content
         assert 'version "1.0.0"' in formula_content

@@ -1,4 +1,4 @@
-"""Tests for edgeml.telemetry — TelemetryReporter and edgeml.init()."""
+"""Tests for octomil.telemetry — TelemetryReporter and octomil.init()."""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from httpx import ASGITransport, AsyncClient
 
-from edgeml.telemetry import TelemetryReporter, _generate_device_id
+from octomil.telemetry import TelemetryReporter, _generate_device_id
 
 
 # ---------------------------------------------------------------------------
@@ -266,30 +266,30 @@ class TestTelemetryBestEffort:
 
 
 # ---------------------------------------------------------------------------
-# edgeml.init() — env var fallback and validation
+# octomil.init() — env var fallback and validation
 # ---------------------------------------------------------------------------
 
 
-class TestEdgemlInit:
+class TestOctomilInit:
     def test_init_raises_without_api_key(self):
         """init() should raise ValueError when no API key is provided."""
-        import edgeml
+        import octomil
 
         with patch.dict(os.environ, {}, clear=True):
             # Clear any existing env vars
-            for key in ("EDGEML_API_KEY", "EDGEML_ORG_ID", "EDGEML_API_BASE"):
+            for key in ("OCTOMIL_API_KEY", "OCTOMIL_ORG_ID", "OCTOMIL_API_BASE"):
                 os.environ.pop(key, None)
             with pytest.raises(ValueError, match="API key required"):
-                edgeml.init()
+                octomil.init()
 
     def test_init_uses_env_vars(self):
         """init() should read from env vars when args are not passed."""
-        import edgeml
+        import octomil
 
         env = {
-            "EDGEML_API_KEY": "test-key-123",
-            "EDGEML_ORG_ID": "my-org",
-            "EDGEML_API_BASE": "https://custom.api.com/api/v1",
+            "OCTOMIL_API_KEY": "test-key-123",
+            "OCTOMIL_ORG_ID": "my-org",
+            "OCTOMIL_API_BASE": "https://custom.api.com/api/v1",
         }
         mock_response = MagicMock()
         mock_response.status_code = 200
@@ -304,21 +304,21 @@ class TestEdgemlInit:
                 mock_client_instance.get.return_value = mock_response
                 MockClient.return_value = mock_client_instance
 
-                edgeml.init()
+                octomil.init()
 
-                assert edgeml._config["api_key"] == "test-key-123"
-                assert edgeml._config["org_id"] == "my-org"
-                assert edgeml._config["api_base"] == "https://custom.api.com/api/v1"
-                assert edgeml._reporter is not None
+                assert octomil._config["api_key"] == "test-key-123"
+                assert octomil._config["org_id"] == "my-org"
+                assert octomil._config["api_base"] == "https://custom.api.com/api/v1"
+                assert octomil._reporter is not None
 
                 # Cleanup
-                edgeml._reporter.close()
-                edgeml._reporter = None
-                edgeml._config = {}
+                octomil._reporter.close()
+                octomil._reporter = None
+                octomil._config = {}
 
     def test_init_with_explicit_args(self):
         """init() should prefer explicit args over env vars."""
-        import edgeml
+        import octomil
         import httpx
 
         mock_response = MagicMock()
@@ -333,24 +333,24 @@ class TestEdgemlInit:
             mock_client_instance.get.return_value = mock_response
             MockClient.return_value = mock_client_instance
 
-            edgeml.init(
+            octomil.init(
                 api_key="explicit-key",
                 org_id="explicit-org",
                 api_base="https://explicit.api.com/api/v1",
             )
 
-            assert edgeml._config["api_key"] == "explicit-key"
-            assert edgeml._config["org_id"] == "explicit-org"
-            assert edgeml._reporter is not None
+            assert octomil._config["api_key"] == "explicit-key"
+            assert octomil._config["org_id"] == "explicit-org"
+            assert octomil._reporter is not None
 
             # Cleanup
-            edgeml._reporter.close()
-            edgeml._reporter = None
-            edgeml._config = {}
+            octomil._reporter.close()
+            octomil._reporter = None
+            octomil._config = {}
 
     def test_init_invalid_key_raises(self):
         """init() should raise ValueError on 401/403 from the health check."""
-        import edgeml
+        import octomil
         import httpx
 
         mock_response = MagicMock()
@@ -365,12 +365,12 @@ class TestEdgemlInit:
             mock_client_instance.get.return_value = mock_response
             MockClient.return_value = mock_client_instance
 
-            with pytest.raises(ValueError, match="Invalid EdgeML API key"):
-                edgeml.init(api_key="bad-key")
+            with pytest.raises(ValueError, match="Invalid Octomil API key"):
+                octomil.init(api_key="bad-key")
 
     def test_init_unreachable_api_still_creates_reporter(self):
         """If the API is unreachable, init() should warn but still create a reporter."""
-        import edgeml
+        import octomil
         import httpx
 
         with patch("httpx.Client") as MockClient:
@@ -382,29 +382,29 @@ class TestEdgemlInit:
             mock_client_instance.get.side_effect = httpx.ConnectError("unreachable")
             MockClient.return_value = mock_client_instance
 
-            edgeml.init(api_key="some-key")
-            assert edgeml._reporter is not None
+            octomil.init(api_key="some-key")
+            assert octomil._reporter is not None
 
             # Cleanup
-            edgeml._reporter.close()
-            edgeml._reporter = None
-            edgeml._config = {}
+            octomil._reporter.close()
+            octomil._reporter = None
+            octomil._config = {}
 
 
 class TestGetReporter:
     def test_returns_none_before_init(self):
-        import edgeml
+        import octomil
 
         # Save and reset state
-        saved_reporter = edgeml._reporter
-        edgeml._reporter = None
+        saved_reporter = octomil._reporter
+        octomil._reporter = None
         try:
-            assert edgeml.get_reporter() is None
+            assert octomil.get_reporter() is None
         finally:
-            edgeml._reporter = saved_reporter
+            octomil._reporter = saved_reporter
 
     def test_returns_reporter_after_init(self):
-        import edgeml
+        import octomil
         import httpx
 
         mock_response = MagicMock()
@@ -419,15 +419,15 @@ class TestGetReporter:
             mock_client_instance.get.return_value = mock_response
             MockClient.return_value = mock_client_instance
 
-            edgeml.init(api_key="test-key")
-            reporter = edgeml.get_reporter()
+            octomil.init(api_key="test-key")
+            reporter = octomil.get_reporter()
             assert reporter is not None
             assert isinstance(reporter, TelemetryReporter)
 
             # Cleanup
             reporter.close()
-            edgeml._reporter = None
-            edgeml._config = {}
+            octomil._reporter = None
+            octomil._config = {}
 
 
 # ---------------------------------------------------------------------------
@@ -438,9 +438,9 @@ class TestGetReporter:
 @pytest.fixture
 def echo_app_with_telemetry():
     """Create a FastAPI app with EchoBackend and telemetry enabled."""
-    from edgeml.serve import EchoBackend, create_app
+    from octomil.serve import EchoBackend, create_app
 
-    with patch("edgeml.serve._detect_backend") as mock_detect:
+    with patch("octomil.serve._detect_backend") as mock_detect:
         echo = EchoBackend()
         echo.load_model("test-model")
         mock_detect.return_value = echo
@@ -460,9 +460,9 @@ def echo_app_with_telemetry():
 @pytest.fixture
 def echo_app_without_telemetry():
     """Create a FastAPI app with EchoBackend and no telemetry."""
-    from edgeml.serve import EchoBackend, create_app
+    from octomil.serve import EchoBackend, create_app
 
-    with patch("edgeml.serve._detect_backend") as mock_detect:
+    with patch("octomil.serve._detect_backend") as mock_detect:
         echo = EchoBackend()
         echo.load_model("test-model")
         mock_detect.return_value = echo

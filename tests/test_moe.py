@@ -17,10 +17,10 @@ from unittest.mock import patch
 
 import pytest
 
-# Ensure the edgeml package is importable from the repo root.
+# Ensure the octomil package is importable from the repo root.
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from edgeml.models.catalog import (
+from octomil.models.catalog import (
     CATALOG,
     MODEL_ALIASES,
     MoEMetadata,
@@ -31,8 +31,8 @@ from edgeml.models.catalog import (
     list_models,
     supports_engine,
 )
-from edgeml.models.resolver import ResolvedModel, resolve
-from edgeml.telemetry import TelemetryReporter, _compute_load_balance
+from octomil.models.resolver import ResolvedModel, resolve
+from octomil.telemetry import TelemetryReporter, _compute_load_balance
 
 
 # =====================================================================
@@ -516,7 +516,7 @@ class TestMoEConfig:
     """Test MoE configuration dataclass."""
 
     def test_default_config(self) -> None:
-        from edgeml.serve import MoEConfig
+        from octomil.serve import MoEConfig
 
         cfg = MoEConfig()
         assert cfg.enabled is True
@@ -525,7 +525,7 @@ class TestMoEConfig:
         assert cfg.offload_inactive is False
 
     def test_custom_config(self) -> None:
-        from edgeml.serve import MoEConfig
+        from octomil.serve import MoEConfig
 
         cfg = MoEConfig(
             enabled=True,
@@ -538,7 +538,7 @@ class TestMoEConfig:
         assert cfg.offload_inactive is True
 
     def test_disabled_config(self) -> None:
-        from edgeml.serve import MoEConfig
+        from octomil.serve import MoEConfig
 
         cfg = MoEConfig(enabled=False)
         assert cfg.enabled is False
@@ -548,7 +548,7 @@ class TestServerStateMoE:
     """Test MoE fields on ServerState."""
 
     def test_server_state_defaults(self) -> None:
-        from edgeml.serve import MoEConfig, ServerState
+        from octomil.serve import MoEConfig, ServerState
 
         state = ServerState()
         assert state.is_moe_model is False
@@ -557,7 +557,7 @@ class TestServerStateMoE:
         assert state.moe_config.enabled is True
 
     def test_server_state_with_moe(self) -> None:
-        from edgeml.serve import MoEConfig, ServerState
+        from octomil.serve import MoEConfig, ServerState
 
         meta = MoEMetadata(8, 2, "7B", "46.7B", "12.9B")
         state = ServerState(
@@ -579,25 +579,25 @@ class TestLlamaCppMoEDetection:
     """Test MoE model detection in LlamaCppEngine."""
 
     def test_is_moe_model_mixtral(self) -> None:
-        from edgeml.engines.llamacpp_engine import LlamaCppEngine
+        from octomil.engines.llamacpp_engine import LlamaCppEngine
 
         engine = LlamaCppEngine()
         assert engine.is_moe_model("mixtral-8x7b") is True
 
     def test_is_moe_model_dbrx(self) -> None:
-        from edgeml.engines.llamacpp_engine import LlamaCppEngine
+        from octomil.engines.llamacpp_engine import LlamaCppEngine
 
         engine = LlamaCppEngine()
         assert engine.is_moe_model("dbrx") is True
 
     def test_is_moe_model_dense(self) -> None:
-        from edgeml.engines.llamacpp_engine import LlamaCppEngine
+        from octomil.engines.llamacpp_engine import LlamaCppEngine
 
         engine = LlamaCppEngine()
         assert engine.is_moe_model("gemma-1b") is False
 
     def test_is_moe_model_unknown(self) -> None:
-        from edgeml.engines.llamacpp_engine import LlamaCppEngine
+        from octomil.engines.llamacpp_engine import LlamaCppEngine
 
         engine = LlamaCppEngine()
         assert engine.is_moe_model("not-a-model") is False
@@ -607,19 +607,19 @@ class TestMLXMoEDetection:
     """Test MoE model detection in MLXEngine."""
 
     def test_is_moe_model_mixtral(self) -> None:
-        from edgeml.engines.mlx_engine import MLXEngine
+        from octomil.engines.mlx_engine import MLXEngine
 
         engine = MLXEngine()
         assert engine.is_moe_model("mixtral-8x7b") is True
 
     def test_is_moe_model_dbrx(self) -> None:
-        from edgeml.engines.mlx_engine import MLXEngine
+        from octomil.engines.mlx_engine import MLXEngine
 
         engine = MLXEngine()
         assert engine.is_moe_model("dbrx") is True
 
     def test_is_moe_model_dense(self) -> None:
-        from edgeml.engines.mlx_engine import MLXEngine
+        from octomil.engines.mlx_engine import MLXEngine
 
         engine = MLXEngine()
         assert engine.is_moe_model("llama-8b") is False
@@ -701,29 +701,29 @@ class TestMoEEngineSupport:
 
 
 class TestTopLevelExports:
-    """Verify MoE utilities are exported from edgeml package."""
+    """Verify MoE utilities are exported from octomil package."""
 
     def test_import_moe_metadata(self) -> None:
-        from edgeml import MoEMetadata
+        from octomil import MoEMetadata
 
         assert MoEMetadata is not None
 
     def test_import_is_moe_model(self) -> None:
-        from edgeml import is_moe_model
+        from octomil import is_moe_model
 
         assert callable(is_moe_model)
 
     def test_import_list_moe_models(self) -> None:
-        from edgeml import list_moe_models
+        from octomil import list_moe_models
 
         assert callable(list_moe_models)
 
     def test_import_get_moe_metadata(self) -> None:
-        from edgeml import get_moe_metadata
+        from octomil import get_moe_metadata
 
         assert callable(get_moe_metadata)
 
     def test_import_moe_config(self) -> None:
-        from edgeml.serve import MoEConfig
+        from octomil.serve import MoEConfig
 
         assert MoEConfig is not None

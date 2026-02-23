@@ -1,4 +1,4 @@
-"""Tests for edgeml.hardware._metal — Apple Silicon Metal GPU detection."""
+"""Tests for octomil.hardware._metal — Apple Silicon Metal GPU detection."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from edgeml.hardware._metal import MetalBackend, _M_SERIES_SKUS
+from octomil.hardware._metal import MetalBackend, _M_SERIES_SKUS
 
 
 def _completed(stdout: str = "", returncode: int = 0) -> MagicMock:
@@ -29,22 +29,22 @@ def backend() -> MetalBackend:
 class TestCheckAvailability:
     def test_available_on_darwin_arm64(self, backend: MetalBackend) -> None:
         with (
-            patch("edgeml.hardware._metal.sys") as mock_sys,
-            patch("edgeml.hardware._metal.platform") as mock_platform,
+            patch("octomil.hardware._metal.sys") as mock_sys,
+            patch("octomil.hardware._metal.platform") as mock_platform,
         ):
             mock_sys.platform = "darwin"
             mock_platform.machine.return_value = "arm64"
             assert backend.check_availability() is True
 
     def test_not_available_on_linux(self, backend: MetalBackend) -> None:
-        with patch("edgeml.hardware._metal.sys") as mock_sys:
+        with patch("octomil.hardware._metal.sys") as mock_sys:
             mock_sys.platform = "linux"
             assert backend.check_availability() is False
 
     def test_not_available_on_darwin_x86(self, backend: MetalBackend) -> None:
         with (
-            patch("edgeml.hardware._metal.sys") as mock_sys,
-            patch("edgeml.hardware._metal.platform") as mock_platform,
+            patch("octomil.hardware._metal.sys") as mock_sys,
+            patch("octomil.hardware._metal.platform") as mock_platform,
         ):
             mock_sys.platform = "darwin"
             mock_platform.machine.return_value = "x86_64"
@@ -58,25 +58,25 @@ class TestCheckAvailability:
 
 class TestGetChipName:
     def test_m4_pro_from_sysctl(self, backend: MetalBackend) -> None:
-        with patch("edgeml.hardware._metal.subprocess.run") as mock_run:
+        with patch("octomil.hardware._metal.subprocess.run") as mock_run:
             mock_run.return_value = _completed("Apple M4 Pro\n")
             diag: list[str] = []
             assert backend._get_chip_name(diag) == "M4 Pro"
 
     def test_m1_from_sysctl(self, backend: MetalBackend) -> None:
-        with patch("edgeml.hardware._metal.subprocess.run") as mock_run:
+        with patch("octomil.hardware._metal.subprocess.run") as mock_run:
             mock_run.return_value = _completed("Apple M1\n")
             diag: list[str] = []
             assert backend._get_chip_name(diag) == "M1"
 
     def test_m3_max_from_sysctl(self, backend: MetalBackend) -> None:
-        with patch("edgeml.hardware._metal.subprocess.run") as mock_run:
+        with patch("octomil.hardware._metal.subprocess.run") as mock_run:
             mock_run.return_value = _completed("Apple M3 Max\n")
             diag: list[str] = []
             assert backend._get_chip_name(diag) == "M3 Max"
 
     def test_fallback_to_system_profiler(self, backend: MetalBackend) -> None:
-        with patch("edgeml.hardware._metal.subprocess.run") as mock_run:
+        with patch("octomil.hardware._metal.subprocess.run") as mock_run:
             # sysctl fails, system_profiler succeeds
             mock_run.side_effect = [
                 _completed("", returncode=1),  # sysctl fails
@@ -86,14 +86,14 @@ class TestGetChipName:
             assert backend._get_chip_name(diag) == "M2 Ultra"
 
     def test_returns_none_when_all_fail(self, backend: MetalBackend) -> None:
-        with patch("edgeml.hardware._metal.subprocess.run") as mock_run:
+        with patch("octomil.hardware._metal.subprocess.run") as mock_run:
             mock_run.side_effect = FileNotFoundError
             diag: list[str] = []
             assert backend._get_chip_name(diag) is None
             assert len(diag) >= 1
 
     def test_non_m_series_brand(self, backend: MetalBackend) -> None:
-        with patch("edgeml.hardware._metal.subprocess.run") as mock_run:
+        with patch("octomil.hardware._metal.subprocess.run") as mock_run:
             mock_run.return_value = _completed("Apple Something New\n")
             diag: list[str] = []
             result = backend._get_chip_name(diag)
@@ -109,14 +109,14 @@ class TestGetTotalMemory:
     def test_memory_from_sysctl(self, backend: MetalBackend) -> None:
         # 16 GB in bytes
         mem_bytes = str(16 * 1024**3)
-        with patch("edgeml.hardware._metal.subprocess.run") as mock_run:
+        with patch("octomil.hardware._metal.subprocess.run") as mock_run:
             mock_run.return_value = _completed(f"{mem_bytes}\n")
             diag: list[str] = []
             result = backend._get_total_memory(diag)
             assert abs(result - 16.0) < 0.01
 
     def test_fallback_to_psutil(self, backend: MetalBackend) -> None:
-        with patch("edgeml.hardware._metal.subprocess.run") as mock_run:
+        with patch("octomil.hardware._metal.subprocess.run") as mock_run:
             mock_run.return_value = _completed("", returncode=1)
             mock_psutil = MagicMock()
             mock_psutil.virtual_memory.return_value.total = 32 * 1024**3
@@ -126,7 +126,7 @@ class TestGetTotalMemory:
                 assert abs(result - 32.0) < 0.01
 
     def test_returns_zero_when_all_fail(self, backend: MetalBackend) -> None:
-        with patch("edgeml.hardware._metal.subprocess.run") as mock_run:
+        with patch("octomil.hardware._metal.subprocess.run") as mock_run:
             mock_run.side_effect = FileNotFoundError
             with patch.dict("sys.modules", {"psutil": None}):
                 diag: list[str] = []
@@ -167,7 +167,7 @@ class TestMatchSku:
 
 class TestDetect:
     def test_m4_pro_16gb(self, backend: MetalBackend) -> None:
-        with patch("edgeml.hardware._metal.subprocess.run") as mock_run:
+        with patch("octomil.hardware._metal.subprocess.run") as mock_run:
             mem_bytes = str(16 * 1024**3)
             mock_run.side_effect = [
                 _completed("Apple M4 Pro\n"),  # chip name
@@ -183,13 +183,13 @@ class TestDetect:
             assert result.gpus[0].capabilities["unified_memory"] is True
 
     def test_returns_none_when_chip_unknown(self, backend: MetalBackend) -> None:
-        with patch("edgeml.hardware._metal.subprocess.run") as mock_run:
+        with patch("octomil.hardware._metal.subprocess.run") as mock_run:
             mock_run.side_effect = FileNotFoundError
             result = backend.detect()
             assert result is None
 
     def test_returns_none_when_memory_zero(self, backend: MetalBackend) -> None:
-        with patch("edgeml.hardware._metal.subprocess.run") as mock_run:
+        with patch("octomil.hardware._metal.subprocess.run") as mock_run:
             mock_run.side_effect = [
                 _completed("Apple M4\n"),  # chip name
                 _completed("0\n"),  # memory = 0
@@ -199,7 +199,7 @@ class TestDetect:
 
     def test_unknown_chip_conservative_estimates(self, backend: MetalBackend) -> None:
         mem_bytes = str(32 * 1024**3)
-        with patch("edgeml.hardware._metal.subprocess.run") as mock_run:
+        with patch("octomil.hardware._metal.subprocess.run") as mock_run:
             mock_run.side_effect = [
                 _completed("Apple Something Future\n"),
                 _completed(f"{mem_bytes}\n"),
@@ -218,13 +218,13 @@ class TestDetect:
 
 class TestGetFingerprint:
     def test_fingerprint_success(self, backend: MetalBackend) -> None:
-        with patch("edgeml.hardware._metal.subprocess.run") as mock_run:
+        with patch("octomil.hardware._metal.subprocess.run") as mock_run:
             mock_run.return_value = _completed("Apple M4 Pro")
             fp = backend.get_fingerprint()
             assert fp == "metal:Apple M4 Pro"
 
     def test_fingerprint_none_on_failure(self, backend: MetalBackend) -> None:
-        with patch("edgeml.hardware._metal.subprocess.run") as mock_run:
+        with patch("octomil.hardware._metal.subprocess.run") as mock_run:
             mock_run.side_effect = FileNotFoundError
             assert backend.get_fingerprint() is None
 

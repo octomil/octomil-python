@@ -14,7 +14,7 @@ Covers:
 
 import unittest
 
-from edgeml.secagg import (
+from octomil.secagg import (
     HKDF_INFO_PAIRWISE_MASK,
     HKDF_INFO_SELF_MASK,
     HKDF_INFO_SHARE_ENCRYPTION,
@@ -839,7 +839,7 @@ class BackwardCompatibilityTests(unittest.TestCase):
     """Ensure original SecAggClient still works unchanged."""
 
     def test_original_client_unchanged(self):
-        from edgeml.secagg import SecAggClient, SecAggConfig
+        from octomil.secagg import SecAggClient, SecAggConfig
 
         cfg = SecAggConfig(
             session_id="s1",
@@ -856,7 +856,7 @@ class BackwardCompatibilityTests(unittest.TestCase):
         self.assertNotEqual(masked, raw)
 
     def test_new_types_exported_from_package(self):
-        from edgeml import (
+        from octomil import (
             ECKeyPair, SecAggPlusClient, SecAggPlusConfig, SECAGG_PLUS_MOD_RANGE,
             HKDF_INFO_PAIRWISE_MASK, HKDF_INFO_SHARE_ENCRYPTION, HKDF_INFO_SELF_MASK,
         )
@@ -870,11 +870,11 @@ class BackwardCompatibilityTests(unittest.TestCase):
         self.assertEqual(HKDF_INFO_SELF_MASK, b"secagg-self-mask")
 
     def test_ecdh_keypair_alias(self):
-        from edgeml.secagg import ECDHKeyPair
+        from octomil.secagg import ECDHKeyPair
         self.assertIs(ECDHKeyPair, ECKeyPair)
 
     def test_compute_shared_secret_alias(self):
-        from edgeml.secagg import compute_shared_secret
+        from octomil.secagg import compute_shared_secret
         self.assertIs(compute_shared_secret, generate_shared_key)
 
 

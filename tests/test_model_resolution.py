@@ -1,4 +1,4 @@
-"""Tests for the unified model resolution layer (edgeml.models).
+"""Tests for the unified model resolution layer (octomil.models).
 
 Covers:
 - Parser: model:variant syntax, bare names, passthrough
@@ -14,11 +14,11 @@ import sys
 
 import pytest
 
-# Ensure the edgeml package is importable from the repo root.
+# Ensure the octomil package is importable from the repo root.
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from edgeml.models.parser import normalize_variant, parse
-from edgeml.models.catalog import (
+from octomil.models.parser import normalize_variant, parse
+from octomil.models.catalog import (
     CATALOG,
     MODEL_ALIASES,
     _resolve_alias,
@@ -26,7 +26,7 @@ from edgeml.models.catalog import (
     list_models,
     supports_engine,
 )
-from edgeml.models.resolver import ModelResolutionError, resolve
+from octomil.models.resolver import ModelResolutionError, resolve
 
 
 # =====================================================================
@@ -463,7 +463,7 @@ class TestBackwardCompat:
 
     def test_mlx_models_dict_populated(self) -> None:
         """_MLX_MODELS in serve.py should be populated from unified catalog."""
-        from edgeml.serve import _MLX_MODELS
+        from octomil.serve import _MLX_MODELS
 
         assert len(_MLX_MODELS) >= 13
         assert "gemma-4b" in _MLX_MODELS
@@ -471,7 +471,7 @@ class TestBackwardCompat:
 
     def test_gguf_models_dict_populated(self) -> None:
         """_GGUF_MODELS in serve.py should be populated from unified catalog."""
-        from edgeml.serve import _GGUF_MODELS
+        from octomil.serve import _GGUF_MODELS
 
         assert len(_GGUF_MODELS) >= 9
         assert "gemma-4b" in _GGUF_MODELS
@@ -480,49 +480,49 @@ class TestBackwardCompat:
 
     def test_resolve_model_name_mlx(self) -> None:
         """resolve_model_name() works for mlx backend."""
-        from edgeml.serve import resolve_model_name
+        from octomil.serve import resolve_model_name
 
         result = resolve_model_name("gemma-4b", "mlx")
         assert "mlx-community" in result
 
     def test_resolve_model_name_mlx_with_variant(self) -> None:
         """resolve_model_name() with :8bit returns 8bit MLX repo."""
-        from edgeml.serve import resolve_model_name
+        from octomil.serve import resolve_model_name
 
         result = resolve_model_name("gemma-4b:8bit", "mlx")
         assert "8bit" in result.lower() or "8b" in result.lower()
 
     def test_resolve_model_name_gguf(self) -> None:
         """resolve_model_name() works for gguf backend."""
-        from edgeml.serve import resolve_model_name
+        from octomil.serve import resolve_model_name
 
         result = resolve_model_name("phi-mini", "gguf")
         assert result == "phi-mini"
 
     def test_resolve_model_name_repo_passthrough(self) -> None:
         """Full repo paths pass through."""
-        from edgeml.serve import resolve_model_name
+        from octomil.serve import resolve_model_name
 
         result = resolve_model_name("user/custom-model", "mlx")
         assert result == "user/custom-model"
 
     def test_resolve_model_name_gguf_file(self) -> None:
         """Local .gguf file passes through."""
-        from edgeml.serve import resolve_model_name
+        from octomil.serve import resolve_model_name
 
         result = resolve_model_name("model.gguf", "gguf")
         assert result == "model.gguf"
 
     def test_resolve_model_name_unknown_raises(self) -> None:
         """Unknown model raises ValueError."""
-        from edgeml.serve import resolve_model_name
+        from octomil.serve import resolve_model_name
 
         with pytest.raises(ValueError, match="Unknown model"):
             resolve_model_name("fake-model", "mlx")
 
     def test_data_classes_importable(self) -> None:
-        """Legacy data classes are importable from edgeml.models."""
-        from edgeml.models import (
+        """Legacy data classes are importable from octomil.models."""
+        from octomil.models import (
             DeploymentPlan,
         )
 
@@ -536,28 +536,28 @@ class TestEngineCatalogs:
 
     def test_mlx_catalog_from_unified(self) -> None:
         """_MLX_CATALOG should match models with mlx-lm engine."""
-        from edgeml.engines.mlx_engine import _MLX_CATALOG
+        from octomil.engines.mlx_engine import _MLX_CATALOG
 
         expected = {n for n, e in CATALOG.items() if "mlx-lm" in e.engines}
         assert _MLX_CATALOG == expected
 
     def test_gguf_catalog_from_unified(self) -> None:
         """_GGUF_CATALOG should match models with llama.cpp engine."""
-        from edgeml.engines.llamacpp_engine import _GGUF_CATALOG
+        from octomil.engines.llamacpp_engine import _GGUF_CATALOG
 
         expected = {n for n, e in CATALOG.items() if "llama.cpp" in e.engines}
         assert _GGUF_CATALOG == expected
 
     def test_mnn_catalog_from_unified(self) -> None:
         """_MNN_CATALOG should match models with mnn engine."""
-        from edgeml.engines.mnn_engine import _MNN_CATALOG
+        from octomil.engines.mnn_engine import _MNN_CATALOG
 
         expected = {n for n, e in CATALOG.items() if "mnn" in e.engines}
         assert _MNN_CATALOG == expected
 
     def test_et_catalog_from_unified(self) -> None:
         """_ET_CATALOG should match models with executorch engine."""
-        from edgeml.engines.executorch_engine import _ET_CATALOG
+        from octomil.engines.executorch_engine import _ET_CATALOG
 
         expected = {n for n, e in CATALOG.items() if "executorch" in e.engines}
         assert _ET_CATALOG == expected
@@ -569,12 +569,12 @@ class TestEngineCatalogs:
 
 
 class TestListCLI:
-    """Tests for the updated ``edgeml list`` CLI command."""
+    """Tests for the updated ``octomil list`` CLI command."""
 
     def test_list_all(self) -> None:
-        """edgeml list shows all families with variant info."""
+        """octomil list shows all families with variant info."""
         from click.testing import CliRunner
-        from edgeml.cli import main
+        from octomil.cli import main
 
         runner = CliRunner()
         result = runner.invoke(main, ["list"])
@@ -585,9 +585,9 @@ class TestListCLI:
         assert "model:variant" in result.output or "model>:<variant>" in result.output
 
     def test_list_specific_family(self) -> None:
-        """edgeml list gemma-4b shows engine artifacts."""
+        """octomil list gemma-4b shows engine artifacts."""
         from click.testing import CliRunner
-        from edgeml.cli import main
+        from octomil.cli import main
 
         runner = CliRunner()
         result = runner.invoke(main, ["list", "gemma-4b"])
@@ -598,9 +598,9 @@ class TestListCLI:
         assert "(default)" in result.output
 
     def test_list_unknown_family_error(self) -> None:
-        """edgeml list nonexistent shows error."""
+        """octomil list nonexistent shows error."""
         from click.testing import CliRunner
-        from edgeml.cli import main
+        from octomil.cli import main
 
         runner = CliRunner()
         result = runner.invoke(main, ["list", "nonexistent"])
@@ -608,9 +608,9 @@ class TestListCLI:
         assert "Unknown model family" in result.output
 
     def test_list_typo_suggests(self) -> None:
-        """edgeml list gemma-4 suggests gemma-4b."""
+        """octomil list gemma-4 suggests gemma-4b."""
         from click.testing import CliRunner
-        from edgeml.cli import main
+        from octomil.cli import main
 
         runner = CliRunner()
         result = runner.invoke(main, ["list", "gemma-4"])

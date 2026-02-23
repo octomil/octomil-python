@@ -1,6 +1,6 @@
 #!/bin/bash -eu
 
-cd /src/edgeml-python
+cd /src/octomil-python
 
 # Build fuzz targets
 for fuzzer in .clusterfuzzlite/fuzz_*.py; do

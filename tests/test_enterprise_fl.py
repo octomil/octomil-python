@@ -13,13 +13,13 @@ import io
 import struct
 import unittest
 
-from edgeml.api_client import EdgeMLClientError
-from edgeml.federated_client import (
+from octomil.api_client import OctomilClientError
+from octomil.federated_client import (
     FederatedClient,
     apply_filters,
     _apply_fedprox_correction,
 )
-from edgeml.secagg import (
+from octomil.secagg import (
     SecAggClient,
     SecAggConfig,
     reconstruct_secret,
@@ -731,7 +731,7 @@ class FederationAlgorithmTests(unittest.TestCase):
 
     def test_fedavg_algorithm_accepted(self):
         """fedavg algorithm should work."""
-        from edgeml.federation import Federation
+        from octomil.federation import Federation
 
         stub = _StubApi()
         stub._responses["/federations"] = []
@@ -747,7 +747,7 @@ class FederationAlgorithmTests(unittest.TestCase):
         stub.post = stub_post
         stub._responses[("/models", (("org_id", "org_1"),))] = {"models": [{"name": "m", "id": "m1"}]}
 
-        with unittest.mock.patch("edgeml.federation._ApiClient") as mock_api:
+        with unittest.mock.patch("octomil.federation._ApiClient") as mock_api:
             mock_api.return_value = stub
             fed = Federation(lambda: "t", name="test", org_id="org_1")
 
@@ -755,8 +755,8 @@ class FederationAlgorithmTests(unittest.TestCase):
         self.assertEqual(result["status"], "completed")
 
     def test_unsupported_algorithm_raises(self):
-        """Unsupported algorithms should raise EdgeMLClientError."""
-        from edgeml.federation import Federation
+        """Unsupported algorithms should raise OctomilClientError."""
+        from octomil.federation import Federation
 
         stub = _StubApi()
         stub._responses["/federations"] = []
@@ -769,18 +769,18 @@ class FederationAlgorithmTests(unittest.TestCase):
 
         stub.post = stub_post
 
-        with unittest.mock.patch("edgeml.federation._ApiClient") as mock_api:
+        with unittest.mock.patch("octomil.federation._ApiClient") as mock_api:
             mock_api.return_value = stub
             fed = Federation(lambda: "t", org_id="org_1")
 
         for algo in ["fedprox", "krum", "fedmedian", "fedtrimmedavg", "scaffold"]:
-            with self.assertRaises(EdgeMLClientError) as ctx:
+            with self.assertRaises(OctomilClientError) as ctx:
                 fed.train(model="m", algorithm=algo)
             self.assertIn("Unsupported algorithm", str(ctx.exception))
 
     def test_train_version_progression(self):
         """Multi-round training should use the new version as base for next round."""
-        from edgeml.federation import Federation
+        from octomil.federation import Federation
 
         stub = _StubApi()
         stub._responses["/federations"] = []
@@ -798,7 +798,7 @@ class FederationAlgorithmTests(unittest.TestCase):
         stub.post = stub_post
         stub._responses[("/models", (("org_id", "org_1"),))] = {"models": [{"name": "m", "id": "m1"}]}
 
-        with unittest.mock.patch("edgeml.federation._ApiClient") as mock_api:
+        with unittest.mock.patch("octomil.federation._ApiClient") as mock_api:
             mock_api.return_value = stub
             fed = Federation(lambda: "t", org_id="org_1")
 
@@ -845,12 +845,12 @@ class PrivacyBudgetEdgeCaseTests(unittest.TestCase):
             def get(self, path, params=None):
                 self.calls.append(("get", path, params))
                 if "/privacy" in path:
-                    raise EdgeMLClientError("Privacy service unavailable")
+                    raise OctomilClientError("Privacy service unavailable")
                 return super().get(path, params)
 
         client = _make_client(stub=_ErrorApi())
 
-        with self.assertRaises(EdgeMLClientError) as ctx:
+        with self.assertRaises(OctomilClientError) as ctx:
             client.get_privacy_budget("fed_1")
         self.assertIn("Privacy service unavailable", str(ctx.exception))
 

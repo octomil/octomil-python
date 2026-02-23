@@ -6,20 +6,20 @@ set -euo pipefail
 
 VERSION="${1:?Usage: $0 <version>}"
 TAG="${VERSION#v}"
-FORMULA="homebrew-tap/Formula/edgeml.rb"
-BASE_URL="https://github.com/edgeml-ai/edgeml-python/releases/download/${VERSION}"
+FORMULA="homebrew-tap/Formula/octomil.rb"
+BASE_URL="https://github.com/octomil/octomil-python/releases/download/${VERSION}"
 
 echo "Updating formula for ${VERSION}..."
 
 # Fetch SHA256 hashes for each platform binary
 echo "  Fetching SHA256 for darwin-arm64..."
-SHA_ARM64=$(curl -fsSL "${BASE_URL}/edgeml-darwin-arm64.tar.gz" | shasum -a 256 | cut -d' ' -f1)
+SHA_ARM64=$(curl -fsSL "${BASE_URL}/octomil-darwin-arm64.tar.gz" | shasum -a 256 | cut -d' ' -f1)
 
 echo "  Fetching SHA256 for darwin-amd64..."
-SHA_AMD64=$(curl -fsSL "${BASE_URL}/edgeml-darwin-amd64.tar.gz" | shasum -a 256 | cut -d' ' -f1)
+SHA_AMD64=$(curl -fsSL "${BASE_URL}/octomil-darwin-amd64.tar.gz" | shasum -a 256 | cut -d' ' -f1)
 
 echo "  Fetching SHA256 for linux-amd64..."
-SHA_LINUX=$(curl -fsSL "${BASE_URL}/edgeml-linux-amd64.tar.gz" | shasum -a 256 | cut -d' ' -f1)
+SHA_LINUX=$(curl -fsSL "${BASE_URL}/octomil-linux-amd64.tar.gz" | shasum -a 256 | cut -d' ' -f1)
 
 # Replace sha256 values positionally (1st = arm64, 2nd = amd64, 3rd = linux).
 # Matches any existing sha256 "..." value including placeholders, making the

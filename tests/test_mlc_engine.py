@@ -5,8 +5,8 @@ from __future__ import annotations
 from unittest.mock import MagicMock, patch
 
 
-from edgeml.engines.base import BenchmarkResult
-from edgeml.engines.mlc_engine import (
+from octomil.engines.base import BenchmarkResult
+from octomil.engines.mlc_engine import (
     MLCBackend,
     MLCEngine,
     _MLC_CATALOG,
@@ -165,23 +165,23 @@ class TestMLCEngine:
         assert self.engine.name == "mlc-llm"
 
     def test_display_name_with_gpu(self) -> None:
-        with patch("edgeml.engines.mlc_engine._detect_gpu", return_value="cuda"):
+        with patch("octomil.engines.mlc_engine._detect_gpu", return_value="cuda"):
             assert "CUDA" in self.engine.display_name
 
     def test_display_name_with_metal(self) -> None:
-        with patch("edgeml.engines.mlc_engine._detect_gpu", return_value="metal"):
+        with patch("octomil.engines.mlc_engine._detect_gpu", return_value="metal"):
             assert "METAL" in self.engine.display_name
 
     def test_display_name_without_gpu(self) -> None:
-        with patch("edgeml.engines.mlc_engine._detect_gpu", return_value=None):
+        with patch("octomil.engines.mlc_engine._detect_gpu", return_value=None):
             assert "GPU" in self.engine.display_name
 
     def test_priority(self) -> None:
         assert self.engine.priority == 18
 
     def test_priority_between_mnn_and_llamacpp(self) -> None:
-        from edgeml.engines.llamacpp_engine import LlamaCppEngine
-        from edgeml.engines.mnn_engine import MNNEngine
+        from octomil.engines.llamacpp_engine import LlamaCppEngine
+        from octomil.engines.mnn_engine import MNNEngine
 
         mnn = MNNEngine()
         llama = LlamaCppEngine()
@@ -189,38 +189,38 @@ class TestMLCEngine:
 
     def test_detect_with_mlc_and_gpu(self) -> None:
         with (
-            patch("edgeml.engines.mlc_engine._has_mlc_llm", return_value=True),
-            patch("edgeml.engines.mlc_engine._detect_gpu", return_value="cuda"),
+            patch("octomil.engines.mlc_engine._has_mlc_llm", return_value=True),
+            patch("octomil.engines.mlc_engine._detect_gpu", return_value="cuda"),
         ):
             assert self.engine.detect() is True
 
     def test_detect_without_mlc(self) -> None:
         with (
-            patch("edgeml.engines.mlc_engine._has_mlc_llm", return_value=False),
+            patch("octomil.engines.mlc_engine._has_mlc_llm", return_value=False),
         ):
             assert self.engine.detect() is False
 
     def test_detect_without_gpu(self) -> None:
         with (
-            patch("edgeml.engines.mlc_engine._has_mlc_llm", return_value=True),
-            patch("edgeml.engines.mlc_engine._detect_gpu", return_value=None),
+            patch("octomil.engines.mlc_engine._has_mlc_llm", return_value=True),
+            patch("octomil.engines.mlc_engine._detect_gpu", return_value=None),
         ):
             assert self.engine.detect() is False
 
     def test_detect_info_with_mlc(self) -> None:
         with (
             patch(
-                "edgeml.engines.mlc_engine._get_mlc_version",
+                "octomil.engines.mlc_engine._get_mlc_version",
                 return_value="0.1.0",
             ),
-            patch("edgeml.engines.mlc_engine._detect_gpu", return_value="cuda"),
+            patch("octomil.engines.mlc_engine._detect_gpu", return_value="cuda"),
         ):
             info = self.engine.detect_info()
             assert "mlc_llm 0.1.0" in info
             assert "cuda" in info
 
     def test_detect_info_empty_when_unavailable(self) -> None:
-        with patch("edgeml.engines.mlc_engine._get_mlc_version", return_value=""):
+        with patch("octomil.engines.mlc_engine._get_mlc_version", return_value=""):
             assert self.engine.detect_info() == ""
 
     def test_supports_catalog_models(self) -> None:
@@ -241,15 +241,15 @@ class TestMLCEngine:
         assert self.engine.supports_model("totally-fake-model-xyz") is False
 
     def test_benchmark_unavailable(self) -> None:
-        with patch("edgeml.engines.mlc_engine._has_mlc_llm", return_value=False):
+        with patch("octomil.engines.mlc_engine._has_mlc_llm", return_value=False):
             result = self.engine.benchmark("gemma-1b")
             assert result.ok is False
             assert "not available" in result.error
 
     def test_benchmark_no_gpu(self) -> None:
         with (
-            patch("edgeml.engines.mlc_engine._has_mlc_llm", return_value=True),
-            patch("edgeml.engines.mlc_engine._detect_gpu", return_value=None),
+            patch("octomil.engines.mlc_engine._has_mlc_llm", return_value=True),
+            patch("octomil.engines.mlc_engine._detect_gpu", return_value=None),
         ):
             result = self.engine.benchmark("gemma-1b")
             assert result.ok is False
@@ -275,8 +275,8 @@ class TestMLCEngine:
         mock_mlc.MLCEngine = mock_mlc_engine_cls
 
         with (
-            patch("edgeml.engines.mlc_engine._has_mlc_llm", return_value=True),
-            patch("edgeml.engines.mlc_engine._detect_gpu", return_value="cuda"),
+            patch("octomil.engines.mlc_engine._has_mlc_llm", return_value=True),
+            patch("octomil.engines.mlc_engine._detect_gpu", return_value="cuda"),
             patch.dict("sys.modules", {"mlc_llm": mock_mlc}),
         ):
             result = self.engine.benchmark("mlc-ai/gemma-2b-it-q4f16_1-MLC")
@@ -291,8 +291,8 @@ class TestMLCEngine:
         mock_mlc.MLCEngine.side_effect = RuntimeError("CUDA OOM")
 
         with (
-            patch("edgeml.engines.mlc_engine._has_mlc_llm", return_value=True),
-            patch("edgeml.engines.mlc_engine._detect_gpu", return_value="cuda"),
+            patch("octomil.engines.mlc_engine._has_mlc_llm", return_value=True),
+            patch("octomil.engines.mlc_engine._detect_gpu", return_value="cuda"),
             patch.dict("sys.modules", {"mlc_llm": mock_mlc}),
         ):
             result = self.engine.benchmark("gemma-1b")
@@ -354,7 +354,7 @@ class TestMLCBackend:
 
         with (
             patch.dict("sys.modules", {"mlc_llm": mock_mlc}),
-            patch("edgeml.engines.mlc_engine._detect_gpu", return_value="cuda"),
+            patch("octomil.engines.mlc_engine._detect_gpu", return_value="cuda"),
         ):
             backend = MLCBackend("mlc-ai/test-model-MLC")
             backend.load_model("mlc-ai/test-model-MLC")
@@ -372,7 +372,7 @@ class TestMLCBackend:
 
         with (
             patch.dict("sys.modules", {"mlc_llm": mock_mlc}),
-            patch("edgeml.engines.mlc_engine._detect_gpu", return_value="metal"),
+            patch("octomil.engines.mlc_engine._detect_gpu", return_value="metal"),
         ):
             backend = MLCBackend("mlc-ai/test-model-MLC")
             backend.load_model("mlc-ai/test-model-MLC")
@@ -569,7 +569,7 @@ class TestMLCQuantSuffixes:
 
 class TestMLCCatalog:
     def test_mlc_models_in_catalog(self) -> None:
-        from edgeml.models.catalog import CATALOG
+        from octomil.models.catalog import CATALOG
 
         mlc_models = [
             name for name, entry in CATALOG.items() if "mlc-llm" in entry.engines
@@ -577,7 +577,7 @@ class TestMLCCatalog:
         assert len(mlc_models) >= 5
 
     def test_gemma_1b_has_mlc(self) -> None:
-        from edgeml.models.catalog import CATALOG
+        from octomil.models.catalog import CATALOG
 
         entry = CATALOG["gemma-1b"]
         assert "mlc-llm" in entry.engines
@@ -585,54 +585,54 @@ class TestMLCCatalog:
         assert "mlc-ai/" in entry.variants["4bit"].mlc
 
     def test_llama_1b_has_mlc(self) -> None:
-        from edgeml.models.catalog import CATALOG
+        from octomil.models.catalog import CATALOG
 
         entry = CATALOG["llama-1b"]
         assert "mlc-llm" in entry.engines
         assert entry.variants["4bit"].mlc is not None
 
     def test_llama_3b_has_mlc(self) -> None:
-        from edgeml.models.catalog import CATALOG
+        from octomil.models.catalog import CATALOG
 
         entry = CATALOG["llama-3b"]
         assert "mlc-llm" in entry.engines
         assert entry.variants["4bit"].mlc is not None
 
     def test_llama_8b_has_mlc(self) -> None:
-        from edgeml.models.catalog import CATALOG
+        from octomil.models.catalog import CATALOG
 
         entry = CATALOG["llama-8b"]
         assert "mlc-llm" in entry.engines
         assert entry.variants["4bit"].mlc is not None
 
     def test_phi_mini_has_mlc(self) -> None:
-        from edgeml.models.catalog import CATALOG
+        from octomil.models.catalog import CATALOG
 
         entry = CATALOG["phi-mini"]
         assert "mlc-llm" in entry.engines
         assert entry.variants["4bit"].mlc is not None
 
     def test_gemma_4b_has_mlc(self) -> None:
-        from edgeml.models.catalog import CATALOG
+        from octomil.models.catalog import CATALOG
 
         entry = CATALOG["gemma-4b"]
         assert "mlc-llm" in entry.engines
         assert entry.variants["4bit"].mlc is not None
 
     def test_variant_spec_has_mlc_field(self) -> None:
-        from edgeml.models.catalog import VariantSpec
+        from octomil.models.catalog import VariantSpec
 
         spec = VariantSpec(mlc="mlc-ai/test-model-MLC")
         assert spec.mlc == "mlc-ai/test-model-MLC"
 
     def test_variant_spec_mlc_default_none(self) -> None:
-        from edgeml.models.catalog import VariantSpec
+        from octomil.models.catalog import VariantSpec
 
         spec = VariantSpec()
         assert spec.mlc is None
 
     def test_whisper_does_not_have_mlc(self) -> None:
-        from edgeml.models.catalog import CATALOG
+        from octomil.models.catalog import CATALOG
 
         entry = CATALOG["whisper-base"]
         assert "mlc-llm" not in entry.engines
@@ -645,19 +645,19 @@ class TestMLCCatalog:
 
 class TestMLCResolver:
     def test_engine_alias_mlc(self) -> None:
-        from edgeml.models.resolver import _normalize_engine
+        from octomil.models.resolver import _normalize_engine
 
         assert _normalize_engine("mlc") == "mlc-llm"
         assert _normalize_engine("mlc-llm") == "mlc-llm"
         assert _normalize_engine("mlcllm") == "mlc-llm"
 
     def test_engine_in_priority(self) -> None:
-        from edgeml.models.resolver import _ENGINE_PRIORITY
+        from octomil.models.resolver import _ENGINE_PRIORITY
 
         assert "mlc-llm" in _ENGINE_PRIORITY
 
     def test_mlc_priority_between_mnn_and_llamacpp(self) -> None:
-        from edgeml.models.resolver import _ENGINE_PRIORITY
+        from octomil.models.resolver import _ENGINE_PRIORITY
 
         mnn_idx = _ENGINE_PRIORITY.index("mnn")
         mlc_idx = _ENGINE_PRIORITY.index("mlc-llm")
@@ -665,40 +665,40 @@ class TestMLCResolver:
         assert mnn_idx < mlc_idx < llama_idx
 
     def test_resolve_with_mlc_engine(self) -> None:
-        from edgeml.models.resolver import resolve
+        from octomil.models.resolver import resolve
 
         result = resolve("gemma-1b", engine="mlc-llm")
         assert result.engine == "mlc-llm"
         assert result.hf_repo == "mlc-ai/gemma-2b-it-q4f16_1-MLC"
 
     def test_resolve_with_mlc_alias(self) -> None:
-        from edgeml.models.resolver import resolve
+        from octomil.models.resolver import resolve
 
         result = resolve("gemma-1b", engine="mlc")
         assert result.engine == "mlc-llm"
 
     def test_resolve_llama_with_mlc(self) -> None:
-        from edgeml.models.resolver import resolve
+        from octomil.models.resolver import resolve
 
         result = resolve("llama-1b", engine="mlc-llm")
         assert result.engine == "mlc-llm"
         assert "mlc-ai/" in result.hf_repo
 
     def test_resolve_phi_mini_with_mlc(self) -> None:
-        from edgeml.models.resolver import resolve
+        from octomil.models.resolver import resolve
 
         result = resolve("phi-mini", engine="mlc-llm")
         assert result.engine == "mlc-llm"
         assert "mlc-ai/" in result.hf_repo
 
     def test_resolve_picks_mlc_when_only_available(self) -> None:
-        from edgeml.models.resolver import resolve
+        from octomil.models.resolver import resolve
 
         result = resolve("gemma-1b", available_engines=["mlc-llm"])
         assert result.engine == "mlc-llm"
 
     def test_resolve_passthrough_repo_id(self) -> None:
-        from edgeml.models.resolver import resolve
+        from octomil.models.resolver import resolve
 
         result = resolve("mlc-ai/custom-model-MLC", engine="mlc-llm")
         assert result.engine == "mlc-llm"
@@ -706,14 +706,14 @@ class TestMLCResolver:
 
     def test_pick_engine_prefers_mlx_over_mlc(self) -> None:
         """mlx-lm has higher priority than mlc-llm."""
-        from edgeml.models.resolver import resolve
+        from octomil.models.resolver import resolve
 
         result = resolve("gemma-1b", available_engines=["mlx-lm", "mlc-llm"])
         assert result.engine == "mlx-lm"
 
     def test_pick_engine_prefers_mlc_over_llamacpp(self) -> None:
         """mlc-llm has higher priority than llama.cpp."""
-        from edgeml.models.resolver import resolve
+        from octomil.models.resolver import resolve
 
         result = resolve("gemma-1b", available_engines=["mlc-llm", "llama.cpp"])
         assert result.engine == "mlc-llm"
@@ -726,7 +726,7 @@ class TestMLCResolver:
 
 class TestMLCRegistry:
     def test_engine_registered(self) -> None:
-        from edgeml.engines.registry import EngineRegistry
+        from octomil.engines.registry import EngineRegistry
 
         registry = EngineRegistry()
         engine = MLCEngine()
@@ -734,14 +734,14 @@ class TestMLCRegistry:
         assert registry.get_engine("mlc-llm") is engine
 
     def test_auto_register_includes_mlc(self) -> None:
-        from edgeml.engines.registry import EngineRegistry, _auto_register
+        from octomil.engines.registry import EngineRegistry, _auto_register
 
         registry = EngineRegistry()
         _auto_register(registry)
         assert registry.get_engine("mlc-llm") is not None
 
     def test_global_registry_has_mlc(self) -> None:
-        from edgeml.engines.registry import get_registry, reset_registry
+        from octomil.engines.registry import get_registry, reset_registry
 
         reset_registry()
         try:
@@ -753,7 +753,7 @@ class TestMLCRegistry:
 
     def test_priority_ordering(self) -> None:
         """mlc-llm (18) should be after mnn (15) and before llama.cpp (20)."""
-        from edgeml.engines.registry import EngineRegistry, _auto_register
+        from octomil.engines.registry import EngineRegistry, _auto_register
 
         registry = EngineRegistry()
         _auto_register(registry)
@@ -768,7 +768,7 @@ class TestMLCRegistry:
         assert mnn.priority < mlc.priority < llama.priority
 
     def test_no_duplicate_registration(self) -> None:
-        from edgeml.engines.registry import EngineRegistry
+        from octomil.engines.registry import EngineRegistry
 
         registry = EngineRegistry()
         registry.register(MLCEngine())
@@ -777,7 +777,7 @@ class TestMLCRegistry:
         assert mlc_count == 1
 
     def test_detect_all_includes_mlc(self) -> None:
-        from edgeml.engines.registry import EngineRegistry, _auto_register
+        from octomil.engines.registry import EngineRegistry, _auto_register
 
         registry = EngineRegistry()
         _auto_register(registry)
@@ -795,7 +795,7 @@ class TestMLCEdgeCases:
     def test_benchmark_returns_benchmark_result(self) -> None:
         engine = MLCEngine()
         with (
-            patch("edgeml.engines.mlc_engine._has_mlc_llm", return_value=False),
+            patch("octomil.engines.mlc_engine._has_mlc_llm", return_value=False),
         ):
             result = engine.benchmark("gemma-1b")
             assert isinstance(result, BenchmarkResult)
@@ -803,7 +803,7 @@ class TestMLCEdgeCases:
     def test_benchmark_result_engine_name(self) -> None:
         engine = MLCEngine()
         with (
-            patch("edgeml.engines.mlc_engine._has_mlc_llm", return_value=False),
+            patch("octomil.engines.mlc_engine._has_mlc_llm", return_value=False),
         ):
             result = engine.benchmark("gemma-1b")
             assert result.engine_name == "mlc-llm"
@@ -813,12 +813,12 @@ class TestMLCEdgeCases:
         assert backend._kwargs == {"some_param": "value"}
 
     def test_engine_is_subclass(self) -> None:
-        from edgeml.engines.base import EnginePlugin
+        from octomil.engines.base import EnginePlugin
 
         assert issubclass(MLCEngine, EnginePlugin)
 
     def test_engine_instance_check(self) -> None:
-        from edgeml.engines.base import EnginePlugin
+        from octomil.engines.base import EnginePlugin
 
         engine = MLCEngine()
         assert isinstance(engine, EnginePlugin)

@@ -2,7 +2,7 @@ import unittest
 import time
 from typing import Optional
 
-from edgeml.inference import (
+from octomil.inference import (
     InferenceChunk,
     Modality,
     StreamingInferenceClient,

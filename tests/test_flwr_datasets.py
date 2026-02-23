@@ -1,10 +1,10 @@
 """Example tests demonstrating non-IID data partitioning with flwr-datasets.
 
-These tests show how ``flwr-datasets`` can be combined with the EdgeML SDK
+These tests show how ``flwr-datasets`` can be combined with the Octomil SDK
 to simulate realistic heterogeneous federated learning scenarios.
 
 Requirements:
-    pip install "edgeml-sdk[dev]"  # includes flwr-datasets
+    pip install "octomil-sdk[dev]"  # includes flwr-datasets
 """
 
 import unittest

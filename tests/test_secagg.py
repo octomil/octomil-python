@@ -3,7 +3,7 @@
 import struct
 import unittest
 
-from edgeml.secagg import (
+from octomil.secagg import (
     DEFAULT_FIELD_SIZE,
     SecAggClient,
     SecAggConfig,
@@ -315,13 +315,13 @@ class FederatedClientSecAggFlagTests(unittest.TestCase):
     """Verify that FederatedClient passes the secure_aggregation flag."""
 
     def test_default_off(self):
-        from edgeml.federated_client import FederatedClient
+        from octomil.federated_client import FederatedClient
 
         client = FederatedClient(auth_token_provider=lambda: "t", org_id="o")
         self.assertFalse(client.secure_aggregation)
 
     def test_explicit_on(self):
-        from edgeml.federated_client import FederatedClient
+        from octomil.federated_client import FederatedClient
 
         client = FederatedClient(
             auth_token_provider=lambda: "t",

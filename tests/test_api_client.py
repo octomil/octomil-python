@@ -1,7 +1,7 @@
 import unittest
 from unittest.mock import patch
 
-from edgeml.api_client import EdgeMLClientError, _ApiClient
+from octomil.api_client import OctomilClientError, _ApiClient
 
 
 class _FakeResponse:
@@ -61,7 +61,7 @@ class _FakeHttpxClient:
 
 def _patch_httpx(response):
     """Patch httpx.Client to return a _FakeHttpxClient with the given response."""
-    return patch("edgeml.api_client.httpx.Client", lambda **kwargs: _FakeHttpxClient(response, **kwargs))
+    return patch("octomil.api_client.httpx.Client", lambda **kwargs: _FakeHttpxClient(response, **kwargs))
 
 
 class ApiClientTests(unittest.TestCase):
@@ -108,7 +108,7 @@ class ApiClientTests(unittest.TestCase):
             auth_token_provider=lambda: "",
             api_base="https://api.example.com",
         )
-        with self.assertRaises(EdgeMLClientError) as ctx:
+        with self.assertRaises(OctomilClientError) as ctx:
             client._headers()
         self.assertIn("empty token", str(ctx.exception))
 
@@ -123,7 +123,7 @@ class ApiClientTests(unittest.TestCase):
         response = _FakeResponse(404, text_data="Not found")
         client = self._make_client()
         with _patch_httpx(response):
-            with self.assertRaises(EdgeMLClientError) as ctx:
+            with self.assertRaises(OctomilClientError) as ctx:
                 client.get("/path")
             self.assertIn("Not found", str(ctx.exception))
 
@@ -138,7 +138,7 @@ class ApiClientTests(unittest.TestCase):
         response = _FakeResponse(400, text_data="Bad request")
         client = self._make_client()
         with _patch_httpx(response):
-            with self.assertRaises(EdgeMLClientError) as ctx:
+            with self.assertRaises(OctomilClientError) as ctx:
                 client.post("/path", payload={})
             self.assertIn("Bad request", str(ctx.exception))
 
@@ -160,7 +160,7 @@ class ApiClientTests(unittest.TestCase):
         response = _FakeResponse(403, text_data="Forbidden")
         client = self._make_client()
         with _patch_httpx(response):
-            with self.assertRaises(EdgeMLClientError) as ctx:
+            with self.assertRaises(OctomilClientError) as ctx:
                 client.put("/path")
             self.assertIn("Forbidden", str(ctx.exception))
 
@@ -182,7 +182,7 @@ class ApiClientTests(unittest.TestCase):
         response = _FakeResponse(500, text_data="Server error")
         client = self._make_client()
         with _patch_httpx(response):
-            with self.assertRaises(EdgeMLClientError) as ctx:
+            with self.assertRaises(OctomilClientError) as ctx:
                 client.patch("/path")
             self.assertIn("Server error", str(ctx.exception))
 
@@ -204,7 +204,7 @@ class ApiClientTests(unittest.TestCase):
         response = _FakeResponse(404, text_data="Not found")
         client = self._make_client()
         with _patch_httpx(response):
-            with self.assertRaises(EdgeMLClientError) as ctx:
+            with self.assertRaises(OctomilClientError) as ctx:
                 client.delete("/path")
             self.assertIn("Not found", str(ctx.exception))
 
@@ -220,7 +220,7 @@ class ApiClientTests(unittest.TestCase):
         response = _FakeResponse(401, text_data="Unauthorized")
         client = self._make_client()
         with _patch_httpx(response):
-            with self.assertRaises(EdgeMLClientError) as ctx:
+            with self.assertRaises(OctomilClientError) as ctx:
                 client.get_bytes("/path")
             self.assertIn("Unauthorized", str(ctx.exception))
 
@@ -260,7 +260,7 @@ class RetryTests(unittest.TestCase):
                 return _FakeResponse(200, {"ok": True})
 
         client = self._make_client()
-        with patch("edgeml.api_client.httpx.Client", lambda **kwargs: _RetryClient(_FakeResponse(200), **kwargs)):
+        with patch("octomil.api_client.httpx.Client", lambda **kwargs: _RetryClient(_FakeResponse(200), **kwargs)):
             result = client.get("/test")
         self.assertEqual(result, {"ok": True})
         self.assertEqual(call_count, 2)
@@ -278,20 +278,20 @@ class RetryTests(unittest.TestCase):
                 return _FakeResponse(200, {"ok": True})
 
         client = self._make_client()
-        with patch("edgeml.api_client.httpx.Client", lambda **kwargs: _RetryClient(_FakeResponse(200), **kwargs)):
+        with patch("octomil.api_client.httpx.Client", lambda **kwargs: _RetryClient(_FakeResponse(200), **kwargs)):
             result = client.get("/test")
         self.assertEqual(result, {"ok": True})
         self.assertEqual(call_count, 3)
 
     def test_retry_exhausted_raises(self):
-        """After max_retries, should raise EdgeMLClientError."""
+        """After max_retries, should raise OctomilClientError."""
         class _AlwaysFail(_FakeHttpxClient):
             def request(self, method, url, **kwargs):
                 return _FakeResponse(503, text_data="Always failing")
 
         client = self._make_client(max_retries=3)
-        with patch("edgeml.api_client.httpx.Client", lambda **kwargs: _AlwaysFail(_FakeResponse(503), **kwargs)):
-            with self.assertRaises(EdgeMLClientError) as ctx:
+        with patch("octomil.api_client.httpx.Client", lambda **kwargs: _AlwaysFail(_FakeResponse(503), **kwargs)):
+            with self.assertRaises(OctomilClientError) as ctx:
                 client.get("/test")
             self.assertIn("Always failing", str(ctx.exception))
 
@@ -306,8 +306,8 @@ class RetryTests(unittest.TestCase):
                 return _FakeResponse(400, text_data="Bad request")
 
         client = self._make_client()
-        with patch("edgeml.api_client.httpx.Client", lambda **kwargs: _ClientError(_FakeResponse(400), **kwargs)):
-            with self.assertRaises(EdgeMLClientError):
+        with patch("octomil.api_client.httpx.Client", lambda **kwargs: _ClientError(_FakeResponse(400), **kwargs)):
+            with self.assertRaises(OctomilClientError):
                 client.get("/test")
         self.assertEqual(call_count, 1)
 
@@ -322,8 +322,8 @@ class RetryTests(unittest.TestCase):
                 return _FakeResponse(404, text_data="Not found")
 
         client = self._make_client()
-        with patch("edgeml.api_client.httpx.Client", lambda **kwargs: _NotFound(_FakeResponse(404), **kwargs)):
-            with self.assertRaises(EdgeMLClientError):
+        with patch("octomil.api_client.httpx.Client", lambda **kwargs: _NotFound(_FakeResponse(404), **kwargs)):
+            with self.assertRaises(OctomilClientError):
                 client.get("/test")
         self.assertEqual(call_count, 1)
 
@@ -340,7 +340,7 @@ class RetryTests(unittest.TestCase):
                 return _FakeResponse(200, {"ok": True})
 
         client = self._make_client()
-        with patch("edgeml.api_client.httpx.Client", lambda **kwargs: _RateLimited(_FakeResponse(200), **kwargs)):
+        with patch("octomil.api_client.httpx.Client", lambda **kwargs: _RateLimited(_FakeResponse(200), **kwargs)):
             result = client.get("/test")
         self.assertEqual(result, {"ok": True})
         self.assertEqual(call_count, 2)
@@ -359,7 +359,7 @@ class RetryTests(unittest.TestCase):
                 return _FakeResponse(200, {"ok": True})
 
         client = self._make_client()
-        with patch("edgeml.api_client.httpx.Client", lambda **kwargs: _ConnError(_FakeResponse(200), **kwargs)):
+        with patch("octomil.api_client.httpx.Client", lambda **kwargs: _ConnError(_FakeResponse(200), **kwargs)):
             result = client.get("/test")
         self.assertEqual(result, {"ok": True})
         self.assertEqual(call_count, 2)
@@ -378,13 +378,13 @@ class RetryTests(unittest.TestCase):
                 return _FakeResponse(200, {"ok": True})
 
         client = self._make_client()
-        with patch("edgeml.api_client.httpx.Client", lambda **kwargs: _Timeout(_FakeResponse(200), **kwargs)):
+        with patch("octomil.api_client.httpx.Client", lambda **kwargs: _Timeout(_FakeResponse(200), **kwargs)):
             result = client.get("/test")
         self.assertEqual(result, {"ok": True})
         self.assertEqual(call_count, 2)
 
     def test_connection_error_exhausted_raises(self):
-        """Connection errors exhausting retries should raise EdgeMLClientError."""
+        """Connection errors exhausting retries should raise OctomilClientError."""
         import httpx as httpx_mod
 
         class _AlwaysTimeout(_FakeHttpxClient):
@@ -392,8 +392,8 @@ class RetryTests(unittest.TestCase):
                 raise httpx_mod.ConnectError("Connection refused")
 
         client = self._make_client(max_retries=2)
-        with patch("edgeml.api_client.httpx.Client", lambda **kwargs: _AlwaysTimeout(_FakeResponse(200), **kwargs)):
-            with self.assertRaises(EdgeMLClientError) as ctx:
+        with patch("octomil.api_client.httpx.Client", lambda **kwargs: _AlwaysTimeout(_FakeResponse(200), **kwargs)):
+            with self.assertRaises(OctomilClientError) as ctx:
                 client.get("/test")
             self.assertIn("2 attempts", str(ctx.exception))
 
@@ -408,8 +408,8 @@ class RetryTests(unittest.TestCase):
                 return _FakeResponse(503, text_data="Fail")
 
         client = self._make_client(max_retries=1)
-        with patch("edgeml.api_client.httpx.Client", lambda **kwargs: _Fail(_FakeResponse(503), **kwargs)):
-            with self.assertRaises(EdgeMLClientError):
+        with patch("octomil.api_client.httpx.Client", lambda **kwargs: _Fail(_FakeResponse(503), **kwargs)):
+            with self.assertRaises(OctomilClientError):
                 client.get("/test")
         self.assertEqual(call_count, 1)
 
@@ -424,8 +424,8 @@ class RetryTests(unittest.TestCase):
                 return _FakeResponse(500, text_data="Internal Server Error")
 
         client = self._make_client(max_retries=1)
-        with patch("edgeml.api_client.httpx.Client", lambda **kwargs: _ServerError(_FakeResponse(500), **kwargs)):
-            with self.assertRaises(EdgeMLClientError) as ctx:
+        with patch("octomil.api_client.httpx.Client", lambda **kwargs: _ServerError(_FakeResponse(500), **kwargs)):
+            with self.assertRaises(OctomilClientError) as ctx:
                 client.get("/test")
             self.assertIn("Internal Server Error", str(ctx.exception))
         self.assertEqual(call_count, 1)
@@ -452,7 +452,7 @@ class ConnectionPoolingTests(unittest.TestCase):
         )
         client.close()
 
-        with patch("edgeml.api_client.httpx.Client", lambda **kwargs: _TrackingClient(**kwargs)):
+        with patch("octomil.api_client.httpx.Client", lambda **kwargs: _TrackingClient(**kwargs)):
             client.get("/path1")
             client.get("/path2")
             client.get("/path3")
@@ -476,7 +476,7 @@ class ConnectionPoolingTests(unittest.TestCase):
         )
         client.close()
 
-        with patch("edgeml.api_client.httpx.Client", lambda **kwargs: _TrackingClient(**kwargs)):
+        with patch("octomil.api_client.httpx.Client", lambda **kwargs: _TrackingClient(**kwargs)):
             client.get("/path1")
             client.close()
             client.get("/path2")

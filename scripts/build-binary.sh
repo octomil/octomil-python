@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Build edgeml as a standalone binary using PyInstaller.
+# Build octomil as a standalone binary using PyInstaller.
 #
 # Usage:
 #   ./scripts/build-binary.sh
@@ -9,8 +9,8 @@
 #   pip install pyinstaller
 #
 # Output:
-#   dist/edgeml-<os>-<arch>.tar.gz   (macOS / Linux)
-#   dist/edgeml-<os>-<arch>.zip      (Windows)
+#   dist/octomil-<os>-<arch>.tar.gz   (macOS / Linux)
+#   dist/octomil-<os>-<arch>.zip      (Windows)
 
 set -euo pipefail
 
@@ -62,16 +62,16 @@ fi
 # Clean previous build artifacts
 # ---------------------------------------------------------------------------
 echo "==> Cleaning previous build..."
-rm -rf build/ dist/edgeml dist/edgeml.pkg
+rm -rf build/ dist/octomil dist/octomil.pkg
 
 # ---------------------------------------------------------------------------
 # Run PyInstaller
 # ---------------------------------------------------------------------------
 echo "==> Building binary with PyInstaller..."
-pyinstaller edgeml.spec --noconfirm
+pyinstaller octomil.spec --noconfirm
 
 # Verify the binary was created
-BINARY="dist/edgeml"
+BINARY="dist/octomil"
 if [ ! -f "$BINARY" ]; then
     echo "ERROR: Binary not found at ${BINARY}" >&2
     exit 1
@@ -95,19 +95,19 @@ echo "==> Binary size: ${BINARY_SIZE}"
 # ---------------------------------------------------------------------------
 # Create archive
 # ---------------------------------------------------------------------------
-ARCHIVE_NAME="edgeml-${PLATFORM}"
+ARCHIVE_NAME="octomil-${PLATFORM}"
 
 echo "==> Creating archive..."
 case "$PLATFORM" in
     windows-*)
         # zip for Windows
         ARCHIVE="${ARCHIVE_NAME}.zip"
-        (cd dist && zip -9 "$ARCHIVE" edgeml.exe 2>/dev/null || zip -9 "$ARCHIVE" edgeml)
+        (cd dist && zip -9 "$ARCHIVE" octomil.exe 2>/dev/null || zip -9 "$ARCHIVE" octomil)
         ;;
     *)
         # tar.gz for macOS and Linux
         ARCHIVE="${ARCHIVE_NAME}.tar.gz"
-        tar -czf "dist/${ARCHIVE}" -C dist edgeml
+        tar -czf "dist/${ARCHIVE}" -C dist octomil
         ;;
 esac
 
@@ -128,6 +128,6 @@ echo "==> SHA256: ${SHA256}"
 
 echo ""
 echo "Build complete."
-echo "  Binary:  dist/edgeml"
+echo "  Binary:  dist/octomil"
 echo "  Archive: dist/${ARCHIVE}"
 echo "  SHA256:  ${SHA256}"

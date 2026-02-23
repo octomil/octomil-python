@@ -1,4 +1,4 @@
-"""Tests for edgeml.serve — OpenAI-compatible inference server."""
+"""Tests for octomil.serve — OpenAI-compatible inference server."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ from unittest.mock import patch
 import pytest
 from httpx import ASGITransport, AsyncClient
 
-from edgeml.serve import (
+from octomil.serve import (
     ChatCompletionBody,
     ChatMessage,
     EchoBackend,
@@ -126,7 +126,7 @@ async def _collect_stream(gen):
 class TestDetectBackend:
     def test_falls_back_to_echo_when_no_backends(self):
         """With no real engines installed, _detect_backend returns echo."""
-        from edgeml.engines import reset_registry
+        from octomil.engines import reset_registry
 
         reset_registry()
         with patch.dict("sys.modules", {"mlx_lm": None, "llama_cpp": None}):
@@ -136,7 +136,7 @@ class TestDetectBackend:
 
     def test_echo_for_unknown_model_name(self):
         """Unknown model name still gets a backend (echo fallback)."""
-        from edgeml.engines import reset_registry
+        from octomil.engines import reset_registry
 
         reset_registry()
         backend = _detect_backend("totally-unknown-model")
@@ -197,7 +197,7 @@ class TestPydanticModels:
 @pytest.fixture
 def echo_app():
     """Create a FastAPI app with EchoBackend for testing."""
-    with patch("edgeml.serve._detect_backend") as mock_detect:
+    with patch("octomil.serve._detect_backend") as mock_detect:
         echo = EchoBackend()
         echo.load_model("test-model")
         mock_detect.return_value = echo
@@ -236,7 +236,7 @@ async def test_list_models(echo_app):
     assert data["object"] == "list"
     assert len(data["data"]) == 1
     assert data["data"][0]["id"] == "test-model"
-    assert data["data"][0]["owned_by"] == "edgeml"
+    assert data["data"][0]["owned_by"] == "octomil"
 
 
 @pytest.mark.asyncio

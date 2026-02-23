@@ -15,7 +15,7 @@ We take security seriously. If you discover a security vulnerability, please rep
 
 ### How to Report
 
-1. Email: **security@edgeml.io**
+1. Email: **security@octomil.com**
 2. Include a detailed description of the vulnerability
 3. Steps to reproduce (if applicable)
 4. Impact assessment
@@ -29,7 +29,7 @@ We take security seriously. If you discover a security vulnerability, please rep
 
 ### Scope
 
-- edgeml-sdk Python package
+- octomil-sdk Python package
 - Federated learning client
 - Data loader and inference modules
 - API client and authentication

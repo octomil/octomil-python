@@ -1,4 +1,4 @@
-"""Tests for the browser-based login flow in edgeml.cli."""
+"""Tests for the browser-based login flow in octomil.cli."""
 
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ from unittest.mock import patch
 import pytest
 from click.testing import CliRunner
 
-from edgeml.cli import _save_credentials, main
+from octomil.cli import _save_credentials, main
 
 
 # ---------------------------------------------------------------------------
@@ -47,16 +47,16 @@ class TestStateTokenGeneration:
 
 
 class TestCredentialSaving:
-    """Test _save_credentials writes JSON to ~/.edgeml/credentials."""
+    """Test _save_credentials writes JSON to ~/.octomil/credentials."""
 
     def test_saves_api_key_as_json(self, tmp_path, monkeypatch):
         monkeypatch.setattr(
-            "edgeml.cli.os.path.expanduser",
-            lambda x: str(tmp_path / ".edgeml") if "~/.edgeml" in x else x,
+            "octomil.cli.os.path.expanduser",
+            lambda x: str(tmp_path / ".octomil") if "~/.octomil" in x else x,
         )
         _save_credentials("edg_test123")
 
-        cred_file = tmp_path / ".edgeml" / "credentials"
+        cred_file = tmp_path / ".octomil" / "credentials"
         assert cred_file.exists()
         data = json.loads(cred_file.read_text())
         assert data["api_key"] == "edg_test123"
@@ -64,28 +64,28 @@ class TestCredentialSaving:
 
     def test_saves_api_key_with_org(self, tmp_path, monkeypatch):
         monkeypatch.setattr(
-            "edgeml.cli.os.path.expanduser",
-            lambda x: str(tmp_path / ".edgeml") if "~/.edgeml" in x else x,
+            "octomil.cli.os.path.expanduser",
+            lambda x: str(tmp_path / ".octomil") if "~/.octomil" in x else x,
         )
         _save_credentials("edg_test123", org="Acme Corp")
 
-        cred_file = tmp_path / ".edgeml" / "credentials"
+        cred_file = tmp_path / ".octomil" / "credentials"
         data = json.loads(cred_file.read_text())
         assert data["api_key"] == "edg_test123"
         assert data["org"] == "Acme Corp"
 
     def test_creates_directory_if_missing(self, tmp_path, monkeypatch):
-        target_dir = tmp_path / "nonexistent" / ".edgeml"
+        target_dir = tmp_path / "nonexistent" / ".octomil"
         monkeypatch.setattr(
-            "edgeml.cli.os.path.expanduser",
-            lambda x: str(target_dir) if "~/.edgeml" in x else x,
+            "octomil.cli.os.path.expanduser",
+            lambda x: str(target_dir) if "~/.octomil" in x else x,
         )
         # Parent directory won't exist, but os.makedirs with exist_ok handles it
         # Actually, we need the parent to exist. Let's use tmp_path directly.
-        target_dir = tmp_path / ".edgeml"
+        target_dir = tmp_path / ".octomil"
         monkeypatch.setattr(
-            "edgeml.cli.os.path.expanduser",
-            lambda x: str(target_dir) if "~/.edgeml" in x else x,
+            "octomil.cli.os.path.expanduser",
+            lambda x: str(target_dir) if "~/.octomil" in x else x,
         )
         assert not target_dir.exists()
         _save_credentials("edg_new")
@@ -93,13 +93,13 @@ class TestCredentialSaving:
 
     def test_overwrites_existing_credentials(self, tmp_path, monkeypatch):
         monkeypatch.setattr(
-            "edgeml.cli.os.path.expanduser",
-            lambda x: str(tmp_path / ".edgeml") if "~/.edgeml" in x else x,
+            "octomil.cli.os.path.expanduser",
+            lambda x: str(tmp_path / ".octomil") if "~/.octomil" in x else x,
         )
         _save_credentials("edg_first", org="OrgA")
         _save_credentials("edg_second", org="OrgB")
 
-        cred_file = tmp_path / ".edgeml" / "credentials"
+        cred_file = tmp_path / ".octomil" / "credentials"
         data = json.loads(cred_file.read_text())
         assert data["api_key"] == "edg_second"
         assert data["org"] == "OrgB"
@@ -109,12 +109,12 @@ class TestCredentialSaving:
         import stat
 
         monkeypatch.setattr(
-            "edgeml.cli.os.path.expanduser",
-            lambda x: str(tmp_path / ".edgeml") if "~/.edgeml" in x else x,
+            "octomil.cli.os.path.expanduser",
+            lambda x: str(tmp_path / ".octomil") if "~/.octomil" in x else x,
         )
         _save_credentials("edg_secret")
 
-        cred_file = tmp_path / ".edgeml" / "credentials"
+        cred_file = tmp_path / ".octomil" / "credentials"
         mode = stat.S_IMODE(os.stat(cred_file).st_mode)
         assert mode == 0o600
 
@@ -128,57 +128,57 @@ class TestCredentialLoading:
     """Test _get_api_key reads both JSON and legacy formats."""
 
     def test_reads_json_format(self, tmp_path, monkeypatch):
-        from edgeml.cli import _get_api_key
+        from octomil.cli import _get_api_key
 
-        monkeypatch.delenv("EDGEML_API_KEY", raising=False)
-        cred_dir = tmp_path / ".edgeml"
+        monkeypatch.delenv("OCTOMIL_API_KEY", raising=False)
+        cred_dir = tmp_path / ".octomil"
         cred_dir.mkdir()
         (cred_dir / "credentials").write_text(
             json.dumps({"api_key": "edg_json_key", "org": "TestOrg"})
         )
         monkeypatch.setattr(
-            "edgeml.cli.os.path.expanduser",
+            "octomil.cli.os.path.expanduser",
             lambda x: str(cred_dir / "credentials"),
         )
         assert _get_api_key() == "edg_json_key"
 
     def test_reads_legacy_format(self, tmp_path, monkeypatch):
-        from edgeml.cli import _get_api_key
+        from octomil.cli import _get_api_key
 
-        monkeypatch.delenv("EDGEML_API_KEY", raising=False)
-        cred_dir = tmp_path / ".edgeml"
+        monkeypatch.delenv("OCTOMIL_API_KEY", raising=False)
+        cred_dir = tmp_path / ".octomil"
         cred_dir.mkdir()
         (cred_dir / "credentials").write_text("api_key=edg_legacy_key\n")
         monkeypatch.setattr(
-            "edgeml.cli.os.path.expanduser",
+            "octomil.cli.os.path.expanduser",
             lambda x: str(cred_dir / "credentials"),
         )
         assert _get_api_key() == "edg_legacy_key"
 
     def test_env_var_takes_priority_over_file(self, tmp_path, monkeypatch):
-        from edgeml.cli import _get_api_key
+        from octomil.cli import _get_api_key
 
-        monkeypatch.setenv("EDGEML_API_KEY", "edg_env_key")
-        cred_dir = tmp_path / ".edgeml"
+        monkeypatch.setenv("OCTOMIL_API_KEY", "edg_env_key")
+        cred_dir = tmp_path / ".octomil"
         cred_dir.mkdir()
         (cred_dir / "credentials").write_text(
             json.dumps({"api_key": "edg_file_key"})
         )
         monkeypatch.setattr(
-            "edgeml.cli.os.path.expanduser",
+            "octomil.cli.os.path.expanduser",
             lambda x: str(cred_dir / "credentials"),
         )
         assert _get_api_key() == "edg_env_key"
 
     def test_empty_file_returns_empty_string(self, tmp_path, monkeypatch):
-        from edgeml.cli import _get_api_key
+        from octomil.cli import _get_api_key
 
-        monkeypatch.delenv("EDGEML_API_KEY", raising=False)
-        cred_dir = tmp_path / ".edgeml"
+        monkeypatch.delenv("OCTOMIL_API_KEY", raising=False)
+        cred_dir = tmp_path / ".octomil"
         cred_dir.mkdir()
         (cred_dir / "credentials").write_text("")
         monkeypatch.setattr(
-            "edgeml.cli.os.path.expanduser",
+            "octomil.cli.os.path.expanduser",
             lambda x: str(cred_dir / "credentials"),
         )
         assert _get_api_key() == ""
@@ -193,10 +193,10 @@ class TestApiKeyFlag:
     """Test the --api-key flag bypasses browser flow."""
 
     def test_api_key_flag_saves_directly(self, tmp_path, monkeypatch):
-        cred_dir = tmp_path / ".edgeml"
+        cred_dir = tmp_path / ".octomil"
         monkeypatch.setattr(
-            "edgeml.cli.os.path.expanduser",
-            lambda x: str(cred_dir) if "~/.edgeml" in x else x,
+            "octomil.cli.os.path.expanduser",
+            lambda x: str(cred_dir) if "~/.octomil" in x else x,
         )
 
         runner = CliRunner()
@@ -208,13 +208,13 @@ class TestApiKeyFlag:
         assert data["api_key"] == "edg_ci_key"
 
     def test_api_key_flag_does_not_open_browser(self, tmp_path, monkeypatch):
-        cred_dir = tmp_path / ".edgeml"
+        cred_dir = tmp_path / ".octomil"
         monkeypatch.setattr(
-            "edgeml.cli.os.path.expanduser",
-            lambda x: str(cred_dir) if "~/.edgeml" in x else x,
+            "octomil.cli.os.path.expanduser",
+            lambda x: str(cred_dir) if "~/.octomil" in x else x,
         )
 
-        with patch("edgeml.cli.webbrowser.open") as mock_open:
+        with patch("octomil.cli.webbrowser.open") as mock_open:
             runner = CliRunner()
             runner.invoke(main, ["login", "--api-key", "edg_ci_key"])
         mock_open.assert_not_called()
@@ -306,10 +306,10 @@ class TestCallbackServer:
         """Full integration: start callback server, simulate dashboard redirect."""
         import socket
 
-        cred_dir = tmp_path / ".edgeml"
+        cred_dir = tmp_path / ".octomil"
         monkeypatch.setattr(
-            "edgeml.cli.os.path.expanduser",
-            lambda x: str(cred_dir) if "~/.edgeml" in x else x,
+            "octomil.cli.os.path.expanduser",
+            lambda x: str(cred_dir) if "~/.octomil" in x else x,
         )
 
         # We need to intercept the browser open call to get the auth URL,
@@ -337,7 +337,7 @@ class TestCallbackServer:
 
             threading.Thread(target=do_callback, daemon=True).start()
 
-        with patch("edgeml.cli.webbrowser.open", side_effect=fake_browser_open):
+        with patch("octomil.cli.webbrowser.open", side_effect=fake_browser_open):
             runner = CliRunner()
             result = runner.invoke(main, ["login"])
 
@@ -354,10 +354,10 @@ class TestCallbackServer:
 
     def test_browser_open_is_called_with_correct_url(self, tmp_path, monkeypatch):
         """Verify the URL opened in the browser has correct structure."""
-        cred_dir = tmp_path / ".edgeml"
+        cred_dir = tmp_path / ".octomil"
         monkeypatch.setattr(
-            "edgeml.cli.os.path.expanduser",
-            lambda x: str(cred_dir) if "~/.edgeml" in x else x,
+            "octomil.cli.os.path.expanduser",
+            lambda x: str(cred_dir) if "~/.octomil" in x else x,
         )
 
         captured_url = {}
@@ -380,14 +380,14 @@ class TestCallbackServer:
 
             threading.Thread(target=do_callback, daemon=True).start()
 
-        with patch("edgeml.cli.webbrowser.open", side_effect=fake_browser_open):
+        with patch("octomil.cli.webbrowser.open", side_effect=fake_browser_open):
             runner = CliRunner()
             runner.invoke(main, ["login"])
 
         url = captured_url["url"]
         parsed = urllib.parse.urlparse(url)
         assert parsed.scheme == "https"
-        assert parsed.netloc == "app.edgeml.io"
+        assert parsed.netloc == "app.octomil.com"
         assert parsed.path == "/cli/auth"
         params = urllib.parse.parse_qs(parsed.query)
         assert "callback" in params
@@ -396,13 +396,13 @@ class TestCallbackServer:
         assert callback.startswith("http://127.0.0.1:")
 
     def test_custom_dashboard_url(self, tmp_path, monkeypatch):
-        """Verify EDGEML_DASHBOARD_URL env var is respected."""
-        cred_dir = tmp_path / ".edgeml"
+        """Verify OCTOMIL_DASHBOARD_URL env var is respected."""
+        cred_dir = tmp_path / ".octomil"
         monkeypatch.setattr(
-            "edgeml.cli.os.path.expanduser",
-            lambda x: str(cred_dir) if "~/.edgeml" in x else x,
+            "octomil.cli.os.path.expanduser",
+            lambda x: str(cred_dir) if "~/.octomil" in x else x,
         )
-        monkeypatch.setenv("EDGEML_DASHBOARD_URL", "https://custom.edgeml.dev")
+        monkeypatch.setenv("OCTOMIL_DASHBOARD_URL", "https://custom.octomil.dev")
 
         captured_url = {}
 
@@ -423,19 +423,19 @@ class TestCallbackServer:
 
             threading.Thread(target=do_callback, daemon=True).start()
 
-        with patch("edgeml.cli.webbrowser.open", side_effect=fake_browser_open):
+        with patch("octomil.cli.webbrowser.open", side_effect=fake_browser_open):
             runner = CliRunner()
             runner.invoke(main, ["login"])
 
         url = captured_url["url"]
-        assert url.startswith("https://custom.edgeml.dev/cli/auth")
+        assert url.startswith("https://custom.octomil.dev/cli/auth")
 
     def test_server_serves_success_html(self, tmp_path, monkeypatch):
         """Verify the callback response includes a success page."""
-        cred_dir = tmp_path / ".edgeml"
+        cred_dir = tmp_path / ".octomil"
         monkeypatch.setattr(
-            "edgeml.cli.os.path.expanduser",
-            lambda x: str(cred_dir) if "~/.edgeml" in x else x,
+            "octomil.cli.os.path.expanduser",
+            lambda x: str(cred_dir) if "~/.octomil" in x else x,
         )
 
         response_body = {}
@@ -457,7 +457,7 @@ class TestCallbackServer:
 
             threading.Thread(target=do_callback, daemon=True).start()
 
-        with patch("edgeml.cli.webbrowser.open", side_effect=fake_browser_open):
+        with patch("octomil.cli.webbrowser.open", side_effect=fake_browser_open):
             runner = CliRunner()
             runner.invoke(main, ["login"])
 

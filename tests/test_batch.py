@@ -1,4 +1,4 @@
-"""Tests for edgeml.batch — async request queue for serialised engine access."""
+"""Tests for octomil.batch — async request queue for serialised engine access."""
 
 from __future__ import annotations
 
@@ -10,14 +10,14 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from httpx import ASGITransport, AsyncClient
 
-from edgeml.batch import (
+from octomil.batch import (
     DEFAULT_MAX_QUEUE_DEPTH,
     QueueFullError,
     QueueStats,
     QueueTimeoutError,
     RequestQueue,
 )
-from edgeml.serve import (
+from octomil.serve import (
     EchoBackend,
     GenerationRequest,
     create_app,
@@ -300,7 +300,7 @@ class TestRequestQueueUnit:
 @pytest.fixture
 def echo_app_with_queue():
     """Create a FastAPI app with EchoBackend and request queue enabled."""
-    with patch("edgeml.serve._detect_backend") as mock_detect:
+    with patch("octomil.serve._detect_backend") as mock_detect:
         echo = EchoBackend()
         echo.load_model("test-model")
         mock_detect.return_value = echo
@@ -320,7 +320,7 @@ def echo_app_with_queue():
 @pytest.fixture
 def echo_app_no_queue():
     """Create a FastAPI app with EchoBackend and NO request queue."""
-    with patch("edgeml.serve._detect_backend") as mock_detect:
+    with patch("octomil.serve._detect_backend") as mock_detect:
         echo = EchoBackend()
         echo.load_model("test-model")
         mock_detect.return_value = echo

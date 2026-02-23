@@ -8,7 +8,7 @@ Usage::
     python examples/code-assistant/demo.py --url http://localhost:8080
 """
 
-from edgeml.demos.code_assistant import main
+from octomil.demos.code_assistant import main
 
 if __name__ == "__main__":
     main()

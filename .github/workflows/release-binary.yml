@@ -45,39 +45,39 @@ jobs:
           pip install pyinstaller
 
       - name: Build binary
-        run: pyinstaller edgeml.spec --noconfirm
+        run: pyinstaller octomil.spec --noconfirm
 
       - name: Verify binary
         run: |
-          ./dist/edgeml/edgeml --version
-          ./dist/edgeml/edgeml --help
-          echo "Binary size: $(du -sh dist/edgeml/ | cut -f1)"
+          ./dist/octomil/octomil --version
+          ./dist/octomil/octomil --help
+          echo "Binary size: $(du -sh dist/octomil/ | cut -f1)"
           # Smoke-test serve startup (must not crash with ModuleNotFoundError)
-          ./dist/edgeml/edgeml serve --help
+          ./dist/octomil/octomil serve --help
 
       - name: Create archive
         run: |
           cd dist
-          tar -czf "edgeml-${{ matrix.target }}.tar.gz" edgeml/
+          tar -czf "octomil-${{ matrix.target }}.tar.gz" octomil/
 
       - name: Generate SHA256
         id: sha
         run: |
           if command -v sha256sum &>/dev/null; then
-            SHA=$(sha256sum "dist/edgeml-${{ matrix.target }}.${{ matrix.archive }}" | awk '{print $1}')
+            SHA=$(sha256sum "dist/octomil-${{ matrix.target }}.${{ matrix.archive }}" | awk '{print $1}')
           else
-            SHA=$(shasum -a 256 "dist/edgeml-${{ matrix.target }}.${{ matrix.archive }}" | awk '{print $1}')
+            SHA=$(shasum -a 256 "dist/octomil-${{ matrix.target }}.${{ matrix.archive }}" | awk '{print $1}')
           fi
           echo "sha256=${SHA}" >> "$GITHUB_OUTPUT"
-          echo "${SHA}  edgeml-${{ matrix.target }}.${{ matrix.archive }}" > "dist/edgeml-${{ matrix.target }}.${{ matrix.archive }}.sha256"
+          echo "${SHA}  octomil-${{ matrix.target }}.${{ matrix.archive }}" > "dist/octomil-${{ matrix.target }}.${{ matrix.archive }}.sha256"
 
       - name: Upload artifact
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
-          name: edgeml-${{ matrix.target }}
+          name: octomil-${{ matrix.target }}
           path: |
-            dist/edgeml-${{ matrix.target }}.${{ matrix.archive }}
-            dist/edgeml-${{ matrix.target }}.${{ matrix.archive }}.sha256
+            dist/octomil-${{ matrix.target }}.${{ matrix.archive }}
+            dist/octomil-${{ matrix.target }}.${{ matrix.archive }}.sha256
           if-no-files-found: error
           retention-days: 5
 

@@ -1,4 +1,4 @@
-"""Tests for deploy orchestration, train, and rollback in edgeml.client."""
+"""Tests for deploy orchestration, train, and rollback in octomil.client."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ from unittest.mock import patch
 
 import pytest
 
-from edgeml.models import (
+from octomil.models import (
     DeploymentPlan,
     DeploymentResult,
     DeviceDeployment,
@@ -41,13 +41,13 @@ class TestDataClasses:
             format="tflite",
             executor="nnapi",
             quantization="fp16",
-            download_url="https://cdn.edgeml.io/model.tflite",
+            download_url="https://cdn.octomil.com/model.tflite",
             conversion_needed=True,
             runtime_config={"threads": 4},
         )
         d = dd.to_dict()
         assert d["device_id"] == "dev-1"
-        assert d["download_url"] == "https://cdn.edgeml.io/model.tflite"
+        assert d["download_url"] == "https://cdn.octomil.com/model.tflite"
         assert d["conversion_needed"] is True
         assert d["runtime_config"]["threads"] == 4
 
@@ -82,7 +82,7 @@ class TestDataClasses:
         ds = DeviceDeploymentStatus(
             device_id="dev-1",
             status="deployed",
-            download_url="https://cdn.edgeml.io/model.onnx",
+            download_url="https://cdn.octomil.com/model.onnx",
             error=None,
         )
         d = ds.to_dict()
@@ -150,11 +150,11 @@ class TestDataClasses:
 
 
 class TestDeployWithDeviceTargeting:
-    @patch("edgeml.client.RolloutsAPI")
-    @patch("edgeml.client.ModelRegistry")
-    @patch("edgeml.client._ApiClient")
+    @patch("octomil.client.RolloutsAPI")
+    @patch("octomil.client.ModelRegistry")
+    @patch("octomil.client._ApiClient")
     def test_deploy_with_devices(self, mock_api_cls, mock_reg_cls, mock_rollouts_cls):
-        from edgeml.client import Client
+        from octomil.client import Client
 
         mock_api = mock_api_cls.return_value
         mock_reg = mock_reg_cls.return_value
@@ -191,11 +191,11 @@ class TestDeployWithDeviceTargeting:
         assert payload["devices"] == ["dev-1", "dev-2"]
         assert payload["strategy"] == "immediate"
 
-    @patch("edgeml.client.RolloutsAPI")
-    @patch("edgeml.client.ModelRegistry")
-    @patch("edgeml.client._ApiClient")
+    @patch("octomil.client.RolloutsAPI")
+    @patch("octomil.client.ModelRegistry")
+    @patch("octomil.client._ApiClient")
     def test_deploy_with_group(self, mock_api_cls, mock_reg_cls, mock_rollouts_cls):
-        from edgeml.client import Client
+        from octomil.client import Client
 
         mock_api = mock_api_cls.return_value
         mock_reg = mock_reg_cls.return_value
@@ -222,13 +222,13 @@ class TestDeployWithDeviceTargeting:
         assert payload["group"] == "production"
         assert "devices" not in payload
 
-    @patch("edgeml.client.RolloutsAPI")
-    @patch("edgeml.client.ModelRegistry")
-    @patch("edgeml.client._ApiClient")
+    @patch("octomil.client.RolloutsAPI")
+    @patch("octomil.client.ModelRegistry")
+    @patch("octomil.client._ApiClient")
     def test_deploy_with_explicit_version_and_devices(
         self, mock_api_cls, mock_reg_cls, mock_rollouts_cls
     ):
-        from edgeml.client import Client
+        from octomil.client import Client
 
         mock_api = mock_api_cls.return_value
         mock_reg = mock_reg_cls.return_value
@@ -252,13 +252,13 @@ class TestDeployWithDeviceTargeting:
         # Should NOT have called get_latest_version since version was explicit
         mock_reg.get_latest_version.assert_not_called()
 
-    @patch("edgeml.client.RolloutsAPI")
-    @patch("edgeml.client.ModelRegistry")
-    @patch("edgeml.client._ApiClient")
+    @patch("octomil.client.RolloutsAPI")
+    @patch("octomil.client.ModelRegistry")
+    @patch("octomil.client._ApiClient")
     def test_deploy_with_device_error_status(
         self, mock_api_cls, mock_reg_cls, mock_rollouts_cls
     ):
-        from edgeml.client import Client
+        from octomil.client import Client
 
         mock_api = mock_api_cls.return_value
         mock_reg = mock_reg_cls.return_value
@@ -291,14 +291,14 @@ class TestDeployWithDeviceTargeting:
 
 
 class TestDeployFallbackToRollout:
-    @patch("edgeml.client.RolloutsAPI")
-    @patch("edgeml.client.ModelRegistry")
-    @patch("edgeml.client._ApiClient")
+    @patch("octomil.client.RolloutsAPI")
+    @patch("octomil.client.ModelRegistry")
+    @patch("octomil.client._ApiClient")
     def test_deploy_without_targeting_uses_rollout(
         self, mock_api_cls, mock_reg_cls, mock_rollouts_cls
     ):
         """When no devices/group is specified, deploy falls back to rollout."""
-        from edgeml.client import Client
+        from octomil.client import Client
 
         mock_reg = mock_reg_cls.return_value
         mock_reg.resolve_model_id.return_value = "model-abc"
@@ -324,13 +324,13 @@ class TestDeployFallbackToRollout:
             start_immediately=False,
         )
 
-    @patch("edgeml.client.RolloutsAPI")
-    @patch("edgeml.client.ModelRegistry")
-    @patch("edgeml.client._ApiClient")
+    @patch("octomil.client.RolloutsAPI")
+    @patch("octomil.client.ModelRegistry")
+    @patch("octomil.client._ApiClient")
     def test_deploy_immediate_strategy_fallback(
         self, mock_api_cls, mock_reg_cls, mock_rollouts_cls
     ):
-        from edgeml.client import Client
+        from octomil.client import Client
 
         mock_reg = mock_reg_cls.return_value
         mock_reg.resolve_model_id.return_value = "model-abc"
@@ -356,13 +356,13 @@ class TestDeployFallbackToRollout:
 
 
 class TestDeployPrepare:
-    @patch("edgeml.client.RolloutsAPI")
-    @patch("edgeml.client.ModelRegistry")
-    @patch("edgeml.client._ApiClient")
+    @patch("octomil.client.RolloutsAPI")
+    @patch("octomil.client.ModelRegistry")
+    @patch("octomil.client._ApiClient")
     def test_deploy_prepare_with_devices(
         self, mock_api_cls, mock_reg_cls, mock_rollouts_cls
     ):
-        from edgeml.client import Client
+        from octomil.client import Client
 
         mock_api = mock_api_cls.return_value
         mock_reg = mock_reg_cls.return_value
@@ -376,7 +376,7 @@ class TestDeployPrepare:
                     "format": "coreml",
                     "executor": "coreml_npu",
                     "quantization": "int8",
-                    "download_url": "https://cdn.edgeml.io/model.mlmodel",
+                    "download_url": "https://cdn.octomil.com/model.mlmodel",
                     "conversion_needed": False,
                     "runtime_config": {"threads": 2},
                 },
@@ -404,13 +404,13 @@ class TestDeployPrepare:
         assert plan.deployments[1].conversion_needed is True
         assert plan.deployments[1].download_url is None
 
-    @patch("edgeml.client.RolloutsAPI")
-    @patch("edgeml.client.ModelRegistry")
-    @patch("edgeml.client._ApiClient")
+    @patch("octomil.client.RolloutsAPI")
+    @patch("octomil.client.ModelRegistry")
+    @patch("octomil.client._ApiClient")
     def test_deploy_prepare_with_group(
         self, mock_api_cls, mock_reg_cls, mock_rollouts_cls
     ):
-        from edgeml.client import Client
+        from octomil.client import Client
 
         mock_api = mock_api_cls.return_value
         mock_reg = mock_reg_cls.return_value
@@ -440,13 +440,13 @@ class TestDeployPrepare:
         payload = call_args[0][1]
         assert payload["group"] == "production"
 
-    @patch("edgeml.client.RolloutsAPI")
-    @patch("edgeml.client.ModelRegistry")
-    @patch("edgeml.client._ApiClient")
+    @patch("octomil.client.RolloutsAPI")
+    @patch("octomil.client.ModelRegistry")
+    @patch("octomil.client._ApiClient")
     def test_deploy_prepare_explicit_version(
         self, mock_api_cls, mock_reg_cls, mock_rollouts_cls
     ):
-        from edgeml.client import Client
+        from octomil.client import Client
 
         mock_api = mock_api_cls.return_value
         mock_reg = mock_reg_cls.return_value
@@ -460,13 +460,13 @@ class TestDeployPrepare:
         assert plan.model_version == "5.0.0"
         mock_reg.get_latest_version.assert_not_called()
 
-    @patch("edgeml.client.RolloutsAPI")
-    @patch("edgeml.client.ModelRegistry")
-    @patch("edgeml.client._ApiClient")
+    @patch("octomil.client.RolloutsAPI")
+    @patch("octomil.client.ModelRegistry")
+    @patch("octomil.client._ApiClient")
     def test_deploy_prepare_empty_result(
         self, mock_api_cls, mock_reg_cls, mock_rollouts_cls
     ):
-        from edgeml.client import Client
+        from octomil.client import Client
 
         mock_api = mock_api_cls.return_value
         mock_reg = mock_reg_cls.return_value
@@ -487,11 +487,11 @@ class TestDeployPrepare:
 
 
 class TestTrain:
-    @patch("edgeml.client.RolloutsAPI")
-    @patch("edgeml.client.ModelRegistry")
-    @patch("edgeml.client._ApiClient")
+    @patch("octomil.client.RolloutsAPI")
+    @patch("octomil.client.ModelRegistry")
+    @patch("octomil.client._ApiClient")
     def test_train_creates_session(self, mock_api_cls, mock_reg_cls, mock_rollouts_cls):
-        from edgeml.client import Client
+        from octomil.client import Client
 
         mock_api = mock_api_cls.return_value
         mock_reg = mock_reg_cls.return_value
@@ -512,13 +512,13 @@ class TestTrain:
         assert result.strategy == "fedavg"
         assert result.status == "created"
 
-    @patch("edgeml.client.RolloutsAPI")
-    @patch("edgeml.client.ModelRegistry")
-    @patch("edgeml.client._ApiClient")
+    @patch("octomil.client.RolloutsAPI")
+    @patch("octomil.client.ModelRegistry")
+    @patch("octomil.client._ApiClient")
     def test_train_with_group_and_kwargs(
         self, mock_api_cls, mock_reg_cls, mock_rollouts_cls
     ):
-        from edgeml.client import Client
+        from octomil.client import Client
 
         mock_api = mock_api_cls.return_value
         mock_reg = mock_reg_cls.return_value
@@ -555,11 +555,11 @@ class TestTrain:
         assert payload["min_updates"] == 5
         assert payload["learning_rate"] == 0.001
 
-    @patch("edgeml.client.RolloutsAPI")
-    @patch("edgeml.client.ModelRegistry")
-    @patch("edgeml.client._ApiClient")
+    @patch("octomil.client.RolloutsAPI")
+    @patch("octomil.client.ModelRegistry")
+    @patch("octomil.client._ApiClient")
     def test_train_defaults(self, mock_api_cls, mock_reg_cls, mock_rollouts_cls):
-        from edgeml.client import Client
+        from octomil.client import Client
 
         mock_api = mock_api_cls.return_value
         mock_reg = mock_reg_cls.return_value
@@ -584,13 +584,13 @@ class TestTrain:
 
 
 class TestRollback:
-    @patch("edgeml.client.RolloutsAPI")
-    @patch("edgeml.client.ModelRegistry")
-    @patch("edgeml.client._ApiClient")
+    @patch("octomil.client.RolloutsAPI")
+    @patch("octomil.client.ModelRegistry")
+    @patch("octomil.client._ApiClient")
     def test_rollback_to_previous_version(
         self, mock_api_cls, mock_reg_cls, mock_rollouts_cls
     ):
-        from edgeml.client import Client
+        from octomil.client import Client
 
         mock_reg = mock_reg_cls.return_value
         mock_reg.resolve_model_id.return_value = "model-abc"
@@ -625,13 +625,13 @@ class TestRollback:
             start_immediately=True,
         )
 
-    @patch("edgeml.client.RolloutsAPI")
-    @patch("edgeml.client.ModelRegistry")
-    @patch("edgeml.client._ApiClient")
+    @patch("octomil.client.RolloutsAPI")
+    @patch("octomil.client.ModelRegistry")
+    @patch("octomil.client._ApiClient")
     def test_rollback_to_specific_version(
         self, mock_api_cls, mock_reg_cls, mock_rollouts_cls
     ):
-        from edgeml.client import Client
+        from octomil.client import Client
 
         mock_reg = mock_reg_cls.return_value
         mock_reg.resolve_model_id.return_value = "model-abc"
@@ -652,14 +652,14 @@ class TestRollback:
         # Should NOT have called list_versions since to_version was explicit
         mock_reg.list_versions.assert_not_called()
 
-    @patch("edgeml.client.RolloutsAPI")
-    @patch("edgeml.client.ModelRegistry")
-    @patch("edgeml.client._ApiClient")
+    @patch("octomil.client.RolloutsAPI")
+    @patch("octomil.client.ModelRegistry")
+    @patch("octomil.client._ApiClient")
     def test_rollback_fails_with_single_version(
         self, mock_api_cls, mock_reg_cls, mock_rollouts_cls
     ):
-        from edgeml.client import Client
-        from edgeml import EdgeMLClientError
+        from octomil.client import Client
+        from octomil import OctomilClientError
 
         mock_reg = mock_reg_cls.return_value
         mock_reg.resolve_model_id.return_value = "model-abc"
@@ -667,7 +667,7 @@ class TestRollback:
         mock_reg.list_versions.return_value = {"versions": [{"version": "1.0.0"}]}
 
         client = Client(api_key="key")
-        with pytest.raises(EdgeMLClientError, match="only one version exists"):
+        with pytest.raises(OctomilClientError, match="only one version exists"):
             client.rollback("my-model")
 
 
@@ -677,11 +677,11 @@ class TestRollback:
 
 
 class TestCLIDeploy:
-    @patch("edgeml.cli._get_client")
+    @patch("octomil.cli._get_client")
     def test_cli_deploy_with_devices(self, mock_get_client):
         from click.testing import CliRunner
 
-        from edgeml.cli import main
+        from octomil.cli import main
 
         mock_client = mock_get_client.return_value
         mock_client.deploy.return_value = DeploymentResult(
@@ -710,11 +710,11 @@ class TestCLIDeploy:
             group=None,
         )
 
-    @patch("edgeml.cli._get_client")
+    @patch("octomil.cli._get_client")
     def test_cli_deploy_with_group(self, mock_get_client):
         from click.testing import CliRunner
 
-        from edgeml.cli import main
+        from octomil.cli import main
 
         mock_client = mock_get_client.return_value
         mock_client.deploy.return_value = DeploymentResult(
@@ -739,11 +739,11 @@ class TestCLIDeploy:
             group="production",
         )
 
-    @patch("edgeml.cli._get_client")
+    @patch("octomil.cli._get_client")
     def test_cli_deploy_dry_run(self, mock_get_client):
         from click.testing import CliRunner
 
-        from edgeml.cli import main
+        from octomil.cli import main
 
         mock_client = mock_get_client.return_value
         mock_client.deploy_prepare.return_value = DeploymentPlan(
@@ -786,11 +786,11 @@ class TestCLIDeploy:
         assert "(conversion needed)" in result.output
         mock_client.deploy.assert_not_called()
 
-    @patch("edgeml.cli._get_client")
+    @patch("octomil.cli._get_client")
     def test_cli_deploy_fallback_no_targeting(self, mock_get_client):
         from click.testing import CliRunner
 
-        from edgeml.cli import main
+        from octomil.cli import main
 
         mock_client = mock_get_client.return_value
         mock_client.deploy.return_value = {"id": "rollout-1", "status": "created"}
@@ -810,11 +810,11 @@ class TestCLIDeploy:
             strategy="canary",
         )
 
-    @patch("edgeml.cli._get_client")
+    @patch("octomil.cli._get_client")
     def test_cli_deploy_blue_green_strategy(self, mock_get_client):
         from click.testing import CliRunner
 
-        from edgeml.cli import main
+        from octomil.cli import main
 
         mock_client = mock_get_client.return_value
         mock_client.deploy.return_value = DeploymentResult(
@@ -847,11 +847,11 @@ class TestCLIDeploy:
 
 
 class TestCLIRollback:
-    @patch("edgeml.cli._get_client")
+    @patch("octomil.cli._get_client")
     def test_cli_rollback_default(self, mock_get_client):
         from click.testing import CliRunner
 
-        from edgeml.cli import main
+        from octomil.cli import main
 
         mock_client = mock_get_client.return_value
         mock_client.rollback.return_value = RollbackResult(
@@ -870,11 +870,11 @@ class TestCLIRollback:
         assert "rollout-rb" in result.output
         mock_client.rollback.assert_called_once_with("gemma-1b", to_version=None)
 
-    @patch("edgeml.cli._get_client")
+    @patch("octomil.cli._get_client")
     def test_cli_rollback_to_specific_version(self, mock_get_client):
         from click.testing import CliRunner
 
-        from edgeml.cli import main
+        from octomil.cli import main
 
         mock_client = mock_get_client.return_value
         mock_client.rollback.return_value = RollbackResult(
@@ -892,11 +892,11 @@ class TestCLIRollback:
         assert "3.0.0 -> 1.0.0" in result.output
         mock_client.rollback.assert_called_once_with("gemma-1b", to_version="1.0.0")
 
-    @patch("edgeml.cli._get_client")
+    @patch("octomil.cli._get_client")
     def test_cli_rollback_error(self, mock_get_client):
         from click.testing import CliRunner
 
-        from edgeml.cli import main
+        from octomil.cli import main
 
         mock_client = mock_get_client.return_value
         mock_client.rollback.side_effect = RuntimeError("only one version exists")
@@ -915,7 +915,7 @@ class TestCLIRollback:
 
 class TestParsingHelpers:
     def test_parse_deployment_result_with_id_key(self):
-        from edgeml.client import _parse_deployment_result
+        from octomil.client import _parse_deployment_result
 
         resp = {
             "id": "dep-alt",
@@ -928,14 +928,14 @@ class TestParsingHelpers:
         assert result.deployment_id == "dep-alt"
 
     def test_parse_deployment_result_empty_statuses(self):
-        from edgeml.client import _parse_deployment_result
+        from octomil.client import _parse_deployment_result
 
         resp = {"deployment_id": "dep-x", "status": "empty"}
         result = _parse_deployment_result(resp, "m", "1")
         assert result.device_statuses == []
 
     def test_parse_deployment_plan_missing_fields(self):
-        from edgeml.client import _parse_deployment_plan
+        from octomil.client import _parse_deployment_plan
 
         resp = {
             "deployments": [

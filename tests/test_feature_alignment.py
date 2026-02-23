@@ -14,14 +14,14 @@ class FeatureAlignmentTests(unittest.TestCase):
             self.skipTest("pandas not installed")
 
     def test_feature_aligner_embedding_strategy(self):
-        from edgeml.feature_alignment import FeatureAligner
+        from octomil.feature_alignment import FeatureAligner
 
         aligner = FeatureAligner(strategy="embedding", input_dim=10)
         self.assertEqual(aligner.strategy, "embedding")
         self.assertEqual(aligner.input_dim, 10)
 
     def test_feature_aligner_fit_single_dataframe(self):
-        from edgeml.feature_alignment import FeatureAligner
+        from octomil.feature_alignment import FeatureAligner
 
         df = pd.DataFrame({
             "feature1": [1, 2, 3],
@@ -34,7 +34,7 @@ class FeatureAlignmentTests(unittest.TestCase):
         self.assertIsInstance(result, FeatureAligner)
 
     def test_feature_aligner_fit_multiple_datasets(self):
-        from edgeml.feature_alignment import FeatureAligner
+        from octomil.feature_alignment import FeatureAligner
 
         datasets = {
             "device1": pd.DataFrame({
@@ -54,7 +54,7 @@ class FeatureAlignmentTests(unittest.TestCase):
         self.assertIsInstance(result, FeatureAligner)
 
     def test_feature_aligner_transform_embedding(self):
-        from edgeml.feature_alignment import FeatureAligner
+        from octomil.feature_alignment import FeatureAligner
 
         train_df = pd.DataFrame({
             "f1": [1, 2, 3],
@@ -74,7 +74,7 @@ class FeatureAlignmentTests(unittest.TestCase):
         self.assertEqual(transformed.shape[1], 4)
 
     def test_feature_aligner_intersection_strategy(self):
-        from edgeml.feature_alignment import FeatureAligner
+        from octomil.feature_alignment import FeatureAligner
 
         datasets = {
             "device1": pd.DataFrame({
@@ -102,7 +102,7 @@ class FeatureAlignmentTests(unittest.TestCase):
         self.assertIn("common1", transformed.columns)
 
     def test_feature_aligner_union_imputation_strategy(self):
-        from edgeml.feature_alignment import FeatureAligner
+        from octomil.feature_alignment import FeatureAligner
 
         datasets = {
             "device1": pd.DataFrame({
@@ -131,7 +131,7 @@ class FeatureAlignmentTests(unittest.TestCase):
         self.assertGreaterEqual(len(transformed.columns), 2)
 
     def test_feature_aligner_with_feature_schema(self):
-        from edgeml.feature_alignment import FeatureAligner
+        from octomil.feature_alignment import FeatureAligner
 
         aligner = FeatureAligner(
             strategy="embedding",
@@ -149,7 +149,7 @@ class FeatureAlignmentTests(unittest.TestCase):
         self.assertEqual(aligner.feature_schema, ["f1", "f2", "f3"])
 
     def test_auto_align_function(self):
-        from edgeml.feature_alignment import auto_align
+        from octomil.feature_alignment import auto_align
 
         # auto_align takes a single DataFrame, not a dict
         df = pd.DataFrame({
@@ -173,7 +173,7 @@ class FeatureAlignmentTests(unittest.TestCase):
         self.assertEqual(len(detected_features), 2)  # f1 and f2
 
     def test_feature_aligner_get_coverage(self):
-        from edgeml.feature_alignment import FeatureAligner
+        from octomil.feature_alignment import FeatureAligner
 
         datasets = {
             "device1": pd.DataFrame({
@@ -200,7 +200,7 @@ class FeatureAlignmentTests(unittest.TestCase):
         self.assertIn("coverage", coverage)
 
     def test_feature_aligner_imputation_methods(self):
-        from edgeml.feature_alignment import FeatureAligner
+        from octomil.feature_alignment import FeatureAligner
 
         df = pd.DataFrame({
             "f1": [1.0, 2.0, 3.0],
@@ -217,7 +217,7 @@ class FeatureAlignmentTests(unittest.TestCase):
             self.assertEqual(result.imputation_method, method)
 
     def test_feature_aligner_transform_without_fit_raises(self):
-        from edgeml.feature_alignment import FeatureAligner
+        from octomil.feature_alignment import FeatureAligner
 
         aligner = FeatureAligner(strategy="embedding", input_dim=5)
 
@@ -234,7 +234,7 @@ class FeatureAlignmentTests(unittest.TestCase):
             pass  # Expected behavior
 
     def test_feature_aligner_empty_dataframe(self):
-        from edgeml.feature_alignment import FeatureAligner
+        from octomil.feature_alignment import FeatureAligner
 
         df = pd.DataFrame()
         aligner = FeatureAligner(strategy="embedding", input_dim=5)
@@ -245,7 +245,7 @@ class FeatureAlignmentTests(unittest.TestCase):
             pass  # Expected to fail on empty data
 
     def test_feature_aligner_projection_matrix_shape(self):
-        from edgeml.feature_alignment import FeatureAligner
+        from octomil.feature_alignment import FeatureAligner
 
         df = pd.DataFrame({
             "f1": [1, 2, 3],
@@ -266,7 +266,7 @@ class FeatureAlignmentTests(unittest.TestCase):
 
     def test_embedding_auto_input_dim(self):
         """When input_dim=None, it should be set to len(all_features) during fit."""
-        from edgeml.feature_alignment import FeatureAligner
+        from octomil.feature_alignment import FeatureAligner
 
         df = pd.DataFrame({
             "a": [1, 2],
@@ -285,7 +285,7 @@ class FeatureAlignmentTests(unittest.TestCase):
 
     def test_embedding_large_input_dim_uses_secondary_projection(self):
         """When input_dim > 10, secondary hash projection entries with value 0.5 are used."""
-        from edgeml.feature_alignment import FeatureAligner
+        from octomil.feature_alignment import FeatureAligner
 
         df = pd.DataFrame({
             f"f{i}": [float(i), float(i + 1)] for i in range(5)
@@ -312,7 +312,7 @@ class FeatureAlignmentTests(unittest.TestCase):
 
     def test_embedding_feature_all_nan(self):
         """A feature column that is all NaN should get default stats."""
-        from edgeml.feature_alignment import FeatureAligner
+        from octomil.feature_alignment import FeatureAligner
 
         df = pd.DataFrame({
             "good_feature": [1.0, 2.0, 3.0],
@@ -331,7 +331,7 @@ class FeatureAlignmentTests(unittest.TestCase):
 
     def test_transform_union_imputation_median(self):
         """Union imputation with median method uses median value for missing features."""
-        from edgeml.feature_alignment import FeatureAligner
+        from octomil.feature_alignment import FeatureAligner
 
         datasets = {
             "d1": pd.DataFrame({
@@ -354,7 +354,7 @@ class FeatureAlignmentTests(unittest.TestCase):
 
     def test_transform_union_imputation_zero(self):
         """Union imputation with zero method fills missing features with 0."""
-        from edgeml.feature_alignment import FeatureAligner
+        from octomil.feature_alignment import FeatureAligner
 
         datasets = {
             "d1": pd.DataFrame({
@@ -375,7 +375,7 @@ class FeatureAlignmentTests(unittest.TestCase):
 
     def test_transform_union_preserves_target(self):
         """Union transform preserves target column and reorders features to match schema."""
-        from edgeml.feature_alignment import FeatureAligner
+        from octomil.feature_alignment import FeatureAligner
 
         datasets = {
             "d1": pd.DataFrame({
@@ -402,7 +402,7 @@ class FeatureAlignmentTests(unittest.TestCase):
 
     def test_get_config_returns_expected_keys(self):
         """get_config() returns dict with all expected keys after fitting."""
-        from edgeml.feature_alignment import FeatureAligner
+        from octomil.feature_alignment import FeatureAligner
 
         df = pd.DataFrame({
             "f1": [1.0, 2.0],
@@ -424,7 +424,7 @@ class FeatureAlignmentTests(unittest.TestCase):
 
     def test_from_config_roundtrip(self):
         """from_config() recreates an aligner with matching attributes."""
-        from edgeml.feature_alignment import FeatureAligner
+        from octomil.feature_alignment import FeatureAligner
 
         df = pd.DataFrame({
             "f1": [1.0, 2.0, 3.0],
@@ -446,7 +446,7 @@ class FeatureAlignmentTests(unittest.TestCase):
 
     def test_get_coverage_no_schema(self):
         """get_coverage() with no feature_schema returns coverage=1.0."""
-        from edgeml.feature_alignment import FeatureAligner
+        from octomil.feature_alignment import FeatureAligner
 
         aligner = FeatureAligner(strategy="embedding", input_dim=5)
         # Not fitted, so feature_schema is None
@@ -460,7 +460,7 @@ class FeatureAlignmentTests(unittest.TestCase):
 
     def test_transform_unknown_strategy_returns_input(self):
         """Transform with an unknown strategy returns the input DataFrame unchanged."""
-        from edgeml.feature_alignment import FeatureAligner
+        from octomil.feature_alignment import FeatureAligner
 
         aligner = FeatureAligner(strategy="embedding", input_dim=5)
         aligner.strategy = "unknown"

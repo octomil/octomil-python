@@ -3,7 +3,7 @@ import unittest
 from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
 
-from edgeml.auth import DeviceAuthClient, DeviceTokenState
+from octomil.auth import DeviceAuthClient, DeviceTokenState
 
 
 class _FakeKeyring:
@@ -89,8 +89,8 @@ class DeviceAuthClientTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_bootstrap_refresh_revoke_lifecycle(self):
         fake_keyring = _FakeKeyring()
-        with patch("edgeml.auth.keyring", fake_keyring), patch(
-            "edgeml.auth.httpx.AsyncClient", _FakeAsyncClient
+        with patch("octomil.auth.keyring", fake_keyring), patch(
+            "octomil.auth.httpx.AsyncClient", _FakeAsyncClient
         ):
             client = DeviceAuthClient(base_url="https://api.example.com", org_id="org_1", device_identifier="device_1")
             state = await client.bootstrap(bootstrap_bearer_token="bootstrap_token")
@@ -104,8 +104,8 @@ class DeviceAuthClientTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_bootstrap_sends_expected_payload_and_bearer_token(self):
         fake_keyring = _FakeKeyring()
-        with patch("edgeml.auth.keyring", fake_keyring), patch(
-            "edgeml.auth.httpx.AsyncClient", _FakeAsyncClient
+        with patch("octomil.auth.keyring", fake_keyring), patch(
+            "octomil.auth.httpx.AsyncClient", _FakeAsyncClient
         ):
             client = DeviceAuthClient(base_url="https://api.example.com", org_id="org_1", device_identifier="device_1")
             await client.bootstrap(
@@ -126,8 +126,8 @@ class DeviceAuthClientTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_refresh_uses_rotated_refresh_token(self):
         fake_keyring = _FakeKeyring()
-        with patch("edgeml.auth.keyring", fake_keyring), patch(
-            "edgeml.auth.httpx.AsyncClient", _FakeAsyncClient
+        with patch("octomil.auth.keyring", fake_keyring), patch(
+            "octomil.auth.httpx.AsyncClient", _FakeAsyncClient
         ):
             client = DeviceAuthClient(base_url="https://api.example.com", org_id="org_1", device_identifier="device_1")
             await client.bootstrap(bootstrap_bearer_token="bootstrap_token")
@@ -142,8 +142,8 @@ class DeviceAuthClientTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_get_access_token_offline_fallback_before_expiry(self):
         fake_keyring = _FakeKeyring()
-        with patch("edgeml.auth.keyring", fake_keyring), patch(
-            "edgeml.auth.httpx.AsyncClient", _FailRefreshAsyncClient
+        with patch("octomil.auth.keyring", fake_keyring), patch(
+            "octomil.auth.httpx.AsyncClient", _FailRefreshAsyncClient
         ):
             client = DeviceAuthClient(base_url="https://api.example.com", org_id="org_1", device_identifier="device_1")
             state = DeviceTokenState(
@@ -162,8 +162,8 @@ class DeviceAuthClientTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_get_access_token_raises_if_expired_and_refresh_fails(self):
         fake_keyring = _FakeKeyring()
-        with patch("edgeml.auth.keyring", fake_keyring), patch(
-            "edgeml.auth.httpx.AsyncClient", _FailRefreshAsyncClient
+        with patch("octomil.auth.keyring", fake_keyring), patch(
+            "octomil.auth.httpx.AsyncClient", _FailRefreshAsyncClient
         ):
             client = DeviceAuthClient(base_url="https://api.example.com", org_id="org_1", device_identifier="device_1")
             state = DeviceTokenState(
@@ -189,8 +189,8 @@ class DeviceAuthClientTests(unittest.IsolatedAsyncioTestCase):
                     raise RuntimeError("network down")
                 return await super().post(url, json=json, headers=headers)
 
-        with patch("edgeml.auth.keyring", fake_keyring), patch(
-            "edgeml.auth.httpx.AsyncClient", _FailRevokeAsyncClient
+        with patch("octomil.auth.keyring", fake_keyring), patch(
+            "octomil.auth.httpx.AsyncClient", _FailRevokeAsyncClient
         ):
             client = DeviceAuthClient(base_url="https://api.example.com", org_id="org_1", device_identifier="device_1")
             await client.bootstrap(bootstrap_bearer_token="bootstrap_token")
@@ -245,8 +245,8 @@ class DeviceAuthClientTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_clear_token_state(self):
         fake_keyring = _FakeKeyring()
-        with patch("edgeml.auth.keyring", fake_keyring), patch(
-            "edgeml.auth.httpx.AsyncClient", _FakeAsyncClient
+        with patch("octomil.auth.keyring", fake_keyring), patch(
+            "octomil.auth.httpx.AsyncClient", _FakeAsyncClient
         ):
             client = DeviceAuthClient(base_url="https://api.example.com", org_id="org_1", device_identifier="device_1")
             await client.bootstrap(bootstrap_bearer_token="bootstrap_token")
@@ -257,8 +257,8 @@ class DeviceAuthClientTests(unittest.IsolatedAsyncioTestCase):
     def test_get_access_token_sync_outside_loop(self):
         """Test get_access_token_sync works when called outside an event loop"""
         fake_keyring = _FakeKeyring()
-        with patch("edgeml.auth.keyring", fake_keyring), patch(
-            "edgeml.auth.httpx.AsyncClient", _FakeAsyncClient
+        with patch("octomil.auth.keyring", fake_keyring), patch(
+            "octomil.auth.httpx.AsyncClient", _FakeAsyncClient
         ):
             client = DeviceAuthClient(base_url="https://api.example.com", org_id="org_1", device_identifier="device_1")
             state = DeviceTokenState(
@@ -279,7 +279,7 @@ class DeviceAuthClientTests(unittest.IsolatedAsyncioTestCase):
         """Test get_access_token_sync raises when called inside an event loop"""
         await asyncio.sleep(0)  # ensure event loop is active
         fake_keyring = _FakeKeyring()
-        with patch("edgeml.auth.keyring", fake_keyring):
+        with patch("octomil.auth.keyring", fake_keyring):
             client = DeviceAuthClient(base_url="https://api.example.com", org_id="org_1", device_identifier="device_1")
             with self.assertRaises(RuntimeError) as ctx:
                 client.get_access_token_sync()
@@ -287,7 +287,7 @@ class DeviceAuthClientTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_get_access_token_no_token_state(self):
         fake_keyring = _FakeKeyring()
-        with patch("edgeml.auth.keyring", fake_keyring):
+        with patch("octomil.auth.keyring", fake_keyring):
             client = DeviceAuthClient(base_url="https://api.example.com", org_id="org_1", device_identifier="device_1")
             with self.assertRaises(RuntimeError) as ctx:
                 await client.get_access_token()
@@ -295,7 +295,7 @@ class DeviceAuthClientTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_refresh_no_token_state(self):
         fake_keyring = _FakeKeyring()
-        with patch("edgeml.auth.keyring", fake_keyring):
+        with patch("octomil.auth.keyring", fake_keyring):
             client = DeviceAuthClient(base_url="https://api.example.com", org_id="org_1", device_identifier="device_1")
             with self.assertRaises(RuntimeError) as ctx:
                 await client.refresh()
@@ -303,8 +303,8 @@ class DeviceAuthClientTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_revoke_with_no_state_is_noop(self):
         fake_keyring = _FakeKeyring()
-        with patch("edgeml.auth.keyring", fake_keyring), patch(
-            "edgeml.auth.httpx.AsyncClient", _FakeAsyncClient
+        with patch("octomil.auth.keyring", fake_keyring), patch(
+            "octomil.auth.httpx.AsyncClient", _FakeAsyncClient
         ):
             client = DeviceAuthClient(base_url="https://api.example.com", org_id="org_1", device_identifier="device_1")
             await client.revoke()

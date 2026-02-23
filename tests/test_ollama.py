@@ -1,4 +1,4 @@
-"""Tests for edgeml.ollama — ollama bridge and CLI integration."""
+"""Tests for octomil.ollama — ollama bridge and CLI integration."""
 
 from __future__ import annotations
 
@@ -8,8 +8,8 @@ import httpx
 import pytest
 from click.testing import CliRunner
 
-from edgeml.cli import main
-from edgeml.ollama import (
+from octomil.cli import main
+from octomil.ollama import (
     OllamaModel,
     get_ollama_model,
     is_ollama_running,
@@ -81,7 +81,7 @@ def _make_model(**overrides) -> OllamaModel:
 
 
 class TestIsOllamaRunning:
-    @patch("edgeml.ollama.httpx.get")
+    @patch("octomil.ollama.httpx.get")
     def test_returns_true_when_reachable(self, mock_get):
         mock_resp = MagicMock()
         mock_resp.status_code = 200
@@ -89,24 +89,24 @@ class TestIsOllamaRunning:
         assert is_ollama_running() is True
         mock_get.assert_called_once_with("http://localhost:11434/api/tags", timeout=3.0)
 
-    @patch("edgeml.ollama.httpx.get")
+    @patch("octomil.ollama.httpx.get")
     def test_returns_false_on_connect_error(self, mock_get):
         mock_get.side_effect = httpx.ConnectError("refused")
         assert is_ollama_running() is False
 
-    @patch("edgeml.ollama.httpx.get")
+    @patch("octomil.ollama.httpx.get")
     def test_returns_false_on_timeout(self, mock_get):
         mock_get.side_effect = httpx.TimeoutException("timed out")
         assert is_ollama_running() is False
 
-    @patch("edgeml.ollama.httpx.get")
+    @patch("octomil.ollama.httpx.get")
     def test_returns_false_on_non_200(self, mock_get):
         mock_resp = MagicMock()
         mock_resp.status_code = 500
         mock_get.return_value = mock_resp
         assert is_ollama_running() is False
 
-    @patch("edgeml.ollama.httpx.get")
+    @patch("octomil.ollama.httpx.get")
     def test_custom_base_url(self, mock_get):
         mock_resp = MagicMock()
         mock_resp.status_code = 200
@@ -121,8 +121,8 @@ class TestIsOllamaRunning:
 
 
 class TestListOllamaModels:
-    @patch("edgeml.ollama.resolve_gguf_path", return_value=None)
-    @patch("edgeml.ollama.httpx.get")
+    @patch("octomil.ollama.resolve_gguf_path", return_value=None)
+    @patch("octomil.ollama.httpx.get")
     def test_returns_models(self, mock_get, mock_resolve):
         mock_resp = MagicMock()
         mock_resp.status_code = 200
@@ -138,17 +138,17 @@ class TestListOllamaModels:
         assert models[1].name == "llama3.2:3b"
         assert models[2].name == "phi-3:mini"
 
-    @patch("edgeml.ollama.httpx.get")
+    @patch("octomil.ollama.httpx.get")
     def test_returns_empty_on_connect_error(self, mock_get):
         mock_get.side_effect = httpx.ConnectError("refused")
         assert list_ollama_models() == []
 
-    @patch("edgeml.ollama.httpx.get")
+    @patch("octomil.ollama.httpx.get")
     def test_returns_empty_on_timeout(self, mock_get):
         mock_get.side_effect = httpx.TimeoutException("timed out")
         assert list_ollama_models() == []
 
-    @patch("edgeml.ollama.httpx.get")
+    @patch("octomil.ollama.httpx.get")
     def test_returns_empty_on_http_error(self, mock_get):
         mock_resp = MagicMock()
         mock_resp.status_code = 500
@@ -165,8 +165,8 @@ class TestListOllamaModels:
 
 
 class TestGetOllamaModel:
-    @patch("edgeml.ollama.resolve_gguf_path", return_value=None)
-    @patch("edgeml.ollama.httpx.get")
+    @patch("octomil.ollama.resolve_gguf_path", return_value=None)
+    @patch("octomil.ollama.httpx.get")
     def test_found_by_full_name(self, mock_get, mock_resolve):
         mock_resp = MagicMock()
         mock_resp.status_code = 200
@@ -178,8 +178,8 @@ class TestGetOllamaModel:
         assert model is not None
         assert model.name == "gemma:2b"
 
-    @patch("edgeml.ollama.resolve_gguf_path", return_value=None)
-    @patch("edgeml.ollama.httpx.get")
+    @patch("octomil.ollama.resolve_gguf_path", return_value=None)
+    @patch("octomil.ollama.httpx.get")
     def test_found_by_base_name(self, mock_get, mock_resolve):
         mock_resp = MagicMock()
         mock_resp.status_code = 200
@@ -191,8 +191,8 @@ class TestGetOllamaModel:
         assert model is not None
         assert model.name == "gemma:2b"
 
-    @patch("edgeml.ollama.resolve_gguf_path", return_value=None)
-    @patch("edgeml.ollama.httpx.get")
+    @patch("octomil.ollama.resolve_gguf_path", return_value=None)
+    @patch("octomil.ollama.httpx.get")
     def test_not_found(self, mock_get, mock_resolve):
         mock_resp = MagicMock()
         mock_resp.status_code = 200
@@ -218,7 +218,7 @@ class TestResolveGgufPath:
 
         model = _make_model(digest="sha256:abc123def456")
 
-        with patch("edgeml.ollama._ollama_models_dir", return_value=str(tmp_path)):
+        with patch("octomil.ollama._ollama_models_dir", return_value=str(tmp_path)):
             result = resolve_gguf_path(model)
 
         assert result == str(blob_file)
@@ -229,7 +229,7 @@ class TestResolveGgufPath:
 
         model = _make_model(digest="sha256:doesnotexist")
 
-        with patch("edgeml.ollama._ollama_models_dir", return_value=str(tmp_path)):
+        with patch("octomil.ollama._ollama_models_dir", return_value=str(tmp_path)):
             result = resolve_gguf_path(model)
 
         assert result is None
@@ -266,9 +266,9 @@ class TestQuantizationMapping:
     def test_unknown_passes_through(self):
         assert map_quantization("WEIRD_QUANT") == "WEIRD_QUANT"
 
-    def test_model_edgeml_quantization_property(self):
+    def test_model_octomil_quantization_property(self):
         model = _make_model(quantization="Q4_K_M")
-        assert model.edgeml_quantization == "INT4"
+        assert model.octomil_quantization == "INT4"
 
 
 # ---------------------------------------------------------------------------
@@ -291,13 +291,13 @@ class TestOllamaModelProperties:
 
 
 # ---------------------------------------------------------------------------
-# CLI: edgeml models
+# CLI: octomil models
 # ---------------------------------------------------------------------------
 
 
 class TestModelsCommand:
-    @patch("edgeml.ollama.is_ollama_running", return_value=True)
-    @patch("edgeml.ollama.list_ollama_models")
+    @patch("octomil.ollama.is_ollama_running", return_value=True)
+    @patch("octomil.ollama.list_ollama_models")
     def test_models_ollama_only(self, mock_list, mock_running):
         mock_list.return_value = [
             _make_model(name="gemma:2b", size=1_678_000_000),
@@ -309,15 +309,15 @@ class TestModelsCommand:
         assert "gemma:2b" in result.output
         assert "Q4_K_M" in result.output
 
-    @patch("edgeml.ollama.is_ollama_running", return_value=False)
+    @patch("octomil.ollama.is_ollama_running", return_value=False)
     def test_models_ollama_not_running(self, mock_running):
         runner = CliRunner()
         result = runner.invoke(main, ["models", "--source", "ollama"])
         assert result.exit_code == 0
         assert "not running" in result.output
 
-    @patch("edgeml.ollama.is_ollama_running", return_value=True)
-    @patch("edgeml.ollama.list_ollama_models", return_value=[])
+    @patch("octomil.ollama.is_ollama_running", return_value=True)
+    @patch("octomil.ollama.list_ollama_models", return_value=[])
     def test_models_ollama_no_models(self, mock_list, mock_running):
         runner = CliRunner()
         result = runner.invoke(main, ["models", "--source", "ollama"])
@@ -325,7 +325,7 @@ class TestModelsCommand:
         assert "no models found" in result.output
 
     def test_models_registry_no_key(self, monkeypatch):
-        monkeypatch.delenv("EDGEML_API_KEY", raising=False)
+        monkeypatch.delenv("OCTOMIL_API_KEY", raising=False)
         runner = CliRunner()
         result = runner.invoke(main, ["models", "--source", "registry"])
         assert result.exit_code == 0
@@ -333,15 +333,15 @@ class TestModelsCommand:
 
 
 # ---------------------------------------------------------------------------
-# CLI: edgeml deploy --phone with ollama detection
+# CLI: octomil deploy --phone with ollama detection
 # ---------------------------------------------------------------------------
 
 
 class TestDeployWithOllama:
-    @patch("edgeml.cli.webbrowser.open")
-    @patch("edgeml.ollama.get_ollama_model")
+    @patch("octomil.cli.webbrowser.open")
+    @patch("octomil.ollama.get_ollama_model")
     def test_deploy_phone_detects_ollama(self, mock_get_model, mock_open, monkeypatch):
-        monkeypatch.setenv("EDGEML_API_KEY", "test-key")
+        monkeypatch.setenv("OCTOMIL_API_KEY", "test-key")
 
         mock_get_model.return_value = _make_model(
             name="gemma:2b",
@@ -373,10 +373,10 @@ class TestDeployWithOllama:
         assert "1.6 GB" in result.output
         assert "Q4_K_M" in result.output
 
-    @patch("edgeml.cli.webbrowser.open")
-    @patch("edgeml.ollama.get_ollama_model", return_value=None)
+    @patch("octomil.cli.webbrowser.open")
+    @patch("octomil.ollama.get_ollama_model", return_value=None)
     def test_deploy_phone_no_ollama_match(self, mock_get_model, mock_open, monkeypatch):
-        monkeypatch.setenv("EDGEML_API_KEY", "test-key")
+        monkeypatch.setenv("OCTOMIL_API_KEY", "test-key")
 
         mock_post_resp = MagicMock()
         mock_post_resp.status_code = 200

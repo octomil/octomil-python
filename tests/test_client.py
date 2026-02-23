@@ -1,4 +1,4 @@
-"""Tests for edgeml.client — high-level Client wrapper."""
+"""Tests for octomil.client — high-level Client wrapper."""
 
 from __future__ import annotations
 
@@ -6,68 +6,68 @@ from unittest.mock import patch
 
 
 class TestClientInit:
-    @patch("edgeml.client.RolloutsAPI")
-    @patch("edgeml.client.ModelRegistry")
-    @patch("edgeml.client._ApiClient")
+    @patch("octomil.client.RolloutsAPI")
+    @patch("octomil.client.ModelRegistry")
+    @patch("octomil.client._ApiClient")
     def test_init_with_explicit_args(self, mock_api, mock_registry, mock_rollouts):
-        from edgeml.client import Client
+        from octomil.client import Client
 
         c = Client(api_key="key123", org_id="org1", api_base="https://custom.api")
         assert c._api_key == "key123"
         assert c._org_id == "org1"
         assert c._api_base == "https://custom.api"
 
-    @patch("edgeml.client.RolloutsAPI")
-    @patch("edgeml.client.ModelRegistry")
-    @patch("edgeml.client._ApiClient")
+    @patch("octomil.client.RolloutsAPI")
+    @patch("octomil.client.ModelRegistry")
+    @patch("octomil.client._ApiClient")
     def test_init_from_env_vars(
         self, mock_api, mock_registry, mock_rollouts, monkeypatch
     ):
-        from edgeml.client import Client
+        from octomil.client import Client
 
-        monkeypatch.setenv("EDGEML_API_KEY", "env_key")
-        monkeypatch.setenv("EDGEML_ORG_ID", "env_org")
-        monkeypatch.setenv("EDGEML_API_BASE", "https://env.api")
+        monkeypatch.setenv("OCTOMIL_API_KEY", "env_key")
+        monkeypatch.setenv("OCTOMIL_ORG_ID", "env_org")
+        monkeypatch.setenv("OCTOMIL_API_BASE", "https://env.api")
 
         c = Client()
         assert c._api_key == "env_key"
         assert c._org_id == "env_org"
         assert c._api_base == "https://env.api"
 
-    @patch("edgeml.client.RolloutsAPI")
-    @patch("edgeml.client.ModelRegistry")
-    @patch("edgeml.client._ApiClient")
+    @patch("octomil.client.RolloutsAPI")
+    @patch("octomil.client.ModelRegistry")
+    @patch("octomil.client._ApiClient")
     def test_init_defaults(self, mock_api, mock_registry, mock_rollouts, monkeypatch):
-        from edgeml.client import Client
+        from octomil.client import Client
 
-        monkeypatch.delenv("EDGEML_API_KEY", raising=False)
-        monkeypatch.delenv("EDGEML_ORG_ID", raising=False)
-        monkeypatch.delenv("EDGEML_API_BASE", raising=False)
+        monkeypatch.delenv("OCTOMIL_API_KEY", raising=False)
+        monkeypatch.delenv("OCTOMIL_ORG_ID", raising=False)
+        monkeypatch.delenv("OCTOMIL_API_BASE", raising=False)
 
         c = Client()
         assert c._api_key == ""
         assert c._org_id == "default"
-        assert c._api_base == "https://api.edgeml.io/api/v1"
+        assert c._api_base == "https://api.octomil.com/api/v1"
 
-    @patch("edgeml.client.RolloutsAPI")
-    @patch("edgeml.client.ModelRegistry")
-    @patch("edgeml.client._ApiClient")
+    @patch("octomil.client.RolloutsAPI")
+    @patch("octomil.client.ModelRegistry")
+    @patch("octomil.client._ApiClient")
     def test_explicit_args_override_env(
         self, mock_api, mock_registry, mock_rollouts, monkeypatch
     ):
-        from edgeml.client import Client
+        from octomil.client import Client
 
-        monkeypatch.setenv("EDGEML_API_KEY", "env_key")
+        monkeypatch.setenv("OCTOMIL_API_KEY", "env_key")
         c = Client(api_key="explicit_key")
         assert c._api_key == "explicit_key"
 
 
 class TestClientPush:
-    @patch("edgeml.client.RolloutsAPI")
-    @patch("edgeml.client.ModelRegistry")
-    @patch("edgeml.client._ApiClient")
+    @patch("octomil.client.RolloutsAPI")
+    @patch("octomil.client.ModelRegistry")
+    @patch("octomil.client._ApiClient")
     def test_push_calls_registry(self, mock_api, mock_registry_cls, mock_rollouts):
-        from edgeml.client import Client
+        from octomil.client import Client
 
         mock_registry = mock_registry_cls.return_value
         mock_registry.ensure_model.return_value = {"id": "model-abc"}
@@ -95,11 +95,11 @@ class TestClientPush:
         )
         assert result["version"] == "1.0.0"
 
-    @patch("edgeml.client.RolloutsAPI")
-    @patch("edgeml.client.ModelRegistry")
-    @patch("edgeml.client._ApiClient")
+    @patch("octomil.client.RolloutsAPI")
+    @patch("octomil.client.ModelRegistry")
+    @patch("octomil.client._ApiClient")
     def test_push_with_all_options(self, mock_api, mock_registry_cls, mock_rollouts):
-        from edgeml.client import Client
+        from octomil.client import Client
 
         mock_registry = mock_registry_cls.return_value
         mock_registry.ensure_model.return_value = {"id": "model-xyz"}
@@ -132,11 +132,11 @@ class TestClientPush:
 
 
 class TestClientPull:
-    @patch("edgeml.client.RolloutsAPI")
-    @patch("edgeml.client.ModelRegistry")
-    @patch("edgeml.client._ApiClient")
+    @patch("octomil.client.RolloutsAPI")
+    @patch("octomil.client.ModelRegistry")
+    @patch("octomil.client._ApiClient")
     def test_pull_with_version(self, mock_api, mock_registry_cls, mock_rollouts):
-        from edgeml.client import Client
+        from octomil.client import Client
 
         mock_registry = mock_registry_cls.return_value
         mock_registry.resolve_model_id.return_value = "model-123"
@@ -154,11 +154,11 @@ class TestClientPull:
         )
         assert result["model_path"] == "/tmp/model.onnx"
 
-    @patch("edgeml.client.RolloutsAPI")
-    @patch("edgeml.client.ModelRegistry")
-    @patch("edgeml.client._ApiClient")
+    @patch("octomil.client.RolloutsAPI")
+    @patch("octomil.client.ModelRegistry")
+    @patch("octomil.client._ApiClient")
     def test_pull_latest_version(self, mock_api, mock_registry_cls, mock_rollouts):
-        from edgeml.client import Client
+        from octomil.client import Client
 
         mock_registry = mock_registry_cls.return_value
         mock_registry.resolve_model_id.return_value = "model-123"
@@ -178,11 +178,11 @@ class TestClientPull:
 
 
 class TestClientDeploy:
-    @patch("edgeml.client.RolloutsAPI")
-    @patch("edgeml.client.ModelRegistry")
-    @patch("edgeml.client._ApiClient")
+    @patch("octomil.client.RolloutsAPI")
+    @patch("octomil.client.ModelRegistry")
+    @patch("octomil.client._ApiClient")
     def test_deploy_with_version(self, mock_api, mock_registry_cls, mock_rollouts):
-        from edgeml.client import Client
+        from octomil.client import Client
 
         mock_registry = mock_registry_cls.return_value
         mock_registry.resolve_model_id.return_value = "model-abc"
@@ -204,13 +204,13 @@ class TestClientDeploy:
         )
         assert result["status"] == "created"
 
-    @patch("edgeml.client.RolloutsAPI")
-    @patch("edgeml.client.ModelRegistry")
-    @patch("edgeml.client._ApiClient")
+    @patch("octomil.client.RolloutsAPI")
+    @patch("octomil.client.ModelRegistry")
+    @patch("octomil.client._ApiClient")
     def test_deploy_immediate_strategy(
         self, mock_api, mock_registry_cls, mock_rollouts
     ):
-        from edgeml.client import Client
+        from octomil.client import Client
 
         mock_registry = mock_registry_cls.return_value
         mock_registry.resolve_model_id.return_value = "model-abc"
@@ -231,11 +231,11 @@ class TestClientDeploy:
 
 
 class TestClientStatus:
-    @patch("edgeml.client.RolloutsAPI")
-    @patch("edgeml.client.ModelRegistry")
-    @patch("edgeml.client._ApiClient")
+    @patch("octomil.client.RolloutsAPI")
+    @patch("octomil.client.ModelRegistry")
+    @patch("octomil.client._ApiClient")
     def test_status(self, mock_api, mock_registry_cls, mock_rollouts_cls):
-        from edgeml.client import Client
+        from octomil.client import Client
 
         mock_registry = mock_registry_cls.return_value
         mock_rollouts = mock_rollouts_cls.return_value
@@ -253,12 +253,12 @@ class TestClientStatus:
 
 
 class TestClientTrain:
-    @patch("edgeml.client.RolloutsAPI")
-    @patch("edgeml.client.ModelRegistry")
-    @patch("edgeml.client._ApiClient")
+    @patch("octomil.client.RolloutsAPI")
+    @patch("octomil.client.ModelRegistry")
+    @patch("octomil.client._ApiClient")
     def test_train_basic(self, mock_api_cls, mock_registry_cls, mock_rollouts):
-        from edgeml.client import Client
-        from edgeml.models import TrainingSession
+        from octomil.client import Client
+        from octomil.models import TrainingSession
 
         mock_registry = mock_registry_cls.return_value
         mock_api = mock_api_cls.return_value
@@ -287,14 +287,14 @@ class TestClientTrain:
         assert result.group == "default"
         assert result.status == "created"
 
-    @patch("edgeml.client.RolloutsAPI")
-    @patch("edgeml.client.ModelRegistry")
-    @patch("edgeml.client._ApiClient")
+    @patch("octomil.client.RolloutsAPI")
+    @patch("octomil.client.ModelRegistry")
+    @patch("octomil.client._ApiClient")
     def test_train_with_all_options(
         self, mock_api_cls, mock_registry_cls, mock_rollouts
     ):
-        from edgeml.client import Client
-        from edgeml.models import TrainingSession
+        from octomil.client import Client
+        from octomil.models import TrainingSession
 
         mock_registry = mock_registry_cls.return_value
         mock_api = mock_api_cls.return_value
@@ -333,11 +333,11 @@ class TestClientTrain:
 
 
 class TestClientTrainStatus:
-    @patch("edgeml.client.RolloutsAPI")
-    @patch("edgeml.client.ModelRegistry")
-    @patch("edgeml.client._ApiClient")
+    @patch("octomil.client.RolloutsAPI")
+    @patch("octomil.client.ModelRegistry")
+    @patch("octomil.client._ApiClient")
     def test_train_status(self, mock_api_cls, mock_registry_cls, mock_rollouts):
-        from edgeml.client import Client
+        from octomil.client import Client
 
         mock_registry = mock_registry_cls.return_value
         mock_api = mock_api_cls.return_value
@@ -361,11 +361,11 @@ class TestClientTrainStatus:
 
 
 class TestClientTrainStop:
-    @patch("edgeml.client.RolloutsAPI")
-    @patch("edgeml.client.ModelRegistry")
-    @patch("edgeml.client._ApiClient")
+    @patch("octomil.client.RolloutsAPI")
+    @patch("octomil.client.ModelRegistry")
+    @patch("octomil.client._ApiClient")
     def test_train_stop(self, mock_api_cls, mock_registry_cls, mock_rollouts):
-        from edgeml.client import Client
+        from octomil.client import Client
 
         mock_registry = mock_registry_cls.return_value
         mock_api = mock_api_cls.return_value
@@ -381,11 +381,11 @@ class TestClientTrainStop:
 
 
 class TestClientListModels:
-    @patch("edgeml.client.RolloutsAPI")
-    @patch("edgeml.client.ModelRegistry")
-    @patch("edgeml.client._ApiClient")
+    @patch("octomil.client.RolloutsAPI")
+    @patch("octomil.client.ModelRegistry")
+    @patch("octomil.client._ApiClient")
     def test_list_models(self, mock_api, mock_registry_cls, mock_rollouts):
-        from edgeml.client import Client
+        from octomil.client import Client
 
         mock_registry = mock_registry_cls.return_value
         mock_registry.list_models.return_value = {"models": [{"name": "m1"}]}

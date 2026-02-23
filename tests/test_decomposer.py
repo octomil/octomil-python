@@ -1,4 +1,4 @@
-"""Tests for edgeml.decomposer — query decomposition and result merging."""
+"""Tests for octomil.decomposer — query decomposition and result merging."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ from unittest.mock import patch
 import pytest
 from httpx import ASGITransport, AsyncClient
 
-from edgeml.decomposer import (
+from octomil.decomposer import (
     DecompositionResult,
     QueryDecomposer,
     ResultMerger,
@@ -21,7 +21,7 @@ from edgeml.decomposer import (
     _split_numbered_list,
     _split_sequential_markers,
 )
-from edgeml.routing import (
+from octomil.routing import (
     DecomposedRoutingDecision,
     ModelInfo,
     QueryRouter,
@@ -636,14 +636,14 @@ class TestMultiModelServeDecomposition:
     @pytest.fixture
     def multi_model_app(self):
         """Create a multi-model FastAPI app with EchoBackends."""
-        from edgeml.serve import EchoBackend, create_multi_model_app
+        from octomil.serve import EchoBackend, create_multi_model_app
 
         def mock_detect(name, **kwargs):
             echo = EchoBackend()
             echo.load_model(name)
             return echo
 
-        with patch("edgeml.serve._detect_backend", side_effect=mock_detect):
+        with patch("octomil.serve._detect_backend", side_effect=mock_detect):
             app = create_multi_model_app(
                 ["small-model", "medium-model", "large-model"],
             )
@@ -658,7 +658,7 @@ class TestMultiModelServeDecomposition:
 
     @pytest.mark.asyncio
     async def test_decomposed_request_headers(self, multi_model_app):
-        """Decomposed requests should have X-EdgeML-Decomposed and X-EdgeML-Subtasks headers."""
+        """Decomposed requests should have X-Octomil-Decomposed and X-Octomil-Subtasks headers."""
         transport = ASGITransport(app=multi_model_app)
         async with AsyncClient(transport=transport, base_url="http://test") as client:
             resp = await client.post(
@@ -677,8 +677,8 @@ class TestMultiModelServeDecomposition:
                 },
             )
         assert resp.status_code == 200
-        assert resp.headers.get("x-edgeml-decomposed") == "true"
-        subtasks = resp.headers.get("x-edgeml-subtasks")
+        assert resp.headers.get("x-octomil-decomposed") == "true"
+        subtasks = resp.headers.get("x-octomil-subtasks")
         assert subtasks is not None
         assert int(subtasks) >= 2
 
@@ -724,9 +724,9 @@ class TestMultiModelServeDecomposition:
             )
         assert resp.status_code == 200
         # Should NOT have decomposition headers
-        assert resp.headers.get("x-edgeml-decomposed") is None
+        assert resp.headers.get("x-octomil-decomposed") is None
         # Should have standard routing headers
-        assert "x-edgeml-routed-model" in resp.headers
+        assert "x-octomil-routed-model" in resp.headers
 
     @pytest.mark.asyncio
     async def test_streaming_skips_decomposition(self, multi_model_app):
@@ -750,7 +750,7 @@ class TestMultiModelServeDecomposition:
             )
         assert resp.status_code == 200
         # Should NOT have decomposition headers (streaming bypasses)
-        assert resp.headers.get("x-edgeml-decomposed") is None
+        assert resp.headers.get("x-octomil-decomposed") is None
 
 
 # ---------------------------------------------------------------------------

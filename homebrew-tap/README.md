@@ -1,10 +1,10 @@
-# EdgeML Homebrew Tap
+# Octomil Homebrew Tap
 
-Install EdgeML via Homebrew:
+Install Octomil via Homebrew:
 
-    brew install edgeml-ai/tap/edgeml
+    brew install octomil/tap/octomil
 
 ## Usage
 
-    edgeml serve gemma-1b
-    edgeml --help
+    octomil serve gemma-1b
+    octomil --help

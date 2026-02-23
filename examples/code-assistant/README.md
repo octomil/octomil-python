@@ -1,15 +1,15 @@
-# EdgeML Code Assistant
+# Octomil Code Assistant
 
-A fully on-device code assistant that runs through EdgeML. Zero cloud API calls, zero cost, complete data privacy.
+A fully on-device code assistant that runs through Octomil. Zero cloud API calls, zero cost, complete data privacy.
 
 ## Quick Start
 
 ```bash
-# Install EdgeML with inference backends
-pip install edgeml[serve]
+# Install Octomil with inference backends
+pip install octomil[serve]
 
-# Launch the demo (auto-starts edgeml serve)
-edgeml demo code-assistant
+# Launch the demo (auto-starts octomil serve)
+octomil demo code-assistant
 ```
 
 That's it. The demo will:
@@ -22,11 +22,11 @@ That's it. The demo will:
 
 ```
   ╔══════════════════════════════════════════════════════╗
-  ║         EdgeML Code Assistant                       ║
+  ║         Octomil Code Assistant                       ║
   ║         100% on-device · zero cloud · zero cost     ║
   ╚══════════════════════════════════════════════════════╝
 
-  ✓ Connected to edgeml serve (gemma-2b on mlx-lm)
+  ✓ Connected to octomil serve (gemma-2b on mlx-lm)
 
 you> Write a Python function to merge two sorted lists
 
@@ -66,16 +66,16 @@ Every response shows:
 
 ```bash
 # Use a different model
-edgeml demo code-assistant --model phi-3-mini
+octomil demo code-assistant --model phi-3-mini
 
-# Connect to an existing edgeml serve instance
-edgeml demo code-assistant --url http://localhost:8080
+# Connect to an existing octomil serve instance
+octomil demo code-assistant --url http://localhost:8080
 
 # Use a different port for auto-started server
-edgeml demo code-assistant --port 9000
+octomil demo code-assistant --port 9000
 
 # Don't auto-start; fail if no server is running
-edgeml demo code-assistant --no-auto-start
+octomil demo code-assistant --no-auto-start
 ```
 
 ## Run Directly
@@ -99,7 +99,7 @@ python examples/code-assistant/demo.py --url http://localhost:8080
              │ HTTP (localhost only)
              ▼
 ┌────────────────────────────────┐
-│  edgeml serve (local server)   │
+│  octomil serve (local server)   │
 │  - OpenAI-compatible API       │
 │  - Auto-selects best engine    │
 │  - KV cache for fast responses │
@@ -119,24 +119,24 @@ Data sent to cloud: 0 bytes
 
 ## For Design Partners
 
-This demo showcases the EdgeML inference pipeline. The same `edgeml serve` backend powers:
+This demo showcases the Octomil inference pipeline. The same `octomil serve` backend powers:
 
 - **Local development**: Run models on your laptop
-- **Phone deployment**: `edgeml deploy --phone` sends the model to your phone
-- **Fleet deployment**: `edgeml deploy --rollout 10%` for production device fleets
-- **Dashboard**: `edgeml dashboard` shows metrics across all devices
+- **Phone deployment**: `octomil deploy --phone` sends the model to your phone
+- **Fleet deployment**: `octomil deploy --rollout 10%` for production device fleets
+- **Dashboard**: `octomil dashboard` shows metrics across all devices
 
 To start a pilot:
 
 ```bash
 # 1. Run the demo locally
-edgeml demo code-assistant
+octomil demo code-assistant
 
 # 2. Deploy to your phone
-edgeml deploy gemma-2b --phone
+octomil deploy gemma-2b --phone
 
 # 3. See both devices in the dashboard
-edgeml dashboard
+octomil dashboard
 ```
 
 ## Requirements
@@ -144,4 +144,4 @@ edgeml dashboard
 - Python 3.9+
 - One of: Apple Silicon Mac (uses mlx-lm) or any platform (uses llama.cpp)
 - 4GB+ RAM for 2B parameter models
-- `pip install edgeml[serve]` installs inference backends automatically
+- `pip install octomil[serve]` installs inference backends automatically

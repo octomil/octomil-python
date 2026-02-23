@@ -1,4 +1,4 @@
-"""Tests for edgeml.enterprise — Enterprise API client and CLI commands."""
+"""Tests for octomil.enterprise — Enterprise API client and CLI commands."""
 
 from __future__ import annotations
 
@@ -8,8 +8,8 @@ from unittest.mock import MagicMock, patch
 import pytest
 from click.testing import CliRunner
 
-from edgeml.cli import main
-from edgeml.enterprise import (
+from octomil.cli import main
+from octomil.enterprise import (
     COMPLIANCE_PRESETS,
     EnterpriseClient,
     EnterpriseClientError,
@@ -69,9 +69,9 @@ class TestCompliancePresets:
 
 class TestConfigHelpers:
     def test_save_and_load_config(self, tmp_path, monkeypatch):
-        config_file = tmp_path / ".edgeml" / "config.json"
+        config_file = tmp_path / ".octomil" / "config.json"
         monkeypatch.setattr(
-            "edgeml.enterprise._config_path", lambda: config_file
+            "octomil.enterprise._config_path", lambda: config_file
         )
 
         data = {"org_id": "test-org-123", "org_name": "Test Corp", "region": "us"}
@@ -84,33 +84,33 @@ class TestConfigHelpers:
         assert loaded["region"] == "us"
 
     def test_load_config_returns_empty_when_missing(self, tmp_path, monkeypatch):
-        config_file = tmp_path / ".edgeml" / "config.json"
+        config_file = tmp_path / ".octomil" / "config.json"
         monkeypatch.setattr(
-            "edgeml.enterprise._config_path", lambda: config_file
+            "octomil.enterprise._config_path", lambda: config_file
         )
         assert load_config() == {}
 
     def test_load_config_returns_empty_on_bad_json(self, tmp_path, monkeypatch):
-        config_file = tmp_path / ".edgeml" / "config.json"
+        config_file = tmp_path / ".octomil" / "config.json"
         config_file.parent.mkdir(parents=True, exist_ok=True)
         config_file.write_text("not json at all{{{")
         monkeypatch.setattr(
-            "edgeml.enterprise._config_path", lambda: config_file
+            "octomil.enterprise._config_path", lambda: config_file
         )
         assert load_config() == {}
 
     def test_save_config_creates_parent_dirs(self, tmp_path, monkeypatch):
-        config_file = tmp_path / "deep" / "nested" / ".edgeml" / "config.json"
+        config_file = tmp_path / "deep" / "nested" / ".octomil" / "config.json"
         monkeypatch.setattr(
-            "edgeml.enterprise._config_path", lambda: config_file
+            "octomil.enterprise._config_path", lambda: config_file
         )
         save_config({"org_id": "x"})
         assert config_file.exists()
 
     def test_config_file_has_restricted_permissions(self, tmp_path, monkeypatch):
-        config_file = tmp_path / ".edgeml" / "config.json"
+        config_file = tmp_path / ".octomil" / "config.json"
         monkeypatch.setattr(
-            "edgeml.enterprise._config_path", lambda: config_file
+            "octomil.enterprise._config_path", lambda: config_file
         )
         save_config({"org_id": "x"})
         import stat
@@ -312,15 +312,15 @@ class TestEnterpriseClient:
 
 
 # ---------------------------------------------------------------------------
-# CLI: edgeml init
+# CLI: octomil init
 # ---------------------------------------------------------------------------
 
 
 class TestInitCommand:
-    @patch("edgeml.cli._get_api_key", return_value="test-key")
-    @patch("edgeml.enterprise.EnterpriseClient")
-    @patch("edgeml.enterprise.save_config")
-    @patch("edgeml.enterprise.load_config", return_value={})
+    @patch("octomil.cli._get_api_key", return_value="test-key")
+    @patch("octomil.enterprise.EnterpriseClient")
+    @patch("octomil.enterprise.save_config")
+    @patch("octomil.enterprise.load_config", return_value={})
     def test_init_creates_org(self, mock_load, mock_save, MockClient, mock_key):
         mock_instance = MockClient.return_value
         mock_instance.create_org.return_value = {"org_id": "acme-corp"}
@@ -338,10 +338,10 @@ class TestInitCommand:
         assert saved_config["org_id"] == "acme-corp"
         assert saved_config["org_name"] == "Acme Corp"
 
-    @patch("edgeml.cli._get_api_key", return_value="test-key")
-    @patch("edgeml.enterprise.EnterpriseClient")
-    @patch("edgeml.enterprise.save_config")
-    @patch("edgeml.enterprise.load_config", return_value={})
+    @patch("octomil.cli._get_api_key", return_value="test-key")
+    @patch("octomil.enterprise.EnterpriseClient")
+    @patch("octomil.enterprise.save_config")
+    @patch("octomil.enterprise.load_config", return_value={})
     def test_init_with_compliance(self, mock_load, mock_save, MockClient, mock_key):
         mock_instance = MockClient.return_value
         mock_instance.create_org.return_value = {"org_id": "acme-corp"}
@@ -359,7 +359,7 @@ class TestInitCommand:
         assert saved_config["compliance"] == "hipaa"
         assert saved_config["region"] == "eu"
 
-    @patch("edgeml.cli._get_api_key", return_value="")
+    @patch("octomil.cli._get_api_key", return_value="")
     def test_init_requires_api_key(self, mock_key):
         runner = CliRunner()
         result = runner.invoke(main, ["init", "Acme Corp"])
@@ -375,7 +375,7 @@ class TestInitCommand:
 
 
 # ---------------------------------------------------------------------------
-# CLI: edgeml team
+# CLI: octomil team
 # ---------------------------------------------------------------------------
 
 
@@ -388,8 +388,8 @@ class TestTeamCommands:
         assert "list" in result.output
         assert "set-policy" in result.output
 
-    @patch("edgeml.cli._require_org_id", return_value="org-123")
-    @patch("edgeml.cli._get_enterprise_client")
+    @patch("octomil.cli._require_org_id", return_value="org-123")
+    @patch("octomil.cli._get_enterprise_client")
     def test_team_add(self, mock_get_client, mock_org_id):
         mock_client = MagicMock()
         mock_client.invite_member.return_value = {
@@ -409,8 +409,8 @@ class TestTeamCommands:
             "org-123", "alice@acme.com", role="admin", name=None
         )
 
-    @patch("edgeml.cli._require_org_id", return_value="org-123")
-    @patch("edgeml.cli._get_enterprise_client")
+    @patch("octomil.cli._require_org_id", return_value="org-123")
+    @patch("octomil.cli._get_enterprise_client")
     def test_team_list(self, mock_get_client, mock_org_id):
         mock_client = MagicMock()
         mock_client.list_members.return_value = [
@@ -428,8 +428,8 @@ class TestTeamCommands:
         assert "member" in result.output
         assert "2 member(s)" in result.output
 
-    @patch("edgeml.cli._require_org_id", return_value="org-123")
-    @patch("edgeml.cli._get_enterprise_client")
+    @patch("octomil.cli._require_org_id", return_value="org-123")
+    @patch("octomil.cli._get_enterprise_client")
     def test_team_list_empty(self, mock_get_client, mock_org_id):
         mock_client = MagicMock()
         mock_client.list_members.return_value = []
@@ -440,8 +440,8 @@ class TestTeamCommands:
         assert result.exit_code == 0
         assert "No team members found" in result.output
 
-    @patch("edgeml.cli._require_org_id", return_value="org-123")
-    @patch("edgeml.cli._get_enterprise_client")
+    @patch("octomil.cli._require_org_id", return_value="org-123")
+    @patch("octomil.cli._get_enterprise_client")
     def test_team_set_policy_mfa(self, mock_get_client, mock_org_id):
         mock_client = MagicMock()
         mock_client.update_settings.return_value = {}
@@ -458,8 +458,8 @@ class TestTeamCommands:
             session_duration_hours=8,
         )
 
-    @patch("edgeml.cli._require_org_id", return_value="org-123")
-    @patch("edgeml.cli._get_enterprise_client")
+    @patch("octomil.cli._require_org_id", return_value="org-123")
+    @patch("octomil.cli._get_enterprise_client")
     def test_team_set_policy_auto_rollback(self, mock_get_client, mock_org_id):
         mock_client = MagicMock()
         mock_client.update_settings.return_value = {}
@@ -476,8 +476,8 @@ class TestTeamCommands:
             audit_retention_days=365,
         )
 
-    @patch("edgeml.cli._require_org_id", return_value="org-123")
-    @patch("edgeml.cli._get_enterprise_client")
+    @patch("octomil.cli._require_org_id", return_value="org-123")
+    @patch("octomil.cli._get_enterprise_client")
     def test_team_set_policy_no_changes(self, mock_get_client, mock_org_id):
         runner = CliRunner()
         result = runner.invoke(main, ["team", "set-policy"])
@@ -486,7 +486,7 @@ class TestTeamCommands:
 
 
 # ---------------------------------------------------------------------------
-# CLI: edgeml keys
+# CLI: octomil keys
 # ---------------------------------------------------------------------------
 
 
@@ -499,8 +499,8 @@ class TestKeysCommands:
         assert "list" in result.output
         assert "revoke" in result.output
 
-    @patch("edgeml.cli._require_org_id", return_value="org-123")
-    @patch("edgeml.cli._get_enterprise_client")
+    @patch("octomil.cli._require_org_id", return_value="org-123")
+    @patch("octomil.cli._get_enterprise_client")
     def test_keys_create(self, mock_get_client, mock_org_id):
         mock_client = MagicMock()
         mock_client.create_api_key.return_value = {
@@ -527,8 +527,8 @@ class TestKeysCommands:
         assert scopes["devices"] == "write"
         assert scopes["models"] == "read"
 
-    @patch("edgeml.cli._require_org_id", return_value="org-123")
-    @patch("edgeml.cli._get_enterprise_client")
+    @patch("octomil.cli._require_org_id", return_value="org-123")
+    @patch("octomil.cli._get_enterprise_client")
     def test_keys_create_no_scopes(self, mock_get_client, mock_org_id):
         mock_client = MagicMock()
         mock_client.create_api_key.return_value = {
@@ -544,8 +544,8 @@ class TestKeysCommands:
         call_kwargs = mock_client.create_api_key.call_args
         assert call_kwargs[1]["scopes"] is None
 
-    @patch("edgeml.cli._require_org_id", return_value="org-123")
-    @patch("edgeml.cli._get_enterprise_client")
+    @patch("octomil.cli._require_org_id", return_value="org-123")
+    @patch("octomil.cli._get_enterprise_client")
     def test_keys_list(self, mock_get_client, mock_org_id):
         mock_client = MagicMock()
         mock_client.list_api_keys.return_value = [
@@ -571,8 +571,8 @@ class TestKeysCommands:
         assert "old-key" in result.output
         assert "2 key(s)" in result.output
 
-    @patch("edgeml.cli._require_org_id", return_value="org-123")
-    @patch("edgeml.cli._get_enterprise_client")
+    @patch("octomil.cli._require_org_id", return_value="org-123")
+    @patch("octomil.cli._get_enterprise_client")
     def test_keys_list_empty(self, mock_get_client, mock_org_id):
         mock_client = MagicMock()
         mock_client.list_api_keys.return_value = []
@@ -583,7 +583,7 @@ class TestKeysCommands:
         assert result.exit_code == 0
         assert "No API keys found" in result.output
 
-    @patch("edgeml.cli._get_enterprise_client")
+    @patch("octomil.cli._get_enterprise_client")
     def test_keys_revoke(self, mock_get_client):
         mock_client = MagicMock()
         mock_client.revoke_api_key.return_value = {
@@ -602,22 +602,22 @@ class TestKeysCommands:
 
 
 # ---------------------------------------------------------------------------
-# CLI: edgeml org
+# CLI: octomil org
 # ---------------------------------------------------------------------------
 
 
 class TestOrgCommand:
-    @patch("edgeml.enterprise.get_org_id", return_value="")
+    @patch("octomil.enterprise.get_org_id", return_value="")
     def test_org_no_config(self, mock_org):
         runner = CliRunner()
         result = runner.invoke(main, ["org"])
         assert result.exit_code == 0
         assert "No organization configured" in result.output
 
-    @patch("edgeml.cli._get_api_key", return_value="test-key")
-    @patch("edgeml.cli._get_enterprise_client")
-    @patch("edgeml.enterprise.get_org_id", return_value="org-123")
-    @patch("edgeml.enterprise.load_config", return_value={
+    @patch("octomil.cli._get_api_key", return_value="test-key")
+    @patch("octomil.cli._get_enterprise_client")
+    @patch("octomil.enterprise.get_org_id", return_value="org-123")
+    @patch("octomil.enterprise.load_config", return_value={
         "org_name": "Test Corp",
         "region": "us",
         "compliance": "soc2",
@@ -651,31 +651,31 @@ class TestOrgCommand:
 
 class TestGetOrgId:
     def test_from_env(self, monkeypatch):
-        from edgeml.enterprise import get_org_id
+        from octomil.enterprise import get_org_id
 
-        monkeypatch.setenv("EDGEML_ORG_ID", "env-org-42")
+        monkeypatch.setenv("OCTOMIL_ORG_ID", "env-org-42")
         assert get_org_id() == "env-org-42"
 
     def test_from_config(self, monkeypatch, tmp_path):
-        from edgeml.enterprise import get_org_id
+        from octomil.enterprise import get_org_id
 
-        monkeypatch.delenv("EDGEML_ORG_ID", raising=False)
-        config_file = tmp_path / ".edgeml" / "config.json"
+        monkeypatch.delenv("OCTOMIL_ORG_ID", raising=False)
+        config_file = tmp_path / ".octomil" / "config.json"
         config_file.parent.mkdir(parents=True, exist_ok=True)
         config_file.write_text(json.dumps({"org_id": "config-org-99"}))
         monkeypatch.setattr(
-            "edgeml.enterprise._config_path", lambda: config_file
+            "octomil.enterprise._config_path", lambda: config_file
         )
 
         assert get_org_id() == "config-org-99"
 
     def test_empty_when_no_env_no_config(self, monkeypatch, tmp_path):
-        from edgeml.enterprise import get_org_id
+        from octomil.enterprise import get_org_id
 
-        monkeypatch.delenv("EDGEML_ORG_ID", raising=False)
-        config_file = tmp_path / ".edgeml" / "config.json"
+        monkeypatch.delenv("OCTOMIL_ORG_ID", raising=False)
+        config_file = tmp_path / ".octomil" / "config.json"
         monkeypatch.setattr(
-            "edgeml.enterprise._config_path", lambda: config_file
+            "octomil.enterprise._config_path", lambda: config_file
         )
 
         assert get_org_id() == ""

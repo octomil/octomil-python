@@ -1,4 +1,4 @@
-"""Tests for the ``edgeml federation`` CLI command group."""
+"""Tests for the ``octomil federation`` CLI command group."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ from unittest.mock import MagicMock, patch
 
 from click.testing import CliRunner
 
-from edgeml.cli import main
+from octomil.cli import main
 
 
 # ---------------------------------------------------------------------------
@@ -51,9 +51,9 @@ def _mock_client(api_responses: dict | None = None):
 
 
 class TestFederationCreate:
-    @patch("edgeml.cli._get_client")
+    @patch("octomil.cli._get_client")
     def test_create_success(self, mock_get_client, monkeypatch):
-        monkeypatch.setenv("EDGEML_API_KEY", "test-key")
+        monkeypatch.setenv("OCTOMIL_API_KEY", "test-key")
         client = _mock_client()
         client._api.post.return_value = {"id": "fed_abc123", "name": "my-fed"}
         mock_get_client.return_value = client
@@ -78,9 +78,9 @@ class TestFederationCreate:
             },
         )
 
-    @patch("edgeml.cli._get_client")
+    @patch("octomil.cli._get_client")
     def test_create_without_description(self, mock_get_client, monkeypatch):
-        monkeypatch.setenv("EDGEML_API_KEY", "test-key")
+        monkeypatch.setenv("OCTOMIL_API_KEY", "test-key")
         client = _mock_client()
         client._api.post.return_value = {"id": "fed_xyz"}
         mock_get_client.return_value = client
@@ -96,7 +96,7 @@ class TestFederationCreate:
         )
 
     def test_create_requires_api_key(self, monkeypatch):
-        monkeypatch.delenv("EDGEML_API_KEY", raising=False)
+        monkeypatch.delenv("OCTOMIL_API_KEY", raising=False)
         runner = CliRunner()
         result = runner.invoke(main, ["federation", "create", "test"])
         assert result.exit_code != 0
@@ -108,9 +108,9 @@ class TestFederationCreate:
 
 
 class TestFederationInvite:
-    @patch("edgeml.cli._get_client")
+    @patch("octomil.cli._get_client")
     def test_invite_multiple_orgs(self, mock_get_client, monkeypatch):
-        monkeypatch.setenv("EDGEML_API_KEY", "test-key")
+        monkeypatch.setenv("OCTOMIL_API_KEY", "test-key")
         client = _mock_client()
         # First call: resolve federation name -> ID
         client._api.get.return_value = [{"id": "fed_001", "name": "my-fed"}]
@@ -134,9 +134,9 @@ class TestFederationInvite:
             {"org_ids": ["org_a", "org_b"]},
         )
 
-    @patch("edgeml.cli._get_client")
+    @patch("octomil.cli._get_client")
     def test_invite_single_org(self, mock_get_client, monkeypatch):
-        monkeypatch.setenv("EDGEML_API_KEY", "test-key")
+        monkeypatch.setenv("OCTOMIL_API_KEY", "test-key")
         client = _mock_client()
         client._api.get.return_value = [{"id": "fed_002", "name": "test-fed"}]
         client._api.post.return_value = [{"org_id": "org_x", "status": "invited"}]
@@ -152,17 +152,17 @@ class TestFederationInvite:
         assert "Invited 1 org(s)" in result.output
 
     def test_invite_requires_org_flag(self, monkeypatch):
-        monkeypatch.setenv("EDGEML_API_KEY", "test-key")
+        monkeypatch.setenv("OCTOMIL_API_KEY", "test-key")
         runner = CliRunner()
         result = runner.invoke(main, ["federation", "invite", "my-fed"])
         assert result.exit_code != 0
 
-    @patch("edgeml.cli._get_client")
+    @patch("octomil.cli._get_client")
     def test_invite_resolves_federation_by_id_fallback(
         self, mock_get_client, monkeypatch
     ):
         """When name lookup returns empty, the raw value is used as ID."""
-        monkeypatch.setenv("EDGEML_API_KEY", "test-key")
+        monkeypatch.setenv("OCTOMIL_API_KEY", "test-key")
         client = _mock_client()
         # Name lookup returns nothing
         client._api.get.return_value = []
@@ -189,9 +189,9 @@ class TestFederationInvite:
 
 
 class TestFederationJoin:
-    @patch("edgeml.cli._get_client")
+    @patch("octomil.cli._get_client")
     def test_join_success(self, mock_get_client, monkeypatch):
-        monkeypatch.setenv("EDGEML_API_KEY", "test-key")
+        monkeypatch.setenv("OCTOMIL_API_KEY", "test-key")
         client = _mock_client()
         client._api.get.return_value = [{"id": "fed_join_01", "name": "target-fed"}]
         client._api.post.return_value = {"status": "joined"}
@@ -207,9 +207,9 @@ class TestFederationJoin:
             {"org_id": "org_test_123"},
         )
 
-    @patch("edgeml.cli._get_client")
+    @patch("octomil.cli._get_client")
     def test_join_with_raw_id(self, mock_get_client, monkeypatch):
-        monkeypatch.setenv("EDGEML_API_KEY", "test-key")
+        monkeypatch.setenv("OCTOMIL_API_KEY", "test-key")
         client = _mock_client()
         client._api.get.return_value = []  # name not found, fallback to raw ID
         client._api.post.return_value = {"status": "joined"}
@@ -228,9 +228,9 @@ class TestFederationJoin:
 
 
 class TestFederationList:
-    @patch("edgeml.cli._get_client")
+    @patch("octomil.cli._get_client")
     def test_list_populated(self, mock_get_client, monkeypatch):
-        monkeypatch.setenv("EDGEML_API_KEY", "test-key")
+        monkeypatch.setenv("OCTOMIL_API_KEY", "test-key")
         client = _mock_client()
         client._api.get.return_value = [
             {"id": "fed_1", "name": "alpha-fed", "description": "First"},
@@ -249,9 +249,9 @@ class TestFederationList:
         assert "First" in result.output
         assert "Second" in result.output
 
-    @patch("edgeml.cli._get_client")
+    @patch("octomil.cli._get_client")
     def test_list_empty(self, mock_get_client, monkeypatch):
-        monkeypatch.setenv("EDGEML_API_KEY", "test-key")
+        monkeypatch.setenv("OCTOMIL_API_KEY", "test-key")
         client = _mock_client()
         client._api.get.return_value = []
         mock_get_client.return_value = client
@@ -262,9 +262,9 @@ class TestFederationList:
         assert result.exit_code == 0
         assert "No federations found" in result.output
 
-    @patch("edgeml.cli._get_client")
+    @patch("octomil.cli._get_client")
     def test_list_passes_org_id(self, mock_get_client, monkeypatch):
-        monkeypatch.setenv("EDGEML_API_KEY", "test-key")
+        monkeypatch.setenv("OCTOMIL_API_KEY", "test-key")
         client = _mock_client()
         client._api.get.return_value = []
         mock_get_client.return_value = client
@@ -284,9 +284,9 @@ class TestFederationList:
 
 
 class TestFederationShow:
-    @patch("edgeml.cli._get_client")
+    @patch("octomil.cli._get_client")
     def test_show_success(self, mock_get_client, monkeypatch):
-        monkeypatch.setenv("EDGEML_API_KEY", "test-key")
+        monkeypatch.setenv("OCTOMIL_API_KEY", "test-key")
         client = _mock_client()
 
         # First get: name resolution
@@ -319,9 +319,9 @@ class TestFederationShow:
         assert "Detailed desc" in result.output
         assert "2026-01-15" in result.output
 
-    @patch("edgeml.cli._get_client")
+    @patch("octomil.cli._get_client")
     def test_show_with_no_description(self, mock_get_client, monkeypatch):
-        monkeypatch.setenv("EDGEML_API_KEY", "test-key")
+        monkeypatch.setenv("OCTOMIL_API_KEY", "test-key")
         client = _mock_client()
 
         call_count = [0]
@@ -355,9 +355,9 @@ class TestFederationShow:
 
 
 class TestFederationMembers:
-    @patch("edgeml.cli._get_client")
+    @patch("octomil.cli._get_client")
     def test_members_populated(self, mock_get_client, monkeypatch):
-        monkeypatch.setenv("EDGEML_API_KEY", "test-key")
+        monkeypatch.setenv("OCTOMIL_API_KEY", "test-key")
         client = _mock_client()
 
         call_count = [0]
@@ -387,9 +387,9 @@ class TestFederationMembers:
         assert "org_bbb" in result.output
         assert "invited" in result.output
 
-    @patch("edgeml.cli._get_client")
+    @patch("octomil.cli._get_client")
     def test_members_empty(self, mock_get_client, monkeypatch):
-        monkeypatch.setenv("EDGEML_API_KEY", "test-key")
+        monkeypatch.setenv("OCTOMIL_API_KEY", "test-key")
         client = _mock_client()
 
         call_count = [0]
@@ -409,9 +409,9 @@ class TestFederationMembers:
         assert result.exit_code == 0
         assert "No members found" in result.output
 
-    @patch("edgeml.cli._get_client")
+    @patch("octomil.cli._get_client")
     def test_members_resolves_federation_name(self, mock_get_client, monkeypatch):
-        monkeypatch.setenv("EDGEML_API_KEY", "test-key")
+        monkeypatch.setenv("OCTOMIL_API_KEY", "test-key")
         client = _mock_client()
 
         call_count = [0]
@@ -444,9 +444,9 @@ class TestFederationMembers:
 
 
 class TestFederationShare:
-    @patch("edgeml.cli._get_client")
+    @patch("octomil.cli._get_client")
     def test_share_model_success(self, mock_get_client, monkeypatch):
-        monkeypatch.setenv("EDGEML_API_KEY", "test-key")
+        monkeypatch.setenv("OCTOMIL_API_KEY", "test-key")
         client = _mock_client()
 
         call_count = [0]
@@ -472,9 +472,9 @@ class TestFederationShare:
         assert result.exit_code == 0
         assert "shared with federation" in result.output
 
-    @patch("edgeml.cli._get_client")
+    @patch("octomil.cli._get_client")
     def test_share_model_not_found(self, mock_get_client, monkeypatch):
-        monkeypatch.setenv("EDGEML_API_KEY", "test-key")
+        monkeypatch.setenv("OCTOMIL_API_KEY", "test-key")
         client = _mock_client()
 
         def _get_side_effect(path, params=None):
@@ -496,9 +496,9 @@ class TestFederationShare:
         assert result.exit_code != 0
         assert "not found" in result.output
 
-    @patch("edgeml.cli._get_client")
+    @patch("octomil.cli._get_client")
     def test_share_calls_correct_api(self, mock_get_client, monkeypatch):
-        monkeypatch.setenv("EDGEML_API_KEY", "test-key")
+        monkeypatch.setenv("OCTOMIL_API_KEY", "test-key")
         client = _mock_client()
 
         def _get_side_effect(path, params=None):

@@ -7,14 +7,14 @@ from dataclasses import dataclass
 from unittest.mock import MagicMock, patch
 
 
-from edgeml.serve import (
+from octomil.serve import (
     EchoBackend,
     InferenceBackend,
     InferenceMetrics,
     LlamaCppBackend,
     MLXBackend,
 )
-from edgeml.telemetry import TelemetryReporter
+from octomil.telemetry import TelemetryReporter
 
 
 # ---------------------------------------------------------------------------
@@ -115,7 +115,7 @@ class TestLlamaCppFlashAttn:
         mock_llama_module = MagicMock(Llama=mock_llama_cls, LlamaCache=MagicMock())
         with (
             patch.dict("sys.modules", {"llama_cpp": mock_llama_module}),
-            patch("edgeml.serve._resolve_new", return_value=mock_resolved),
+            patch("octomil.serve._resolve_new", return_value=mock_resolved),
         ):
             backend = LlamaCppBackend(cache_enabled=False)
             backend.load_model("short-name")
@@ -136,13 +136,13 @@ class TestLlamaCppFlashAttn:
         with (
             patch.dict("sys.modules", {"llama_cpp": mock_llama_module}),
             patch(
-                "edgeml.serve._resolve_new",
+                "octomil.serve._resolve_new",
                 side_effect=__import__(
-                    "edgeml.models.resolver", fromlist=["ModelResolutionError"]
+                    "octomil.models.resolver", fromlist=["ModelResolutionError"]
                 ).ModelResolutionError("not found"),
             ),
             patch(
-                "edgeml.serve._GGUF_MODELS", {"test-model": ("org/repo", "file.gguf")}
+                "octomil.serve._GGUF_MODELS", {"test-model": ("org/repo", "file.gguf")}
             ),
         ):
             backend = LlamaCppBackend(cache_enabled=False)
@@ -163,7 +163,7 @@ class TestLlamaCppFlashAttn:
 class TestMLXAttentionBackend:
     def test_mlx_engine_module_docstring_mentions_metal_fused(self):
         """The mlx_engine module docstring should document Metal fused attention."""
-        from edgeml.engines import mlx_engine
+        from octomil.engines import mlx_engine
 
         assert "Metal fused attention" in mlx_engine.__doc__
 
@@ -178,7 +178,7 @@ class TestMLXAttentionBackend:
 
 class TestORTAttentionBackend:
     def test_ort_backend_attention_backend_is_sdpa(self):
-        from edgeml.engines.ort_engine import _ORTBackend
+        from octomil.engines.ort_engine import _ORTBackend
 
         backend = _ORTBackend("test-model")
         assert backend.attention_backend == "sdpa"
@@ -187,7 +187,7 @@ class TestORTAttentionBackend:
         """ORT session generate should set attention_backend='sdpa' in metrics."""
         import numpy as np
 
-        from edgeml.engines.ort_engine import _ORTBackend
+        from octomil.engines.ort_engine import _ORTBackend
 
         mock_input = MagicMock()
         mock_input.name = "input_ids"
@@ -213,7 +213,7 @@ class TestORTAttentionBackend:
 
     def test_ort_generate_genai_returns_sdpa(self):
         """ORT GenAI generate should set attention_backend='sdpa' in metrics."""
-        from edgeml.engines.ort_engine import _ORTBackend
+        from octomil.engines.ort_engine import _ORTBackend
 
         mock_og = MagicMock()
         mock_model = MagicMock()
@@ -376,10 +376,10 @@ class TestTelemetryAttentionBackend:
 class TestEnginePluginAttentionBackend:
     def test_llamacpp_engine_creates_backend_with_flash_attention(self):
         """LlamaCppEngine.create_backend should return a backend with flash_attention."""
-        from edgeml.engines.llamacpp_engine import LlamaCppEngine
+        from octomil.engines.llamacpp_engine import LlamaCppEngine
 
         engine = LlamaCppEngine()
-        with patch("edgeml.serve.LlamaCppBackend") as MockBackend:
+        with patch("octomil.serve.LlamaCppBackend") as MockBackend:
             mock_instance = MagicMock()
             mock_instance.attention_backend = "flash_attention"
             MockBackend.return_value = mock_instance
@@ -388,10 +388,10 @@ class TestEnginePluginAttentionBackend:
 
     def test_mlx_engine_creates_backend_with_metal_fused(self):
         """MLXEngine.create_backend should return a backend with metal_fused."""
-        from edgeml.engines.mlx_engine import MLXEngine
+        from octomil.engines.mlx_engine import MLXEngine
 
         engine = MLXEngine()
-        with patch("edgeml.serve.MLXBackend") as MockBackend:
+        with patch("octomil.serve.MLXBackend") as MockBackend:
             mock_instance = MagicMock()
             mock_instance.attention_backend = "metal_fused"
             MockBackend.return_value = mock_instance
@@ -400,7 +400,7 @@ class TestEnginePluginAttentionBackend:
 
     def test_ort_engine_creates_backend_with_sdpa(self):
         """ONNXRuntimeEngine.create_backend should return a backend with sdpa."""
-        from edgeml.engines.ort_engine import ONNXRuntimeEngine
+        from octomil.engines.ort_engine import ONNXRuntimeEngine
 
         engine = ONNXRuntimeEngine()
         backend = engine.create_backend("test-model")

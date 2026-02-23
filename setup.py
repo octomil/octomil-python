@@ -2,14 +2,14 @@ import os
 from setuptools import setup, find_packages
 
 setup(
-    name="edgeml-sdk",
+    name="octomil-sdk",
     version="2.0.3",
-    description="EdgeML — serve, deploy, and observe ML models on edge devices",
+    description="Octomil — serve, deploy, and observe ML models on edge devices",
     long_description=open("README.md").read() if os.path.exists("README.md") else "",
     long_description_content_type="text/markdown",
-    author="EdgeML",
-    author_email="team@edgeml.io",
-    url="https://github.com/edgeml-ai/edgeml-python",
+    author="Octomil",
+    author_email="team@octomil.com",
+    url="https://github.com/octomil/octomil-python",
     packages=find_packages(),
     install_requires=[
         "psutil>=5.9.0",
@@ -76,7 +76,7 @@ setup(
     },
     entry_points={
         "console_scripts": [
-            "edgeml=edgeml.cli:main",
+            "octomil=octomil.cli:main",
         ],
     },
     python_requires=">=3.9",

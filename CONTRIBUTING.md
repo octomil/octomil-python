@@ -1,6 +1,6 @@
-# Contributing to EdgeML Python SDK
+# Contributing to Octomil Python SDK
 
-Thank you for your interest in contributing to the EdgeML Python SDK! This guide will help you get started.
+Thank you for your interest in contributing to the Octomil Python SDK! This guide will help you get started.
 
 ## Table of Contents
 
@@ -15,7 +15,7 @@ Thank you for your interest in contributing to the EdgeML Python SDK! This guide
 
 ## Reporting Bugs
 
-If you find a bug, please open an issue on [GitHub Issues](https://github.com/edgeml-ai/edgeml-python/issues) with the following information:
+If you find a bug, please open an issue on [GitHub Issues](https://github.com/octomil/octomil-python/issues) with the following information:
 
 - A clear and descriptive title
 - Steps to reproduce the issue
@@ -26,7 +26,7 @@ If you find a bug, please open an issue on [GitHub Issues](https://github.com/ed
 
 ## Requesting Features
 
-Feature requests are welcome! Please open an issue on [GitHub Issues](https://github.com/edgeml-ai/edgeml-python/issues) and include:
+Feature requests are welcome! Please open an issue on [GitHub Issues](https://github.com/octomil/octomil-python/issues) and include:
 
 - A clear description of the feature and the problem it solves
 - Example usage or API design, if applicable
@@ -41,7 +41,7 @@ Refer to the [README](README.md) for full setup instructions. In brief:
    ```bash
    python -m venv venv
    source venv/bin/activate
-   pip install -e edgeml/python[dev]
+   pip install -e octomil/python[dev]
    ```
 3. Verify the setup by running the test suite:
    ```bash
@@ -131,4 +131,4 @@ If you experience or witness unacceptable behavior, please report it by opening 
 
 ---
 
-Thank you for contributing to EdgeML!
+Thank you for contributing to Octomil!

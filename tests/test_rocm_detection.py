@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from unittest.mock import patch
 
-from edgeml.engines.llamacpp_engine import LlamaCppEngine
+from octomil.engines.llamacpp_engine import LlamaCppEngine
 
 
 # ---------------------------------------------------------------------------
@@ -63,7 +63,7 @@ class TestDetectInfoRocm:
         """Non-macOS with ROCm (and no CUDA) reports CPU + ROCm."""
         engine = LlamaCppEngine()
         with patch(
-            "edgeml.engines.llamacpp_engine.platform.system", return_value="Linux"
+            "octomil.engines.llamacpp_engine.platform.system", return_value="Linux"
         ):
             with patch.object(LlamaCppEngine, "_has_cuda", return_value=False):
                 with patch.object(LlamaCppEngine, "_has_rocm", return_value=True):
@@ -73,7 +73,7 @@ class TestDetectInfoRocm:
         """When both CUDA and ROCm are available, CUDA wins."""
         engine = LlamaCppEngine()
         with patch(
-            "edgeml.engines.llamacpp_engine.platform.system", return_value="Linux"
+            "octomil.engines.llamacpp_engine.platform.system", return_value="Linux"
         ):
             with patch.object(LlamaCppEngine, "_has_cuda", return_value=True):
                 with patch.object(LlamaCppEngine, "_has_rocm", return_value=True):
@@ -83,7 +83,7 @@ class TestDetectInfoRocm:
         """macOS always reports Metal regardless of ROCm."""
         engine = LlamaCppEngine()
         with patch(
-            "edgeml.engines.llamacpp_engine.platform.system", return_value="Darwin"
+            "octomil.engines.llamacpp_engine.platform.system", return_value="Darwin"
         ):
             assert engine.detect_info() == "CPU + Metal"
 
@@ -91,7 +91,7 @@ class TestDetectInfoRocm:
         """No GPU acceleration falls back to CPU only."""
         engine = LlamaCppEngine()
         with patch(
-            "edgeml.engines.llamacpp_engine.platform.system", return_value="Linux"
+            "octomil.engines.llamacpp_engine.platform.system", return_value="Linux"
         ):
             with patch.object(LlamaCppEngine, "_has_cuda", return_value=False):
                 with patch.object(LlamaCppEngine, "_has_rocm", return_value=False):
@@ -109,10 +109,10 @@ class TestDisplayNameRocm:
     def test_rocm_display_name(self) -> None:
         engine = LlamaCppEngine()
         with patch(
-            "edgeml.engines.llamacpp_engine.platform.system", return_value="Linux"
+            "octomil.engines.llamacpp_engine.platform.system", return_value="Linux"
         ):
             with patch(
-                "edgeml.engines.llamacpp_engine.platform.machine",
+                "octomil.engines.llamacpp_engine.platform.machine",
                 return_value="x86_64",
             ):
                 with patch.object(LlamaCppEngine, "_has_cuda", return_value=False):
@@ -122,10 +122,10 @@ class TestDisplayNameRocm:
     def test_cuda_display_name_over_rocm(self) -> None:
         engine = LlamaCppEngine()
         with patch(
-            "edgeml.engines.llamacpp_engine.platform.system", return_value="Linux"
+            "octomil.engines.llamacpp_engine.platform.system", return_value="Linux"
         ):
             with patch(
-                "edgeml.engines.llamacpp_engine.platform.machine",
+                "octomil.engines.llamacpp_engine.platform.machine",
                 return_value="x86_64",
             ):
                 with patch.object(LlamaCppEngine, "_has_cuda", return_value=True):
@@ -135,10 +135,10 @@ class TestDisplayNameRocm:
     def test_cpu_display_name_fallback(self) -> None:
         engine = LlamaCppEngine()
         with patch(
-            "edgeml.engines.llamacpp_engine.platform.system", return_value="Linux"
+            "octomil.engines.llamacpp_engine.platform.system", return_value="Linux"
         ):
             with patch(
-                "edgeml.engines.llamacpp_engine.platform.machine",
+                "octomil.engines.llamacpp_engine.platform.machine",
                 return_value="x86_64",
             ):
                 with patch.object(LlamaCppEngine, "_has_cuda", return_value=False):

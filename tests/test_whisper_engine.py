@@ -12,8 +12,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from edgeml.engines.base import BenchmarkResult
-from edgeml.engines.whisper_engine import (
+from octomil.engines.base import BenchmarkResult
+from octomil.engines.whisper_engine import (
     WhisperCppEngine,
     _WhisperBackend,
     _WHISPER_MODELS,
@@ -133,19 +133,19 @@ class TestWhisperCppEngine:
 
     def test_detect_with_pywhispercpp(self) -> None:
         with patch(
-            "edgeml.engines.whisper_engine._has_pywhispercpp", return_value=True
+            "octomil.engines.whisper_engine._has_pywhispercpp", return_value=True
         ):
             assert self.engine.detect() is True
 
     def test_detect_without_pywhispercpp(self) -> None:
         with patch(
-            "edgeml.engines.whisper_engine._has_pywhispercpp", return_value=False
+            "octomil.engines.whisper_engine._has_pywhispercpp", return_value=False
         ):
             assert self.engine.detect() is False
 
     def test_detect_info_with_version(self) -> None:
         with patch(
-            "edgeml.engines.whisper_engine._get_whisper_version",
+            "octomil.engines.whisper_engine._get_whisper_version",
             return_value="1.2.0",
         ):
             info = self.engine.detect_info()
@@ -155,7 +155,7 @@ class TestWhisperCppEngine:
 
     def test_detect_info_empty_when_unavailable(self) -> None:
         with patch(
-            "edgeml.engines.whisper_engine._get_whisper_version",
+            "octomil.engines.whisper_engine._get_whisper_version",
             return_value="",
         ):
             assert self.engine.detect_info() == ""
@@ -171,7 +171,7 @@ class TestWhisperCppEngine:
 
     def test_benchmark_unavailable(self) -> None:
         with patch(
-            "edgeml.engines.whisper_engine._has_pywhispercpp", return_value=False
+            "octomil.engines.whisper_engine._has_pywhispercpp", return_value=False
         ):
             result = self.engine.benchmark("whisper-base")
             assert result.ok is False
@@ -179,7 +179,7 @@ class TestWhisperCppEngine:
 
     def test_benchmark_unsupported_model(self) -> None:
         with patch(
-            "edgeml.engines.whisper_engine._has_pywhispercpp", return_value=True
+            "octomil.engines.whisper_engine._has_pywhispercpp", return_value=True
         ):
             result = self.engine.benchmark("gemma-1b")
             assert result.ok is False
@@ -195,7 +195,7 @@ class TestWhisperCppEngine:
 
         with (
             patch(
-                "edgeml.engines.whisper_engine._has_pywhispercpp",
+                "octomil.engines.whisper_engine._has_pywhispercpp",
                 return_value=True,
             ),
             patch.dict("sys.modules", {"pywhispercpp": MagicMock(), "pywhispercpp.model": mock_pw_model}),
@@ -214,7 +214,7 @@ class TestWhisperCppEngine:
 
         with (
             patch(
-                "edgeml.engines.whisper_engine._has_pywhispercpp",
+                "octomil.engines.whisper_engine._has_pywhispercpp",
                 return_value=True,
             ),
             patch.dict("sys.modules", {"pywhispercpp": MagicMock(), "pywhispercpp.model": mock_pw_model}),
@@ -387,7 +387,7 @@ class TestTranscriptionEndpoint:
 
     def _make_app(self, whisper_backend: Any = None) -> Any:
         """Create a test app with a mocked whisper backend."""
-        from edgeml.serve import create_app
+        from octomil.serve import create_app
 
         app = create_app("whisper-base")
 
@@ -404,7 +404,7 @@ class TestTranscriptionEndpoint:
 
         app = FastAPI()
 
-        from edgeml.serve import ServerState
+        from octomil.serve import ServerState
 
         state = ServerState(model_name="gemma-1b")
 
@@ -456,7 +456,7 @@ class TestTranscriptionEndpoint:
         We verify the route exists without actually calling it (avoids
         python-multipart requirement in test env).
         """
-        from edgeml.serve import create_app
+        from octomil.serve import create_app
 
         app = create_app("whisper-base")
         route_paths = [
@@ -473,7 +473,7 @@ class TestTranscriptionEndpoint:
 
 class TestWhisperRegistry:
     def test_engine_registered(self) -> None:
-        from edgeml.engines.registry import EngineRegistry
+        from octomil.engines.registry import EngineRegistry
 
         registry = EngineRegistry()
         engine = WhisperCppEngine()
@@ -481,14 +481,14 @@ class TestWhisperRegistry:
         assert registry.get_engine("whisper.cpp") is engine
 
     def test_auto_register_includes_whisper(self) -> None:
-        from edgeml.engines.registry import EngineRegistry, _auto_register
+        from octomil.engines.registry import EngineRegistry, _auto_register
 
         registry = EngineRegistry()
         _auto_register(registry)
         assert registry.get_engine("whisper.cpp") is not None
 
     def test_global_registry_has_whisper(self) -> None:
-        from edgeml.engines.registry import get_registry, reset_registry
+        from octomil.engines.registry import get_registry, reset_registry
 
         reset_registry()
         try:
@@ -500,7 +500,7 @@ class TestWhisperRegistry:
 
     def test_priority_ordering(self) -> None:
         """whisper.cpp (35) should be after onnxruntime (30) and before echo (999)."""
-        from edgeml.engines.registry import EngineRegistry, _auto_register
+        from octomil.engines.registry import EngineRegistry, _auto_register
 
         registry = EngineRegistry()
         _auto_register(registry)
@@ -522,7 +522,7 @@ class TestWhisperRegistry:
 
 class TestWhisperCatalog:
     def test_whisper_models_in_catalog(self) -> None:
-        from edgeml.models.catalog import CATALOG
+        from octomil.models.catalog import CATALOG
 
         whisper_models = [
             name
@@ -537,28 +537,28 @@ class TestWhisperCatalog:
         assert "whisper-large-v3" in whisper_models
 
     def test_whisper_tiny_params(self) -> None:
-        from edgeml.models.catalog import CATALOG
+        from octomil.models.catalog import CATALOG
 
         entry = CATALOG["whisper-tiny"]
         assert entry.publisher == "OpenAI"
         assert entry.params == "39M"
 
     def test_whisper_base_params(self) -> None:
-        from edgeml.models.catalog import CATALOG
+        from octomil.models.catalog import CATALOG
 
         entry = CATALOG["whisper-base"]
         assert entry.publisher == "OpenAI"
         assert entry.params == "74M"
 
     def test_whisper_large_v3_params(self) -> None:
-        from edgeml.models.catalog import CATALOG
+        from octomil.models.catalog import CATALOG
 
         entry = CATALOG["whisper-large-v3"]
         assert entry.publisher == "OpenAI"
         assert entry.params == "1.55B"
 
     def test_whisper_default_quant_is_fp16(self) -> None:
-        from edgeml.models.catalog import CATALOG
+        from octomil.models.catalog import CATALOG
 
         for name in _WHISPER_MODELS:
             assert CATALOG[name].default_quant == "fp16"
@@ -571,19 +571,19 @@ class TestWhisperCatalog:
 
 class TestWhisperResolver:
     def test_engine_alias_whisper(self) -> None:
-        from edgeml.models.resolver import _normalize_engine
+        from octomil.models.resolver import _normalize_engine
 
         assert _normalize_engine("whisper") == "whisper.cpp"
         assert _normalize_engine("whisper.cpp") == "whisper.cpp"
         assert _normalize_engine("whispercpp") == "whisper.cpp"
 
     def test_engine_in_priority(self) -> None:
-        from edgeml.models.resolver import _ENGINE_PRIORITY
+        from octomil.models.resolver import _ENGINE_PRIORITY
 
         assert "whisper.cpp" in _ENGINE_PRIORITY
 
     def test_resolve_with_whisper_engine(self) -> None:
-        from edgeml.models.resolver import resolve
+        from octomil.models.resolver import resolve
 
         result = resolve("whisper-base", engine="whisper.cpp")
         assert result.engine == "whisper.cpp"

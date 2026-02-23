@@ -6,7 +6,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from edgeml.engines.mnn_engine import MNNEngine, _parse_tps_from_output
+from octomil.engines.mnn_engine import MNNEngine, _parse_tps_from_output
 
 
 class TestMNNEngine:
@@ -17,29 +17,29 @@ class TestMNNEngine:
         assert self.engine.name == "mnn"
 
     def test_display_name_macos(self) -> None:
-        with patch("edgeml.engines.mnn_engine.platform.system", return_value="Darwin"):
+        with patch("octomil.engines.mnn_engine.platform.system", return_value="Darwin"):
             assert "Metal" in self.engine.display_name
 
     def test_display_name_linux(self) -> None:
-        with patch("edgeml.engines.mnn_engine.platform.system", return_value="Linux"):
+        with patch("octomil.engines.mnn_engine.platform.system", return_value="Linux"):
             assert "Vulkan" in self.engine.display_name
 
     def test_display_name_windows(self) -> None:
-        with patch("edgeml.engines.mnn_engine.platform.system", return_value="Windows"):
+        with patch("octomil.engines.mnn_engine.platform.system", return_value="Windows"):
             assert "CPU" in self.engine.display_name
 
     def test_priority(self) -> None:
         assert self.engine.priority == 15
 
     def test_detect_with_pymnn(self) -> None:
-        with patch("edgeml.engines.mnn_engine._has_pymnn", return_value=True):
+        with patch("octomil.engines.mnn_engine._has_pymnn", return_value=True):
             assert self.engine.detect() is True
 
     def test_detect_with_cli(self) -> None:
         with (
-            patch("edgeml.engines.mnn_engine._has_pymnn", return_value=False),
+            patch("octomil.engines.mnn_engine._has_pymnn", return_value=False),
             patch(
-                "edgeml.engines.mnn_engine._find_mnn_cli",
+                "octomil.engines.mnn_engine._find_mnn_cli",
                 return_value="/usr/bin/mnn-llm",
             ),
         ):
@@ -47,19 +47,19 @@ class TestMNNEngine:
 
     def test_detect_nothing_available(self) -> None:
         with (
-            patch("edgeml.engines.mnn_engine._has_pymnn", return_value=False),
-            patch("edgeml.engines.mnn_engine._find_mnn_cli", return_value=None),
+            patch("octomil.engines.mnn_engine._has_pymnn", return_value=False),
+            patch("octomil.engines.mnn_engine._find_mnn_cli", return_value=None),
         ):
             assert self.engine.detect() is False
 
     def test_detect_info(self) -> None:
         with (
-            patch("edgeml.engines.mnn_engine._has_pymnn", return_value=True),
+            patch("octomil.engines.mnn_engine._has_pymnn", return_value=True),
             patch(
-                "edgeml.engines.mnn_engine._find_mnn_cli",
+                "octomil.engines.mnn_engine._find_mnn_cli",
                 return_value="/usr/bin/mnn-llm",
             ),
-            patch("edgeml.engines.mnn_engine.platform.system", return_value="Darwin"),
+            patch("octomil.engines.mnn_engine.platform.system", return_value="Darwin"),
         ):
             info = self.engine.detect_info()
             assert "Python bindings" in info
@@ -86,9 +86,9 @@ class TestMNNEngine:
         mock_model.generate.return_value = "Hello world this is a test"
 
         with (
-            patch("edgeml.engines.mnn_engine._has_pymnn", return_value=True),
+            patch("octomil.engines.mnn_engine._has_pymnn", return_value=True),
             patch(
-                "edgeml.engines.mnn_engine.MNNEngine._benchmark_python"
+                "octomil.engines.mnn_engine.MNNEngine._benchmark_python"
             ) as mock_bench,
         ):
             mock_bench.return_value = MagicMock(
@@ -99,12 +99,12 @@ class TestMNNEngine:
 
     def test_benchmark_cli(self) -> None:
         with (
-            patch("edgeml.engines.mnn_engine._has_pymnn", return_value=False),
+            patch("octomil.engines.mnn_engine._has_pymnn", return_value=False),
             patch(
-                "edgeml.engines.mnn_engine._find_mnn_cli",
+                "octomil.engines.mnn_engine._find_mnn_cli",
                 return_value="/usr/bin/mnn-llm",
             ),
-            patch("edgeml.engines.mnn_engine.MNNEngine._benchmark_cli") as mock_bench,
+            patch("octomil.engines.mnn_engine.MNNEngine._benchmark_cli") as mock_bench,
         ):
             mock_bench.return_value = MagicMock(
                 engine_name="mnn", tokens_per_second=45.0, ok=True
@@ -114,20 +114,20 @@ class TestMNNEngine:
 
     def test_benchmark_unavailable(self) -> None:
         with (
-            patch("edgeml.engines.mnn_engine._has_pymnn", return_value=False),
-            patch("edgeml.engines.mnn_engine._find_mnn_cli", return_value=None),
+            patch("octomil.engines.mnn_engine._has_pymnn", return_value=False),
+            patch("octomil.engines.mnn_engine._find_mnn_cli", return_value=None),
         ):
             result = self.engine.benchmark("gemma-4b")
             assert result.ok is False
             assert "not available" in result.error
 
     def test_create_backend_with_pymnn(self) -> None:
-        with patch("edgeml.engines.mnn_engine._has_pymnn", return_value=True):
+        with patch("octomil.engines.mnn_engine._has_pymnn", return_value=True):
             backend = self.engine.create_backend("gemma-4b")
             assert backend.model_name == "gemma-4b"
 
     def test_create_backend_without_pymnn(self) -> None:
-        with patch("edgeml.engines.mnn_engine._has_pymnn", return_value=False):
+        with patch("octomil.engines.mnn_engine._has_pymnn", return_value=False):
             with pytest.raises(RuntimeError, match="MNN Python bindings required"):
                 self.engine.create_backend("gemma-4b")
 
@@ -151,9 +151,9 @@ class TestParseTpsFromOutput:
 
 class TestMNNRegistry:
     def test_engine_registered(self) -> None:
-        from edgeml.engines.registry import EngineRegistry
+        from octomil.engines.registry import EngineRegistry
 
-        from edgeml.engines.mnn_engine import MNNEngine
+        from octomil.engines.mnn_engine import MNNEngine
 
         registry = EngineRegistry()
         engine = MNNEngine()
@@ -161,7 +161,7 @@ class TestMNNRegistry:
         assert registry.get_engine("mnn") is engine
 
     def test_auto_register_includes_mnn(self) -> None:
-        from edgeml.engines.registry import EngineRegistry, _auto_register
+        from octomil.engines.registry import EngineRegistry, _auto_register
 
         registry = EngineRegistry()
         _auto_register(registry)

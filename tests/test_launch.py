@@ -1,4 +1,4 @@
-"""Tests for edgeml launch command and agent registry."""
+"""Tests for octomil launch command and agent registry."""
 
 from __future__ import annotations
 
@@ -8,9 +8,9 @@ import click
 import pytest
 from click.testing import CliRunner
 
-from edgeml.agents.launcher import is_serve_running, launch_agent, start_serve_background
-from edgeml.agents.registry import AGENTS, get_agent, is_agent_installed, list_agents
-from edgeml.cli import main
+from octomil.agents.launcher import is_serve_running, launch_agent, start_serve_background
+from octomil.agents.registry import AGENTS, get_agent, is_agent_installed, list_agents
+from octomil.cli import main
 
 
 # ---------------------------------------------------------------------------
@@ -91,7 +91,7 @@ class TestLaunchCLI:
 
 
 class TestIsServeRunning:
-    @patch("edgeml.agents.launcher.urllib.request.urlopen")
+    @patch("octomil.agents.launcher.urllib.request.urlopen")
     def test_returns_true_when_server_responds(self, mock_urlopen):
         mock_urlopen.return_value = MagicMock()
         assert is_serve_running() is True
@@ -99,12 +99,12 @@ class TestIsServeRunning:
             "http://localhost:8080/v1/models", timeout=2
         )
 
-    @patch("edgeml.agents.launcher.urllib.request.urlopen")
+    @patch("octomil.agents.launcher.urllib.request.urlopen")
     def test_returns_false_on_connection_error(self, mock_urlopen):
         mock_urlopen.side_effect = ConnectionRefusedError
         assert is_serve_running() is False
 
-    @patch("edgeml.agents.launcher.urllib.request.urlopen")
+    @patch("octomil.agents.launcher.urllib.request.urlopen")
     def test_custom_host_port(self, mock_urlopen):
         mock_urlopen.return_value = MagicMock()
         assert is_serve_running(host="0.0.0.0", port=9090) is True
@@ -119,27 +119,27 @@ class TestIsServeRunning:
 
 
 class TestStartServeBackground:
-    @patch("edgeml.agents.launcher.is_serve_running")
-    @patch("edgeml.agents.launcher.subprocess.Popen")
+    @patch("octomil.agents.launcher.is_serve_running")
+    @patch("octomil.agents.launcher.subprocess.Popen")
     def test_starts_and_waits_for_ready(self, mock_popen, mock_running):
         mock_proc = MagicMock()
         mock_popen.return_value = mock_proc
         # First call: not ready; second call: ready
         mock_running.side_effect = [False, True]
 
-        with patch("edgeml.agents.launcher.time.sleep"):
+        with patch("octomil.agents.launcher.time.sleep"):
             proc = start_serve_background("qwen3", port=8080)
 
         assert proc is mock_proc
         mock_popen.assert_called_once()
 
-    @patch("edgeml.agents.launcher.is_serve_running", return_value=False)
-    @patch("edgeml.agents.launcher.subprocess.Popen")
+    @patch("octomil.agents.launcher.is_serve_running", return_value=False)
+    @patch("octomil.agents.launcher.subprocess.Popen")
     def test_raises_on_timeout(self, mock_popen, mock_running):
         mock_proc = MagicMock()
         mock_popen.return_value = mock_proc
 
-        with patch("edgeml.agents.launcher.time.sleep"):
+        with patch("octomil.agents.launcher.time.sleep"):
             with pytest.raises(RuntimeError, match="failed to start"):
                 start_serve_background("model", port=8080)
 
@@ -152,9 +152,9 @@ class TestStartServeBackground:
 
 
 class TestLaunchAgent:
-    @patch("edgeml.agents.launcher.subprocess.run")
-    @patch("edgeml.agents.launcher.is_serve_running", return_value=True)
-    @patch("edgeml.agents.registry.is_agent_installed", return_value=True)
+    @patch("octomil.agents.launcher.subprocess.run")
+    @patch("octomil.agents.launcher.is_serve_running", return_value=True)
+    @patch("octomil.agents.registry.is_agent_installed", return_value=True)
     def test_launch_uses_shlex_split(self, mock_installed, mock_running, mock_run):
         mock_run.return_value = MagicMock(returncode=0)
 
@@ -167,10 +167,10 @@ class TestLaunchAgent:
         assert isinstance(call_args[0][0], list)
         assert call_args[0][0][0] == "claude"
 
-    @patch("edgeml.agents.launcher.subprocess.run")
-    @patch("edgeml.agents.launcher.start_serve_background")
-    @patch("edgeml.agents.launcher.is_serve_running", return_value=False)
-    @patch("edgeml.agents.registry.is_agent_installed", return_value=True)
+    @patch("octomil.agents.launcher.subprocess.run")
+    @patch("octomil.agents.launcher.start_serve_background")
+    @patch("octomil.agents.launcher.is_serve_running", return_value=False)
+    @patch("octomil.agents.registry.is_agent_installed", return_value=True)
     def test_launch_starts_serve_when_not_running(
         self, mock_installed, mock_running, mock_serve, mock_run
     ):
@@ -184,10 +184,10 @@ class TestLaunchAgent:
         mock_serve.assert_called_once_with("qwen3", port=8080)
         mock_proc.terminate.assert_called_once()
 
-    @patch("edgeml.agents.launcher.click.confirm", return_value=False)
-    @patch("edgeml.agents.launcher.subprocess.run")
-    @patch("edgeml.agents.launcher.is_serve_running", return_value=True)
-    @patch("edgeml.agents.registry.is_agent_installed", return_value=False)
+    @patch("octomil.agents.launcher.click.confirm", return_value=False)
+    @patch("octomil.agents.launcher.subprocess.run")
+    @patch("octomil.agents.launcher.is_serve_running", return_value=True)
+    @patch("octomil.agents.registry.is_agent_installed", return_value=False)
     def test_launch_offers_install(self, mock_installed, mock_running, mock_run, mock_confirm):
         """When agent is not installed and user declines, raises SystemExit(1)."""
         with pytest.raises(SystemExit):
@@ -197,9 +197,9 @@ class TestLaunchAgent:
         with pytest.raises(click.ClickException, match="Unknown agent"):
             launch_agent("nonexistent")
 
-    @patch("edgeml.agents.launcher.subprocess.run")
-    @patch("edgeml.agents.launcher.is_serve_running", return_value=True)
-    @patch("edgeml.agents.registry.is_agent_installed", return_value=True)
+    @patch("octomil.agents.launcher.subprocess.run")
+    @patch("octomil.agents.launcher.is_serve_running", return_value=True)
+    @patch("octomil.agents.registry.is_agent_installed", return_value=True)
     def test_launch_sets_openai_api_key_for_openai_agents(
         self, mock_installed, mock_running, mock_run
     ):
@@ -210,5 +210,5 @@ class TestLaunchAgent:
 
         call_kwargs = mock_run.call_args
         env = call_kwargs[1]["env"]
-        assert env["OPENAI_API_KEY"] == "edgeml-local"
+        assert env["OPENAI_API_KEY"] == "octomil-local"
         assert "OPENAI_BASE_URL" in env

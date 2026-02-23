@@ -1,21 +1,21 @@
-# EdgeML Python SDK
+# Octomil Python SDK
 
-[![CI](https://github.com/edgeml-ai/edgeml-python/actions/workflows/ci.yml/badge.svg)](https://github.com/edgeml-ai/edgeml-python/actions/workflows/ci.yml)
-[![codecov](https://codecov.io/gh/edgeml-ai/edgeml-python/branch/main/graph/badge.svg)](https://codecov.io/gh/edgeml-ai/edgeml-python)
-[![Quality Gate Status](https://sonarcloud.io/api/project_badges/measure?project=edgeml-ai_edgeml-python&metric=alert_status)](https://sonarcloud.io/summary/new_code?id=edgeml-ai_edgeml-python)
-[![Security Rating](https://sonarcloud.io/api/project_badges/measure?project=edgeml-ai_edgeml-python&metric=security_rating)](https://sonarcloud.io/summary/new_code?id=edgeml-ai_edgeml-python)
-[![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/edgeml-ai/edgeml-python/badge)](https://scorecard.dev/viewer/?uri=github.com/edgeml-ai/edgeml-python)
+[![CI](https://github.com/octomil/octomil-python/actions/workflows/ci.yml/badge.svg)](https://github.com/octomil/octomil-python/actions/workflows/ci.yml)
+[![codecov](https://codecov.io/gh/octomil/octomil-python/branch/main/graph/badge.svg)](https://codecov.io/gh/octomil/octomil-python)
+[![Quality Gate Status](https://sonarcloud.io/api/project_badges/measure?project=octomil_octomil-python&metric=alert_status)](https://sonarcloud.io/summary/new_code?id=octomil_octomil-python)
+[![Security Rating](https://sonarcloud.io/api/project_badges/measure?project=octomil_octomil-python&metric=security_rating)](https://sonarcloud.io/summary/new_code?id=octomil_octomil-python)
+[![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/octomil/octomil-python/badge)](https://scorecard.dev/viewer/?uri=github.com/octomil/octomil-python)
 [![CII Best Practices](https://www.bestpractices.dev/projects/11914/badge)](https://www.bestpractices.dev/projects/11914)
-[![CodeQL](https://github.com/edgeml-ai/edgeml-python/actions/workflows/codeql.yml/badge.svg)](https://github.com/edgeml-ai/edgeml-python/actions/workflows/codeql.yml)
+[![CodeQL](https://github.com/octomil/octomil-python/actions/workflows/codeql.yml/badge.svg)](https://github.com/octomil/octomil-python/actions/workflows/codeql.yml)
 [![Python](https://img.shields.io/badge/Python-3.9+-3776AB?logo=python&logoColor=white)](https://www.python.org/)
-[![PyPI version](https://img.shields.io/pypi/v/edgeml-sdk.svg)](https://pypi.org/project/edgeml-sdk/)
+[![PyPI version](https://img.shields.io/pypi/v/octomil-sdk.svg)](https://pypi.org/project/octomil-sdk/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 > Enterprise-grade Python SDK for federated learning orchestration and secure device runtime participation.
 
 ## Overview
 
-The EdgeML Python SDK enables privacy-preserving federated learning for production environments. Built with enterprise security requirements in mind, it provides secure device authentication, automated token management, and comprehensive control-plane APIs for model orchestration.
+The Octomil Python SDK enables privacy-preserving federated learning for production environments. Built with enterprise security requirements in mind, it provides secure device authentication, automated token management, and comprehensive control-plane APIs for model orchestration.
 
 ### Key Features
 
@@ -39,26 +39,26 @@ The EdgeML Python SDK enables privacy-preserving federated learning for producti
 ## Installation
 
 ```bash
-pip install edgeml-sdk
+pip install octomil-sdk
 ```
 
 ### Optional Dependencies
 
 ```bash
 # For cloud storage support
-pip install edgeml-sdk[s3]      # AWS S3
-pip install edgeml-sdk[gcs]     # Google Cloud Storage
-pip install edgeml-sdk[azure]   # Azure Blob Storage
-pip install edgeml-sdk[all]     # All cloud providers
+pip install octomil-sdk[s3]      # AWS S3
+pip install octomil-sdk[gcs]     # Google Cloud Storage
+pip install octomil-sdk[azure]   # Azure Blob Storage
+pip install octomil-sdk[all]     # All cloud providers
 
 # For deep learning frameworks
-pip install edgeml-sdk[torch]   # PyTorch support
+pip install octomil-sdk[torch]   # PyTorch support
 
 # For secure token storage
-pip install edgeml-sdk[auth]    # System keyring integration
+pip install octomil-sdk[auth]    # System keyring integration
 
 # For development
-pip install edgeml-sdk[dev]     # Testing and linting tools
+pip install octomil-sdk[dev]     # Testing and linting tools
 ```
 
 ## Quick Start
@@ -68,11 +68,11 @@ pip install edgeml-sdk[dev]     # Testing and linting tools
 For production deployments, use secure token-based authentication:
 
 ```python
-from edgeml import DeviceAuthClient, FederatedClient
+from octomil import DeviceAuthClient, FederatedClient
 
 # Initialize device auth client
 auth = DeviceAuthClient(
-    base_url="https://api.edgeml.io",
+    base_url="https://api.octomil.com",
     org_id="org_123",
     device_identifier="python-runtime-001",
 )
@@ -105,9 +105,9 @@ if assignment:
 For model management and orchestration:
 
 ```python
-from edgeml import EdgeML
+from octomil import Octomil
 
-edge = EdgeML(
+edge = Octomil(
     auth_token_provider=lambda: auth.get_access_token_sync(),
     org_id="org_123",
 )
@@ -154,7 +154,7 @@ The SDK automatically handles token refresh before expiration, ensuring uninterr
 The SDK manages the full lifecycle of federated training rounds:
 
 ```python
-from edgeml import FederatedClient
+from octomil import FederatedClient
 
 client = FederatedClient(
     auth_token_provider=auth_provider,
@@ -177,7 +177,7 @@ if assignment:
 Compute weight deltas between model states:
 
 ```python
-from edgeml.federated import compute_state_dict_delta
+from octomil.federated import compute_state_dict_delta
 
 delta = compute_state_dict_delta(base_state=global_weights, updated_state=trained_weights)
 ```
@@ -231,7 +231,7 @@ result = client.train_fedper(
 Privacy-preserving filters are applied automatically during round participation. You can also use them directly:
 
 ```python
-from edgeml.federated import apply_filters
+from octomil.federated import apply_filters
 
 filters = [
     {"type": "gradient_clip", "max_norm": 1.0},
@@ -266,29 +266,29 @@ budget = client.get_privacy_budget(federation_id="fed_456")
 
 ```bash
 # API Configuration
-export EDGEML_API_BASE="https://api.edgeml.io/api/v1"
-export EDGEML_ORG_ID="your-org-id"
+export OCTOMIL_API_BASE="https://api.octomil.com/api/v1"
+export OCTOMIL_ORG_ID="your-org-id"
 
 # Device Configuration
-export EDGEML_DEVICE_ID="unique-device-identifier"
-export EDGEML_PLATFORM="python"
+export OCTOMIL_DEVICE_ID="unique-device-identifier"
+export OCTOMIL_PLATFORM="python"
 
 # Token Storage (optional)
-export EDGEML_TOKEN_STORAGE="keyring"  # or "memory"
+export OCTOMIL_TOKEN_STORAGE="keyring"  # or "memory"
 
 # Logging
-export EDGEML_LOG_LEVEL="INFO"  # DEBUG, INFO, WARNING, ERROR
+export OCTOMIL_LOG_LEVEL="INFO"  # DEBUG, INFO, WARNING, ERROR
 ```
 
 ### Advanced Configuration
 
 ```python
-from edgeml import FederatedClient
+from octomil import FederatedClient
 
 client = FederatedClient(
     auth_token_provider=auth_provider,
     org_id="org_123",
-    api_base="https://api.edgeml.io/api/v1",
+    api_base="https://api.octomil.com/api/v1",
     device_identifier="custom-id",
     platform="python",
     timeout=30.0,  # API timeout in seconds
@@ -322,7 +322,7 @@ client = FederatedClient(
 
 ```bash
 # Run all tests with coverage
-pytest --cov=edgeml --cov-report=term-missing
+pytest --cov=octomil --cov-report=term-missing
 
 # Run specific test suite
 pytest tests/test_device_auth.py -v
@@ -333,7 +333,7 @@ tox
 
 ## Documentation
 
-For full SDK documentation, see [https://docs.edgeml.io/sdks/python](https://docs.edgeml.io/sdks/python)
+For full SDK documentation, see [https://docs.octomil.com/sdks/python](https://docs.octomil.com/sdks/python)
 
 ## Contributing
 
@@ -343,18 +343,18 @@ We welcome contributions! Please see our [Contributing Guide](CONTRIBUTING.md) f
 
 ```bash
 # Clone repository
-git clone https://github.com/edgeml-ai/edgeml-python.git
-cd edgeml-python
+git clone https://github.com/octomil/octomil-python.git
+cd octomil-python
 
 # Install in development mode
-pip install -e edgeml/python[dev]
+pip install -e octomil/python[dev]
 
 # Run tests
 pytest
 
 # Run linters
 ruff check .
-mypy edgeml/python/edgeml
+mypy octomil/python/octomil
 ```
 
 ## Privacy Statement
@@ -367,7 +367,7 @@ The Python SDK collects minimal device information for runtime identification:
 - **Device Identifier**: Custom identifier you provide, or auto-generated UUID
 - **Platform**: Always set to "python"
 - **OS Version**: Operating system information
-- **Organization ID**: Your EdgeML organization ID
+- **Organization ID**: Your Octomil organization ID
 
 **Model Information** (during training):
 - Model ID and version being trained
@@ -380,7 +380,7 @@ The Python SDK:
 - ✅ Runs in standard Python environments (no special permissions)
 - ✅ Does not access system hardware information (battery, sensors, etc.)
 - ✅ Does not require root/admin privileges
-- ✅ Only makes HTTPS API calls to EdgeML servers
+- ✅ Only makes HTTPS API calls to Octomil servers
 
 ### Why This Data is Collected
 
@@ -396,7 +396,7 @@ The Python SDK:
 - ❌ File system contents
 - ❌ Environment variables or secrets
 - ❌ System hardware specs (CPU, RAM, disk)
-- ❌ Network activity outside EdgeML API calls
+- ❌ Network activity outside Octomil API calls
 
 Only model gradients (mathematical weight updates) are uploaded to the server.
 
@@ -406,12 +406,12 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 ## Support
 
-For issues and feature requests, please use the [GitHub issue tracker](https://github.com/edgeml-ai/edgeml-python/issues).
+For issues and feature requests, please use the [GitHub issue tracker](https://github.com/octomil/octomil-python/issues).
 
-For questions: support@edgeml.io
+For questions: support@octomil.com
 
 ---
 
 <p align="center">
-  <strong>Built with ❤️ by the EdgeML Team</strong>
+  <strong>Built with ❤️ by the Octomil Team</strong>
 </p>

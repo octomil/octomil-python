@@ -1,4 +1,4 @@
-"""Tests for edgeml.scanner — inference point detection."""
+"""Tests for octomil.scanner — inference point detection."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 from click.testing import CliRunner
 
-from edgeml.scanner import InferencePoint, format_json, format_text, scan_directory
+from octomil.scanner import InferencePoint, format_json, format_text, scan_directory
 
 
 # ---------------------------------------------------------------------------
@@ -369,7 +369,7 @@ class TestFormatText:
                 pattern="MLModel.load()",
                 type="CoreML model loading",
                 platform="ios",
-                suggestion="Wrap with EdgeML.wrap(model) for telemetry",
+                suggestion="Wrap with Octomil.wrap(model) for telemetry",
                 context="MLModel.load(contentsOf: url) { result in",
             ),
         ]
@@ -408,7 +408,7 @@ class TestFormatJson:
                 pattern="MLModel.load()",
                 type="CoreML model loading",
                 platform="ios",
-                suggestion="Wrap with EdgeML.wrap(model) for telemetry",
+                suggestion="Wrap with Octomil.wrap(model) for telemetry",
                 context="MLModel.load(contentsOf: url)",
             ),
         ]
@@ -431,7 +431,7 @@ class TestFormatJson:
 
 class TestScanCLI:
     def test_scan_text_output(self, sample_project: Path) -> None:
-        from edgeml.cli import main
+        from octomil.cli import main
 
         runner = CliRunner()
         result = runner.invoke(main, ["scan", str(sample_project)])
@@ -440,7 +440,7 @@ class TestScanCLI:
         assert "inference point(s)" in result.output
 
     def test_scan_json_output(self, sample_project: Path) -> None:
-        from edgeml.cli import main
+        from octomil.cli import main
 
         runner = CliRunner()
         result = runner.invoke(main, ["scan", str(sample_project), "--format", "json"])
@@ -455,7 +455,7 @@ class TestScanCLI:
         assert "points" in data
 
     def test_scan_platform_filter(self, sample_project: Path) -> None:
-        from edgeml.cli import main
+        from octomil.cli import main
 
         runner = CliRunner()
         result = runner.invoke(main, ["scan", str(sample_project), "--platform", "ios"])
@@ -466,7 +466,7 @@ class TestScanCLI:
         assert "Python:" not in result.output
 
     def test_scan_nonexistent_path(self, tmp_path: Path) -> None:
-        from edgeml.cli import main
+        from octomil.cli import main
 
         runner = CliRunner()
         bad_path = str(tmp_path / "does_not_exist")
@@ -474,7 +474,7 @@ class TestScanCLI:
         assert result.exit_code != 0
 
     def test_scan_empty_directory(self, tmp_path: Path) -> None:
-        from edgeml.cli import main
+        from octomil.cli import main
 
         runner = CliRunner()
         result = runner.invoke(main, ["scan", str(tmp_path)])
@@ -482,7 +482,7 @@ class TestScanCLI:
         assert "No inference points found" in result.output
 
     def test_scan_json_empty(self, tmp_path: Path) -> None:
-        from edgeml.cli import main
+        from octomil.cli import main
 
         runner = CliRunner()
         result = runner.invoke(main, ["scan", str(tmp_path), "--format", "json"])

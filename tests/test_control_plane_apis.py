@@ -1,7 +1,7 @@
 import unittest
 
-from edgeml.control_plane import ExperimentsAPI, RolloutsAPI
-from edgeml.registry import ModelRegistry
+from octomil.control_plane import ExperimentsAPI, RolloutsAPI
+from octomil.registry import ModelRegistry
 
 
 class _StubApi:

@@ -9,10 +9,10 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-# Ensure the edgeml package is importable from the repo root.
+# Ensure the octomil package is importable from the repo root.
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from edgeml.model_registry import (
+from octomil.model_registry import (
     DEFAULT_TAG,
     MODEL_FAMILIES,
     ModelResolutionError,
@@ -24,9 +24,9 @@ from edgeml.model_registry import (
     parse_model_tag,
     resolve_model,
 )
-from edgeml.sources.huggingface import HuggingFaceSource
-from edgeml.sources.kaggle import KaggleSource
-from edgeml.sources.ollama import OllamaSource, _parse_ollama_ref
+from octomil.sources.huggingface import HuggingFaceSource
+from octomil.sources.kaggle import KaggleSource
+from octomil.sources.ollama import OllamaSource, _parse_ollama_ref
 
 
 # =====================================================================
@@ -251,7 +251,7 @@ class TestBackwardsCompatDicts:
     """Verify the _MLX_MODELS and _GGUF_MODELS dicts in serve.py are populated."""
 
     def test_mlx_models_populated(self) -> None:
-        from edgeml.serve import _MLX_MODELS
+        from octomil.serve import _MLX_MODELS
 
         assert len(_MLX_MODELS) >= 13, (
             f"Expected at least 13 MLX models, got {len(_MLX_MODELS)}"
@@ -260,7 +260,7 @@ class TestBackwardsCompatDicts:
         assert "mlx-community" in _MLX_MODELS["gemma-4b"]
 
     def test_gguf_models_populated(self) -> None:
-        from edgeml.serve import _GGUF_MODELS
+        from octomil.serve import _GGUF_MODELS
 
         assert len(_GGUF_MODELS) >= 9, (
             f"Expected at least 9 GGUF models, got {len(_GGUF_MODELS)}"
@@ -279,31 +279,31 @@ class TestResolveModelName:
     """Tests for the updated resolve_model_name in serve.py."""
 
     def test_mlx_resolution(self) -> None:
-        from edgeml.serve import resolve_model_name
+        from octomil.serve import resolve_model_name
 
         result = resolve_model_name("gemma-4b", "mlx")
         assert "mlx-community" in result
 
     def test_mlx_with_tag(self) -> None:
-        from edgeml.serve import resolve_model_name
+        from octomil.serve import resolve_model_name
 
         result = resolve_model_name("gemma-4b:q8_0", "mlx")
         assert "8bit" in result or "8b" in result.lower()
 
     def test_gguf_resolution(self) -> None:
-        from edgeml.serve import resolve_model_name
+        from octomil.serve import resolve_model_name
 
         result = resolve_model_name("gemma-4b", "gguf")
         assert result == "gemma-4b"
 
     def test_full_repo_passthrough(self) -> None:
-        from edgeml.serve import resolve_model_name
+        from octomil.serve import resolve_model_name
 
         result = resolve_model_name("user/custom-model", "mlx")
         assert result == "user/custom-model"
 
     def test_unknown_model_raises(self) -> None:
-        from edgeml.serve import resolve_model_name
+        from octomil.serve import resolve_model_name
 
         with pytest.raises(ValueError, match="Unknown model"):
             resolve_model_name("fake-model", "mlx")
@@ -533,17 +533,17 @@ class TestSourceFallback:
 
 
 # =====================================================================
-# edgeml list CLI command
+# octomil list CLI command
 # =====================================================================
 
 
 class TestListCLI:
-    """Tests for the ``edgeml list`` CLI command output."""
+    """Tests for the ``octomil list`` CLI command output."""
 
     def test_list_all_families(self) -> None:
-        """edgeml list without args shows a table of all families."""
+        """octomil list without args shows a table of all families."""
         from click.testing import CliRunner
-        from edgeml.cli import main
+        from octomil.cli import main
 
         runner = CliRunner()
         result = runner.invoke(main, ["list"])
@@ -553,9 +553,9 @@ class TestListCLI:
         assert "model families available" in result.output
 
     def test_list_specific_family(self) -> None:
-        """edgeml list gemma-4b shows variants with engine artifacts."""
+        """octomil list gemma-4b shows variants with engine artifacts."""
         from click.testing import CliRunner
-        from edgeml.cli import main
+        from octomil.cli import main
 
         runner = CliRunner()
         result = runner.invoke(main, ["list", "gemma-4b"])
@@ -567,9 +567,9 @@ class TestListCLI:
         assert "mlx-lm:" in result.output or "mlx-community" in result.output
 
     def test_list_unknown_family_error(self) -> None:
-        """edgeml list nonexistent shows error with suggestions."""
+        """octomil list nonexistent shows error with suggestions."""
         from click.testing import CliRunner
-        from edgeml.cli import main
+        from octomil.cli import main
 
         runner = CliRunner()
         result = runner.invoke(main, ["list", "nonexistent"])
@@ -577,9 +577,9 @@ class TestListCLI:
         assert "Unknown model family" in result.output
 
     def test_list_close_match_suggests(self) -> None:
-        """edgeml list gemma-4 (typo) suggests gemma-4b."""
+        """octomil list gemma-4 (typo) suggests gemma-4b."""
         from click.testing import CliRunner
-        from edgeml.cli import main
+        from octomil.cli import main
 
         runner = CliRunner()
         result = runner.invoke(main, ["list", "gemma-4"])

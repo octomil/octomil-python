@@ -1,7 +1,7 @@
 import unittest
 
-from edgeml.api_client import EdgeMLClientError
-from edgeml.federation import Federation
+from octomil.api_client import OctomilClientError
+from octomil.federation import Federation
 
 
 class _StubApi:
@@ -41,7 +41,7 @@ class FederationTests(unittest.TestCase):
         )
 
         # Patch _ApiClient to return our stub, then create Federation
-        with unittest.mock.patch("edgeml.federation._ApiClient") as mock_api:
+        with unittest.mock.patch("octomil.federation._ApiClient") as mock_api:
             mock_api.return_value = stub
             federation = Federation(lambda: "token123", name="test_fed", org_id="org_1")
 
@@ -53,7 +53,7 @@ class FederationTests(unittest.TestCase):
         stub = _StubApi()
         stub.set_response(("/federations", (("name", "new_fed"), ("org_id", "org_1"))), [])
 
-        with unittest.mock.patch("edgeml.federation._ApiClient") as mock_api:
+        with unittest.mock.patch("octomil.federation._ApiClient") as mock_api:
             mock_api.return_value = stub
             federation = Federation(lambda: "token123", name="new_fed", org_id="org_1")
 
@@ -62,7 +62,7 @@ class FederationTests(unittest.TestCase):
     def test_init_uses_default_name(self):
         stub = _StubApi()
 
-        with unittest.mock.patch("edgeml.federation._ApiClient") as mock_api:
+        with unittest.mock.patch("octomil.federation._ApiClient") as mock_api:
             mock_api.return_value = stub
             federation = Federation(lambda: "token123", org_id="org_1")
 
@@ -72,7 +72,7 @@ class FederationTests(unittest.TestCase):
         stub = _StubApi()
         stub.set_response(("/federations", (("name", "default"), ("org_id", "org_1"))), [])
 
-        with unittest.mock.patch("edgeml.federation._ApiClient") as mock_api:
+        with unittest.mock.patch("octomil.federation._ApiClient") as mock_api:
             mock_api.return_value = stub
             federation = Federation(lambda: "token123", org_id="org_1")
 
@@ -87,7 +87,7 @@ class FederationTests(unittest.TestCase):
         stub.set_response(("/models", (("org_id", "org_1"),)), {"models": [{"name": "my_model", "id": "model_456"}]})
         stub.set_response(("/federations", (("name", "default"), ("org_id", "org_1"))), [])
 
-        with unittest.mock.patch("edgeml.federation._ApiClient") as mock_api:
+        with unittest.mock.patch("octomil.federation._ApiClient") as mock_api:
             mock_api.return_value = stub
             federation = Federation(lambda: "token123", org_id="org_1")
 
@@ -111,11 +111,11 @@ class FederationTests(unittest.TestCase):
         stub = _StubApi()
         stub.set_response(("/federations", (("name", "default"), ("org_id", "org_1"))), [])
 
-        with unittest.mock.patch("edgeml.federation._ApiClient") as mock_api:
+        with unittest.mock.patch("octomil.federation._ApiClient") as mock_api:
             mock_api.return_value = stub
             federation = Federation(lambda: "token123", org_id="org_1")
 
-        with self.assertRaises(EdgeMLClientError) as ctx:
+        with self.assertRaises(OctomilClientError) as ctx:
             federation.train(model="my_model", algorithm="unsupported")
         self.assertIn("Unsupported algorithm", str(ctx.exception))
 
@@ -124,7 +124,7 @@ class FederationTests(unittest.TestCase):
         stub.set_response(("/models", (("org_id", "org_1"),)), {"models": [{"name": "my_model", "id": "model_456"}]})
         stub.set_response(("/federations", (("name", "default"), ("org_id", "org_1"))), [])
 
-        with unittest.mock.patch("edgeml.federation._ApiClient") as mock_api:
+        with unittest.mock.patch("octomil.federation._ApiClient") as mock_api:
             mock_api.return_value = stub
             federation = Federation(lambda: "token123", org_id="org_1")
 
@@ -137,7 +137,7 @@ class FederationTests(unittest.TestCase):
         stub = _StubApi()
         stub.set_response(("/federations", (("name", "default"), ("org_id", "org_1"))), [])
 
-        with unittest.mock.patch("edgeml.federation._ApiClient") as mock_api:
+        with unittest.mock.patch("octomil.federation._ApiClient") as mock_api:
             mock_api.return_value = stub
             federation = Federation(lambda: "token123", org_id="org_1")
 
@@ -163,7 +163,7 @@ class FederationTests(unittest.TestCase):
         stub = _StubApi()
         stub.set_response(("/federations", (("name", "default"), ("org_id", "org_1"))), [])
 
-        with unittest.mock.patch("edgeml.federation._ApiClient") as mock_api:
+        with unittest.mock.patch("octomil.federation._ApiClient") as mock_api:
             mock_api.return_value = stub
             federation = Federation(lambda: "token123", org_id="org_1")
 
@@ -180,7 +180,7 @@ class FederationTests(unittest.TestCase):
         stub.set_response(("/federations", (("name", "default"), ("org_id", "org_1"))), [])
         stub.set_response(("/models/model_1/versions/latest", None), {"version": "4.0.0"})
 
-        with unittest.mock.patch("edgeml.federation._ApiClient") as mock_api:
+        with unittest.mock.patch("octomil.federation._ApiClient") as mock_api:
             mock_api.return_value = stub
             federation = Federation(lambda: "token123", org_id="org_1")
 
@@ -194,11 +194,11 @@ class FederationTests(unittest.TestCase):
         stub = _StubApi()
         stub.set_response(("/federations", (("name", "default"), ("org_id", "org_1"))), [])
 
-        with unittest.mock.patch("edgeml.federation._ApiClient") as mock_api:
+        with unittest.mock.patch("octomil.federation._ApiClient") as mock_api:
             mock_api.return_value = stub
             federation = Federation(lambda: "token123", org_id="org_1")
 
-        with self.assertRaises(EdgeMLClientError) as ctx:
+        with self.assertRaises(OctomilClientError) as ctx:
             federation.deploy()
         self.assertIn("model_id is required", str(ctx.exception))
 
@@ -207,13 +207,13 @@ class FederationTests(unittest.TestCase):
         stub.set_response(("/federations", (("name", "default"), ("org_id", "org_1"))), [])
         stub.set_response(("/models/model_1/versions/latest", None), {})
 
-        with unittest.mock.patch("edgeml.federation._ApiClient") as mock_api:
+        with unittest.mock.patch("octomil.federation._ApiClient") as mock_api:
             mock_api.return_value = stub
             federation = Federation(lambda: "token123", org_id="org_1")
 
         federation.last_model_id = "model_1"
 
-        with self.assertRaises(EdgeMLClientError) as ctx:
+        with self.assertRaises(OctomilClientError) as ctx:
             federation.deploy()
         self.assertIn("version is required", str(ctx.exception))
 

@@ -3,7 +3,7 @@ import tempfile
 import os
 from unittest.mock import patch
 
-from edgeml.data_loader import (
+from octomil.data_loader import (
     DataLoadError, load_data, validate_target, _detect_format,
     _get_s3_options, _get_azure_options, _get_storage_options,
     prepare_data,
@@ -264,7 +264,7 @@ class DataLoaderTests(unittest.TestCase):
         result = _get_azure_options()
         self.assertIsNone(result)
 
-    @patch('edgeml.data_loader._get_s3_options', return_value={'key': 'k', 'secret': 's'})
+    @patch('octomil.data_loader._get_s3_options', return_value={'key': 'k', 'secret': 's'})
     def test_get_storage_options_s3_path(self, mock_s3):
         result = _get_storage_options('s3://my-bucket/data.csv')
         mock_s3.assert_called_once()
@@ -274,7 +274,7 @@ class DataLoaderTests(unittest.TestCase):
         result = _get_storage_options('gs://my-bucket/data.csv')
         self.assertIsNone(result)
 
-    @patch('edgeml.data_loader._get_azure_options', return_value={'account_name': 'acct'})
+    @patch('octomil.data_loader._get_azure_options', return_value={'account_name': 'acct'})
     def test_get_storage_options_azure_path(self, mock_azure):
         result_az = _get_storage_options('az://container/data.csv')
         self.assertEqual(result_az, {'account_name': 'acct'})

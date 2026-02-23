@@ -7,11 +7,11 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from edgeml.engines.base import BenchmarkResult, EnginePlugin
-from edgeml.engines.echo_engine import EchoEngine
-from edgeml.engines.llamacpp_engine import LlamaCppEngine
-from edgeml.engines.mlx_engine import MLXEngine
-from edgeml.engines.registry import (
+from octomil.engines.base import BenchmarkResult, EnginePlugin
+from octomil.engines.echo_engine import EchoEngine
+from octomil.engines.llamacpp_engine import LlamaCppEngine
+from octomil.engines.mlx_engine import MLXEngine
+from octomil.engines.registry import (
     DetectionResult,
     EngineRegistry,
     RankedEngine,
@@ -344,14 +344,14 @@ class TestEchoEngine:
 class TestMLXEngine:
     def test_detect_returns_false_on_non_darwin(self):
         e = MLXEngine()
-        with patch("edgeml.engines.mlx_engine.platform") as mock_platform:
+        with patch("octomil.engines.mlx_engine.platform") as mock_platform:
             mock_platform.system.return_value = "Linux"
             mock_platform.machine.return_value = "x86_64"
             assert e.detect() is False
 
     def test_detect_returns_false_on_intel_mac(self):
         e = MLXEngine()
-        with patch("edgeml.engines.mlx_engine.platform") as mock_platform:
+        with patch("octomil.engines.mlx_engine.platform") as mock_platform:
             mock_platform.system.return_value = "Darwin"
             mock_platform.machine.return_value = "x86_64"
             assert e.detect() is False

@@ -1,4 +1,4 @@
-"""Tests for edgeml.hardware._unified and edgeml.hardware._base."""
+"""Tests for octomil.hardware._unified and octomil.hardware._base."""
 
 from __future__ import annotations
 
@@ -7,15 +7,15 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from edgeml.hardware._base import GPUBackend, GPUBackendRegistry, reset_gpu_registry
-from edgeml.hardware._types import (
+from octomil.hardware._base import GPUBackend, GPUBackendRegistry, reset_gpu_registry
+from octomil.hardware._types import (
     CPUInfo,
     GPUDetectionResult,
     GPUInfo,
     GPUMemory,
     HardwareProfile,
 )
-from edgeml.hardware._unified import UnifiedDetector, detect_hardware
+from octomil.hardware._unified import UnifiedDetector, detect_hardware
 
 
 # ---------------------------------------------------------------------------
@@ -198,8 +198,8 @@ class TestGPUBackendRegistry:
 
 
 class TestUnifiedDetector:
-    @patch("edgeml.hardware._unified.detect_cpu")
-    @patch("edgeml.hardware._unified.get_gpu_registry")
+    @patch("octomil.hardware._unified.detect_cpu")
+    @patch("octomil.hardware._unified.get_gpu_registry")
     @patch("psutil.virtual_memory")
     def test_cuda_detected_uses_cuda(self, mock_vm_fn, mock_get_registry, mock_detect_cpu):
         """When CUDA GPU is detected, best_backend should be 'cuda'."""
@@ -218,8 +218,8 @@ class TestUnifiedDetector:
         assert profile.gpu is not None
         assert profile.gpu.backend == "cuda"
 
-    @patch("edgeml.hardware._unified.detect_cpu")
-    @patch("edgeml.hardware._unified.get_gpu_registry")
+    @patch("octomil.hardware._unified.detect_cpu")
+    @patch("octomil.hardware._unified.get_gpu_registry")
     @patch("psutil.virtual_memory")
     def test_all_backends_fail_cpu_avx512_fallback(
         self, mock_vm_fn, mock_get_registry, mock_detect_cpu,
@@ -238,8 +238,8 @@ class TestUnifiedDetector:
         assert profile.best_backend == "cpu_avx512"
         assert profile.gpu is None
 
-    @patch("edgeml.hardware._unified.detect_cpu")
-    @patch("edgeml.hardware._unified.get_gpu_registry")
+    @patch("octomil.hardware._unified.detect_cpu")
+    @patch("octomil.hardware._unified.get_gpu_registry")
     @patch("psutil.virtual_memory")
     def test_all_backends_fail_cpu_avx2_fallback(
         self, mock_vm_fn, mock_get_registry, mock_detect_cpu,
@@ -257,8 +257,8 @@ class TestUnifiedDetector:
 
         assert profile.best_backend == "cpu_avx2"
 
-    @patch("edgeml.hardware._unified.detect_cpu")
-    @patch("edgeml.hardware._unified.get_gpu_registry")
+    @patch("octomil.hardware._unified.detect_cpu")
+    @patch("octomil.hardware._unified.get_gpu_registry")
     @patch("psutil.virtual_memory")
     def test_all_backends_fail_cpu_neon_fallback(
         self, mock_vm_fn, mock_get_registry, mock_detect_cpu,
@@ -278,8 +278,8 @@ class TestUnifiedDetector:
 
         assert profile.best_backend == "cpu_neon"
 
-    @patch("edgeml.hardware._unified.detect_cpu")
-    @patch("edgeml.hardware._unified.get_gpu_registry")
+    @patch("octomil.hardware._unified.detect_cpu")
+    @patch("octomil.hardware._unified.get_gpu_registry")
     @patch("psutil.virtual_memory")
     def test_all_backends_fail_plain_cpu_fallback(
         self, mock_vm_fn, mock_get_registry, mock_detect_cpu,
@@ -299,8 +299,8 @@ class TestUnifiedDetector:
 
         assert profile.best_backend == "cpu"
 
-    @patch("edgeml.hardware._unified.detect_cpu")
-    @patch("edgeml.hardware._unified.get_gpu_registry")
+    @patch("octomil.hardware._unified.detect_cpu")
+    @patch("octomil.hardware._unified.get_gpu_registry")
     @patch("psutil.virtual_memory")
     def test_cache_within_ttl_returns_same_object(
         self, mock_vm_fn, mock_get_registry, mock_detect_cpu,
@@ -321,9 +321,9 @@ class TestUnifiedDetector:
         # detect_cpu should only have been called once
         assert mock_detect_cpu.call_count == 1
 
-    @patch("edgeml.hardware._unified.time")
-    @patch("edgeml.hardware._unified.detect_cpu")
-    @patch("edgeml.hardware._unified.get_gpu_registry")
+    @patch("octomil.hardware._unified.time")
+    @patch("octomil.hardware._unified.detect_cpu")
+    @patch("octomil.hardware._unified.get_gpu_registry")
     @patch("psutil.virtual_memory")
     def test_cache_expiry_redetects(
         self, mock_vm_fn, mock_get_registry, mock_detect_cpu, mock_time,
@@ -347,9 +347,9 @@ class TestUnifiedDetector:
         assert first is not second
         assert mock_detect_cpu.call_count == 2
 
-    @patch("edgeml.hardware._unified.time")
-    @patch("edgeml.hardware._unified.detect_cpu")
-    @patch("edgeml.hardware._unified.get_gpu_registry")
+    @patch("octomil.hardware._unified.time")
+    @patch("octomil.hardware._unified.detect_cpu")
+    @patch("octomil.hardware._unified.get_gpu_registry")
     @patch("psutil.virtual_memory")
     def test_force_bypasses_cache(
         self, mock_vm_fn, mock_get_registry, mock_detect_cpu, mock_time,
@@ -372,8 +372,8 @@ class TestUnifiedDetector:
         assert first is not second
         assert mock_detect_cpu.call_count == 2
 
-    @patch("edgeml.hardware._unified.detect_cpu")
-    @patch("edgeml.hardware._unified.get_gpu_registry")
+    @patch("octomil.hardware._unified.detect_cpu")
+    @patch("octomil.hardware._unified.get_gpu_registry")
     @patch("psutil.virtual_memory")
     def test_diagnostics_aggregated_from_backends(
         self, mock_vm_fn, mock_get_registry, mock_detect_cpu,
@@ -392,8 +392,8 @@ class TestUnifiedDetector:
 
         assert profile.diagnostics == expected_diag
 
-    @patch("edgeml.hardware._unified.detect_cpu")
-    @patch("edgeml.hardware._unified.get_gpu_registry")
+    @patch("octomil.hardware._unified.detect_cpu")
+    @patch("octomil.hardware._unified.get_gpu_registry")
     @patch("psutil.virtual_memory")
     def test_ram_values_computed_from_psutil(
         self, mock_vm_fn, mock_get_registry, mock_detect_cpu,
@@ -419,8 +419,8 @@ class TestUnifiedDetector:
 
 
 class TestDetectHardwareGlobal:
-    @patch("edgeml.hardware._unified.detect_cpu")
-    @patch("edgeml.hardware._unified.get_gpu_registry")
+    @patch("octomil.hardware._unified.detect_cpu")
+    @patch("octomil.hardware._unified.get_gpu_registry")
     @patch("psutil.virtual_memory")
     def test_detect_hardware_returns_profile(
         self, mock_vm_fn, mock_get_registry, mock_detect_cpu,
@@ -434,15 +434,15 @@ class TestDetectHardwareGlobal:
         mock_get_registry.return_value = mock_registry
 
         # Reset the module-level singleton
-        import edgeml.hardware._unified as unified_mod
+        import octomil.hardware._unified as unified_mod
         unified_mod._detector = None
 
         profile = detect_hardware()
 
         assert isinstance(profile, HardwareProfile)
 
-    @patch("edgeml.hardware._unified.detect_cpu")
-    @patch("edgeml.hardware._unified.get_gpu_registry")
+    @patch("octomil.hardware._unified.detect_cpu")
+    @patch("octomil.hardware._unified.get_gpu_registry")
     @patch("psutil.virtual_memory")
     def test_detect_hardware_reuses_singleton(
         self, mock_vm_fn, mock_get_registry, mock_detect_cpu,
@@ -455,7 +455,7 @@ class TestDetectHardwareGlobal:
         mock_registry.detect_best.return_value = (None, [])
         mock_get_registry.return_value = mock_registry
 
-        import edgeml.hardware._unified as unified_mod
+        import octomil.hardware._unified as unified_mod
         unified_mod._detector = None
 
         first = detect_hardware()
@@ -473,7 +473,7 @@ class TestDetectHardwareGlobal:
 class TestResetGpuRegistry:
     def test_reset_clears_singleton(self):
         """reset_gpu_registry() sets the module-level _registry to None."""
-        import edgeml.hardware._base as base_mod
+        import octomil.hardware._base as base_mod
 
         # Make sure there is a registry
         base_mod._registry = GPUBackendRegistry()
@@ -484,10 +484,10 @@ class TestResetGpuRegistry:
 
     def test_get_gpu_registry_after_reset_creates_new(self):
         """After reset, get_gpu_registry creates a fresh registry."""
-        from edgeml.hardware._base import get_gpu_registry
+        from octomil.hardware._base import get_gpu_registry
 
         reset_gpu_registry()
-        with patch("edgeml.hardware._base._auto_register"):
+        with patch("octomil.hardware._base._auto_register"):
             registry = get_gpu_registry()
         assert isinstance(registry, GPUBackendRegistry)
 

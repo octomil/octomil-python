@@ -1,6 +1,6 @@
 import unittest
 
-from edgeml.control_plane import FederatedAnalyticsAPI
+from octomil.control_plane import FederatedAnalyticsAPI
 
 
 class _StubApi:

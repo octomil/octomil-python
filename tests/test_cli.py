@@ -1,4 +1,4 @@
-"""Tests for edgeml.cli — Click command-line interface."""
+"""Tests for octomil.cli — Click command-line interface."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ from unittest.mock import MagicMock, patch
 
 from click.testing import CliRunner
 
-from edgeml.cli import _get_api_key, main
+from octomil.cli import _get_api_key, main
 
 
 # ---------------------------------------------------------------------------
@@ -16,45 +16,45 @@ from edgeml.cli import _get_api_key, main
 
 class TestGetApiKey:
     def test_from_env_var(self, monkeypatch):
-        monkeypatch.setenv("EDGEML_API_KEY", "env-key-123")
+        monkeypatch.setenv("OCTOMIL_API_KEY", "env-key-123")
         assert _get_api_key() == "env-key-123"
 
     def test_empty_when_no_env_no_file(self, monkeypatch, tmp_path):
-        monkeypatch.delenv("EDGEML_API_KEY", raising=False)
+        monkeypatch.delenv("OCTOMIL_API_KEY", raising=False)
         monkeypatch.setattr(
-            "os.path.expanduser", lambda x: str(tmp_path / ".edgeml" / "credentials")
+            "os.path.expanduser", lambda x: str(tmp_path / ".octomil" / "credentials")
         )
         assert _get_api_key() == ""
 
     def test_from_credentials_file_json(self, monkeypatch, tmp_path):
         import json
 
-        monkeypatch.delenv("EDGEML_API_KEY", raising=False)
-        cred_dir = tmp_path / ".edgeml"
+        monkeypatch.delenv("OCTOMIL_API_KEY", raising=False)
+        cred_dir = tmp_path / ".octomil"
         cred_dir.mkdir()
         cred_file = cred_dir / "credentials"
         cred_file.write_text(json.dumps({"api_key": "file-key-456", "org": "acme"}))
 
         monkeypatch.setattr(
-            "edgeml.cli.os.path.expanduser", lambda x: str(cred_dir / "credentials")
+            "octomil.cli.os.path.expanduser", lambda x: str(cred_dir / "credentials")
         )
         assert _get_api_key() == "file-key-456"
 
     def test_from_credentials_file_legacy(self, monkeypatch, tmp_path):
         """Backward compat: reads legacy key=value format."""
-        monkeypatch.delenv("EDGEML_API_KEY", raising=False)
-        cred_dir = tmp_path / ".edgeml"
+        monkeypatch.delenv("OCTOMIL_API_KEY", raising=False)
+        cred_dir = tmp_path / ".octomil"
         cred_dir.mkdir()
         cred_file = cred_dir / "credentials"
         cred_file.write_text("api_key=legacy-key-789\n")
 
         monkeypatch.setattr(
-            "edgeml.cli.os.path.expanduser", lambda x: str(cred_dir / "credentials")
+            "octomil.cli.os.path.expanduser", lambda x: str(cred_dir / "credentials")
         )
         assert _get_api_key() == "legacy-key-789"
 
     def test_env_takes_priority(self, monkeypatch):
-        monkeypatch.setenv("EDGEML_API_KEY", "env-key")
+        monkeypatch.setenv("OCTOMIL_API_KEY", "env-key")
         assert _get_api_key() == "env-key"
 
 
@@ -68,7 +68,7 @@ class TestMainGroup:
         runner = CliRunner()
         result = runner.invoke(main, ["--help"])
         assert result.exit_code == 0
-        assert "EdgeML" in result.output
+        assert "Octomil" in result.output
 
     def test_version(self):
         runner = CliRunner()
@@ -78,38 +78,38 @@ class TestMainGroup:
 
 
 # ---------------------------------------------------------------------------
-# edgeml serve
+# octomil serve
 # ---------------------------------------------------------------------------
 
 
 class TestServeCommand:
     def test_serve_basic(self):
         runner = CliRunner()
-        with patch("edgeml.serve.run_server") as mock_run:
+        with patch("octomil.serve.run_server") as mock_run:
             result = runner.invoke(main, ["serve", "gemma-1b"])
         assert result.exit_code == 0
-        assert "Starting EdgeML serve" in result.output
+        assert "Starting Octomil serve" in result.output
         assert "gemma-1b" in result.output
         mock_run.assert_called_once()
 
     def test_serve_custom_port(self):
         runner = CliRunner()
-        with patch("edgeml.serve.run_server"):
+        with patch("octomil.serve.run_server"):
             result = runner.invoke(main, ["serve", "gemma-1b", "--port", "9000"])
         assert result.exit_code == 0
         assert "9000" in result.output
 
     def test_serve_share_no_key(self, monkeypatch):
-        monkeypatch.delenv("EDGEML_API_KEY", raising=False)
+        monkeypatch.delenv("OCTOMIL_API_KEY", raising=False)
         runner = CliRunner()
-        with patch("edgeml.serve.run_server"):
+        with patch("octomil.serve.run_server"):
             result = runner.invoke(main, ["serve", "test", "--share"])
         assert result.exit_code == 0
         assert "--share requires an API key" in result.output
 
 
 # ---------------------------------------------------------------------------
-# edgeml login
+# octomil login
 # ---------------------------------------------------------------------------
 
 
@@ -117,10 +117,10 @@ class TestLoginCommand:
     def test_login_saves_credentials(self, tmp_path, monkeypatch):
         import json
 
-        cred_dir = tmp_path / ".edgeml"
+        cred_dir = tmp_path / ".octomil"
         monkeypatch.setattr(
-            "edgeml.cli.os.path.expanduser",
-            lambda x: str(cred_dir) if "~/.edgeml" in x else x,
+            "octomil.cli.os.path.expanduser",
+            lambda x: str(cred_dir) if "~/.octomil" in x else x,
         )
 
         runner = CliRunner()
@@ -136,22 +136,22 @@ class TestLoginCommand:
 
 
 # ---------------------------------------------------------------------------
-# edgeml dashboard
+# octomil dashboard
 # ---------------------------------------------------------------------------
 
 
 class TestDashboardCommand:
-    @patch("edgeml.cli.webbrowser.open")
+    @patch("octomil.cli.webbrowser.open")
     def test_dashboard_opens_browser(self, mock_open):
         runner = CliRunner()
         result = runner.invoke(main, ["dashboard"])
         assert result.exit_code == 0
         assert "Opening dashboard" in result.output
-        mock_open.assert_called_once_with("https://app.edgeml.io")
+        mock_open.assert_called_once_with("https://app.octomil.com")
 
-    @patch("edgeml.cli.webbrowser.open")
+    @patch("octomil.cli.webbrowser.open")
     def test_dashboard_custom_url(self, mock_open, monkeypatch):
-        monkeypatch.setenv("EDGEML_DASHBOARD_URL", "https://custom.dashboard.io")
+        monkeypatch.setenv("OCTOMIL_DASHBOARD_URL", "https://custom.dashboard.io")
         runner = CliRunner()
         result = runner.invoke(main, ["dashboard"])
         assert result.exit_code == 0
@@ -159,14 +159,14 @@ class TestDashboardCommand:
 
 
 # ---------------------------------------------------------------------------
-# edgeml deploy --phone
+# octomil deploy --phone
 # ---------------------------------------------------------------------------
 
 
 class TestDeployCommand:
-    @patch("edgeml.cli.webbrowser.open")
+    @patch("octomil.cli.webbrowser.open")
     def test_deploy_phone(self, mock_open, monkeypatch):
-        monkeypatch.setenv("EDGEML_API_KEY", "test-key")
+        monkeypatch.setenv("OCTOMIL_API_KEY", "test-key")
 
         # Mock httpx for pairing session creation + polling
         mock_post_resp = MagicMock()
@@ -192,13 +192,13 @@ class TestDeployCommand:
         assert "ABC123" in result.output
         mock_open.assert_called_once()
         call_url = mock_open.call_args[0][0]
-        assert call_url.startswith("edgeml://pair?")
+        assert call_url.startswith("octomil://pair?")
         assert "token=ABC123" in call_url
         assert "host=" in call_url
 
-    @patch("edgeml.cli._get_client")
+    @patch("octomil.cli._get_client")
     def test_deploy_rollout(self, mock_get_client, monkeypatch):
-        monkeypatch.setenv("EDGEML_API_KEY", "test-key")
+        monkeypatch.setenv("OCTOMIL_API_KEY", "test-key")
         mock_client = MagicMock()
         mock_client.deploy.return_value = {"id": "rollout-1", "status": "created"}
         mock_get_client.return_value = mock_client
@@ -212,14 +212,14 @@ class TestDeployCommand:
 
 
 # ---------------------------------------------------------------------------
-# edgeml status
+# octomil status
 # ---------------------------------------------------------------------------
 
 
 class TestStatusCommand:
-    @patch("edgeml.cli._get_client")
+    @patch("octomil.cli._get_client")
     def test_status(self, mock_get_client, monkeypatch):
-        monkeypatch.setenv("EDGEML_API_KEY", "test-key")
+        monkeypatch.setenv("OCTOMIL_API_KEY", "test-key")
         mock_client = MagicMock()
         mock_client.status.return_value = {
             "model": {"name": "test-model", "id": "abc", "framework": "pytorch"},
@@ -236,9 +236,9 @@ class TestStatusCommand:
         assert "Active rollouts: 1" in result.output
         assert "v1.0.0" in result.output
 
-    @patch("edgeml.cli._get_client")
+    @patch("octomil.cli._get_client")
     def test_status_no_rollouts(self, mock_get_client, monkeypatch):
-        monkeypatch.setenv("EDGEML_API_KEY", "test-key")
+        monkeypatch.setenv("OCTOMIL_API_KEY", "test-key")
         mock_client = MagicMock()
         mock_client.status.return_value = {
             "model": {"name": "test-model", "id": "abc", "framework": "pytorch"},
@@ -253,14 +253,14 @@ class TestStatusCommand:
 
 
 # ---------------------------------------------------------------------------
-# edgeml push
+# octomil push
 # ---------------------------------------------------------------------------
 
 
 class TestPushCommand:
-    @patch("edgeml.cli._get_client")
+    @patch("octomil.cli._get_client")
     def test_push(self, mock_get_client, tmp_path, monkeypatch):
-        monkeypatch.setenv("EDGEML_API_KEY", "test-key")
+        monkeypatch.setenv("OCTOMIL_API_KEY", "test-key")
         mock_client = MagicMock()
         mock_client.push.return_value = {"formats": {"onnx": "ok", "coreml": "ok"}}
         mock_get_client.return_value = mock_client
@@ -279,14 +279,14 @@ class TestPushCommand:
 
 
 # ---------------------------------------------------------------------------
-# edgeml pull
+# octomil pull
 # ---------------------------------------------------------------------------
 
 
 class TestPullCommand:
-    @patch("edgeml.cli._get_client")
+    @patch("octomil.cli._get_client")
     def test_pull(self, mock_get_client, monkeypatch):
-        monkeypatch.setenv("EDGEML_API_KEY", "test-key")
+        monkeypatch.setenv("OCTOMIL_API_KEY", "test-key")
         mock_client = MagicMock()
         mock_client.pull.return_value = {"model_path": "/tmp/model.onnx"}
         mock_get_client.return_value = mock_client
@@ -300,16 +300,16 @@ class TestPullCommand:
 
 
 # ---------------------------------------------------------------------------
-# edgeml train start
+# octomil train start
 # ---------------------------------------------------------------------------
 
 
 class TestTrainStartCommand:
-    @patch("edgeml.cli._get_client")
+    @patch("octomil.cli._get_client")
     def test_train_start_basic(self, mock_get_client, monkeypatch):
-        from edgeml.models import TrainingSession
+        from octomil.models import TrainingSession
 
-        monkeypatch.setenv("EDGEML_API_KEY", "test-key")
+        monkeypatch.setenv("OCTOMIL_API_KEY", "test-key")
         mock_client = MagicMock()
         mock_client.train.return_value = TrainingSession(
             session_id="tr-123",
@@ -328,11 +328,11 @@ class TestTrainStartCommand:
         assert "tr-123" in result.output
         mock_client.train.assert_called_once()
 
-    @patch("edgeml.cli._get_client")
+    @patch("octomil.cli._get_client")
     def test_train_start_with_options(self, mock_get_client, monkeypatch):
-        from edgeml.models import TrainingSession
+        from octomil.models import TrainingSession
 
-        monkeypatch.setenv("EDGEML_API_KEY", "test-key")
+        monkeypatch.setenv("OCTOMIL_API_KEY", "test-key")
         mock_client = MagicMock()
         mock_client.train.return_value = TrainingSession(
             session_id="tr-456",
@@ -376,16 +376,16 @@ class TestTrainStartCommand:
         )
 
     def test_train_start_requires_api_key(self, monkeypatch):
-        monkeypatch.delenv("EDGEML_API_KEY", raising=False)
+        monkeypatch.delenv("OCTOMIL_API_KEY", raising=False)
         runner = CliRunner()
         result = runner.invoke(main, ["train", "start", "model"])
         assert result.exit_code != 0
 
-    @patch("edgeml.cli._get_client")
+    @patch("octomil.cli._get_client")
     def test_train_start_with_group(self, mock_get_client, monkeypatch):
-        from edgeml.models import TrainingSession
+        from octomil.models import TrainingSession
 
-        monkeypatch.setenv("EDGEML_API_KEY", "test-key")
+        monkeypatch.setenv("OCTOMIL_API_KEY", "test-key")
         mock_client = MagicMock()
         mock_client.train.return_value = TrainingSession(
             session_id="tr-789",
@@ -414,7 +414,7 @@ class TestTrainStartCommand:
         )
 
     def test_train_start_invalid_strategy(self, monkeypatch):
-        monkeypatch.setenv("EDGEML_API_KEY", "test-key")
+        monkeypatch.setenv("OCTOMIL_API_KEY", "test-key")
         runner = CliRunner()
         result = runner.invoke(
             main, ["train", "start", "model", "--strategy", "invalid"]
@@ -423,14 +423,14 @@ class TestTrainStartCommand:
 
 
 # ---------------------------------------------------------------------------
-# edgeml train status
+# octomil train status
 # ---------------------------------------------------------------------------
 
 
 class TestTrainStatusCommand:
-    @patch("edgeml.cli._get_client")
+    @patch("octomil.cli._get_client")
     def test_train_status(self, mock_get_client, monkeypatch):
-        monkeypatch.setenv("EDGEML_API_KEY", "test-key")
+        monkeypatch.setenv("OCTOMIL_API_KEY", "test-key")
         mock_client = MagicMock()
         mock_client.train_status.return_value = {
             "current_round": 23,
@@ -451,9 +451,9 @@ class TestTrainStatusCommand:
         assert "0.3420" in result.output
         assert "91.2%" in result.output
 
-    @patch("edgeml.cli._get_client")
+    @patch("octomil.cli._get_client")
     def test_train_status_no_metrics(self, mock_get_client, monkeypatch):
-        monkeypatch.setenv("EDGEML_API_KEY", "test-key")
+        monkeypatch.setenv("OCTOMIL_API_KEY", "test-key")
         mock_client = MagicMock()
         mock_client.train_status.return_value = {
             "current_round": 1,
@@ -472,14 +472,14 @@ class TestTrainStatusCommand:
 
 
 # ---------------------------------------------------------------------------
-# edgeml train stop
+# octomil train stop
 # ---------------------------------------------------------------------------
 
 
 class TestTrainStopCommand:
-    @patch("edgeml.cli._get_client")
+    @patch("octomil.cli._get_client")
     def test_train_stop(self, mock_get_client, monkeypatch):
-        monkeypatch.setenv("EDGEML_API_KEY", "test-key")
+        monkeypatch.setenv("OCTOMIL_API_KEY", "test-key")
         mock_client = MagicMock()
         mock_client.train_stop.return_value = {"last_round": 23}
         mock_get_client.return_value = mock_client
@@ -492,7 +492,7 @@ class TestTrainStopCommand:
 
 
 # ---------------------------------------------------------------------------
-# edgeml benchmark
+# octomil benchmark
 # ---------------------------------------------------------------------------
 
 
@@ -525,15 +525,15 @@ class TestBenchmarkCommand:
     def _run_benchmark(self, monkeypatch, cli_args, api_key="test-key"):
         """Helper that patches all heavy benchmark deps and invokes the CLI."""
         if api_key:
-            monkeypatch.setenv("EDGEML_API_KEY", api_key)
+            monkeypatch.setenv("OCTOMIL_API_KEY", api_key)
         else:
-            monkeypatch.delenv("EDGEML_API_KEY", raising=False)
+            monkeypatch.delenv("OCTOMIL_API_KEY", raising=False)
 
         mock_backend, mock_process, mock_vm = _make_benchmark_mocks()
 
         with (
-            patch("edgeml.cli._get_api_key", return_value=api_key or ""),
-            patch("edgeml.serve._detect_backend", return_value=mock_backend),
+            patch("octomil.cli._get_api_key", return_value=api_key or ""),
+            patch("octomil.serve._detect_backend", return_value=mock_backend),
             patch("psutil.Process", return_value=mock_process),
             patch("psutil.virtual_memory", return_value=mock_vm),
         ):
@@ -548,8 +548,8 @@ class TestBenchmarkCommand:
         mock_resp.status_code = 200
 
         with (
-            patch("edgeml.cli._get_api_key", return_value="test-key"),
-            patch("edgeml.serve._detect_backend", return_value=mock_backend),
+            patch("octomil.cli._get_api_key", return_value="test-key"),
+            patch("octomil.serve._detect_backend", return_value=mock_backend),
             patch("psutil.Process", return_value=mock_process),
             patch("psutil.virtual_memory", return_value=mock_vm),
             patch("httpx.post", return_value=mock_resp) as mock_post,
@@ -564,12 +564,12 @@ class TestBenchmarkCommand:
 
     def test_default_shares_warns_no_api_key(self, monkeypatch):
         """Without --local and without an API key, warns about missing key."""
-        monkeypatch.delenv("EDGEML_API_KEY", raising=False)
+        monkeypatch.delenv("OCTOMIL_API_KEY", raising=False)
         mock_backend, mock_process, mock_vm = _make_benchmark_mocks()
 
         with (
-            patch("edgeml.cli._get_api_key", return_value=""),
-            patch("edgeml.serve._detect_backend", return_value=mock_backend),
+            patch("octomil.cli._get_api_key", return_value=""),
+            patch("octomil.serve._detect_backend", return_value=mock_backend),
             patch("psutil.Process", return_value=mock_process),
             patch("psutil.virtual_memory", return_value=mock_vm),
         ):
@@ -582,12 +582,12 @@ class TestBenchmarkCommand:
 
     def test_local_flag_skips_share(self, monkeypatch):
         """With --local, no upload attempt is made."""
-        monkeypatch.setenv("EDGEML_API_KEY", "test-key")
+        monkeypatch.setenv("OCTOMIL_API_KEY", "test-key")
         mock_backend, mock_process, mock_vm = _make_benchmark_mocks()
 
         with (
-            patch("edgeml.cli._get_api_key", return_value="test-key"),
-            patch("edgeml.serve._detect_backend", return_value=mock_backend),
+            patch("octomil.cli._get_api_key", return_value="test-key"),
+            patch("octomil.serve._detect_backend", return_value=mock_backend),
             patch("psutil.Process", return_value=mock_process),
             patch("psutil.virtual_memory", return_value=mock_vm),
         ):

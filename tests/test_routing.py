@@ -1,4 +1,4 @@
-"""Tests for edgeml.routing — query routing, complexity estimation, and tier-0 deterministic answers."""
+"""Tests for octomil.routing — query routing, complexity estimation, and tier-0 deterministic answers."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ from unittest.mock import patch
 import pytest
 from httpx import ASGITransport, AsyncClient
 
-from edgeml.routing import (
+from octomil.routing import (
     TIER_ORDER,
     DeterministicResult,
     ModelInfo,
@@ -732,14 +732,14 @@ class TestMultiModelServeApp:
     @pytest.fixture
     def multi_model_app(self):
         """Create a multi-model FastAPI app with EchoBackends."""
-        from edgeml.serve import EchoBackend, create_multi_model_app
+        from octomil.serve import EchoBackend, create_multi_model_app
 
         def mock_detect(name, **kwargs):
             echo = EchoBackend()
             echo.load_model(name)
             return echo
 
-        with patch("edgeml.serve._detect_backend", side_effect=mock_detect):
+        with patch("octomil.serve._detect_backend", side_effect=mock_detect):
             app = create_multi_model_app(
                 ["small-model", "medium-model", "large-model"],
             )
@@ -791,12 +791,12 @@ class TestMultiModelServeApp:
             )
         assert resp.status_code == 200
         # Should have routing headers
-        assert "x-edgeml-routed-model" in resp.headers
-        assert "x-edgeml-complexity" in resp.headers
-        assert "x-edgeml-tier" in resp.headers
+        assert "x-octomil-routed-model" in resp.headers
+        assert "x-octomil-complexity" in resp.headers
+        assert "x-octomil-tier" in resp.headers
         # Simple query -> small model
-        assert resp.headers["x-edgeml-routed-model"] == "small-model"
-        assert resp.headers["x-edgeml-tier"] == "fast"
+        assert resp.headers["x-octomil-routed-model"] == "small-model"
+        assert resp.headers["x-octomil-tier"] == "fast"
 
     @pytest.mark.asyncio
     async def test_chat_completion_routes_complex(self, multi_model_app):
@@ -835,8 +835,8 @@ class TestMultiModelServeApp:
                 },
             )
         assert resp.status_code == 200
-        assert resp.headers["x-edgeml-routed-model"] == "large-model"
-        assert resp.headers["x-edgeml-tier"] == "quality"
+        assert resp.headers["x-octomil-routed-model"] == "large-model"
+        assert resp.headers["x-octomil-tier"] == "quality"
 
     @pytest.mark.asyncio
     async def test_chat_completion_response_format(self, multi_model_app):
@@ -886,7 +886,7 @@ class TestMultiModelServeApp:
                 },
             )
         assert resp.status_code == 200
-        assert "x-edgeml-routed-model" in resp.headers
+        assert "x-octomil-routed-model" in resp.headers
 
 
 # ---------------------------------------------------------------------------
@@ -897,7 +897,7 @@ class TestMultiModelServeApp:
 class TestFallbackChain:
     def test_fallback_on_model_failure(self):
         """When the primary model fails, the next model should be tried."""
-        from edgeml.serve import EchoBackend, create_multi_model_app
+        from octomil.serve import EchoBackend, create_multi_model_app
 
         call_count = {"small": 0, "large": 0}
 
@@ -919,7 +919,7 @@ class TestFallbackChain:
             backend.load_model(name)
             return backend
 
-        with patch("edgeml.serve._detect_backend", side_effect=mock_detect):
+        with patch("octomil.serve._detect_backend", side_effect=mock_detect):
             app = create_multi_model_app(["small", "large"])
 
             async def _trigger_lifespan():
@@ -942,13 +942,13 @@ class TestFallbackChain:
         resp = asyncio.run(_run())
         assert resp.status_code == 200
         # Should have used fallback
-        assert resp.headers.get("x-edgeml-fallback") == "true"
+        assert resp.headers.get("x-octomil-fallback") == "true"
         # The large model should have handled it
-        assert resp.headers["x-edgeml-routed-model"] == "large"
+        assert resp.headers["x-octomil-routed-model"] == "large"
 
     def test_all_models_fail_returns_503(self):
         """When all models fail, return 503."""
-        from edgeml.serve import EchoBackend, create_multi_model_app
+        from octomil.serve import EchoBackend, create_multi_model_app
 
         class AlwaysFailBackend(EchoBackend):
             def generate(self, request):
@@ -959,7 +959,7 @@ class TestFallbackChain:
             backend.load_model(name)
             return backend
 
-        with patch("edgeml.serve._detect_backend", side_effect=mock_detect):
+        with patch("octomil.serve._detect_backend", side_effect=mock_detect):
             app = create_multi_model_app(["a", "b"])
 
             async def _trigger_lifespan():
@@ -993,7 +993,7 @@ class TestServeCliMultiModel:
     def test_auto_route_requires_models(self):
         from click.testing import CliRunner
 
-        from edgeml.cli import main
+        from octomil.cli import main
 
         runner = CliRunner()
         result = runner.invoke(main, ["serve", "test", "--auto-route"])
@@ -1003,7 +1003,7 @@ class TestServeCliMultiModel:
     def test_auto_route_requires_two_models(self):
         from click.testing import CliRunner
 
-        from edgeml.cli import main
+        from octomil.cli import main
 
         runner = CliRunner()
         result = runner.invoke(
@@ -1015,10 +1015,10 @@ class TestServeCliMultiModel:
     def test_multi_model_prints_tier_info(self):
         from click.testing import CliRunner
 
-        from edgeml.cli import main
+        from octomil.cli import main
 
         runner = CliRunner()
-        with patch("edgeml.serve.run_multi_model_server"):
+        with patch("octomil.serve.run_multi_model_server"):
             result = runner.invoke(
                 main,
                 [
@@ -1037,10 +1037,10 @@ class TestServeCliMultiModel:
     def test_route_strategy_default_is_complexity(self):
         from click.testing import CliRunner
 
-        from edgeml.cli import main
+        from octomil.cli import main
 
         runner = CliRunner()
-        with patch("edgeml.serve.run_multi_model_server") as mock_run:
+        with patch("octomil.serve.run_multi_model_server") as mock_run:
             result = runner.invoke(
                 main,
                 [
@@ -1060,19 +1060,19 @@ class TestServeCliMultiModel:
         """Without --auto-route, serve works exactly as before."""
         from click.testing import CliRunner
 
-        from edgeml.cli import main
+        from octomil.cli import main
 
         runner = CliRunner()
-        with patch("edgeml.serve.run_server") as mock_run:
+        with patch("octomil.serve.run_server") as mock_run:
             result = runner.invoke(main, ["serve", "gemma-1b"])
         assert result.exit_code == 0
-        assert "Starting EdgeML serve" in result.output
+        assert "Starting Octomil serve" in result.output
         mock_run.assert_called_once()
 
     def test_invalid_route_strategy_rejected(self):
         from click.testing import CliRunner
 
-        from edgeml.cli import main
+        from octomil.cli import main
 
         runner = CliRunner()
         result = runner.invoke(
@@ -1098,9 +1098,9 @@ class TestServeCliMultiModel:
 @pytest.fixture
 def echo_app_with_routing():
     """Create a FastAPI app with EchoBackend for testing deterministic routing."""
-    from edgeml.serve import EchoBackend, create_app
+    from octomil.serve import EchoBackend, create_app
 
-    with patch("edgeml.serve._detect_backend") as mock_detect:
+    with patch("octomil.serve._detect_backend") as mock_detect:
         echo = EchoBackend()
         echo.load_model("test-model")
         mock_detect.return_value = echo

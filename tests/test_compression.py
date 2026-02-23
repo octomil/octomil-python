@@ -1,4 +1,4 @@
-"""Tests for edgeml.compression — prompt compression / context distillation."""
+"""Tests for octomil.compression — prompt compression / context distillation."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from edgeml.compression import (
+from octomil.compression import (
     CompressionConfig,
     CompressionStats,
     PromptCompressor,
@@ -468,7 +468,7 @@ class TestCompressionTelemetry:
     def test_report_prompt_compressed_payload(self):
         """Verify TelemetryReporter.report_prompt_compressed enqueues correct payload."""
         from unittest.mock import patch
-        from edgeml.telemetry import TelemetryReporter
+        from octomil.telemetry import TelemetryReporter
 
         sent = []
 
@@ -505,7 +505,7 @@ class TestCompressionTelemetry:
 
     def test_report_prompt_compressed_enqueue(self):
         """Verify the payload structure via mock."""
-        from edgeml.telemetry import TelemetryReporter
+        from octomil.telemetry import TelemetryReporter
 
         reporter = TelemetryReporter(
             api_key="test-key",
@@ -557,7 +557,7 @@ class TestCompressionTelemetry:
 class TestCompressionCLI:
     def test_serve_help_shows_compress_context(self):
         from click.testing import CliRunner
-        from edgeml.cli import main
+        from octomil.cli import main
 
         runner = CliRunner()
         result = runner.invoke(main, ["serve", "--help"])
@@ -566,7 +566,7 @@ class TestCompressionCLI:
 
     def test_serve_help_shows_compression_strategy(self):
         from click.testing import CliRunner
-        from edgeml.cli import main
+        from octomil.cli import main
 
         runner = CliRunner()
         result = runner.invoke(main, ["serve", "--help"])
@@ -576,7 +576,7 @@ class TestCompressionCLI:
 
     def test_serve_help_shows_compression_ratio(self):
         from click.testing import CliRunner
-        from edgeml.cli import main
+        from octomil.cli import main
 
         runner = CliRunner()
         result = runner.invoke(main, ["serve", "--help"])
@@ -584,7 +584,7 @@ class TestCompressionCLI:
 
     def test_serve_help_shows_compression_max_turns(self):
         from click.testing import CliRunner
-        from edgeml.cli import main
+        from octomil.cli import main
 
         runner = CliRunner()
         result = runner.invoke(main, ["serve", "--help"])
@@ -592,7 +592,7 @@ class TestCompressionCLI:
 
     def test_serve_help_shows_compression_threshold(self):
         from click.testing import CliRunner
-        from edgeml.cli import main
+        from octomil.cli import main
 
         runner = CliRunner()
         result = runner.invoke(main, ["serve", "--help"])
@@ -601,10 +601,10 @@ class TestCompressionCLI:
     def test_serve_with_compress_context_passes_through(self):
         """Verify --compress-context is accepted by the CLI and passed to run_server."""
         from click.testing import CliRunner
-        from edgeml.cli import main
+        from octomil.cli import main
 
         runner = CliRunner()
-        with patch("edgeml.engines.get_registry") as mock_registry:
+        with patch("octomil.engines.get_registry") as mock_registry:
             # Set up a minimal mock registry
             mock_reg = MagicMock()
             mock_detection = MagicMock()
@@ -616,7 +616,7 @@ class TestCompressionCLI:
             mock_reg.detect_all.return_value = [mock_detection]
             mock_registry.return_value = mock_reg
 
-            with patch("edgeml.serve.run_server") as mock_run:
+            with patch("octomil.serve.run_server") as mock_run:
                 result = runner.invoke(
                     main,
                     [
@@ -651,9 +651,9 @@ class TestCompressionCLI:
 async def _make_echo_app_async(**create_kwargs):
     """Create a FastAPI app with EchoBackend for testing, triggering lifespan."""
     from unittest.mock import patch as _patch
-    from edgeml.serve import EchoBackend, create_app
+    from octomil.serve import EchoBackend, create_app
 
-    with _patch("edgeml.serve._detect_backend") as mock_detect:
+    with _patch("octomil.serve._detect_backend") as mock_detect:
         echo = EchoBackend()
         echo.load_model("test-model")
         mock_detect.return_value = echo

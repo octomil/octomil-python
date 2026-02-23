@@ -3,8 +3,8 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from edgeml.api_client import EdgeMLClientError
-from edgeml.registry import ModelRegistry
+from octomil.api_client import OctomilClientError
+from octomil.registry import ModelRegistry
 
 
 class _FakeHttpxResponse:
@@ -47,7 +47,7 @@ class _StubApi:
         self.calls = []
         self._responses = {}
         self.timeout = 60.0  # Add timeout attribute
-        self.api_base = "https://api.edgeml.io/api/v1"
+        self.api_base = "https://api.octomil.com/api/v1"
 
     def set_response(self, key, response):
         self._responses[key] = response
@@ -173,7 +173,7 @@ class ModelRegistryTests(unittest.TestCase):
         stub = _StubApi()
         stub.set_response(("/models/model_1/versions/latest", None), {})
         registry.api = stub
-        with self.assertRaises(EdgeMLClientError) as ctx:
+        with self.assertRaises(OctomilClientError) as ctx:
             registry.get_latest_version("model_1")
         self.assertIn("Latest version not found", str(ctx.exception))
 
@@ -269,7 +269,7 @@ class ModelRegistryTests(unittest.TestCase):
         with tempfile.NamedTemporaryFile(delete=False) as tmp:
             tmp_path = tmp.name
 
-        with patch("edgeml.registry.httpx.Client", fake_client):
+        with patch("octomil.registry.httpx.Client", fake_client):
             result = registry.download_version("model_1", "1.0.0", "onnx", tmp_path)
 
         self.assertEqual(result, tmp_path)
@@ -283,7 +283,7 @@ class ModelRegistryTests(unittest.TestCase):
         stub = _StubApi()
         stub.set_response(("/models/model_1/versions/1.0.0/download-url", (("format", "onnx"),)), {})
         registry.api = stub
-        with self.assertRaises(EdgeMLClientError) as ctx:
+        with self.assertRaises(OctomilClientError) as ctx:
             registry.download_version("model_1", "1.0.0", "onnx", os.path.join(tempfile.gettempdir(), "model.onnx"))
         self.assertIn("Download URL missing", str(ctx.exception))
 
@@ -296,8 +296,8 @@ class ModelRegistryTests(unittest.TestCase):
         fake_response = _FakeHttpxResponse(status_code=404, text="Not found")
         fake_client = _FakeHttpxClient(fake_response)
 
-        with patch("edgeml.registry.httpx.Client", fake_client):
-            with self.assertRaises(EdgeMLClientError) as ctx:
+        with patch("octomil.registry.httpx.Client", fake_client):
+            with self.assertRaises(OctomilClientError) as ctx:
                 registry.download_version("model_1", "1.0.0", "onnx", os.path.join(tempfile.gettempdir(), "model.onnx"))
         self.assertIn("Not found", str(ctx.exception))
 
@@ -384,7 +384,7 @@ class ModelRegistryTests(unittest.TestCase):
         registry = ModelRegistry(auth_token_provider=lambda: "token123")
         stub = _StubApi()
         registry.api = stub
-        from edgeml.control_plane import RolloutsAPI
+        from octomil.control_plane import RolloutsAPI
         registry.rollouts = RolloutsAPI(stub)
         registry.create_rollout(
             model_id="model_1",
@@ -414,7 +414,7 @@ class ModelRegistryTests(unittest.TestCase):
             tmp_path = tmp.name
 
         try:
-            with patch("edgeml.registry.httpx.Client", fake_client):
+            with patch("octomil.registry.httpx.Client", fake_client):
                 result = registry.upload_version_from_path(
                     model_id="model_1",
                     file_path=tmp_path,
@@ -449,7 +449,7 @@ class ModelRegistryTests(unittest.TestCase):
             tmp2_path = tmp2.name
 
         try:
-            with patch("edgeml.registry.httpx.Client", fake_client):
+            with patch("octomil.registry.httpx.Client", fake_client):
                 result = registry.upload_version_from_path(
                     model_id="model_1",
                     file_path=tmp_path,
@@ -474,8 +474,8 @@ class ModelRegistryTests(unittest.TestCase):
             tmp_path = tmp.name
 
         try:
-            with patch("edgeml.registry.httpx.Client", fake_client):
-                with self.assertRaises(EdgeMLClientError) as ctx:
+            with patch("octomil.registry.httpx.Client", fake_client):
+                with self.assertRaises(OctomilClientError) as ctx:
                     registry.upload_version_from_path(
                         model_id="model_1",
                         file_path=tmp_path,

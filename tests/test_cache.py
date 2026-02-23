@@ -1,11 +1,11 @@
-"""Tests for edgeml.cache — KV cache manager with LRU eviction and prefix matching."""
+"""Tests for octomil.cache — KV cache manager with LRU eviction and prefix matching."""
 
 from __future__ import annotations
 
 
 import pytest
 
-from edgeml.cache import (
+from octomil.cache import (
     CachedPrefix,
     CacheStats,
     KVCacheManager,

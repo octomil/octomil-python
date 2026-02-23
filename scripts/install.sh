@@ -1,18 +1,18 @@
 #!/usr/bin/env sh
 #
-# EdgeML installer — download the correct binary for this platform.
+# Octomil installer — download the correct binary for this platform.
 #
 # Usage:
-#   curl -fsSL https://get.edgeml.io | sh
+#   curl -fsSL https://get.octomil.com | sh
 #
 # Environment variables:
-#   EDGEML_VERSION   — specific version to install (default: latest)
-#   EDGEML_INSTALL   — installation directory (default: /usr/local/bin or ~/.local/bin)
+#   OCTOMIL_VERSION   — specific version to install (default: latest)
+#   OCTOMIL_INSTALL   — installation directory (default: /usr/local/bin or ~/.local/bin)
 
 set -eu
 
-REPO="edgeml-ai/edgeml-python"
-BINARY_NAME="edgeml"
+REPO="octomil/octomil-python"
+BINARY_NAME="octomil"
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -42,13 +42,13 @@ detect_platform() {
     case "$OS" in
         Darwin) OS="darwin" ;;
         Linux)  OS="linux" ;;
-        *)      error "Unsupported operating system: $OS. EdgeML supports macOS and Linux." ;;
+        *)      error "Unsupported operating system: $OS. Octomil supports macOS and Linux." ;;
     esac
 
     case "$ARCH" in
         arm64|aarch64)  ARCH="arm64" ;;
         x86_64|amd64)   ARCH="amd64" ;;
-        *)              error "Unsupported architecture: $ARCH. EdgeML supports arm64 and x86_64." ;;
+        *)              error "Unsupported architecture: $ARCH. Octomil supports arm64 and x86_64." ;;
     esac
 
     PLATFORM="${OS}-${ARCH}"
@@ -59,7 +59,7 @@ detect_platform() {
         echo ""
         echo "  Install via pip instead:"
         echo ""
-        echo "    pip install edgeml[serve]"
+        echo "    pip install octomil[serve]"
         echo ""
         exit 0
     fi
@@ -70,8 +70,8 @@ detect_platform() {
 # ---------------------------------------------------------------------------
 
 get_version() {
-    if [ -n "${EDGEML_VERSION:-}" ]; then
-        VERSION="$EDGEML_VERSION"
+    if [ -n "${OCTOMIL_VERSION:-}" ]; then
+        VERSION="$OCTOMIL_VERSION"
         # Prepend v if missing
         case "$VERSION" in
             v*) ;;
@@ -89,11 +89,11 @@ get_version() {
         VERSION=$(wget -qO- "https://api.github.com/repos/${REPO}/releases/latest" | \
             grep '"tag_name"' | head -1 | sed -E 's/.*"tag_name":[[:space:]]*"([^"]+)".*/\1/')
     else
-        error "curl or wget is required to download edgeml."
+        error "curl or wget is required to download octomil."
     fi
 
     if [ -z "$VERSION" ]; then
-        error "Could not determine latest version. Set EDGEML_VERSION manually."
+        error "Could not determine latest version. Set OCTOMIL_VERSION manually."
     fi
 }
 
@@ -102,8 +102,8 @@ get_version() {
 # ---------------------------------------------------------------------------
 
 get_install_dir() {
-    if [ -n "${EDGEML_INSTALL:-}" ]; then
-        INSTALL_DIR="$EDGEML_INSTALL"
+    if [ -n "${OCTOMIL_INSTALL:-}" ]; then
+        INSTALL_DIR="$OCTOMIL_INSTALL"
         return
     fi
 
@@ -117,7 +117,7 @@ get_install_dir() {
     fi
 
     # lib dir: where the full binary bundle lives
-    LIB_DIR="${HOME}/.local/lib/edgeml"
+    LIB_DIR="${HOME}/.local/lib/octomil"
 }
 
 # ---------------------------------------------------------------------------
@@ -216,11 +216,11 @@ main() {
     verify
 
     echo ""
-    info "EdgeML ${VERSION} installed successfully."
+    info "Octomil ${VERSION} installed successfully."
     echo ""
     echo "  Get started:"
-    echo "    edgeml serve gemma-1b"
-    echo "    edgeml --help"
+    echo "    octomil serve gemma-1b"
+    echo "    octomil --help"
     echo ""
 }
 

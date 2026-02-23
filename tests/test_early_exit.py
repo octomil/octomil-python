@@ -1,4 +1,4 @@
-"""Tests for edgeml.early_exit — early exit / adaptive computation depth.
+"""Tests for octomil.early_exit — early exit / adaptive computation depth.
 
 Covers:
 - EarlyExitConfig construction and property computation
@@ -23,7 +23,7 @@ from unittest.mock import patch
 import pytest
 from click.testing import CliRunner
 
-from edgeml.early_exit import (
+from octomil.early_exit import (
     PRESET_MIN_LAYERS_FRACTION,
     PRESET_THRESHOLDS,
     EarlyExitConfig,
@@ -512,11 +512,11 @@ class TestEarlyExitMonitor:
 @pytest.fixture
 def echo_app_with_early_exit():
     """Create a FastAPI app with EchoBackend and early exit enabled."""
-    from edgeml.serve import EchoBackend, create_app
+    from octomil.serve import EchoBackend, create_app
 
     ee_cfg = EarlyExitConfig(enabled=True, threshold=0.3, total_layers=32)
 
-    with patch("edgeml.serve._detect_backend") as mock_detect:
+    with patch("octomil.serve._detect_backend") as mock_detect:
         echo = EchoBackend()
         echo.load_model("test-model")
         mock_detect.return_value = echo
@@ -535,9 +535,9 @@ def echo_app_with_early_exit():
 @pytest.fixture
 def echo_app_without_early_exit():
     """Create a FastAPI app with EchoBackend and no early exit."""
-    from edgeml.serve import EchoBackend, create_app
+    from octomil.serve import EchoBackend, create_app
 
-    with patch("edgeml.serve._detect_backend") as mock_detect:
+    with patch("octomil.serve._detect_backend") as mock_detect:
         echo = EchoBackend()
         echo.load_model("test-model")
         mock_detect.return_value = echo
@@ -679,7 +679,7 @@ async def test_health_no_early_exit_when_disabled(echo_app_without_early_exit):
 
 class TestCliEarlyExitFlags:
     def test_serve_help_shows_early_exit_threshold(self):
-        from edgeml.cli import main
+        from octomil.cli import main
 
         runner = CliRunner()
         result = runner.invoke(main, ["serve", "--help"])
@@ -687,7 +687,7 @@ class TestCliEarlyExitFlags:
         assert "--early-exit-threshold" in result.output
 
     def test_serve_help_shows_speed_quality(self):
-        from edgeml.cli import main
+        from octomil.cli import main
 
         runner = CliRunner()
         result = runner.invoke(main, ["serve", "--help"])
@@ -695,7 +695,7 @@ class TestCliEarlyExitFlags:
         assert "--speed-quality" in result.output
 
     def test_speed_quality_choices(self):
-        from edgeml.cli import main
+        from octomil.cli import main
 
         runner = CliRunner()
         result = runner.invoke(main, ["serve", "--help"])
@@ -711,7 +711,7 @@ class TestCliEarlyExitFlags:
 
 class TestTelemetryEarlyExit:
     def test_report_early_exit_stats_payload(self):
-        from edgeml.telemetry import TelemetryReporter
+        from octomil.telemetry import TelemetryReporter
 
         sent = []
 
@@ -749,7 +749,7 @@ class TestTelemetryEarlyExit:
         assert m["avg_entropy"] == 0.22
 
     def test_generation_completed_includes_early_exit(self):
-        from edgeml.telemetry import TelemetryReporter
+        from octomil.telemetry import TelemetryReporter
 
         sent = []
 
@@ -788,7 +788,7 @@ class TestTelemetryEarlyExit:
         assert p["metrics"]["early_exit"]["early_exit_tokens"] == 15
 
     def test_generation_completed_no_early_exit_when_none(self):
-        from edgeml.telemetry import TelemetryReporter
+        from octomil.telemetry import TelemetryReporter
 
         sent = []
 
@@ -827,14 +827,14 @@ class TestTelemetryEarlyExit:
 
 class TestInferenceMetricsEarlyExit:
     def test_default_values(self):
-        from edgeml.serve import InferenceMetrics
+        from octomil.serve import InferenceMetrics
 
         m = InferenceMetrics()
         assert m.early_exit_tokens == 0
         assert m.avg_layers_used == 0.0
 
     def test_with_early_exit_values(self):
-        from edgeml.serve import InferenceMetrics
+        from octomil.serve import InferenceMetrics
 
         m = InferenceMetrics(early_exit_tokens=15, avg_layers_used=20.5)
         assert m.early_exit_tokens == 15

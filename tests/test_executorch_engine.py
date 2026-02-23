@@ -6,7 +6,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from edgeml.engines.executorch_engine import (
+from octomil.engines.executorch_engine import (
     ExecuTorchEngine,
     _get_best_delegate,
     _has_executorch,
@@ -45,13 +45,13 @@ class TestExecuTorchEngine:
 
     def test_detect_with_executorch(self) -> None:
         with patch(
-            "edgeml.engines.executorch_engine._has_executorch", return_value=True
+            "octomil.engines.executorch_engine._has_executorch", return_value=True
         ):
             assert self.engine.detect() is True
 
     def test_detect_without_executorch(self) -> None:
         with patch(
-            "edgeml.engines.executorch_engine._has_executorch", return_value=False
+            "octomil.engines.executorch_engine._has_executorch", return_value=False
         ):
             assert self.engine.detect() is False
 
@@ -60,7 +60,7 @@ class TestExecuTorchEngine:
         mock_et.__version__ = "0.4.0"
         with (
             patch(
-                "edgeml.engines.executorch_engine._has_executorch", return_value=True
+                "octomil.engines.executorch_engine._has_executorch", return_value=True
             ),
             patch.dict("sys.modules", {"executorch": mock_et}),
         ):
@@ -69,7 +69,7 @@ class TestExecuTorchEngine:
 
     def test_detect_info_unavailable(self) -> None:
         with patch(
-            "edgeml.engines.executorch_engine._has_executorch", return_value=False
+            "octomil.engines.executorch_engine._has_executorch", return_value=False
         ):
             assert self.engine.detect_info() == ""
 
@@ -88,7 +88,7 @@ class TestExecuTorchEngine:
 
     def test_benchmark_error_when_unavailable(self) -> None:
         with patch(
-            "edgeml.engines.executorch_engine._has_executorch", return_value=False
+            "octomil.engines.executorch_engine._has_executorch", return_value=False
         ):
             # benchmark will try to import and fail
             result = self.engine.benchmark("llama-3b")
@@ -104,10 +104,10 @@ class TestExecuTorchEngine:
 
         with (
             patch(
-                "edgeml.engines.executorch_engine._has_executorch", return_value=True
+                "octomil.engines.executorch_engine._has_executorch", return_value=True
             ),
             patch(
-                "edgeml.engines.executorch_engine.ExecuTorchEngine._resolve_model_path",
+                "octomil.engines.executorch_engine.ExecuTorchEngine._resolve_model_path",
                 return_value="/tmp/model.pte",
             ),
         ):
@@ -135,14 +135,14 @@ class TestExecuTorchEngine:
 class TestGetBestDelegate:
     def test_macos_prefers_coreml(self) -> None:
         with patch(
-            "edgeml.engines.executorch_engine.platform.system", return_value="Darwin"
+            "octomil.engines.executorch_engine.platform.system", return_value="Darwin"
         ):
             assert _get_best_delegate() == "coreml"
 
     def test_linux_default_xnnpack(self) -> None:
         with (
             patch(
-                "edgeml.engines.executorch_engine.platform.system", return_value="Linux"
+                "octomil.engines.executorch_engine.platform.system", return_value="Linux"
             ),
             patch("os.path.exists", return_value=False),
         ):
@@ -151,7 +151,7 @@ class TestGetBestDelegate:
     def test_linux_qualcomm_prefers_qnn(self) -> None:
         with (
             patch(
-                "edgeml.engines.executorch_engine.platform.system", return_value="Linux"
+                "octomil.engines.executorch_engine.platform.system", return_value="Linux"
             ),
             patch("os.path.exists", return_value=True),
         ):
@@ -159,7 +159,7 @@ class TestGetBestDelegate:
 
     def test_windows_defaults_xnnpack(self) -> None:
         with patch(
-            "edgeml.engines.executorch_engine.platform.system", return_value="Windows"
+            "octomil.engines.executorch_engine.platform.system", return_value="Windows"
         ):
             assert _get_best_delegate() == "xnnpack"
 
@@ -191,7 +191,7 @@ class TestHasExecutorch:
 
 class TestExecuTorchRegistry:
     def test_engine_registered(self) -> None:
-        from edgeml.engines.registry import EngineRegistry
+        from octomil.engines.registry import EngineRegistry
 
         registry = EngineRegistry()
         engine = ExecuTorchEngine()
@@ -199,7 +199,7 @@ class TestExecuTorchRegistry:
         assert registry.get_engine("executorch") is engine
 
     def test_auto_register_includes_executorch(self) -> None:
-        from edgeml.engines.registry import EngineRegistry, _auto_register
+        from octomil.engines.registry import EngineRegistry, _auto_register
 
         registry = EngineRegistry()
         _auto_register(registry)

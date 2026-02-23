@@ -1,4 +1,4 @@
-"""Tests for edgeml.grammar — structured/constrained decoding support."""
+"""Tests for octomil.grammar — structured/constrained decoding support."""
 
 from __future__ import annotations
 
@@ -9,14 +9,14 @@ from unittest.mock import patch
 import pytest
 from httpx import ASGITransport, AsyncClient
 
-from edgeml.grammar import (
+from octomil.grammar import (
     extract_json,
     json_mode_grammar,
     json_schema_to_gbnf,
     json_system_prompt,
     validate_json_output,
 )
-from edgeml.serve import (
+from octomil.serve import (
     ChatCompletionBody,
     EchoBackend,
     GenerationRequest,
@@ -548,7 +548,7 @@ class TestGenerationRequestExtended:
 @pytest.fixture
 def echo_app():
     """Create a FastAPI app with EchoBackend for testing."""
-    with patch("edgeml.serve._detect_backend") as mock_detect:
+    with patch("octomil.serve._detect_backend") as mock_detect:
         echo = EchoBackend()
         echo.load_model("test-model")
         mock_detect.return_value = echo
@@ -565,7 +565,7 @@ def echo_app():
 @pytest.fixture
 def json_mode_app():
     """Create a FastAPI app with json_mode=True and EchoBackend."""
-    with patch("edgeml.serve._detect_backend") as mock_detect:
+    with patch("octomil.serve._detect_backend") as mock_detect:
         echo = EchoBackend()
         echo.load_model("test-model")
         mock_detect.return_value = echo

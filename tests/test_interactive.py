@@ -1,4 +1,4 @@
-"""Tests for edgeml.interactive — command catalog, fuzzy filter, fallback UI."""
+"""Tests for octomil.interactive — command catalog, fuzzy filter, fallback UI."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ from unittest.mock import MagicMock, patch
 
 import click
 
-from edgeml.interactive import (
+from octomil.interactive import (
     _CommandEntry,
     _build_command_catalog,
     _fallback_interactive,
@@ -21,7 +21,7 @@ from edgeml.interactive import (
 
 def _make_cli_group() -> click.Group:
     """Build a Click group with representative commands."""
-    group = click.Group(name="edgeml")
+    group = click.Group(name="octomil")
 
     @click.command()
     def serve():
@@ -41,7 +41,7 @@ def _make_cli_group() -> click.Group:
 
     @click.command()
     def login():
-        """Authenticate with EdgeML."""
+        """Authenticate with Octomil."""
 
     @click.command()
     def benchmark():
@@ -323,12 +323,12 @@ class TestFuzzyFilter:
 
 class TestFallbackInteractive:
     def test_output_includes_header(self):
-        """Fallback prints 'EdgeML Commands' header."""
+        """Fallback prints 'Octomil Commands' header."""
         commands = [
             _CommandEntry(name="serve", description="Start server.", category="Serve"),
             _CommandEntry(name="hw", description="Hardware info.", category="Hardware"),
         ]
-        with patch("edgeml.interactive.click") as mock_click:
+        with patch("octomil.interactive.click") as mock_click:
             mock_click.prompt.return_value = "q"
             mock_click.echo = MagicMock()
             mock_click.secho = MagicMock()
@@ -339,7 +339,7 @@ class TestFallbackInteractive:
         assert result is None
         # Check that echo was called with the header
         echo_calls = [str(c) for c in mock_click.echo.call_args_list]
-        header_found = any("EdgeML Commands" in c for c in echo_calls)
+        header_found = any("Octomil Commands" in c for c in echo_calls)
         assert header_found
 
     def test_output_shows_categories(self):
@@ -350,7 +350,7 @@ class TestFallbackInteractive:
                 name="deploy", description="Deploy model.", category="Deploy"
             ),
         ]
-        with patch("edgeml.interactive.click") as mock_click:
+        with patch("octomil.interactive.click") as mock_click:
             mock_click.prompt.return_value = "q"
             mock_click.echo = MagicMock()
             mock_click.secho = MagicMock()
@@ -367,7 +367,7 @@ class TestFallbackInteractive:
         commands = [
             _CommandEntry(name="serve", description="Start server.", category="Serve"),
         ]
-        with patch("edgeml.interactive.click") as mock_click:
+        with patch("octomil.interactive.click") as mock_click:
             mock_click.prompt.return_value = "serve"
             mock_click.echo = MagicMock()
             mock_click.secho = MagicMock()
@@ -382,7 +382,7 @@ class TestFallbackInteractive:
         commands = [
             _CommandEntry(name="serve", description="Start server.", category="Serve"),
         ]
-        with patch("edgeml.interactive.click") as mock_click:
+        with patch("octomil.interactive.click") as mock_click:
             mock_click.prompt.return_value = "q"
             mock_click.echo = MagicMock()
             mock_click.secho = MagicMock()
@@ -397,7 +397,7 @@ class TestFallbackInteractive:
         commands = [
             _CommandEntry(name="serve", description="Start server.", category="Serve"),
         ]
-        with patch("edgeml.interactive.click") as mock_click:
+        with patch("octomil.interactive.click") as mock_click:
             mock_click.prompt.side_effect = click.Abort()
             mock_click.echo = MagicMock()
             mock_click.secho = MagicMock()
@@ -412,7 +412,7 @@ class TestFallbackInteractive:
         commands = [
             _CommandEntry(name="serve", description="Start server.", category="Serve"),
         ]
-        with patch("edgeml.interactive.click") as mock_click:
+        with patch("octomil.interactive.click") as mock_click:
             mock_click.prompt.side_effect = EOFError()
             mock_click.echo = MagicMock()
             mock_click.secho = MagicMock()
@@ -427,7 +427,7 @@ class TestFallbackInteractive:
         commands = [
             _CommandEntry(name="serve", description="Start server.", category="Serve"),
         ]
-        with patch("edgeml.interactive.click") as mock_click:
+        with patch("octomil.interactive.click") as mock_click:
             mock_click.prompt.return_value = "  serve  "
             mock_click.echo = MagicMock()
             mock_click.secho = MagicMock()
@@ -443,7 +443,7 @@ class TestFallbackInteractive:
             _CommandEntry(name="serve", description="Start server.", category="Serve"),
             _CommandEntry(name="hw", description="Hardware.", category="Hardware"),
         ]
-        with patch("edgeml.interactive.click") as mock_click:
+        with patch("octomil.interactive.click") as mock_click:
             mock_click.prompt.return_value = "q"
             mock_click.echo = MagicMock()
             mock_click.secho = MagicMock()
@@ -461,7 +461,7 @@ class TestFallbackInteractive:
         commands = [
             _CommandEntry(name="serve", description="Start server.", category="Serve"),
         ]
-        with patch("edgeml.interactive.click") as mock_click:
+        with patch("octomil.interactive.click") as mock_click:
             mock_click.prompt.return_value = "q"
             mock_click.echo = MagicMock()
             mock_click.secho = MagicMock()
