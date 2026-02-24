@@ -32,35 +32,35 @@ class RecommendedModel:
 
 RECOMMENDED_MODELS: list[RecommendedModel] = [
     RecommendedModel(
-        key="qwen-7b",
-        label="qwen-7b",
-        description="Best local coding model, strong reasoning",
+        key="qwen-coder-7b",
+        label="qwen-coder-7b",
+        description="Best local coding model, purpose-built for code",
         size="~4.5 GB",
         recommended=True,
     ),
     RecommendedModel(
-        key="gemma-4b",
-        label="gemma-4b",
-        description="Fast and capable, good for quick tasks",
-        size="~2.5 GB",
+        key="qwen-coder-3b",
+        label="qwen-coder-3b",
+        description="Fast coding model, runs on any machine",
+        size="~2 GB",
+    ),
+    RecommendedModel(
+        key="qwen-coder-1.5b",
+        label="qwen-coder-1.5b",
+        description="Ultra-light coding model, instant responses",
+        size="~1 GB",
+    ),
+    RecommendedModel(
+        key="qwen-7b",
+        label="qwen-7b",
+        description="Strong general-purpose with good code ability",
+        size="~4.5 GB",
     ),
     RecommendedModel(
         key="llama-8b",
         label="llama-8b",
-        description="Solid general-purpose coding assistant",
+        description="Meta Llama 3.1, solid all-rounder",
         size="~4.5 GB",
-    ),
-    RecommendedModel(
-        key="qwen-3b",
-        label="qwen-3b",
-        description="Lightweight, runs on any machine",
-        size="~2 GB",
-    ),
-    RecommendedModel(
-        key="phi-mini",
-        label="phi-mini",
-        description="Microsoft Phi 3.5, efficient reasoning",
-        size="~2.5 GB",
     ),
 ]
 

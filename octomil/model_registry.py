@@ -609,6 +609,102 @@ MODEL_FAMILIES: dict[str, ModelFamily] = {
         },
     ),
     # -----------------------------------------------------------------------
+    # Alibaba Qwen — Coder (code-specialized)
+    # -----------------------------------------------------------------------
+    "qwen-coder-1.5b": ModelFamily(
+        default_tag="q4_k_m",
+        publisher="Qwen",
+        params="1.5B",
+        variants={
+            "q4_k_m": ModelVariant(
+                quantization_family="4bit",
+                mlx="mlx-community/Qwen2.5-Coder-1.5B-Instruct-4bit",
+                sources=[
+                    ModelSource(
+                        type="huggingface",
+                        ref="Qwen/Qwen2.5-Coder-1.5B-Instruct-GGUF",
+                        file="qwen2.5-coder-1.5b-instruct-q4_k_m.gguf",
+                        trust="official",
+                    ),
+                ],
+            ),
+            "q8_0": ModelVariant(
+                quantization_family="8bit",
+                mlx="mlx-community/Qwen2.5-Coder-1.5B-Instruct-8bit",
+                sources=[
+                    ModelSource(
+                        type="huggingface",
+                        ref="Qwen/Qwen2.5-Coder-1.5B-Instruct-GGUF",
+                        file="qwen2.5-coder-1.5b-instruct-q8_0.gguf",
+                        trust="official",
+                    ),
+                ],
+            ),
+        },
+    ),
+    "qwen-coder-3b": ModelFamily(
+        default_tag="q4_k_m",
+        publisher="Qwen",
+        params="3B",
+        variants={
+            "q4_k_m": ModelVariant(
+                quantization_family="4bit",
+                mlx="mlx-community/Qwen2.5-Coder-3B-Instruct-4bit",
+                sources=[
+                    ModelSource(
+                        type="huggingface",
+                        ref="Qwen/Qwen2.5-Coder-3B-Instruct-GGUF",
+                        file="qwen2.5-coder-3b-instruct-q4_k_m.gguf",
+                        trust="official",
+                    ),
+                ],
+            ),
+            "q8_0": ModelVariant(
+                quantization_family="8bit",
+                mlx="mlx-community/Qwen2.5-Coder-3B-Instruct-8bit",
+                sources=[
+                    ModelSource(
+                        type="huggingface",
+                        ref="Qwen/Qwen2.5-Coder-3B-Instruct-GGUF",
+                        file="qwen2.5-coder-3b-instruct-q8_0.gguf",
+                        trust="official",
+                    ),
+                ],
+            ),
+        },
+    ),
+    "qwen-coder-7b": ModelFamily(
+        default_tag="q4_k_m",
+        publisher="Qwen",
+        params="7B",
+        variants={
+            "q4_k_m": ModelVariant(
+                quantization_family="4bit",
+                mlx="mlx-community/Qwen2.5-Coder-7B-Instruct-4bit",
+                sources=[
+                    ModelSource(
+                        type="huggingface",
+                        ref="Qwen/Qwen2.5-Coder-7B-Instruct-GGUF",
+                        file="qwen2.5-coder-7b-instruct-q4_k_m.gguf",
+                        trust="official",
+                    ),
+                ],
+            ),
+            "q8_0": ModelVariant(
+                quantization_family="8bit",
+                mlx="mlx-community/Qwen2.5-Coder-7B-Instruct-8bit",
+                sources=[
+                    ModelSource(
+                        type="huggingface",
+                        ref="Qwen/Qwen2.5-Coder-7B-Instruct-GGUF",
+                        file="qwen2.5-coder-7b-instruct-q8_0.gguf",
+                        trust="official",
+                    ),
+                ],
+            ),
+        },
+    ),
+    # -----------------------------------------------------------------------
     # Mistral AI
     # -----------------------------------------------------------------------
     "mistral-7b": ModelFamily(

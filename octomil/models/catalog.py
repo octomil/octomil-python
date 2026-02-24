@@ -357,6 +357,81 @@ CATALOG: dict[str, ModelEntry] = {
         },
     ),
     # -------------------------------------------------------------------
+    # Alibaba Qwen — Coder (code-specialized)
+    # -------------------------------------------------------------------
+    "qwen-coder-1.5b": ModelEntry(
+        publisher="Qwen",
+        params="1.5B",
+        default_quant="4bit",
+        engines=frozenset({"mlx-lm", "llama.cpp"}),
+        variants={
+            "4bit": VariantSpec(
+                mlx="mlx-community/Qwen2.5-Coder-1.5B-Instruct-4bit",
+                gguf=GGUFSource(
+                    "Qwen/Qwen2.5-Coder-1.5B-Instruct-GGUF",
+                    "qwen2.5-coder-1.5b-instruct-q4_k_m.gguf",
+                ),
+                source_repo="Qwen/Qwen2.5-Coder-1.5B-Instruct",
+            ),
+            "8bit": VariantSpec(
+                mlx="mlx-community/Qwen2.5-Coder-1.5B-Instruct-8bit",
+                gguf=GGUFSource(
+                    "Qwen/Qwen2.5-Coder-1.5B-Instruct-GGUF",
+                    "qwen2.5-coder-1.5b-instruct-q8_0.gguf",
+                ),
+                source_repo="Qwen/Qwen2.5-Coder-1.5B-Instruct",
+            ),
+        },
+    ),
+    "qwen-coder-3b": ModelEntry(
+        publisher="Qwen",
+        params="3B",
+        default_quant="4bit",
+        engines=frozenset({"mlx-lm", "llama.cpp"}),
+        variants={
+            "4bit": VariantSpec(
+                mlx="mlx-community/Qwen2.5-Coder-3B-Instruct-4bit",
+                gguf=GGUFSource(
+                    "Qwen/Qwen2.5-Coder-3B-Instruct-GGUF",
+                    "qwen2.5-coder-3b-instruct-q4_k_m.gguf",
+                ),
+                source_repo="Qwen/Qwen2.5-Coder-3B-Instruct",
+            ),
+            "8bit": VariantSpec(
+                mlx="mlx-community/Qwen2.5-Coder-3B-Instruct-8bit",
+                gguf=GGUFSource(
+                    "Qwen/Qwen2.5-Coder-3B-Instruct-GGUF",
+                    "qwen2.5-coder-3b-instruct-q8_0.gguf",
+                ),
+                source_repo="Qwen/Qwen2.5-Coder-3B-Instruct",
+            ),
+        },
+    ),
+    "qwen-coder-7b": ModelEntry(
+        publisher="Qwen",
+        params="7B",
+        default_quant="4bit",
+        engines=frozenset({"mlx-lm", "llama.cpp"}),
+        variants={
+            "4bit": VariantSpec(
+                mlx="mlx-community/Qwen2.5-Coder-7B-Instruct-4bit",
+                gguf=GGUFSource(
+                    "Qwen/Qwen2.5-Coder-7B-Instruct-GGUF",
+                    "qwen2.5-coder-7b-instruct-q4_k_m.gguf",
+                ),
+                source_repo="Qwen/Qwen2.5-Coder-7B-Instruct",
+            ),
+            "8bit": VariantSpec(
+                mlx="mlx-community/Qwen2.5-Coder-7B-Instruct-8bit",
+                gguf=GGUFSource(
+                    "Qwen/Qwen2.5-Coder-7B-Instruct-GGUF",
+                    "qwen2.5-coder-7b-instruct-q8_0.gguf",
+                ),
+                source_repo="Qwen/Qwen2.5-Coder-7B-Instruct",
+            ),
+        },
+    ),
+    # -------------------------------------------------------------------
     # Mistral AI
     # -------------------------------------------------------------------
     "mistral-7b": ModelEntry(
@@ -652,6 +727,11 @@ MODEL_ALIASES: dict[str, str] = {
     "qwen-2.5-7b": "qwen-7b",
     "phi4": "phi-4",
     "phi4-mini": "phi-mini",
+    # Coder aliases
+    "qwen-2.5-coder-1.5b": "qwen-coder-1.5b",
+    "qwen-2.5-coder-3b": "qwen-coder-3b",
+    "qwen-2.5-coder-7b": "qwen-coder-7b",
+    "qwen-coder": "qwen-coder-7b",
     # MoE aliases
     "mixtral": "mixtral-8x7b",
     "mixtral-instruct": "mixtral-8x7b",
