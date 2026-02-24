@@ -1711,6 +1711,72 @@ def dashboard() -> None:
 
 
 # ---------------------------------------------------------------------------
+# octomil benchmark — hardware helpers
+# ---------------------------------------------------------------------------
+
+
+def _get_gpu_core_count() -> int | None:
+    """Return GPU core count on macOS via system_profiler, else None."""
+    import platform as _platform
+
+    if _platform.system() != "Darwin":
+        return None
+    try:
+        import json
+        import subprocess
+
+        out = subprocess.run(
+            ["system_profiler", "SPDisplaysDataType", "-json"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        data = json.loads(out.stdout)
+        for gpu in data.get("SPDisplaysDataType", []):
+            cores = gpu.get("sppci_cores")
+            if cores is not None:
+                return int(str(cores).replace(" ", ""))
+    except Exception:
+        pass
+    return None
+
+
+def _get_thermal_state() -> int | None:
+    """Return thermal pressure as 1-4 on macOS, else None."""
+    import platform as _platform
+
+    if _platform.system() != "Darwin":
+        return None
+    try:
+        import subprocess
+
+        out = subprocess.run(
+            ["sysctl", "-n", "kern.thermal_pressure"],
+            capture_output=True,
+            text=True,
+            timeout=3,
+        )
+        val = int(out.stdout.strip())
+        return val + 1  # 0-3 → 1-4
+    except Exception:
+        pass
+    return None
+
+
+def _get_battery_level() -> int | None:
+    """Return battery percentage (0-100), None for desktops."""
+    try:
+        import psutil
+
+        bat = psutil.sensors_battery()
+        if bat is not None:
+            return int(bat.percent)
+    except Exception:
+        pass
+    return None
+
+
+# ---------------------------------------------------------------------------
 # octomil benchmark
 # ---------------------------------------------------------------------------
 
@@ -1893,6 +1959,10 @@ def benchmark(
         try:
             import httpx
 
+            gpu_cores = _get_gpu_core_count()
+            thermal = _get_thermal_state()
+            battery = _get_battery_level()
+
             payload = {
                 "model": model,
                 "backend": backend.name,
@@ -1901,6 +1971,9 @@ def benchmark(
                 "os_version": _platform.platform(),
                 "accelerator": "Metal" if _platform.system() == "Darwin" else "CPU",
                 "ram_total_bytes": psutil.virtual_memory().total,
+                "gpu_core_count": gpu_cores,
+                "thermal_state": thermal,
+                "battery_level": battery,
                 "iterations": iterations,
                 "prompt_tokens": avg_prompt,
                 "completion_tokens": avg_completion,
@@ -1933,7 +2006,21 @@ def benchmark(
                 timeout=10.0,
             )
             if resp.status_code < 400:
-                click.echo("Benchmark data shared successfully.")
+                data = resp.json()
+                share_url = data.get("share_url", "")
+                rank = data.get("percentile_rank")
+                chip = payload.get("accelerator", "CPU")
+                cores = payload.get("gpu_core_count")
+
+                click.echo(f"\nYour device: {chip}" + (f" ({cores} GPU cores)" if cores else ""))
+                click.echo(f"  {model}: {avg_tps:.1f} tok/s", nl=False)
+                if rank is not None:
+                    click.echo(f" — top {100 - rank:.0f}% worldwide")
+                else:
+                    click.echo()
+                click.echo(f"\n  Leaderboard: https://octomil.com/benchmarks")
+                if share_url:
+                    click.echo(f"  Share: {share_url}")
             else:
                 click.echo(f"Failed to share: {resp.status_code}", err=True)
         except Exception as exc:
