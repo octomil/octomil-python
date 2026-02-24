@@ -1839,15 +1839,6 @@ def benchmark(
     )
 
     if not local:
-        api_key = _get_api_key()
-        if not api_key:
-            click.echo(
-                "\nSkipping share: no API key. Run `octomil login` first, "
-                "or use --local to keep results local.",
-                err=True,
-            )
-            return
-
         click.echo("\nSharing anonymous benchmark data...")
         try:
             import httpx
@@ -1881,10 +1872,14 @@ def benchmark(
                 or os.environ.get("OCTOMIL_API_BASE")
                 or "https://api.octomil.com/api/v1"
             )
+            headers = {}
+            api_key = _get_api_key()
+            if api_key:
+                headers["Authorization"] = f"Bearer {api_key}"
             resp = httpx.post(
                 f"{api_base}/benchmarks",
                 json=payload,
-                headers={"Authorization": f"Bearer {api_key}"},
+                headers=headers,
                 timeout=10.0,
             )
             if resp.status_code < 400:
@@ -3013,24 +3008,33 @@ def federation_share(model_name: str, federation_name: str) -> None:
     "agent",
     type=click.Choice(["claude", "codex", "openclaw", "aider"], case_sensitive=False),
 )
-@click.option("--model", "-m", default=None, help="Model to serve (default: qwen3).")
+@click.option(
+    "--model",
+    "-m",
+    default=None,
+    help="Model to serve (default: auto-select best for device).",
+)
 @click.option("--port", "-p", default=8080, help="Port for local server.")
-def launch(agent: str, model: Optional[str], port: int) -> None:
+@click.option("--select", "-s", is_flag=True, help="Interactively choose a model.")
+def launch(agent: str, model: Optional[str], port: int, select: bool) -> None:
     """Launch a coding agent powered by a local model.
 
     Starts octomil serve in the background (if not already running),
     configures the agent's environment to point at the local
     OpenAI-compatible endpoint, and execs the agent.
 
+    Without --model or --select, auto-picks the best model for your device.
+
     \b
     Examples:
-        octomil launch claude
+        octomil launch codex
+        octomil launch codex --select
         octomil launch codex --model codestral
         octomil launch aider --model deepseek-coder-v2
     """
     from .agents.launcher import launch_agent
 
-    launch_agent(agent, model=model, port=port)
+    launch_agent(agent, model=model, port=port, select=select)
 
 
 # ---------------------------------------------------------------------------
