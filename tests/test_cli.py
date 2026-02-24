@@ -562,23 +562,29 @@ class TestBenchmarkCommand:
         assert "Benchmark data shared successfully" in result.output
         mock_post.assert_called_once()
 
-    def test_default_shares_warns_no_api_key(self, monkeypatch):
-        """Without --local and without an API key, warns about missing key."""
+    def test_default_shares_without_api_key(self, monkeypatch):
+        """Without --local and without an API key, still shares anonymously."""
         monkeypatch.delenv("OCTOMIL_API_KEY", raising=False)
         mock_backend, mock_process, mock_vm = _make_benchmark_mocks()
+        mock_resp = MagicMock()
+        mock_resp.status_code = 201
 
         with (
             patch("octomil.cli._get_api_key", return_value=""),
             patch("octomil.serve._detect_backend", return_value=mock_backend),
             patch("psutil.Process", return_value=mock_process),
             patch("psutil.virtual_memory", return_value=mock_vm),
+            patch("httpx.post", return_value=mock_resp) as mock_post,
         ):
             runner = CliRunner()
             result = runner.invoke(main, ["benchmark", "gemma-1b", "--iterations", "1"])
 
         assert result.exit_code == 0
-        assert "Skipping share: no API key" in result.output
-        assert "--local" in result.output
+        assert "Sharing anonymous benchmark data" in result.output
+        assert "Benchmark data shared successfully" in result.output
+        # Should POST without Authorization header
+        call_kwargs = mock_post.call_args
+        assert "Authorization" not in call_kwargs.kwargs.get("headers", {})
 
     def test_local_flag_skips_share(self, monkeypatch):
         """With --local, no upload attempt is made."""
