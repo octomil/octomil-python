@@ -9,6 +9,9 @@ import pytest
 from click.testing import CliRunner
 
 from octomil.agents.launcher import (
+    RecommendedModel,
+    _auto_select_model,
+    _select_model_fallback,
     is_serve_running,
     launch_agent,
     start_serve_background,
@@ -87,6 +90,11 @@ class TestLaunchCLI:
         assert "codex" in result.output
         assert "aider" in result.output
         assert "openclaw" in result.output
+
+    def test_launch_help_shows_select_flag(self):
+        runner = CliRunner()
+        result = runner.invoke(main, ["launch", "--help"])
+        assert "--select" in result.output
 
 
 # ---------------------------------------------------------------------------
@@ -216,3 +224,136 @@ class TestLaunchAgent:
         env = call_kwargs[1]["env"]
         assert env["OPENAI_API_KEY"] == "octomil-local"
         assert "OPENAI_BASE_URL" in env
+
+    @patch("octomil.agents.launcher._auto_select_model", return_value="qwen-coder-7b")
+    @patch("octomil.agents.launcher.subprocess.run")
+    @patch("octomil.agents.launcher.start_serve_background")
+    @patch("octomil.agents.launcher.is_serve_running", return_value=False)
+    @patch("octomil.agents.registry.is_agent_installed", return_value=True)
+    def test_launch_auto_selects_when_no_model(
+        self, mock_installed, mock_running, mock_serve, mock_run, mock_auto
+    ):
+        mock_serve.return_value = MagicMock()
+        mock_run.return_value = MagicMock(returncode=0)
+
+        with pytest.raises(SystemExit):
+            launch_agent("codex")
+
+        mock_auto.assert_called_once()
+        mock_serve.assert_called_once_with("qwen-coder-7b", port=8080)
+
+    @patch("octomil.agents.launcher._select_model_tui", return_value="llama-8b")
+    @patch("octomil.agents.launcher.subprocess.run")
+    @patch("octomil.agents.launcher.start_serve_background")
+    @patch("octomil.agents.launcher.is_serve_running", return_value=False)
+    @patch("octomil.agents.registry.is_agent_installed", return_value=True)
+    def test_launch_shows_tui_with_select_flag(
+        self, mock_installed, mock_running, mock_serve, mock_run, mock_tui
+    ):
+        mock_serve.return_value = MagicMock()
+        mock_run.return_value = MagicMock(returncode=0)
+
+        with pytest.raises(SystemExit):
+            launch_agent("codex", select=True)
+
+        mock_tui.assert_called_once()
+        mock_serve.assert_called_once_with("llama-8b", port=8080)
+
+    @patch("octomil.agents.launcher._auto_select_model")
+    @patch("octomil.agents.launcher.subprocess.run")
+    @patch("octomil.agents.launcher.start_serve_background")
+    @patch("octomil.agents.launcher.is_serve_running", return_value=False)
+    @patch("octomil.agents.registry.is_agent_installed", return_value=True)
+    def test_launch_skips_auto_select_when_model_given(
+        self, mock_installed, mock_running, mock_serve, mock_run, mock_auto
+    ):
+        mock_serve.return_value = MagicMock()
+        mock_run.return_value = MagicMock(returncode=0)
+
+        with pytest.raises(SystemExit):
+            launch_agent("codex", model="llama-8b")
+
+        mock_auto.assert_not_called()
+        mock_serve.assert_called_once_with("llama-8b", port=8080)
+
+
+# ---------------------------------------------------------------------------
+# Auto-select model
+# ---------------------------------------------------------------------------
+
+
+class TestAutoSelectModel:
+    @patch("octomil.agents.launcher._get_memory_budget_gb", return_value=16.0)
+    @patch("octomil.agents.launcher._build_recommendations")
+    def test_returns_first_recommendation(self, mock_recs, mock_budget):
+        mock_recs.return_value = [
+            RecommendedModel(
+                key="qwen-coder-7b",
+                label="qwen-coder-7b",
+                description="Best small coding model",
+                size="~4.5 GB",
+                recommended=True,
+            ),
+        ]
+        result = _auto_select_model()
+        assert result == "qwen-coder-7b"
+
+    @patch("octomil.agents.launcher._get_memory_budget_gb", return_value=16.0)
+    @patch("octomil.agents.launcher._build_recommendations")
+    def test_prints_usage_hint(self, mock_recs, mock_budget, capsys):
+        mock_recs.return_value = [
+            RecommendedModel(
+                key="llama-8b",
+                label="llama-8b",
+                description="Meta Llama",
+                size="~4.5 GB",
+                recommended=True,
+            ),
+        ]
+        _auto_select_model()
+        captured = capsys.readouterr()
+        assert "llama-8b" in captured.out
+        assert "--select" in captured.out
+
+
+# ---------------------------------------------------------------------------
+# Fallback model picker
+# ---------------------------------------------------------------------------
+
+
+class TestSelectModelFallback:
+    @patch("octomil.agents.launcher._is_model_downloaded", return_value=False)
+    @patch("click.prompt", return_value="1")
+    def test_returns_first_when_default(self, mock_prompt, mock_downloaded):
+        recs = [
+            RecommendedModel(
+                key="qwen-coder-7b",
+                label="qwen-coder-7b",
+                description="Best small coder",
+                size="~4.5 GB",
+                recommended=True,
+            ),
+            RecommendedModel(
+                key="llama-8b",
+                label="llama-8b",
+                description="Llama",
+                size="~4.5 GB",
+            ),
+        ]
+        result = _select_model_fallback(recs, 16.0)
+        assert result == "qwen-coder-7b"
+
+    @patch("octomil.agents.launcher._is_model_downloaded", return_value=False)
+    @patch("click.prompt", return_value="custom-model")
+    def test_returns_custom_model_name(self, mock_prompt, mock_downloaded):
+        recs = [
+            RecommendedModel(
+                key="qwen-coder-7b",
+                label="qwen-coder-7b",
+                description="Best small coder",
+                size="~4.5 GB",
+                recommended=True,
+            ),
+        ]
+        result = _select_model_fallback(recs, 16.0)
+        assert result == "custom-model"
