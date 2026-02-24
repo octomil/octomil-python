@@ -76,6 +76,30 @@ class TestMainGroup:
         assert result.exit_code == 0
         assert "1.0.0" in result.output
 
+    def test_no_args_shows_quickstart(self):
+        """Bare `octomil` with no args shows focused onboarding screen."""
+        runner = CliRunner()
+        result = runner.invoke(main, [])
+        assert result.exit_code == 0
+        assert "Quick start" in result.output
+        assert "octomil chat" in result.output
+        assert "octomil serve" in result.output
+        assert "octomil deploy" in result.output
+        assert "octomil launch" in result.output
+        assert "ollama://" in result.output
+        assert "--help" in result.output
+
+    def test_help_shows_full_commands(self):
+        """--help still shows the full Click-generated help with all commands."""
+        runner = CliRunner()
+        result = runner.invoke(main, ["--help"])
+        assert result.exit_code == 0
+        # These commands appear in full help but NOT in the quickstart screen
+        assert "benchmark" in result.output
+        assert "train" in result.output
+        assert "push" in result.output
+        assert "pull" in result.output
+
 
 # ---------------------------------------------------------------------------
 # octomil serve

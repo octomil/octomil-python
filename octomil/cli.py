@@ -168,10 +168,30 @@ def _auto_optimize(model_tag: str, context_length: int = 4096) -> str | None:
 # ---------------------------------------------------------------------------
 
 
-@click.group()
+_WELCOME = """\
+Octomil — from your laptop to your phone
+
+  Quick start:
+    octomil chat <model>              Chat with a model locally
+    octomil serve <model>             Start OpenAI-compatible server
+    octomil deploy <model> --phone    Deploy to your phone
+    octomil launch <agent>            Launch a coding agent
+
+  Already using ollama?
+    octomil deploy ollama://<model> --phone
+
+  More: octomil --help               All commands
+        octomil interactive           Browse commands (TUI)
+"""
+
+
+@click.group(invoke_without_command=True)
 @click.version_option(version="1.0.0", prog_name="octomil")
-def main() -> None:
+@click.pass_context
+def main(ctx: click.Context) -> None:
     """Octomil — serve, deploy, and observe ML models on edge devices."""
+    if ctx.invoked_subcommand is None:
+        click.echo(_WELCOME)
 
 
 # ---------------------------------------------------------------------------
