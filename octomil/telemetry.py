@@ -114,6 +114,14 @@ class TelemetryReporter:
         self._worker = threading.Thread(target=self._dispatch_loop, daemon=True)
         self._worker.start()
 
+        self._funnel_queue: queue.Queue[Optional[dict[str, Any]]] = queue.Queue(
+            maxsize=256
+        )
+        self._funnel_worker = threading.Thread(
+            target=self._funnel_dispatch_loop, daemon=True
+        )
+        self._funnel_worker.start()
+
     # ------------------------------------------------------------------
     # Public reporting methods
     # ------------------------------------------------------------------
@@ -347,14 +355,63 @@ class TelemetryReporter:
             metrics=metrics,
         )
 
+    def report_funnel_event(
+        self,
+        stage: str,
+        success: bool = True,
+        device_id: str | None = None,
+        model_id: str | None = None,
+        rollout_id: str | None = None,
+        session_id: str | None = None,
+        failure_reason: str | None = None,
+        failure_category: str | None = None,
+        duration_ms: int | None = None,
+        platform: str | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> None:
+        """Report a funnel analytics event. Non-blocking."""
+        payload: dict[str, Any] = {
+            "stage": stage,
+            "success": success,
+            "source": "sdk_python",
+            "sdk_version": "1.0.0",
+            "org_id": self.org_id,
+            "timestamp_ms": int(time.time() * 1000),
+        }
+        if device_id is not None:
+            payload["device_id"] = device_id
+        if model_id is not None:
+            payload["model_id"] = model_id
+        if rollout_id is not None:
+            payload["rollout_id"] = rollout_id
+        if session_id is not None:
+            payload["session_id"] = session_id
+        if failure_reason is not None:
+            payload["failure_reason"] = failure_reason
+        if failure_category is not None:
+            payload["failure_category"] = failure_category
+        if duration_ms is not None:
+            payload["duration_ms"] = duration_ms
+        if platform is not None:
+            payload["platform"] = platform
+        if metadata is not None:
+            payload["metadata"] = metadata
+
+        try:
+            self._funnel_queue.put_nowait(payload)
+        except queue.Full:
+            logger.debug("Funnel telemetry queue full — dropping event %s", stage)
+
     # ------------------------------------------------------------------
     # Shutdown
     # ------------------------------------------------------------------
 
     def close(self) -> None:
-        """Signal the dispatch thread to drain remaining events and exit."""
+        """Signal dispatch threads to drain remaining events and exit."""
         self._queue.put(None)  # sentinel
+        self._funnel_queue.put(None)  # sentinel
         self._worker.join(timeout=5.0)
+        self._funnel_worker.join(timeout=5.0)
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -419,3 +476,21 @@ class TelemetryReporter:
             client.post(url, json=payload, headers=headers)
         except Exception as exc:  # noqa: BLE001
             logger.warning("Telemetry event dispatch failed: %s", exc)
+
+    def _funnel_dispatch_loop(self) -> None:
+        """Background thread: pull funnel payloads and POST to /funnel/events."""
+        client = httpx.Client(timeout=5.0)
+        url = f"{self.api_base}/funnel/events"
+        headers = {"Authorization": f"Bearer {self.api_key}"}
+        try:
+            while True:
+                payload = self._funnel_queue.get()
+                if payload is None:
+                    while not self._funnel_queue.empty():
+                        remaining = self._funnel_queue.get_nowait()
+                        if remaining is not None:
+                            self._send(client, url, headers, remaining)
+                    break
+                self._send(client, url, headers, payload)
+        finally:
+            client.close()
