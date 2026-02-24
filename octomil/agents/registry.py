@@ -17,6 +17,7 @@ class AgentDef:
     install_check: str  # command to check if installed (e.g. "claude")
     install_cmd: str  # command to install the agent
     exec_cmd: str  # command to launch the agent
+    needs_local_model: bool = True  # whether agent requires a local model server
 
 
 AGENTS: dict[str, AgentDef] = {
@@ -27,6 +28,7 @@ AGENTS: dict[str, AgentDef] = {
         install_check="claude",
         install_cmd="npm install -g @anthropic-ai/claude-code",
         exec_cmd="claude",
+        needs_local_model=False,
     ),
     "codex": AgentDef(
         name="codex",

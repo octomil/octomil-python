@@ -69,23 +69,28 @@ def launch_agent(
         else:
             raise SystemExit(1)
 
-    # Start serve if not running
-    serve_proc: Optional[subprocess.Popen] = None
-    base_url = f"http://localhost:{port}/v1"
-    if not is_serve_running(port=port):
-        if model is None:
-            model = "qwen3"
-        click.echo(f"Starting octomil serve {model}...")
-        serve_proc = start_serve_background(model, port=port)
-        click.echo(f"Model ready at {base_url}")
-    else:
-        click.echo(f"Using existing server at {base_url}")
+    # Agents that don't need a local model (e.g. Claude Code) are exec'd
+    # directly unless the user explicitly passed --model to proxy through
+    # the local server.
+    use_local_server = agent.needs_local_model or model is not None
 
-    # Set env and exec
+    serve_proc: Optional[subprocess.Popen] = None
     env = os.environ.copy()
-    env[agent.env_key] = base_url
-    if agent.env_key.startswith("OPENAI"):
-        env["OPENAI_API_KEY"] = "octomil-local"
+
+    if use_local_server:
+        base_url = f"http://localhost:{port}/v1"
+        if not is_serve_running(port=port):
+            if model is None:
+                model = "qwen3"
+            click.echo(f"Starting octomil serve {model}...")
+            serve_proc = start_serve_background(model, port=port)
+            click.echo(f"Model ready at {base_url}")
+        else:
+            click.echo(f"Using existing server at {base_url}")
+
+        env[agent.env_key] = base_url
+        if agent.env_key.startswith("OPENAI"):
+            env["OPENAI_API_KEY"] = "octomil-local"
 
     try:
         click.echo(f"Launching {agent.display_name}...\n")
