@@ -357,3 +357,153 @@ class TestSelectModelFallback:
         ]
         result = _select_model_fallback(recs, 16.0)
         assert result == "custom-model"
+
+
+# ---------------------------------------------------------------------------
+# RecommendedModel.downloaded field
+# ---------------------------------------------------------------------------
+
+
+class TestRecommendedModelDownloadedField:
+    def test_recommended_model_has_downloaded_field(self):
+        model = RecommendedModel(
+            key="test",
+            label="test",
+            description="test model",
+            size="~1 GB",
+        )
+        assert hasattr(model, "downloaded")
+        assert model.downloaded is False
+
+    def test_recommended_model_downloaded_true(self):
+        model = RecommendedModel(
+            key="test",
+            label="test",
+            description="test model",
+            size="~1 GB",
+            downloaded=True,
+        )
+        assert model.downloaded is True
+
+
+# ---------------------------------------------------------------------------
+# Auto-select prefers downloaded models
+# ---------------------------------------------------------------------------
+
+
+class TestAutoSelectPrefersDownloaded:
+    @patch("octomil.agents.launcher._get_memory_budget_gb", return_value=16.0)
+    @patch("octomil.agents.launcher._build_recommendations")
+    def test_auto_select_prefers_downloaded(self, mock_recs, mock_budget):
+        """When a smaller model is already downloaded, prefer it over
+        the largest fitting model that hasn't been downloaded yet."""
+        mock_recs.return_value = [
+            RecommendedModel(
+                key="llama-8b",
+                label="llama-8b",
+                description="Meta Llama 3.1",
+                size="~4.5 GB",
+                recommended=True,
+                downloaded=False,
+            ),
+            RecommendedModel(
+                key="qwen-coder-3b",
+                label="qwen-coder-3b",
+                description="Fast coding model",
+                size="~2 GB",
+                downloaded=True,
+            ),
+        ]
+        result = _auto_select_model()
+        assert result == "qwen-coder-3b"
+
+    @patch("octomil.agents.launcher._get_memory_budget_gb", return_value=16.0)
+    @patch("octomil.agents.launcher._build_recommendations")
+    def test_auto_select_picks_largest_when_none_downloaded(
+        self, mock_recs, mock_budget
+    ):
+        """When no models are downloaded, pick the largest fitting model."""
+        mock_recs.return_value = [
+            RecommendedModel(
+                key="llama-8b",
+                label="llama-8b",
+                description="Meta Llama 3.1",
+                size="~4.5 GB",
+                recommended=True,
+                downloaded=False,
+            ),
+            RecommendedModel(
+                key="qwen-coder-3b",
+                label="qwen-coder-3b",
+                description="Fast coding model",
+                size="~2 GB",
+                downloaded=False,
+            ),
+        ]
+        result = _auto_select_model()
+        assert result == "llama-8b"
+
+    @patch("octomil.agents.launcher._get_memory_budget_gb", return_value=16.0)
+    @patch("octomil.agents.launcher._build_recommendations")
+    def test_auto_select_picks_largest_downloaded(self, mock_recs, mock_budget):
+        """When two models are downloaded, pick the larger of the two."""
+        mock_recs.return_value = [
+            RecommendedModel(
+                key="llama-8b",
+                label="llama-8b",
+                description="Meta Llama 3.1",
+                size="~4.5 GB",
+                recommended=True,
+                downloaded=True,
+            ),
+            RecommendedModel(
+                key="qwen-coder-3b",
+                label="qwen-coder-3b",
+                description="Fast coding model",
+                size="~2 GB",
+                downloaded=True,
+            ),
+        ]
+        result = _auto_select_model()
+        assert result == "llama-8b"
+
+    @patch("octomil.agents.launcher._get_memory_budget_gb", return_value=16.0)
+    @patch("octomil.agents.launcher._build_recommendations")
+    def test_auto_select_prints_already_downloaded_message(
+        self, mock_recs, mock_budget, capsys
+    ):
+        """When selecting a downloaded model, prints 'already downloaded'."""
+        mock_recs.return_value = [
+            RecommendedModel(
+                key="qwen-coder-7b",
+                label="qwen-coder-7b",
+                description="Best small coder",
+                size="~4.5 GB",
+                recommended=True,
+                downloaded=True,
+            ),
+        ]
+        _auto_select_model()
+        captured = capsys.readouterr()
+        assert "already downloaded" in captured.out
+
+    @patch("octomil.agents.launcher._get_memory_budget_gb", return_value=16.0)
+    @patch("octomil.agents.launcher._build_recommendations")
+    def test_auto_select_prints_will_download_message(
+        self, mock_recs, mock_budget, capsys
+    ):
+        """When no model is downloaded, prints 'will download' with size."""
+        mock_recs.return_value = [
+            RecommendedModel(
+                key="qwen-coder-7b",
+                label="qwen-coder-7b",
+                description="Best small coder",
+                size="~4.5 GB",
+                recommended=True,
+                downloaded=False,
+            ),
+        ]
+        _auto_select_model()
+        captured = capsys.readouterr()
+        assert "will download" in captured.out
+        assert "~4.5 GB" in captured.out

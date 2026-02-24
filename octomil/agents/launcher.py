@@ -115,6 +115,7 @@ class RecommendedModel:
     description: str
     size: str
     recommended: bool = False
+    downloaded: bool = False
 
 
 def _build_recommendations() -> list[RecommendedModel]:
@@ -130,6 +131,7 @@ def _build_recommendations() -> list[RecommendedModel]:
                     label=c.key,
                     description=c.description,
                     size=c.size,
+                    downloaded=_is_model_downloaded(c.key),
                 )
             )
 
@@ -142,6 +144,7 @@ def _build_recommendations() -> list[RecommendedModel]:
                 label=smallest.key,
                 description=smallest.description,
                 size=smallest.size,
+                downloaded=_is_model_downloaded(smallest.key),
             )
         )
 
@@ -152,19 +155,39 @@ def _build_recommendations() -> list[RecommendedModel]:
         description=models[0].description,
         size=models[0].size,
         recommended=True,
+        downloaded=models[0].downloaded,
     )
     return models
 
 
 def _auto_select_model() -> str:
-    """Auto-select the best model for the device. No user prompt."""
+    """Auto-select the best model for the device. No user prompt.
+
+    Prefers an already-downloaded model to avoid cold-start download wait.
+    When multiple models are downloaded, picks the largest (it's already
+    cached so there's no penalty).  Falls back to the largest fitting model
+    when nothing is cached.
+    """
     recommendations = _build_recommendations()
     budget = _get_memory_budget_gb()
-    best = recommendations[0]
-    click.echo(
-        f"Using {best.key} (best for {budget:.0f} GB available). "
-        "Use --select to choose."
-    )
+
+    downloaded = [m for m in recommendations if m.downloaded]
+
+    if downloaded:
+        # Pick the largest downloaded model (first in the list — sorted
+        # largest-to-smallest from _ALL_CANDIDATES order).
+        best = downloaded[0]
+        click.echo(
+            f"Using {best.key} (already downloaded, best for {budget:.0f} GB). "
+            "Use --select to choose."
+        )
+    else:
+        best = recommendations[0]
+        click.echo(
+            f"Using {best.key} (best for {budget:.0f} GB, "
+            f"will download {best.size}). "
+            "Use --select to choose."
+        )
     return best.key
 
 
