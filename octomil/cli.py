@@ -1225,14 +1225,44 @@ def deploy(
     phone deployment, --devices/--group for targeted deployment,
     or --rollout for fleet percentage rollouts.
 
+    Use the ollama:// URI scheme to deploy directly from your
+    local Ollama cache:
+
+    \b
     Examples:
 
         octomil deploy gemma-1b --phone
+        octomil deploy ollama://llama3.2 --phone
+        octomil deploy ollama://gemma:2b --phone
         octomil deploy sentiment-v1 --rollout 10 --strategy canary
         octomil deploy gemma-1b --devices device_1,device_2
         octomil deploy gemma-1b --group production
         octomil deploy gemma-1b --group production --dry-run
     """
+    # Handle ollama:// URI scheme
+    ollama_source_result = None
+    if name.startswith("ollama://"):
+        ollama_ref = name[len("ollama://") :]
+        if not ollama_ref:
+            click.echo(
+                "Error: ollama:// URI requires a model name, " "e.g. ollama://llama3.2",
+                err=True,
+            )
+            sys.exit(1)
+        click.echo(f"Resolving ollama model: {ollama_ref}")
+
+        from .sources.ollama import OllamaSource
+
+        source = OllamaSource()
+        try:
+            ollama_source_result = source.resolve(ollama_ref)
+        except RuntimeError as exc:
+            click.echo(click.style(f"  Error: {exc}", fg="red"), err=True)
+            sys.exit(1)
+        click.echo(click.style(f"  Found: {ollama_source_result.path}", fg="green"))
+        # Use the base model name for display / API calls
+        name = ollama_ref.split(":")[0]
+
     if phone:
         import httpx
 
@@ -1839,15 +1869,6 @@ def benchmark(
     )
 
     if not local:
-        api_key = _get_api_key()
-        if not api_key:
-            click.echo(
-                "\nSkipping share: no API key. Run `octomil login` first, "
-                "or use --local to keep results local.",
-                err=True,
-            )
-            return
-
         click.echo("\nSharing anonymous benchmark data...")
         try:
             import httpx
@@ -1881,10 +1902,14 @@ def benchmark(
                 or os.environ.get("OCTOMIL_API_BASE")
                 or "https://api.octomil.com/api/v1"
             )
+            headers = {}
+            api_key = _get_api_key()
+            if api_key:
+                headers["Authorization"] = f"Bearer {api_key}"
             resp = httpx.post(
                 f"{api_base}/benchmarks",
                 json=payload,
-                headers={"Authorization": f"Bearer {api_key}"},
+                headers=headers,
                 timeout=10.0,
             )
             if resp.status_code < 400:
@@ -2209,7 +2234,13 @@ def list_models_cmd(model_family: Optional[str]) -> None:
     help="Filter model source.",
 )
 def models(source: str) -> None:
-    """List available models from ollama and the Octomil registry."""
+    """List available models from ollama and the Octomil registry.
+
+    \b
+    Deploy ollama models directly:
+        octomil deploy ollama://llama3.2 --phone
+        octomil deploy ollama://gemma:2b --phone
+    """
     if source in ("all", "ollama"):
         from .ollama import is_ollama_running, list_ollama_models
 
@@ -2217,10 +2248,15 @@ def models(source: str) -> None:
             ollama_models = list_ollama_models()
             if ollama_models:
                 click.echo("Local (ollama):")
+                click.echo(
+                    f"  {'NAME':<20s}{'SIZE':>8s}   "
+                    f"{'QUANT':<9s}{'FAMILY':<12s}DEPLOY URI"
+                )
                 for m in ollama_models:
+                    deploy_uri = f"ollama://{m.name}"
                     click.echo(
                         f"  {m.name:<20s}{m.size_display:>8s}   "
-                        f"{m.quantization:<9s}{m.family}"
+                        f"{m.quantization:<9s}{m.family:<12s}{deploy_uri}"
                     )
             else:
                 click.echo("Local (ollama): no models found")
@@ -3004,6 +3040,79 @@ def federation_share(model_name: str, federation_name: str) -> None:
 
 
 # ---------------------------------------------------------------------------
+# octomil chat
+# ---------------------------------------------------------------------------
+
+
+@main.command()
+@click.argument("model", required=False, default=None)
+@click.option("--port", "-p", default=8080, help="Port for local server.")
+@click.option("--system", "-s", default=None, help="System prompt.")
+@click.option(
+    "--temperature",
+    "-t",
+    default=0.7,
+    type=float,
+    help="Sampling temperature (default: 0.7).",
+)
+@click.option(
+    "--max-tokens",
+    default=2048,
+    type=int,
+    help="Max tokens per response (default: 2048).",
+)
+def chat(
+    model: Optional[str],
+    port: int,
+    system: Optional[str],
+    temperature: float,
+    max_tokens: int,
+) -> None:
+    """Chat with a model locally.
+
+    Starts the server, downloads the model if needed, and opens an
+    interactive chat. One command from install to conversation.
+
+    \b
+    Examples:
+        octomil chat
+        octomil chat qwen-coder-7b
+        octomil chat llama-8b --system "You are a Python expert."
+        octomil chat qwen-coder-3b -t 0.3
+    """
+    from .agents.launcher import (
+        _auto_select_model,
+        is_serve_running,
+        start_serve_background,
+    )
+    from .chat import run_chat_repl
+
+    if model is None:
+        model = _auto_select_model()
+
+    serve_proc = None
+    if not is_serve_running(port=port):
+        click.echo(f"Starting octomil serve {model}...")
+        serve_proc = start_serve_background(model, port=port)
+        click.echo("Ready.\n")
+    else:
+        click.echo(f"Using existing server at localhost:{port}\n")
+
+    url = f"http://localhost:{port}"
+    try:
+        run_chat_repl(
+            url,
+            model,
+            system_prompt=system,
+            temperature=temperature,
+            max_tokens=max_tokens,
+        )
+    finally:
+        if serve_proc is not None:
+            serve_proc.terminate()
+
+
+# ---------------------------------------------------------------------------
 # octomil launch
 # ---------------------------------------------------------------------------
 
@@ -3013,24 +3122,33 @@ def federation_share(model_name: str, federation_name: str) -> None:
     "agent",
     type=click.Choice(["claude", "codex", "openclaw", "aider"], case_sensitive=False),
 )
-@click.option("--model", "-m", default=None, help="Model to serve (default: qwen3).")
+@click.option(
+    "--model",
+    "-m",
+    default=None,
+    help="Model to serve (default: auto-select best for device).",
+)
 @click.option("--port", "-p", default=8080, help="Port for local server.")
-def launch(agent: str, model: Optional[str], port: int) -> None:
+@click.option("--select", "-s", is_flag=True, help="Interactively choose a model.")
+def launch(agent: str, model: Optional[str], port: int, select: bool) -> None:
     """Launch a coding agent powered by a local model.
 
     Starts octomil serve in the background (if not already running),
     configures the agent's environment to point at the local
     OpenAI-compatible endpoint, and execs the agent.
 
+    Without --model or --select, auto-picks the best model for your device.
+
     \b
     Examples:
-        octomil launch claude
+        octomil launch codex
+        octomil launch codex --select
         octomil launch codex --model codestral
         octomil launch aider --model deepseek-coder-v2
     """
     from .agents.launcher import launch_agent
 
-    launch_agent(agent, model=model, port=port)
+    launch_agent(agent, model=model, port=port, select=select)
 
 
 # ---------------------------------------------------------------------------
