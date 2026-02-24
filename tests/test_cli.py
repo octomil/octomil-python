@@ -614,3 +614,16 @@ class TestBenchmarkCommand:
         assert "--local" in result.output
         # --share should no longer appear
         assert "--share" not in result.output
+
+
+# ---------------------------------------------------------------------------
+# octomil warmup
+# ---------------------------------------------------------------------------
+
+
+class TestWarmupCommand:
+    def test_warmup_help(self):
+        runner = CliRunner()
+        result = runner.invoke(main, ["warmup", "--help"])
+        assert result.exit_code == 0
+        assert "Pre-download" in result.output
