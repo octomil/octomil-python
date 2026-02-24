@@ -78,6 +78,21 @@ def _get_client():  # type: ignore[no-untyped-def]
     return Client(api_key=_require_api_key())
 
 
+def _get_telemetry_reporter():  # type: ignore[no-untyped-def]
+    """Best-effort TelemetryReporter for funnel events. Returns None if no API key."""
+    from .telemetry import TelemetryReporter
+
+    api_key = _get_api_key()
+    if not api_key:
+        return None
+    api_base: str = (
+        os.environ.get("OCTOMIL_API_URL")
+        or os.environ.get("OCTOMIL_API_BASE")
+        or "https://api.octomil.com/api/v1"
+    )
+    return TelemetryReporter(api_key=api_key, api_base=api_base)
+
+
 # ---------------------------------------------------------------------------
 # Auto-optimization helper
 # ---------------------------------------------------------------------------
@@ -598,6 +613,12 @@ def _prompt_engine_install() -> bool:
             click.echo(
                 click.style(f"\n  {top_pkg} installed successfully.\n", fg="green")
             )
+            try:
+                reporter = _get_telemetry_reporter()
+                if reporter:
+                    reporter.report_funnel_event("cli_install", success=True)
+            except Exception:
+                pass  # Never break CLI
             return True
         except subprocess.CalledProcessError:
             click.echo(
@@ -605,6 +626,17 @@ def _prompt_engine_install() -> bool:
                 err=True,
             )
             click.echo(f"  Try manually: pip install {top_pkg}\n")
+            try:
+                reporter = _get_telemetry_reporter()
+                if reporter:
+                    reporter.report_funnel_event(
+                        "cli_install",
+                        success=False,
+                        failure_reason=f"Failed to install {top_pkg}",
+                        failure_category="engine_install",
+                    )
+            except Exception:
+                pass  # Never break CLI
             return False
     else:
         # Show alternatives
@@ -1348,6 +1380,18 @@ def deploy(
                         )
                     )
                     click.echo(f"  Open dashboard: {dashboard_url}")
+                    try:
+                        reporter = _get_telemetry_reporter()
+                        if reporter:
+                            reporter.report_funnel_event(
+                                "first_deploy",
+                                success=True,
+                                model_id=name,
+                                device_id=data.get("device_id"),
+                                platform=data.get("device_platform"),
+                            )
+                    except Exception:
+                        pass  # Never break CLI
                     break
                 elif status_val in ("expired", "cancelled"):
                     click.echo(f"Session {status_val}.", err=True)
@@ -1530,6 +1574,19 @@ def pair(
     session = resp.json()
     click.echo(f"Connected to session for model: {session['model_name']}")
     click.echo(f"Status: {session['status']}")
+
+    try:
+        reporter = _get_telemetry_reporter()
+        if reporter:
+            reporter.report_funnel_event(
+                "app_pair",
+                success=True,
+                device_id=device_id,
+                platform=platform,
+            )
+    except Exception:
+        pass  # Never break CLI
+
     click.echo("Waiting for deployment...")
 
     import time
