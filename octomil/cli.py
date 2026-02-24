@@ -296,6 +296,12 @@ def main() -> None:
     "fast: aggressive (threshold=0.5). "
     "Overridden by --early-exit-threshold if both are set.",
 )
+@click.option(
+    "--no-telemetry",
+    is_flag=True,
+    default=False,
+    help="Disable anonymous usage telemetry. Also respects EDGEML_NO_TELEMETRY=1 env var.",
+)
 def serve(
     model: str,
     port: int,
@@ -318,6 +324,7 @@ def serve(
     tool_use: bool,
     early_exit_threshold: float | None,
     speed_quality: str | None,
+    no_telemetry: bool,
 ) -> None:
     """Start a local OpenAI-compatible inference server.
 
@@ -475,6 +482,9 @@ def serve(
             err=True,
         )
 
+    # Check telemetry opt-out
+    telemetry_disabled = no_telemetry or os.environ.get("EDGEML_NO_TELEMETRY") == "1"
+
     from .serve import run_server
 
     run_server(
@@ -495,6 +505,7 @@ def serve(
         compression_threshold=compression_threshold,
         tool_use=tool_use,
         early_exit_config=ee_config if ee_config.enabled else None,
+        no_anonymous_telemetry=telemetry_disabled,
     )
 
 

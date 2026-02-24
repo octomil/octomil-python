@@ -790,6 +790,7 @@ class ServerState:
     early_exit_config: Optional["EarlyExitConfig"] = None
     early_exit_monitor: Optional["EarlyExitMonitor"] = None
     tool_use: bool = False  # pre-load coding agent tool schemas
+    anonymous_reporter: Any = None  # AnonymousPingReporter instance
 
 
 @dataclass
@@ -884,6 +885,7 @@ def create_app(
     compression_threshold: int = 256,
     tool_use: bool = False,
     early_exit_config: Optional["EarlyExitConfig"] = None,
+    no_anonymous_telemetry: bool = False,
 ) -> Any:
     """Create a FastAPI app with OpenAI-compatible endpoints.
 
@@ -1043,6 +1045,16 @@ def create_app(
             except Exception as exc:
                 logger.warning("Failed to initialise telemetry: %s", exc)
 
+        # Start anonymous platform ping reporter (no API key needed)
+        if not no_anonymous_telemetry:
+            try:
+                from .anonymous_telemetry import AnonymousPingReporter as _APR
+
+                state.anonymous_reporter = _APR()
+                logger.info("Anonymous platform telemetry enabled")
+            except Exception as exc:
+                logger.debug("Anonymous telemetry init failed: %s", exc)
+
         yield
 
         # Graceful shutdown: stop request queue
@@ -1052,6 +1064,10 @@ def create_app(
         # Graceful shutdown: drain pending telemetry events
         if state.reporter is not None:
             state.reporter.close()
+
+        # Shutdown anonymous reporter
+        if state.anonymous_reporter is not None:
+            state.anonymous_reporter.close()
 
     app = FastAPI(title="Octomil Serve", version="1.0.0", lifespan=lifespan)
 
@@ -1350,6 +1366,10 @@ def create_app(
                 )
             except Exception:
                 pass
+
+        # Record anonymous platform ping
+        if state.anonymous_reporter is not None:
+            state.anonymous_reporter.record_inference()
 
         usage: dict[str, Any] = {
             "prompt_tokens": metrics.prompt_tokens,
@@ -1799,6 +1819,7 @@ def run_server(
     compression_threshold: int = 256,
     tool_use: bool = False,
     early_exit_config: Optional["EarlyExitConfig"] = None,
+    no_anonymous_telemetry: bool = False,
 ) -> None:
     """Start the inference server (blocking).
 
@@ -1829,6 +1850,8 @@ def run_server(
         Pre-load coding agent tool schemas for structured output.
     early_exit_config:
         Configuration for early exit / adaptive computation depth.
+    no_anonymous_telemetry:
+        Disable anonymous platform ping telemetry.
     """
     import uvicorn
 
@@ -1849,6 +1872,7 @@ def run_server(
         compression_threshold=compression_threshold,
         tool_use=tool_use,
         early_exit_config=early_exit_config,
+        no_anonymous_telemetry=no_anonymous_telemetry,
     )
     uvicorn.run(app, host=host, port=port, log_level="info")
 
