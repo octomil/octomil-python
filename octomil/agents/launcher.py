@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import shlex
 import subprocess
@@ -13,62 +14,79 @@ from typing import Optional
 
 import click
 
+logger = logging.getLogger(__name__)
+
 
 # ---------------------------------------------------------------------------
-# Recommended models for coding agents, ordered by preference.
+# Candidate models for the interactive picker (largest → smallest).
+# The picker filters this list based on available device memory.
 # ---------------------------------------------------------------------------
 
 
 @dataclass(frozen=True)
-class RecommendedModel:
-    """A model recommendation shown in the interactive picker."""
+class _Candidate:
+    """A model that may appear in the interactive picker."""
 
     key: str  # catalog key passed to ``octomil serve``
-    label: str  # display name
+    params_b: float  # total parameter count in billions
     description: str  # one-line description
-    size: str  # approximate download size
-    recommended: bool = False  # highlight as top pick
+    size: str  # approximate Q4_K_M download size
 
 
-RECOMMENDED_MODELS: list[RecommendedModel] = [
-    RecommendedModel(
-        key="qwen-coder-7b",
-        label="qwen-coder-7b",
-        description="Best local coding model, purpose-built for code",
-        size="~4.5 GB",
-        recommended=True,
+_ALL_CANDIDATES: list[_Candidate] = [
+    _Candidate("deepseek-v3.2", 685, "DeepSeek V3.2, top open model", "~405 GB"),
+    _Candidate(
+        "minimax-m2.1", 229, "MiniMax M2.1, strong multi-lang coding", "~138 GB"
     ),
-    RecommendedModel(
-        key="qwen-coder-3b",
-        label="qwen-coder-3b",
-        description="Fast coding model, runs on any machine",
-        size="~2 GB",
-    ),
-    RecommendedModel(
-        key="qwen-coder-1.5b",
-        label="qwen-coder-1.5b",
-        description="Ultra-light coding model, instant responses",
-        size="~1 GB",
-    ),
-    RecommendedModel(
-        key="qwen-7b",
-        label="qwen-7b",
-        description="Strong general-purpose with good code ability",
-        size="~4.5 GB",
-    ),
-    RecommendedModel(
-        key="llama-8b",
-        label="llama-8b",
-        description="Meta Llama 3.1, solid all-rounder",
-        size="~4.5 GB",
-    ),
+    _Candidate("devstral-123b", 123, "Devstral 2, Mistral's agentic coder", "~75 GB"),
+    _Candidate("glm-flash", 30, "GLM-4.7 Flash, fast reasoning & code", "~18.5 GB"),
+    _Candidate("qwen-coder-7b", 7, "Best small coding model, purpose-built", "~4.5 GB"),
+    _Candidate("llama-8b", 8, "Meta Llama 3.1, solid all-rounder", "~4.5 GB"),
+    _Candidate("qwen-coder-3b", 3, "Fast coding model, runs anywhere", "~2 GB"),
+    _Candidate("qwen-coder-1.5b", 1.5, "Ultra-light coder, instant responses", "~1 GB"),
 ]
+
+
+# ---------------------------------------------------------------------------
+# Device-aware model filtering
+# ---------------------------------------------------------------------------
+
+
+def _get_memory_budget_gb() -> float:
+    """Return usable memory in GB for model loading (total RAM - OS reserve)."""
+    try:
+        from ..hardware import UnifiedDetector
+
+        hw = UnifiedDetector().detect()
+        is_metal = hw.gpu is not None and hw.gpu.backend == "metal"
+        if is_metal:
+            # Apple Silicon: unified memory, reserve 4 GB for OS
+            return max(hw.total_ram_gb - 4.0, 0.0)
+        if hw.gpu is not None and hw.gpu.total_vram_gb > 0:
+            return hw.gpu.total_vram_gb * 0.9
+        return hw.available_ram_gb * 0.85
+    except Exception:
+        logger.debug("Hardware detection failed, assuming 8 GB budget")
+        return 8.0
+
+
+def _model_fits(params_b: float, budget_gb: float) -> bool:
+    """Check if a model at Q4_K_M fits within the memory budget."""
+    try:
+        from ..model_optimizer import _total_memory_gb
+
+        needed = _total_memory_gb(params_b, "Q4_K_M", 4096)
+        return needed <= budget_gb
+    except Exception:
+        # Fallback: rough estimate at 0.625 bytes/param
+        return (params_b * 0.625) <= budget_gb
 
 
 def _is_model_downloaded(key: str) -> bool:
     """Check if a model is already cached locally."""
     try:
         from ..models.catalog import get_model
+        from ..sources.huggingface import HuggingFaceSource
 
         entry = get_model(key)
         if entry is None:
@@ -77,8 +95,6 @@ def _is_model_downloaded(key: str) -> bool:
         variant = entry.variants.get(entry.default_quant)
         if variant is None:
             return False
-
-        from ..sources.huggingface import HuggingFaceSource
 
         hf = HuggingFaceSource()
         if variant.mlx and hf.check_cache(variant.mlx):
@@ -90,12 +106,65 @@ def _is_model_downloaded(key: str) -> bool:
     return False
 
 
+@dataclass(frozen=True)
+class RecommendedModel:
+    """A model recommendation shown in the interactive picker."""
+
+    key: str
+    label: str
+    description: str
+    size: str
+    recommended: bool = False
+
+
+def _build_recommendations() -> list[RecommendedModel]:
+    """Build a device-filtered list of recommended models."""
+    budget = _get_memory_budget_gb()
+    models: list[RecommendedModel] = []
+
+    for c in _ALL_CANDIDATES:
+        if _model_fits(c.params_b, budget):
+            models.append(
+                RecommendedModel(
+                    key=c.key,
+                    label=c.key,
+                    description=c.description,
+                    size=c.size,
+                )
+            )
+
+    if not models:
+        # Always offer the smallest model as a fallback
+        smallest = _ALL_CANDIDATES[-1]
+        models.append(
+            RecommendedModel(
+                key=smallest.key,
+                label=smallest.key,
+                description=smallest.description,
+                size=smallest.size,
+            )
+        )
+
+    # Mark the first (largest fitting) model as recommended
+    models[0] = RecommendedModel(
+        key=models[0].key,
+        label=models[0].label,
+        description=models[0].description,
+        size=models[0].size,
+        recommended=True,
+    )
+    return models
+
+
 def _select_model() -> str:
     """Show an interactive model picker and return the chosen model key."""
-    click.echo("\nModel Configuration\n")
+    recommendations = _build_recommendations()
+    budget = _get_memory_budget_gb()
+
+    click.echo(f"\nModel Configuration (detected {budget:.0f} GB available)\n")
     click.echo("  Recommended")
 
-    for i, m in enumerate(RECOMMENDED_MODELS):
+    for i, m in enumerate(recommendations):
         downloaded = _is_model_downloaded(m.key)
         status = "downloaded" if downloaded else "not downloaded"
         marker = " (Recommended)" if m.recommended else ""
@@ -105,8 +174,8 @@ def _select_model() -> str:
 
     click.echo()
 
-    choices = {str(i + 1): m.key for i, m in enumerate(RECOMMENDED_MODELS)}
-    labels = {str(i + 1): m.label for i, m in enumerate(RECOMMENDED_MODELS)}
+    choices = {str(i + 1): m.key for i, m in enumerate(recommendations)}
+    labels = {str(i + 1): m.label for i, m in enumerate(recommendations)}
 
     hint_parts = [f"{k}={labels[k]}" for k in sorted(choices)]
     hint = ", ".join(hint_parts)
@@ -163,7 +232,7 @@ def launch_agent(
     """Launch a coding agent with a local model backend.
 
     1. Ensures the agent binary is installed (offers to install if not).
-    2. If no model specified, shows an interactive picker.
+    2. If no model specified, shows a device-aware interactive picker.
     3. Starts ``octomil serve`` in the background if no server is running.
     4. Sets the appropriate env var so the agent talks to the local server.
     5. Execs the agent and tears down the server on exit.

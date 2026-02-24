@@ -796,6 +796,106 @@ MODEL_FAMILIES: dict[str, ModelFamily] = {
             ),
         },
     ),
+    # -----------------------------------------------------------------------
+    # Zhipu AI GLM
+    # -----------------------------------------------------------------------
+    "glm-flash": ModelFamily(
+        default_tag="q4_k_m",
+        publisher="Zhipu AI",
+        params="30B",
+        variants={
+            "q4_k_m": ModelVariant(
+                quantization_family="4bit",
+                mlx="mlx-community/GLM-4.7-Flash-4bit",
+                sources=[
+                    ModelSource(
+                        type="huggingface",
+                        ref="bartowski/zai-org_GLM-4.7-Flash-GGUF",
+                        file="zai-org_GLM-4.7-Flash-Q4_K_M.gguf",
+                        trust="community",
+                    ),
+                ],
+            ),
+            "q8_0": ModelVariant(
+                quantization_family="8bit",
+                mlx="mlx-community/GLM-4.7-Flash-8bit",
+                sources=[
+                    ModelSource(
+                        type="huggingface",
+                        ref="bartowski/zai-org_GLM-4.7-Flash-GGUF",
+                        file="zai-org_GLM-4.7-Flash-Q8_0.gguf",
+                        trust="community",
+                    ),
+                ],
+            ),
+        },
+    ),
+    # -----------------------------------------------------------------------
+    # Mistral AI — Devstral (agentic coding)
+    # -----------------------------------------------------------------------
+    "devstral-123b": ModelFamily(
+        default_tag="q4_k_m",
+        publisher="Mistral AI",
+        params="123B",
+        variants={
+            "q4_k_m": ModelVariant(
+                quantization_family="4bit",
+                mlx="mlx-community/Devstral-2-123B-Instruct-2512-4bit",
+                sources=[
+                    ModelSource(
+                        type="huggingface",
+                        ref="unsloth/Devstral-2-123B-Instruct-2512-GGUF",
+                        file="Devstral-2-123B-Instruct-2512-Q4_K_M-00001-of-00002.gguf",
+                        trust="community",
+                    ),
+                ],
+            ),
+        },
+    ),
+    # -----------------------------------------------------------------------
+    # DeepSeek V3.2
+    # -----------------------------------------------------------------------
+    "deepseek-v3.2": ModelFamily(
+        default_tag="q4_k_m",
+        publisher="DeepSeek",
+        params="685B",
+        variants={
+            "q4_k_m": ModelVariant(
+                quantization_family="4bit",
+                mlx="mlx-community/DeepSeek-V3.2-4bit",
+                sources=[
+                    ModelSource(
+                        type="huggingface",
+                        ref="unsloth/DeepSeek-V3.2-GGUF",
+                        file="DeepSeek-V3.2-Q4_K_M-00001-of-00009.gguf",
+                        trust="community",
+                    ),
+                ],
+            ),
+        },
+    ),
+    # -----------------------------------------------------------------------
+    # MiniMax M2.1
+    # -----------------------------------------------------------------------
+    "minimax-m2.1": ModelFamily(
+        default_tag="q4_k_m",
+        publisher="MiniMax",
+        params="229B",
+        variants={
+            "q4_k_m": ModelVariant(
+                quantization_family="4bit",
+                mlx="mlx-community/MiniMax-M2.1-4bit",
+                sources=[
+                    ModelSource(
+                        type="huggingface",
+                        ref="unsloth/MiniMax-M2.1-GGUF",
+                        file="MiniMax-M2.1-Q4_K_M-00001-of-00003.gguf",
+                        trust="community",
+                    ),
+                ],
+            ),
+        },
+    ),
 }
 
 

@@ -704,6 +704,114 @@ CATALOG: dict[str, ModelEntry] = {
             ),
         },
     ),
+    # -------------------------------------------------------------------
+    # Zhipu AI GLM
+    # -------------------------------------------------------------------
+    "glm-flash": ModelEntry(
+        publisher="Zhipu AI",
+        params="30B",
+        default_quant="4bit",
+        architecture="moe",
+        moe=MoEMetadata(
+            num_experts=160,
+            active_experts=8,
+            expert_size="0.2B",
+            total_params="30B",
+            active_params="3B",
+        ),
+        engines=frozenset({"mlx-lm", "llama.cpp"}),
+        variants={
+            "4bit": VariantSpec(
+                mlx="mlx-community/GLM-4.7-Flash-4bit",
+                gguf=GGUFSource(
+                    "bartowski/zai-org_GLM-4.7-Flash-GGUF",
+                    "zai-org_GLM-4.7-Flash-Q4_K_M.gguf",
+                ),
+                source_repo="zai-org/GLM-4.7-Flash",
+            ),
+            "8bit": VariantSpec(
+                mlx="mlx-community/GLM-4.7-Flash-8bit",
+                gguf=GGUFSource(
+                    "bartowski/zai-org_GLM-4.7-Flash-GGUF",
+                    "zai-org_GLM-4.7-Flash-Q8_0.gguf",
+                ),
+                source_repo="zai-org/GLM-4.7-Flash",
+            ),
+        },
+    ),
+    # -------------------------------------------------------------------
+    # Mistral AI — Devstral (agentic coding)
+    # -------------------------------------------------------------------
+    "devstral-123b": ModelEntry(
+        publisher="Mistral AI",
+        params="123B",
+        default_quant="4bit",
+        engines=frozenset({"mlx-lm", "llama.cpp"}),
+        variants={
+            "4bit": VariantSpec(
+                mlx="mlx-community/Devstral-2-123B-Instruct-2512-4bit",
+                gguf=GGUFSource(
+                    "unsloth/Devstral-2-123B-Instruct-2512-GGUF",
+                    "Devstral-2-123B-Instruct-2512-Q4_K_M-00001-of-00002.gguf",
+                ),
+                source_repo="mistralai/Devstral-2-123B-Instruct-2512",
+            ),
+        },
+    ),
+    # -------------------------------------------------------------------
+    # DeepSeek V3.2
+    # -------------------------------------------------------------------
+    "deepseek-v3.2": ModelEntry(
+        publisher="DeepSeek",
+        params="685B",
+        default_quant="4bit",
+        architecture="moe",
+        moe=MoEMetadata(
+            num_experts=256,
+            active_experts=8,
+            expert_size="2B",
+            total_params="685B",
+            active_params="37B",
+        ),
+        engines=frozenset({"mlx-lm", "llama.cpp"}),
+        variants={
+            "4bit": VariantSpec(
+                mlx="mlx-community/DeepSeek-V3.2-4bit",
+                gguf=GGUFSource(
+                    "unsloth/DeepSeek-V3.2-GGUF",
+                    "DeepSeek-V3.2-Q4_K_M-00001-of-00009.gguf",
+                ),
+                source_repo="deepseek-ai/DeepSeek-V3.2",
+            ),
+        },
+    ),
+    # -------------------------------------------------------------------
+    # MiniMax M2.1
+    # -------------------------------------------------------------------
+    "minimax-m2.1": ModelEntry(
+        publisher="MiniMax",
+        params="229B",
+        default_quant="4bit",
+        architecture="moe",
+        moe=MoEMetadata(
+            num_experts=8,
+            active_experts=2,
+            expert_size="10B",
+            total_params="229B",
+            active_params="10B",
+        ),
+        engines=frozenset({"mlx-lm", "llama.cpp"}),
+        variants={
+            "4bit": VariantSpec(
+                mlx="mlx-community/MiniMax-M2.1-4bit",
+                gguf=GGUFSource(
+                    "unsloth/MiniMax-M2.1-GGUF",
+                    "MiniMax-M2.1-Q4_K_M-00001-of-00003.gguf",
+                ),
+                source_repo="MiniMaxAI/MiniMax-M2.1",
+            ),
+        },
+    ),
 }
 
 
@@ -740,6 +848,13 @@ MODEL_ALIASES: dict[str, str] = {
     "deepseek-v2-lite-chat": "deepseek-v2-lite",
     "qwen-1.5-moe": "qwen-moe-14b",
     "qwen-moe": "qwen-moe-14b",
+    # Large model aliases
+    "glm-4.7-flash": "glm-flash",
+    "glm-4.7": "glm-flash",
+    "devstral": "devstral-123b",
+    "devstral-2": "devstral-123b",
+    "minimax": "minimax-m2.1",
+    "minimax-m2": "minimax-m2.1",
 }
 
 
