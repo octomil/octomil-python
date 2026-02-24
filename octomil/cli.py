@@ -1265,7 +1265,7 @@ def deploy(
         ollama_ref = name[len("ollama://") :]
         if not ollama_ref:
             click.echo(
-                "Error: ollama:// URI requires a model name, " "e.g. ollama://llama3.2",
+                "Error: ollama:// URI requires a model name, e.g. ollama://llama3.2",
                 err=True,
             )
             sys.exit(1)
@@ -3130,6 +3130,61 @@ def chat(
     finally:
         if serve_proc is not None:
             serve_proc.terminate()
+
+
+# ---------------------------------------------------------------------------
+# octomil warmup
+# ---------------------------------------------------------------------------
+
+
+@main.command()
+def warmup() -> None:
+    """Pre-download the recommended model for your device.
+
+    Detects available hardware, picks the best model, and downloads it
+    so that subsequent ``octomil launch`` or ``octomil chat`` calls start
+    instantly with zero cold-start delay.
+
+    \b
+    Examples:
+        octomil warmup
+    """
+    from .agents.launcher import _build_recommendations
+    from .sources.huggingface import HuggingFaceSource
+
+    recommendations = _build_recommendations()
+    best = recommendations[0]
+
+    if best.downloaded:
+        click.echo(f"{best.key} is already downloaded. Nothing to do.")
+        return
+
+    click.echo(f"Downloading {best.key} ({best.size})...")
+
+    try:
+        from .models.catalog import get_model
+
+        entry = get_model(best.key)
+        if entry is None:
+            raise click.ClickException(f"Model '{best.key}' not found in catalog.")
+
+        variant = entry.variants.get(entry.default_quant)
+        if variant is None:
+            raise click.ClickException(f"No default variant for '{best.key}'.")
+
+        hf = HuggingFaceSource()
+        if variant.mlx:
+            hf.resolve(variant.mlx)
+        elif variant.gguf:
+            hf.resolve(variant.gguf.repo, variant.gguf.filename)
+        else:
+            raise click.ClickException(f"No downloadable artifact for '{best.key}'.")
+
+        click.echo(f"{best.key} downloaded successfully.")
+    except click.ClickException:
+        raise
+    except Exception as exc:
+        raise click.ClickException(f"Download failed: {exc}") from exc
 
 
 # ---------------------------------------------------------------------------
