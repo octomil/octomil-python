@@ -8,9 +8,122 @@ import subprocess
 import sys
 import time
 import urllib.request
+from dataclasses import dataclass
 from typing import Optional
 
 import click
+
+
+# ---------------------------------------------------------------------------
+# Recommended models for coding agents, ordered by preference.
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class RecommendedModel:
+    """A model recommendation shown in the interactive picker."""
+
+    key: str  # catalog key passed to ``octomil serve``
+    label: str  # display name
+    description: str  # one-line description
+    size: str  # approximate download size
+    recommended: bool = False  # highlight as top pick
+
+
+RECOMMENDED_MODELS: list[RecommendedModel] = [
+    RecommendedModel(
+        key="qwen-7b",
+        label="qwen-7b",
+        description="Best local coding model, strong reasoning",
+        size="~4.5 GB",
+        recommended=True,
+    ),
+    RecommendedModel(
+        key="gemma-4b",
+        label="gemma-4b",
+        description="Fast and capable, good for quick tasks",
+        size="~2.5 GB",
+    ),
+    RecommendedModel(
+        key="llama-8b",
+        label="llama-8b",
+        description="Solid general-purpose coding assistant",
+        size="~4.5 GB",
+    ),
+    RecommendedModel(
+        key="qwen-3b",
+        label="qwen-3b",
+        description="Lightweight, runs on any machine",
+        size="~2 GB",
+    ),
+    RecommendedModel(
+        key="phi-mini",
+        label="phi-mini",
+        description="Microsoft Phi 3.5, efficient reasoning",
+        size="~2.5 GB",
+    ),
+]
+
+
+def _is_model_downloaded(key: str) -> bool:
+    """Check if a model is already cached locally."""
+    try:
+        from ..models.catalog import get_model
+
+        entry = get_model(key)
+        if entry is None:
+            return False
+
+        variant = entry.variants.get(entry.default_quant)
+        if variant is None:
+            return False
+
+        from ..sources.huggingface import HuggingFaceSource
+
+        hf = HuggingFaceSource()
+        if variant.mlx and hf.check_cache(variant.mlx):
+            return True
+        if variant.gguf and hf.check_cache(variant.gguf.repo, variant.gguf.filename):
+            return True
+    except Exception:
+        pass
+    return False
+
+
+def _select_model() -> str:
+    """Show an interactive model picker and return the chosen model key."""
+    click.echo("\nModel Configuration\n")
+    click.echo("  Recommended")
+
+    for i, m in enumerate(RECOMMENDED_MODELS):
+        downloaded = _is_model_downloaded(m.key)
+        status = "downloaded" if downloaded else "not downloaded"
+        marker = " (Recommended)" if m.recommended else ""
+        prefix = "  > " if i == 0 else "    "
+        click.echo(f"{prefix}{m.label}{marker}")
+        click.echo(f"      {m.description}, {m.size}, ({status})")
+
+    click.echo()
+
+    choices = {str(i + 1): m.key for i, m in enumerate(RECOMMENDED_MODELS)}
+    labels = {str(i + 1): m.label for i, m in enumerate(RECOMMENDED_MODELS)}
+
+    hint_parts = [f"{k}={labels[k]}" for k in sorted(choices)]
+    hint = ", ".join(hint_parts)
+
+    selection = click.prompt(
+        f"Select model [{hint}] or enter a model name",
+        default="1",
+    )
+
+    if selection in choices:
+        return choices[selection]
+    return selection
+
+
+# ---------------------------------------------------------------------------
+# Server management
+# ---------------------------------------------------------------------------
 
 
 def is_serve_running(host: str = "localhost", port: int = 8080) -> bool:
@@ -37,6 +150,11 @@ def start_serve_background(model: str, port: int = 8080) -> subprocess.Popen:
     raise RuntimeError("octomil serve failed to start within 60s")
 
 
+# ---------------------------------------------------------------------------
+# Main launcher
+# ---------------------------------------------------------------------------
+
+
 def launch_agent(
     agent_name: str,
     model: Optional[str] = None,
@@ -45,9 +163,10 @@ def launch_agent(
     """Launch a coding agent with a local model backend.
 
     1. Ensures the agent binary is installed (offers to install if not).
-    2. Starts ``octomil serve`` in the background if no server is running.
-    3. Sets the appropriate env var so the agent talks to the local server.
-    4. Execs the agent and tears down the server on exit.
+    2. If no model specified, shows an interactive picker.
+    3. Starts ``octomil serve`` in the background if no server is running.
+    4. Sets the appropriate env var so the agent talks to the local server.
+    5. Execs the agent and tears down the server on exit.
     """
     from .registry import get_agent, is_agent_installed
 
@@ -81,7 +200,7 @@ def launch_agent(
         base_url = f"http://localhost:{port}/v1"
         if not is_serve_running(port=port):
             if model is None:
-                model = "qwen3"
+                model = _select_model()
             click.echo(f"Starting octomil serve {model}...")
             serve_proc = start_serve_background(model, port=port)
             click.echo(f"Model ready at {base_url}")
