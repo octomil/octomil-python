@@ -29,12 +29,12 @@ logger = logging.getLogger(__name__)
 _MODEL_ALIASES: Dict[str, Dict[str, str]] = {
     # ── Phi family ────────────────────────────────────────────────────────
     "phi-4-mini": {"hf": "microsoft/Phi-4-mini-instruct-onnx", "ollama": "phi4-mini"},
-    "phi-mini": {"hf": "REDACTED", "ollama": "phi3.5"},
-    "phi-4": {"hf": "REDACTED", "ollama": "phi4"},
-    "phi4": {"hf": "REDACTED", "ollama": "phi4"},
+    "phi-mini": {"hf": "REDACTED", "hf_onnx": "REDACTED-onnx", "ollama": "phi3.5"},
+    "phi-4": {"hf": "REDACTED", "hf_onnx": "REDACTED-onnx", "ollama": "phi4"},
+    "phi4": {"hf": "REDACTED", "hf_onnx": "REDACTED-onnx", "ollama": "phi4"},
     "phi4-mini": {"hf": "microsoft/Phi-4-mini-instruct-onnx", "ollama": "phi4-mini"},
     # ── Gemma 3 family ────────────────────────────────────────────────────
-    "gemma-1b": {"hf": "REDACTED", "ollama": "gemma3:1b"},
+    "gemma-1b": {"hf": "REDACTED", "hf_onnx": "onnx-community/gemma-3-1b-it-ONNX", "ollama": "gemma3:1b"},
     "gemma-3b": {"hf": "REDACTED", "ollama": "gemma3:4b"},
     "gemma-4b": {"hf": "REDACTED", "ollama": "gemma3:4b"},
     "gemma-12b": {"hf": "REDACTED", "ollama": "gemma3:12b"},
@@ -45,12 +45,12 @@ _MODEL_ALIASES: Dict[str, Dict[str, str]] = {
     "gemma2-27b": {"hf": "REDACTED", "ollama": "gemma2:27b"},
     "gemma2": {"hf": "REDACTED", "ollama": "gemma2:9b"},
     # ── Llama 3.2 family ──────────────────────────────────────────────────
-    "llama-1b": {"hf": "REDACTED", "ollama": "llama3.2:1b"},
-    "llama-3b": {"hf": "REDACTED", "ollama": "llama3.2:3b"},
-    "llama-3.2-1b": {"hf": "REDACTED", "ollama": "llama3.2:1b"},
-    "llama-3.2-3b": {"hf": "REDACTED", "ollama": "llama3.2:3b"},
-    "llama3.2-1b": {"hf": "REDACTED", "ollama": "llama3.2:1b"},
-    "llama3.2-3b": {"hf": "REDACTED", "ollama": "llama3.2:3b"},
+    "llama-1b": {"hf": "REDACTED", "hf_onnx": "onnx-community/Llama-3.2-1B-Instruct-ONNX", "ollama": "llama3.2:1b"},
+    "llama-3b": {"hf": "REDACTED", "hf_onnx": "onnx-community/Llama-3.2-3B-Instruct-ONNX", "ollama": "llama3.2:3b"},
+    "llama-3.2-1b": {"hf": "REDACTED", "hf_onnx": "onnx-community/Llama-3.2-1B-Instruct-ONNX", "ollama": "llama3.2:1b"},
+    "llama-3.2-3b": {"hf": "REDACTED", "hf_onnx": "onnx-community/Llama-3.2-3B-Instruct-ONNX", "ollama": "llama3.2:3b"},
+    "llama3.2-1b": {"hf": "REDACTED", "hf_onnx": "onnx-community/Llama-3.2-1B-Instruct-ONNX", "ollama": "llama3.2:1b"},
+    "llama3.2-3b": {"hf": "REDACTED", "hf_onnx": "onnx-community/Llama-3.2-3B-Instruct-ONNX", "ollama": "llama3.2:3b"},
     # ── Llama 3.1 family ──────────────────────────────────────────────────
     "llama-8b": {"hf": "REDACTED", "ollama": "llama3.1:8b"},
     "llama-3.1-8b": {"hf": "REDACTED", "ollama": "llama3.1:8b"},
@@ -129,11 +129,11 @@ _MODEL_ALIASES: Dict[str, Dict[str, str]] = {
     "command-r": {"hf": "REDACTED", "ollama": "command-r"},
     "command-r-plus": {"hf": "REDACTED", "ollama": "command-r-plus"},
     # ── SmolLM ────────────────────────────────────────────────────────────
-    "smollm-360m": {"hf": "REDACTED", "ollama": "smollm2:360m"},
+    "smollm-360m": {"hf": "REDACTED", "hf_onnx": "onnx-community/SmolLM2-360M-Instruct-ONNX", "ollama": "smollm2:360m"},
     "smollm-1.7b": {"hf": "REDACTED", "ollama": "smollm2:1.7b"},
     "smollm2-1.7b": {"hf": "REDACTED", "ollama": "smollm2:1.7b"},
     # ── Other popular models ──────────────────────────────────────────────
-    "tinyllama": {"hf": "REDACTED", "ollama": "tinyllama"},
+    "tinyllama": {"hf": "REDACTED", "hf_onnx": "onnx-community/TinyLlama-1.1B-Chat-v1.0-ONNX", "ollama": "tinyllama"},
     "internlm2": {"hf": "REDACTED", "ollama": "internlm2:7b"},
     "internlm2-7b": {"hf": "REDACTED", "ollama": "internlm2:7b"},
     "stable-code": {"hf": "REDACTED", "ollama": "stable-code:3b"},
@@ -159,11 +159,11 @@ _MODEL_ALIASES: Dict[str, Dict[str, str]] = {
     "wizardcoder": {"hf": "WizardLMTeam/WizardCoder-Python-7B-V1.0", "ollama": "wizardcoder:7b"},
     "stablelm2": {"hf": "stabilityai/stablelm-2-zephyr-1_6b", "ollama": "stablelm2:1.6b"},
     # ── Whisper (HF only) ─────────────────────────────────────────────────
-    "whisper-tiny": {"hf": "REDACTED"},
-    "whisper-base": {"hf": "REDACTED"},
-    "whisper-small": {"hf": "REDACTED"},
-    "whisper-medium": {"hf": "REDACTED"},
-    "whisper-large-v3": {"hf": "REDACTED"},
+    "whisper-tiny": {"hf": "REDACTED", "hf_onnx": "onnx-community/whisper-tiny"},
+    "whisper-base": {"hf": "REDACTED", "hf_onnx": "onnx-community/whisper-base"},
+    "whisper-small": {"hf": "REDACTED", "hf_onnx": "onnx-community/whisper-small"},
+    "whisper-medium": {"hf": "REDACTED", "hf_onnx": "onnx-community/whisper-medium-ONNX"},
+    "whisper-large-v3": {"hf": "REDACTED", "hf_onnx": "onnx-community/whisper-large-v3-ONNX"},
 }
 
 _ollama = OllamaSource()
@@ -284,22 +284,29 @@ def resolve_and_download(name: str) -> str:
     )
 
 
-def resolve_hf_repo(name: str) -> Optional[str]:
+def resolve_hf_repo(name: str, *, prefer_onnx: bool = True) -> Optional[str]:
     """Resolve a model name to a HuggingFace repo ID without downloading.
+
+    When *prefer_onnx* is ``True`` (the default), returns the ``hf_onnx``
+    repo if one is registered for this alias — these repos already contain
+    ``.onnx`` files and skip server-side conversion entirely.
 
     Returns the HF repo string (e.g. ``microsoft/Phi-4-mini-instruct``) or
     ``None`` if the name is not a known alias or explicit HF reference.
     """
-    # Explicit hf: prefix
+    # Explicit hf: prefix — user chose a specific repo, honour it
     explicit = _parse_explicit_source(name)
     if explicit:
         source, ref = explicit
         return ref if source == "hf" else None
 
-    # Alias lookup
+    # Alias lookup — prefer ONNX variant for server-side import
     aliases = _MODEL_ALIASES.get(name)
-    if aliases and "hf" in aliases:
-        return aliases["hf"]
+    if aliases:
+        if prefer_onnx and "hf_onnx" in aliases:
+            return aliases["hf_onnx"]
+        if "hf" in aliases:
+            return aliases["hf"]
 
     # Direct org/model format
     if "/" in name:
