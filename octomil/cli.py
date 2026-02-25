@@ -72,10 +72,28 @@ def _require_api_key() -> str:
     return key
 
 
+def _get_org_id() -> str | None:
+    """Read org_id from env or ~/.octomil/credentials."""
+    import json
+
+    oid = os.environ.get("OCTOMIL_ORG_ID", "")
+    if not oid:
+        config_path = os.path.expanduser("~/.octomil/credentials")
+        if os.path.exists(config_path):
+            with open(config_path) as f:
+                raw = f.read().strip()
+            try:
+                data = json.loads(raw)
+                oid = data.get("org_id", "")
+            except (json.JSONDecodeError, ValueError):
+                pass
+    return oid or None
+
+
 def _get_client():  # type: ignore[no-untyped-def]
     from .client import Client
 
-    return Client(api_key=_require_api_key())
+    return Client(api_key=_require_api_key(), org_id=_get_org_id())
 
 
 def _get_telemetry_reporter():  # type: ignore[no-untyped-def]
@@ -1064,31 +1082,52 @@ def _browser_login() -> None:
             self.send_response(200)
             self.send_header("Content-Type", "text/html")
             self.end_headers()
-            self.wfile.write(
-                b'<!DOCTYPE html><html lang="en"><head><meta charset="utf-8">'
-                b"<title>Octomil CLI</title><style>"
-                b"*{margin:0;padding:0;box-sizing:border-box}"
-                b"body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',system-ui,sans-serif;"
-                b"display:flex;justify-content:center;align-items:center;min-height:100vh;"
-                b"background:#070d12;color:#e2e8f0}"
-                b".card{text-align:center;padding:3rem 2.5rem;max-width:420px}"
-                b".ok{width:56px;height:56px;border-radius:50%;background:rgba(34,197,94,.12);"
-                b"border:1.5px solid rgba(34,197,94,.3);display:flex;align-items:center;"
-                b"justify-content:center;margin:0 auto 1.5rem}"
-                b".ok svg{width:28px;height:28px;stroke:#22c55e;fill:none;stroke-width:2.5;"
-                b"stroke-linecap:round;stroke-linejoin:round}"
-                b"h2{font-size:1.25rem;font-weight:600;margin-bottom:.5rem;letter-spacing:-.01em}"
-                b"p{color:#64748b;font-size:.9rem;line-height:1.5}"
-                b".hint{margin-top:2rem;padding:.875rem 1rem;background:#0f1822;"
-                b"border:1px solid rgba(255,255,255,.06);border-radius:8px;"
-                b"font-family:'SF Mono','Fira Code',monospace;font-size:.8rem;color:#7dd3fc}"
-                b"</style></head><body><div class=card>"
-                b'<div class=ok><svg viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg></div>'
-                b"<h2>CLI Authenticated</h2>"
-                b"<p>You can close this tab and return to your terminal.</p>"
-                b"<div class=hint>$ octomil push phi-4-mini --version 1.0.0</div>"
-                b"</div></body></html>"
+            _CMD = "octomil push phi-4-mini --version 1.0.0"
+            _COPY_ICON = (
+                '<svg viewBox="0 0 24 24"><rect x="9" y="9" width="13" height="13" rx="2"/>'
+                '<path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>'
             )
+            _CHECK_ICON = '<svg viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg>'
+            _page = (
+                '<!DOCTYPE html><html lang="en"><head><meta charset="utf-8">'
+                "<title>Octomil CLI</title><style>"
+                "*{margin:0;padding:0;box-sizing:border-box}"
+                "body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',system-ui,sans-serif;"
+                "display:flex;justify-content:center;align-items:center;min-height:100vh;"
+                "background:#070d12;color:#e2e8f0}"
+                ".card{text-align:center;padding:3rem 2.5rem;max-width:420px}"
+                ".ok{width:56px;height:56px;border-radius:50%;background:rgba(34,197,94,.12);"
+                "border:1.5px solid rgba(34,197,94,.3);display:flex;align-items:center;"
+                "justify-content:center;margin:0 auto 1.5rem}"
+                ".ok svg{width:28px;height:28px;stroke:#22c55e;fill:none;stroke-width:2.5;"
+                "stroke-linecap:round;stroke-linejoin:round}"
+                "h2{font-size:1.25rem;font-weight:600;margin-bottom:.5rem;letter-spacing:-.01em}"
+                "p{color:#64748b;font-size:.9rem;line-height:1.5}"
+                ".hint{margin-top:2rem;padding:.875rem 1rem;background:#0f1822;"
+                "border:1px solid rgba(255,255,255,.06);border-radius:8px;"
+                "font-family:'SF Mono','Fira Code',monospace;font-size:.8rem;color:#7dd3fc;"
+                "display:flex;align-items:center;justify-content:space-between;gap:.75rem}"
+                ".hint code{flex:1;text-align:left}"
+                ".cb{background:none;border:1px solid rgba(255,255,255,.1);border-radius:5px;"
+                "padding:4px 6px;cursor:pointer;color:#64748b;display:flex;align-items:center;"
+                "transition:all .15s ease;flex-shrink:0}"
+                ".cb:hover{border-color:rgba(255,255,255,.2);color:#7dd3fc}"
+                ".cb svg{width:16px;height:16px;stroke:currentColor;fill:none;"
+                "stroke-width:2;stroke-linecap:round;stroke-linejoin:round}"
+                "</style></head><body><div class=card>"
+                '<div class=ok><svg viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg></div>'
+                "<h2>CLI Authenticated</h2>"
+                "<p>You can close this tab and return to your terminal.</p>"
+                f'<div class=hint><code>$ {_CMD}</code>'
+                f'<button class=cb id=cpb>{_COPY_ICON}</button></div>'
+                "<script>"
+                f"document.getElementById('cpb').onclick=function(){{navigator.clipboard.writeText('{_CMD}');"
+                f"this.innerHTML='{_CHECK_ICON}';var b=this;"
+                f"setTimeout(function(){{b.innerHTML='{_COPY_ICON}'}},1500)}}"
+                "</script>"
+                "</div></body></html>"
+            )
+            self.wfile.write(_page.encode())
             got_callback.set()
 
         def log_message(self, format: str, *args: object) -> None:  # noqa: A002
