@@ -15,7 +15,6 @@ from octomil.cli_helpers import (
     _get_client,
     _get_org_id,
     _has_explicit_quant,
-    _require_api_key,
 )
 
 
@@ -30,7 +29,9 @@ def register(cli: click.Group) -> None:
 
 
 @click.command()
-@click.argument("path", required=False, default=None, shell_complete=_complete_model_name)
+@click.argument(
+    "path", required=False, default=None, shell_complete=_complete_model_name
+)
 @click.option(
     "--model-id",
     "-m",
@@ -38,7 +39,9 @@ def register(cli: click.Group) -> None:
     help="Model ID in the registry. Inferred from path or model name if omitted.",
     shell_complete=_complete_model_name,
 )
-@click.option("--version", "-v", default="1.0.0", help="Semantic version (default: 1.0.0).")
+@click.option(
+    "--version", "-v", default="1.0.0", help="Semantic version (default: 1.0.0)."
+)
 @click.option("--description", "-d", default=None, help="Version description.")
 @click.option(
     "--formats",
@@ -154,12 +157,11 @@ def push(
 
 def _print_sdk_snippet(model_name: str, version: str) -> None:
     """Print ready-to-paste SDK snippets with real credentials."""
-    from octomil.cli_helpers import _get_org_id
 
     api_key = _get_api_key()
     org_id = _get_org_id() or "<your-org-id>"
 
-    click.echo(f"\n  Add to your app:\n")
+    click.echo("\n  Add to your app:\n")
     click.secho("  Swift (iOS)", bold=True)
     click.echo(
         f'    let client = OctomilClient(apiKey: "{api_key}", orgId: "{org_id}")\n'
