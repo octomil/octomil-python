@@ -62,6 +62,26 @@ def get_battery_level() -> Optional[int]:
     return None
 
 
+def is_charging() -> bool:
+    """
+    Check if the device is currently charging.
+
+    Returns:
+        True if charging, False otherwise (including when no battery sensor).
+    """
+    try:
+        import psutil
+
+        battery = psutil.sensors_battery()
+        if battery:
+            return bool(battery.power_plugged)
+    except ImportError:
+        pass
+    except (AttributeError, OSError, RuntimeError):
+        pass
+    return False
+
+
 def get_network_type() -> str:
     """
     Get current network connection type.
