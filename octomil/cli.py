@@ -58,7 +58,8 @@ from octomil.commands import (  # noqa: E402
     enterprise,
     federation,
     interactive,
+    completions,
 )
 
-for _mod in [serve, model_ops, deploy, benchmark, enterprise, federation, interactive]:
+for _mod in [serve, model_ops, deploy, benchmark, enterprise, federation, interactive, completions]:
     _mod.register(main)
