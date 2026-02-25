@@ -83,7 +83,7 @@ class TestClientPush:
         mock_registry.ensure_model.assert_called_once_with(
             name="test",
             framework="pytorch",
-            use_case="general",
+            use_case="other",
             description=None,
         )
         mock_registry.upload_version_from_path.assert_called_once_with(

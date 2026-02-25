@@ -782,12 +782,12 @@ class TestResolveModelSize:
 
 class TestHasExplicitQuant:
     def test_no_colon_no_quant(self) -> None:
-        from octomil.cli import _has_explicit_quant
+        from octomil.cli_helpers import _has_explicit_quant
 
         assert _has_explicit_quant("llama3.1") is False
 
     def test_size_variant_not_quant(self) -> None:
-        from octomil.cli import _has_explicit_quant
+        from octomil.cli_helpers import _has_explicit_quant
 
         assert _has_explicit_quant("llama3.1:8b") is False
 
@@ -802,6 +802,6 @@ class TestHasExplicitQuant:
         ],
     )
     def test_explicit_quant_detected(self, tag: str) -> None:
-        from octomil.cli import _has_explicit_quant
+        from octomil.cli_helpers import _has_explicit_quant
 
         assert _has_explicit_quant(tag) is True
