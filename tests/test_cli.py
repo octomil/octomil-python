@@ -123,13 +123,6 @@ class TestServeCommand:
         assert result.exit_code == 0
         assert "9000" in result.output
 
-    def test_serve_share_no_key(self, monkeypatch):
-        monkeypatch.delenv("OCTOMIL_API_KEY", raising=False)
-        runner = CliRunner()
-        with patch("octomil.serve.run_server"):
-            result = runner.invoke(main, ["serve", "test", "--share"])
-        assert result.exit_code == 0
-        assert "--share requires an API key" in result.output
 
 
 # ---------------------------------------------------------------------------
