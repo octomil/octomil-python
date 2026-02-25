@@ -1498,12 +1498,65 @@ def deploy(
         dashboard_url = os.environ.get(
             "OCTOMIL_DASHBOARD_URL", "https://app.octomil.com"
         )
+        headers = {"Authorization": f"Bearer {api_key}"}
+
+        # Ensure model exists in registry — auto-download, convert, push if needed
+        check_resp = httpx.get(
+            f"{api_base}/models/{name}",
+            headers=headers,
+            timeout=10.0,
+        )
+        if check_resp.status_code == 404:
+            click.echo(f"Model '{name}' not in registry — auto-importing...")
+            from octomil.sources.resolver import resolve_and_download
+
+            try:
+                resolved_path = resolve_and_download(name)
+            except Exception as exc:
+                click.echo(
+                    click.style(f"  Error resolving model: {exc}", fg="red"),
+                    err=True,
+                )
+                sys.exit(1)
+            click.echo(click.style(f"  Downloaded to {resolved_path}", fg="green"))
+
+            client = _get_client()
+            effective_version = version or "1.0.0"
+            resolved_name = name.split("/")[-1].split(":")[-1]
+            try:
+                client.push(
+                    resolved_path,
+                    name=resolved_name,
+                    version=effective_version,
+                )
+                click.echo(
+                    click.style(
+                        f"  Pushed {resolved_name} v{effective_version}", fg="green"
+                    )
+                )
+                name = resolved_name
+            except Exception as exc:
+                # 402 = plan limit
+                if "402" in str(exc) or "limit" in str(exc).lower():
+                    click.echo(
+                        click.style(
+                            "  Plan limit reached — upgrade at "
+                            "https://app.octomil.com/settings/billing",
+                            fg="red",
+                        ),
+                        err=True,
+                    )
+                else:
+                    click.echo(
+                        click.style(f"  Push failed: {exc}", fg="red"), err=True
+                    )
+                sys.exit(1)
 
         click.echo(f"Creating pairing session for {name}...")
         resp = httpx.post(
             f"{api_base}/deploy/pair",
             json={"model_name": name, "model_version": version},
-            headers={"Authorization": f"Bearer {api_key}"},
+            headers=headers,
             timeout=10.0,
         )
         if resp.status_code >= 400:
@@ -3480,7 +3533,7 @@ def launch(agent: str, model: Optional[str], port: int, select: bool) -> None:
 # Interactive command
 # ---------------------------------------------------------------------------
 
-from .cli_hw import interactive_cmd_factory  # noqa: E402
+from octomil.cli_hw import interactive_cmd_factory  # noqa: E402
 
 main.add_command(interactive_cmd_factory(main), "interactive")
 
