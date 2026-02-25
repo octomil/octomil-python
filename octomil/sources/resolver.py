@@ -29,12 +29,12 @@ logger = logging.getLogger(__name__)
 _MODEL_ALIASES: Dict[str, Dict[str, str]] = {
     # ── Phi family ────────────────────────────────────────────────────────
     "phi-4-mini": {"hf": "microsoft/Phi-4-mini-instruct-onnx", "ollama": "phi4-mini"},
-    "phi-mini": {"hf": "microsoft/Phi-3.5-mini-instruct", "ollama": "phi3.5"},
-    "phi-4": {"hf": "microsoft/phi-4", "ollama": "phi4"},
-    "phi4": {"hf": "microsoft/phi-4", "ollama": "phi4"},
+    "phi-mini": {"hf": "microsoft/Phi-3.5-mini-instruct", "hf_onnx": "microsoft/Phi-3.5-mini-instruct-onnx", "ollama": "phi3.5"},
+    "phi-4": {"hf": "microsoft/phi-4", "hf_onnx": "microsoft/phi-4-onnx", "ollama": "phi4"},
+    "phi4": {"hf": "microsoft/phi-4", "hf_onnx": "microsoft/phi-4-onnx", "ollama": "phi4"},
     "phi4-mini": {"hf": "microsoft/Phi-4-mini-instruct-onnx", "ollama": "phi4-mini"},
     # ── Gemma 3 family ────────────────────────────────────────────────────
-    "gemma-1b": {"hf": "google/gemma-3-1b-it", "ollama": "gemma3:1b"},
+    "gemma-1b": {"hf": "google/gemma-3-1b-it", "hf_onnx": "onnx-community/gemma-3-1b-it-ONNX", "ollama": "gemma3:1b"},
     "gemma-3b": {"hf": "google/gemma-3-4b-it", "ollama": "gemma3:4b"},
     "gemma-4b": {"hf": "google/gemma-3-4b-it", "ollama": "gemma3:4b"},
     "gemma-12b": {"hf": "google/gemma-3-12b-it", "ollama": "gemma3:12b"},
@@ -45,12 +45,12 @@ _MODEL_ALIASES: Dict[str, Dict[str, str]] = {
     "gemma2-27b": {"hf": "google/gemma-2-27b-it", "ollama": "gemma2:27b"},
     "gemma2": {"hf": "google/gemma-2-9b-it", "ollama": "gemma2:9b"},
     # ── Llama 3.2 family ──────────────────────────────────────────────────
-    "llama-1b": {"hf": "meta-llama/Llama-3.2-1B-Instruct", "ollama": "llama3.2:1b"},
-    "llama-3b": {"hf": "meta-llama/Llama-3.2-3B-Instruct", "ollama": "llama3.2:3b"},
-    "llama-3.2-1b": {"hf": "meta-llama/Llama-3.2-1B-Instruct", "ollama": "llama3.2:1b"},
-    "llama-3.2-3b": {"hf": "meta-llama/Llama-3.2-3B-Instruct", "ollama": "llama3.2:3b"},
-    "llama3.2-1b": {"hf": "meta-llama/Llama-3.2-1B-Instruct", "ollama": "llama3.2:1b"},
-    "llama3.2-3b": {"hf": "meta-llama/Llama-3.2-3B-Instruct", "ollama": "llama3.2:3b"},
+    "llama-1b": {"hf": "meta-llama/Llama-3.2-1B-Instruct", "hf_onnx": "onnx-community/Llama-3.2-1B-Instruct-ONNX", "ollama": "llama3.2:1b"},
+    "llama-3b": {"hf": "meta-llama/Llama-3.2-3B-Instruct", "hf_onnx": "onnx-community/Llama-3.2-3B-Instruct-ONNX", "ollama": "llama3.2:3b"},
+    "llama-3.2-1b": {"hf": "meta-llama/Llama-3.2-1B-Instruct", "hf_onnx": "onnx-community/Llama-3.2-1B-Instruct-ONNX", "ollama": "llama3.2:1b"},
+    "llama-3.2-3b": {"hf": "meta-llama/Llama-3.2-3B-Instruct", "hf_onnx": "onnx-community/Llama-3.2-3B-Instruct-ONNX", "ollama": "llama3.2:3b"},
+    "llama3.2-1b": {"hf": "meta-llama/Llama-3.2-1B-Instruct", "hf_onnx": "onnx-community/Llama-3.2-1B-Instruct-ONNX", "ollama": "llama3.2:1b"},
+    "llama3.2-3b": {"hf": "meta-llama/Llama-3.2-3B-Instruct", "hf_onnx": "onnx-community/Llama-3.2-3B-Instruct-ONNX", "ollama": "llama3.2:3b"},
     # ── Llama 3.1 family ──────────────────────────────────────────────────
     "llama-8b": {"hf": "meta-llama/Meta-Llama-3.1-8B-Instruct", "ollama": "llama3.1:8b"},
     "llama-3.1-8b": {"hf": "meta-llama/Meta-Llama-3.1-8B-Instruct", "ollama": "llama3.1:8b"},
@@ -129,11 +129,11 @@ _MODEL_ALIASES: Dict[str, Dict[str, str]] = {
     "command-r": {"hf": "CohereForAI/c4ai-command-r-v01", "ollama": "command-r"},
     "command-r-plus": {"hf": "CohereForAI/c4ai-command-r-plus", "ollama": "command-r-plus"},
     # ── SmolLM ────────────────────────────────────────────────────────────
-    "smollm-360m": {"hf": "HuggingFaceTB/SmolLM2-360M-Instruct", "ollama": "smollm2:360m"},
+    "smollm-360m": {"hf": "HuggingFaceTB/SmolLM2-360M-Instruct", "hf_onnx": "onnx-community/SmolLM2-360M-Instruct-ONNX", "ollama": "smollm2:360m"},
     "smollm-1.7b": {"hf": "HuggingFaceTB/SmolLM2-1.7B-Instruct", "ollama": "smollm2:1.7b"},
     "smollm2-1.7b": {"hf": "HuggingFaceTB/SmolLM2-1.7B-Instruct", "ollama": "smollm2:1.7b"},
     # ── Other popular models ──────────────────────────────────────────────
-    "tinyllama": {"hf": "TinyLlama/TinyLlama-1.1B-Chat-v1.0", "ollama": "tinyllama"},
+    "tinyllama": {"hf": "TinyLlama/TinyLlama-1.1B-Chat-v1.0", "hf_onnx": "onnx-community/TinyLlama-1.1B-Chat-v1.0-ONNX", "ollama": "tinyllama"},
     "internlm2": {"hf": "internlm/internlm2_5-7b-chat", "ollama": "internlm2:7b"},
     "internlm2-7b": {"hf": "internlm/internlm2_5-7b-chat", "ollama": "internlm2:7b"},
     "stable-code": {"hf": "stabilityai/stable-code-instruct-3b", "ollama": "stable-code:3b"},
@@ -159,11 +159,11 @@ _MODEL_ALIASES: Dict[str, Dict[str, str]] = {
     "wizardcoder": {"hf": "WizardLMTeam/WizardCoder-Python-7B-V1.0", "ollama": "wizardcoder:7b"},
     "stablelm2": {"hf": "stabilityai/stablelm-2-zephyr-1_6b", "ollama": "stablelm2:1.6b"},
     # ── Whisper (HF only) ─────────────────────────────────────────────────
-    "whisper-tiny": {"hf": "openai/whisper-tiny"},
-    "whisper-base": {"hf": "openai/whisper-base"},
-    "whisper-small": {"hf": "openai/whisper-small"},
-    "whisper-medium": {"hf": "openai/whisper-medium"},
-    "whisper-large-v3": {"hf": "openai/whisper-large-v3"},
+    "whisper-tiny": {"hf": "openai/whisper-tiny", "hf_onnx": "onnx-community/whisper-tiny"},
+    "whisper-base": {"hf": "openai/whisper-base", "hf_onnx": "onnx-community/whisper-base"},
+    "whisper-small": {"hf": "openai/whisper-small", "hf_onnx": "onnx-community/whisper-small"},
+    "whisper-medium": {"hf": "openai/whisper-medium", "hf_onnx": "onnx-community/whisper-medium-ONNX"},
+    "whisper-large-v3": {"hf": "openai/whisper-large-v3", "hf_onnx": "onnx-community/whisper-large-v3-ONNX"},
 }
 
 _ollama = OllamaSource()
@@ -284,22 +284,29 @@ def resolve_and_download(name: str) -> str:
     )
 
 
-def resolve_hf_repo(name: str) -> Optional[str]:
+def resolve_hf_repo(name: str, *, prefer_onnx: bool = True) -> Optional[str]:
     """Resolve a model name to a HuggingFace repo ID without downloading.
+
+    When *prefer_onnx* is ``True`` (the default), returns the ``hf_onnx``
+    repo if one is registered for this alias — these repos already contain
+    ``.onnx`` files and skip server-side conversion entirely.
 
     Returns the HF repo string (e.g. ``microsoft/Phi-4-mini-instruct``) or
     ``None`` if the name is not a known alias or explicit HF reference.
     """
-    # Explicit hf: prefix
+    # Explicit hf: prefix — user chose a specific repo, honour it
     explicit = _parse_explicit_source(name)
     if explicit:
         source, ref = explicit
         return ref if source == "hf" else None
 
-    # Alias lookup
+    # Alias lookup — prefer ONNX variant for server-side import
     aliases = _MODEL_ALIASES.get(name)
-    if aliases and "hf" in aliases:
-        return aliases["hf"]
+    if aliases:
+        if prefer_onnx and "hf_onnx" in aliases:
+            return aliases["hf_onnx"]
+        if "hf" in aliases:
+            return aliases["hf"]
 
     # Direct org/model format
     if "/" in name:
