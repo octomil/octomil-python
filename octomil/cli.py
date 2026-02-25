@@ -120,6 +120,16 @@ _KNOWN_QUANT_SUFFIXES = frozenset(
 )
 
 
+def _complete_model_name(ctx, param, incomplete):
+    """Shell completion callback for model name arguments/options."""
+    from click.shell_completion import CompletionItem
+    from .models.catalog import CATALOG, MODEL_ALIASES
+    from .sources.resolver import _MODEL_ALIASES as _RESOLVER_ALIASES
+
+    names = sorted(set(CATALOG) | set(MODEL_ALIASES) | set(_RESOLVER_ALIASES))
+    return [CompletionItem(n) for n in names if n.startswith(incomplete)]
+
+
 def _has_explicit_quant(model_tag: str) -> bool:
     """Check if the model tag already specifies a quantization variant."""
     if ":" not in model_tag:
@@ -204,7 +214,7 @@ def main(ctx: click.Context) -> None:
 
 
 @main.command()
-@click.argument("model")
+@click.argument("model", shell_complete=_complete_model_name)
 @click.option("--port", "-p", default=8080, help="Port to listen on.")
 @click.option("--host", default="0.0.0.0", help="Host to bind to.")
 @click.option("--benchmark", is_flag=True, help="Run latency benchmark on startup.")
@@ -1146,12 +1156,13 @@ def login(api_key: Optional[str]) -> None:
 
 
 @main.command()
-@click.argument("path", required=False, default=None)
+@click.argument("path", required=False, default=None, shell_complete=_complete_model_name)
 @click.option(
     "--model-id",
     "-m",
     default=None,
     help="Model ID in the registry. Inferred from path or model name if omitted.",
+    shell_complete=_complete_model_name,
 )
 @click.option("--version", "-v", required=True, help="Semantic version (e.g. 1.0.0).")
 @click.option("--description", "-d", default=None, help="Version description.")
@@ -1263,7 +1274,7 @@ def push(
 
 
 @main.command()
-@click.argument("name")
+@click.argument("name", shell_complete=_complete_model_name)
 @click.option(
     "--version", "-v", default=None, help="Version to download. Defaults to latest."
 )
@@ -1306,7 +1317,7 @@ def pull(name: str, version: Optional[str], fmt: Optional[str], output: str) -> 
 
 
 @main.command()
-@click.argument("name")
+@click.argument("name", shell_complete=_complete_model_name)
 @click.option(
     "--version", "-v", default=None, help="Version to deploy. Defaults to latest."
 )
@@ -1777,7 +1788,7 @@ def pair(
 
 
 @main.command()
-@click.argument("name")
+@click.argument("name", shell_complete=_complete_model_name)
 def status(name: str) -> None:
     """Show model status, active rollouts, and inference metrics.
 
@@ -1905,7 +1916,7 @@ def _percentile(data: list[float], pct: float) -> float:
 
 
 @main.command()
-@click.argument("model")
+@click.argument("model", shell_complete=_complete_model_name)
 @click.option(
     "--local",
     is_flag=True,
@@ -3265,7 +3276,7 @@ def federation_share(model_name: str, federation_name: str) -> None:
 
 
 @main.command()
-@click.argument("model", required=False, default=None)
+@click.argument("model", required=False, default=None, shell_complete=_complete_model_name)
 @click.option("--port", "-p", default=8080, help="Port for local server.")
 @click.option("--system", "-s", default=None, help="System prompt.")
 @click.option(
