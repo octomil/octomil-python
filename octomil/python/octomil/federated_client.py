@@ -17,6 +17,9 @@ from typing import (
     Union,
 )
 
+from octomil.device_info import get_battery_level, is_charging
+from octomil.resilience import check_network_quality, check_training_eligibility
+
 from .api_client import OctomilClientError, _ApiClient
 from .control_plane import ExperimentsAPI, RolloutsAPI
 from .data_loader import DataLoadError, DataSource, load_data, validate_target
@@ -448,6 +451,49 @@ class FederatedClient:
             "weights_data": base64.b64encode(weights_data).decode("ascii"),
         }
         return self.api.post(_TRAINING_WEIGHTS_ENDPOINT, payload)
+
+    def train_if_eligible(
+        self,
+        round_id: str,
+        local_train_fn: LocalTrainFn,
+        min_battery: int = 15,
+        gradient_cache: Optional[Any] = None,
+        format: str = "pytorch",
+    ) -> Dict[str, Any]:
+        """Check eligibility, train if OK, cache gradient on upload failure.
+
+        Returns a dict with ``skipped`` (bool), ``reason`` (str or None),
+        and ``result`` (server response when training succeeded).
+        """
+        battery_level = get_battery_level()
+        charging = is_charging()
+
+        eligibility = check_training_eligibility(
+            battery_level=battery_level,
+            min_battery=min_battery,
+            charging=charging,
+        )
+        if not eligibility.eligible:
+            return {"skipped": True, "reason": eligibility.reason}
+
+        try:
+            result = self.participate_in_round(
+                round_id=round_id,
+                local_train_fn=local_train_fn,
+                format=format,
+            )
+            return {"skipped": False, "reason": None, "result": result}
+        except Exception as exc:
+            logger.warning("Training upload failed for round %s: %s", round_id, exc)
+            if gradient_cache is not None:
+                weights_bytes = self._serialize_weights({"error_round": round_id})
+                gradient_cache.store(
+                    round_id=round_id,
+                    device_id=self.device_id or self.device_identifier,
+                    weights_data=weights_bytes,
+                    sample_count=0,
+                )
+            return {"skipped": True, "reason": "upload_failed"}
 
     def _secagg_mask_and_share(self, round_id: str, weights_data: bytes) -> bytes:
         """Run the client side of the SecAgg protocol and return masked weights."""
