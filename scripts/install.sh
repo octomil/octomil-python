@@ -205,6 +205,44 @@ verify() {
 }
 
 # ---------------------------------------------------------------------------
+# Shell completions
+# ---------------------------------------------------------------------------
+
+COMPLETIONS_MARKER="# octomil shell completions"
+
+setup_completions() {
+    CURRENT_SHELL="$(basename "${SHELL:-/bin/sh}")"
+
+    case "$CURRENT_SHELL" in
+        zsh)
+            COMP_LINE='eval "$(_OCTOMIL_COMPLETE=zsh_source octomil)"'
+            RC_FILE="${HOME}/.zshrc"
+            ;;
+        fish)
+            COMP_LINE='_OCTOMIL_COMPLETE=fish_source octomil | source'
+            RC_FILE="${HOME}/.config/fish/conf.d/octomil.fish"
+            ;;
+        bash|*)
+            COMP_LINE='eval "$(_OCTOMIL_COMPLETE=bash_source octomil)"'
+            RC_FILE="${HOME}/.bashrc"
+            ;;
+    esac
+
+    # Skip if already installed
+    if [ -f "$RC_FILE" ] && grep -qF "$COMPLETIONS_MARKER" "$RC_FILE" 2>/dev/null; then
+        return
+    fi
+
+    # For fish, ensure conf.d directory exists
+    if [ "$CURRENT_SHELL" = "fish" ]; then
+        mkdir -p "$(dirname "$RC_FILE")"
+    fi
+
+    printf '\n%s\n%s\n' "$COMPLETIONS_MARKER" "$COMP_LINE" >> "$RC_FILE"
+    info "Shell completions added to ${RC_FILE}"
+}
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
@@ -214,6 +252,7 @@ main() {
     get_install_dir
     download_and_install
     verify
+    setup_completions
 
     echo ""
     info "Octomil ${VERSION} installed successfully."
