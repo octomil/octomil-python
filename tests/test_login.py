@@ -72,7 +72,7 @@ class TestCredentialSaving:
         cred_file = tmp_path / ".octomil" / "credentials"
         data = json.loads(cred_file.read_text())
         assert data["api_key"] == "edg_test123"
-        assert data["org"] == "Acme Corp"
+        assert data["org_name"] == "Acme Corp"
 
     def test_creates_directory_if_missing(self, tmp_path, monkeypatch):
         target_dir = tmp_path / "nonexistent" / ".octomil"
@@ -102,7 +102,7 @@ class TestCredentialSaving:
         cred_file = tmp_path / ".octomil" / "credentials"
         data = json.loads(cred_file.read_text())
         assert data["api_key"] == "edg_second"
-        assert data["org"] == "OrgB"
+        assert data["org_name"] == "OrgB"
 
     def test_file_permissions_restrictive(self, tmp_path, monkeypatch):
         import os
@@ -347,15 +347,15 @@ class TestCallbackServer:
             result = runner.invoke(main, ["login"])
 
         assert result.exit_code == 0
-        assert "Authenticated as org: BrowserOrg" in result.output
-        assert "API key saved" in result.output
+        assert "Authenticated (BrowserOrg)" in result.output
+        assert "Credentials saved" in result.output
 
         # Verify credentials were saved as JSON with org
         cred_file = cred_dir / "credentials"
         assert cred_file.exists()
         data = json.loads(cred_file.read_text())
         assert data["api_key"] == "edg_browser_key"
-        assert data["org"] == "BrowserOrg"
+        assert data["org_name"] == "BrowserOrg"
 
     def test_browser_open_is_called_with_correct_url(self, tmp_path, monkeypatch):
         """Verify the URL opened in the browser has correct structure."""
@@ -466,7 +466,7 @@ class TestCallbackServer:
             runner = CliRunner()
             runner.invoke(main, ["login"])
 
-        assert "Success" in response_body.get("html", "")
+        assert "CLI Authenticated" in response_body.get("html", "")
 
     def test_login_help_shows_api_key_flag(self):
         """Verify --api-key is documented in login help."""

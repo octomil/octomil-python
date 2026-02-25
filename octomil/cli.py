@@ -6,7 +6,7 @@ Usage::
     octomil serve gemma-1b --port 8080
     octomil deploy gemma-1b --phone
     octomil dashboard
-    octomil push model.pt --name sentiment-v1 --version 1.0.0
+    octomil push phi-4-mini --version 1.0.0
     octomil pull sentiment-v1 --version 1.0.0 --format coreml
     octomil check model.pt
     octomil convert model.pt --target ios,android
@@ -169,19 +169,23 @@ def _auto_optimize(model_tag: str, context_length: int = 4096) -> str | None:
 
 
 _WELCOME = """\
-Octomil — from your laptop to your phone
+Octomil — run ML on any device
 
-  Quick start:
-    octomil chat <model>              Chat with a model locally
-    octomil serve <model>             Start OpenAI-compatible server
-    octomil deploy <model> --phone    Deploy to your phone
-    octomil launch <agent>            Launch a coding agent
+  Get started:
+    1. octomil login                         authenticate
+    2. octomil serve phi-4-mini              local inference server
+    3. octomil push phi-4-mini --version 1.0.0
+                                             download, convert, push
+    4. octomil deploy phi-4-mini --phone     send to device
 
-  Already using ollama?
-    octomil deploy ollama://<model> --phone
+  Useful commands:
+    octomil benchmark <model>                measure tokens/s
+    octomil models                           list available models
+    octomil dashboard                        open web dashboard
+    octomil launch <agent>                   launch coding agent
 
-  More: octomil --help               All commands
-        octomil interactive           Browse commands (TUI)
+  Run octomil <command> --help for details.
+  Docs: https://docs.octomil.com
 """
 
 
@@ -973,7 +977,11 @@ def convert(model_path: str, target: str, output: str, input_shape: str) -> None
 # ---------------------------------------------------------------------------
 
 
-def _save_credentials(api_key: str, org: Optional[str] = None) -> None:
+def _save_credentials(
+    api_key: str,
+    org: Optional[str] = None,
+    org_id: Optional[str] = None,
+) -> None:
     """Save credentials to ~/.octomil/credentials as JSON with restrictive permissions."""
     import json
 
@@ -982,7 +990,9 @@ def _save_credentials(api_key: str, org: Optional[str] = None) -> None:
     config_path = os.path.join(config_dir, "credentials")
     data: dict[str, str] = {"api_key": api_key}
     if org:
-        data["org"] = org
+        data["org_name"] = org
+    if org_id:
+        data["org_id"] = org_id
     with open(config_path, "w") as f:
         json.dump(data, f, indent=2)
         f.write("\n")
@@ -1020,13 +1030,14 @@ def _browser_login() -> None:
 
     received_key: str | None = None
     received_org: str | None = None
+    received_org_id: str | None = None
     got_callback = threading.Event()
 
     class _CallbackHandler(http.server.BaseHTTPRequestHandler):
         """Handle the single GET callback from the dashboard."""
 
         def do_GET(self) -> None:  # noqa: N802
-            nonlocal received_key, received_org
+            nonlocal received_key, received_org, received_org_id
             params = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
 
             cb_state = params.get("state", [None])[0]
@@ -1038,12 +1049,35 @@ def _browser_login() -> None:
 
             received_key = params.get("key", [None])[0]
             received_org = params.get("org", [None])[0]
+            received_org_id = params.get("org_id", [None])[0]
 
             self.send_response(200)
             self.send_header("Content-Type", "text/html")
             self.end_headers()
             self.wfile.write(
-                b"<html><body><h2>Success! You can close this tab.</h2></body></html>"
+                b'<!DOCTYPE html><html lang="en"><head><meta charset="utf-8">'
+                b"<title>Octomil CLI</title><style>"
+                b"*{margin:0;padding:0;box-sizing:border-box}"
+                b"body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',system-ui,sans-serif;"
+                b"display:flex;justify-content:center;align-items:center;min-height:100vh;"
+                b"background:#070d12;color:#e2e8f0}"
+                b".card{text-align:center;padding:3rem 2.5rem;max-width:420px}"
+                b".ok{width:56px;height:56px;border-radius:50%;background:rgba(34,197,94,.12);"
+                b"border:1.5px solid rgba(34,197,94,.3);display:flex;align-items:center;"
+                b"justify-content:center;margin:0 auto 1.5rem}"
+                b".ok svg{width:28px;height:28px;stroke:#22c55e;fill:none;stroke-width:2.5;"
+                b"stroke-linecap:round;stroke-linejoin:round}"
+                b"h2{font-size:1.25rem;font-weight:600;margin-bottom:.5rem;letter-spacing:-.01em}"
+                b"p{color:#64748b;font-size:.9rem;line-height:1.5}"
+                b".hint{margin-top:2rem;padding:.875rem 1rem;background:#0f1822;"
+                b"border:1px solid rgba(255,255,255,.06);border-radius:8px;"
+                b"font-family:'SF Mono','Fira Code',monospace;font-size:.8rem;color:#7dd3fc}"
+                b"</style></head><body><div class=card>"
+                b'<div class=ok><svg viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg></div>'
+                b"<h2>CLI Authenticated</h2>"
+                b"<p>You can close this tab and return to your terminal.</p>"
+                b"<div class=hint>$ octomil push phi-4-mini --version 1.0.0</div>"
+                b"</div></body></html>"
             )
             got_callback.set()
 
@@ -1062,12 +1096,22 @@ def _browser_login() -> None:
     server.shutdown()
 
     if received_key:
-        _save_credentials(received_key, org=received_org)
-        org_display = received_org or "unknown"
-        click.echo(
-            click.style(f"\u2713 Authenticated as org: {org_display}", fg="green")
-        )
-        click.echo("API key saved to ~/.octomil/credentials")
+        _save_credentials(received_key, org=received_org, org_id=received_org_id)
+        org_display = received_org or ""
+        if org_display:
+            click.echo(
+                click.style(f"  Authenticated ({org_display})", fg="green")
+            )
+        else:
+            click.echo(click.style("  Authenticated", fg="green"))
+        click.echo("  Credentials saved to ~/.octomil/credentials")
+        if not received_org_id:
+            click.echo(
+                click.style(
+                    "\n  No organization linked. Run `octomil init <org>` to create one.",
+                    fg="yellow",
+                )
+            )
     else:
         click.echo("Timed out. You can paste your API key manually:")
         manual_key: str = click.prompt("API key", hide_input=True)
@@ -1102,8 +1146,13 @@ def login(api_key: Optional[str]) -> None:
 
 
 @main.command()
-@click.argument("file_path", type=click.Path(exists=True))
-@click.option("--name", "-n", required=True, help="Model name.")
+@click.argument("path", required=False, default=None)
+@click.option(
+    "--model-id",
+    "-m",
+    default=None,
+    help="Model ID in the registry. Inferred from path or model name if omitted.",
+)
 @click.option("--version", "-v", required=True, help="Semantic version (e.g. 1.0.0).")
 @click.option("--description", "-d", default=None, help="Version description.")
 @click.option(
@@ -1113,35 +1162,99 @@ def login(api_key: Optional[str]) -> None:
     help="Comma-separated target formats for server-side conversion.",
 )
 def push(
-    file_path: str,
-    name: str,
+    path: Optional[str],
+    model_id: Optional[str],
     version: str,
     description: Optional[str],
     formats: Optional[str],
 ) -> None:
-    """Upload a model and trigger server-side conversion.
+    """Upload model artifacts to Octomil. Downloads automatically if needed.
 
-    Uploads FILE_PATH, registers it as NAME at VERSION, and optionally
-    triggers conversion to mobile formats on the server.
+    PATH can be a local file/directory, or a model name to auto-download:
 
-    Example:
-
-        octomil push model.pt --name sentiment-v1 --version 1.0.0 --formats coreml,tflite
+    \b
+        octomil push ./converted --model-id phi-4-mini --version 1.0.0
+        octomil push phi-4-mini --version 1.0.0
+        octomil push hf:microsoft/Phi-4-mini --version 1.0.0
+        octomil push ollama:phi4-mini --version 1.0.0
     """
+    resolved_path = path
+    resolved_name = model_id
+
+    if not path and not model_id:
+        click.echo(
+            "Error: provide a path or model name.\n\n"
+            "  octomil push phi-4-mini --version 1.0.0\n"
+            "  octomil push ./converted --model-id my-model --version 1.0.0",
+            err=True,
+        )
+        sys.exit(1)
+
+    # If no local path or path doesn't exist, try to resolve as model name
+    if path and os.path.exists(path):
+        # Local file/directory — use directly
+        resolved_path = path
+        if not resolved_name:
+            resolved_name = os.path.splitext(os.path.basename(path))[0]
+    else:
+        # Treat as model name — resolve from Ollama / HuggingFace / Kaggle
+        model_name = path or model_id
+        assert model_name is not None
+        if not resolved_name:
+            # Derive registry ID from the model name
+            resolved_name = model_name.split("/")[-1].split(":")[-1]
+
+        click.echo(f"  Resolving {model_name}...")
+
+        from .sources.resolver import resolve_and_download
+
+        try:
+            resolved_path = resolve_and_download(model_name)
+        except Exception as exc:
+            click.echo(f"Error: could not resolve model: {exc}", err=True)
+            sys.exit(1)
+
+        click.echo(f"  Model ready at {resolved_path}")
+
+    assert resolved_path is not None
+    assert resolved_name is not None
+
     client = _get_client()
-    click.echo(f"Pushing {file_path} as {name} v{version}...")
+    click.echo(f"  Pushing {resolved_name} v{version}...")
 
     result = client.push(
-        file_path,
-        name=name,
+        resolved_path,
+        name=resolved_name,
         version=version,
         description=description,
         formats=formats,
     )
 
-    click.echo(f"Uploaded: {name} v{version}")
+    click.echo(click.style(f"  Done — {resolved_name} v{version}", fg="green"))
     for fmt, info in result.get("formats", {}).items():
-        click.echo(f"  {fmt}: {info}")
+        click.echo(f"    {fmt}: {info}")
+
+    # Print SDK snippet
+    import json
+
+    cred_path = os.path.expanduser("~/.octomil/credentials")
+    org_id = None
+    if os.path.exists(cred_path):
+        try:
+            with open(cred_path) as f:
+                creds = json.load(f)
+            org_id = creds.get("org_id")
+        except Exception:
+            pass
+
+    if org_id:
+        api_key = _get_api_key()
+        masked = f"{api_key[:7]}...{api_key[-4:]}" if len(api_key) > 14 else "edg_..."
+        click.echo(
+            f"\n  Add to your app:\n"
+            f'\n  iOS:     let client = OctomilClient(apiKey: "{masked}", orgId: "{org_id}")'
+            f'\n  Android: val client = OctomilClient(apiKey = "{masked}", orgId = "{org_id}", context = this)\n'
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -2565,7 +2678,7 @@ def init(
     click.echo("  2. Create an API key:    octomil keys create deploy-key")
     click.echo("  3. Set security policy:  octomil team set-policy --require-mfa")
     click.echo(
-        "  4. Push a model:         octomil push model.pt --name my-model --version 1.0.0"
+        "  4. Push a model:         octomil push my-model --version 1.0.0"
     )
 
 

@@ -81,12 +81,11 @@ class TestMainGroup:
         runner = CliRunner()
         result = runner.invoke(main, [])
         assert result.exit_code == 0
-        assert "Quick start" in result.output
-        assert "octomil chat" in result.output
+        assert "Get started" in result.output
         assert "octomil serve" in result.output
+        assert "octomil push" in result.output
         assert "octomil deploy" in result.output
         assert "octomil launch" in result.output
-        assert "ollama://" in result.output
         assert "--help" in result.output
 
     def test_help_shows_full_commands(self):
@@ -295,10 +294,10 @@ class TestPushCommand:
         runner = CliRunner()
         result = runner.invoke(
             main,
-            ["push", str(model_file), "--name", "test-model", "--version", "1.0.0"],
+            ["push", str(model_file), "--model-id", "test-model", "--version", "1.0.0"],
         )
         assert result.exit_code == 0
-        assert "Uploaded: test-model v1.0.0" in result.output
+        assert "test-model v1.0.0" in result.output
         mock_client.push.assert_called_once()
 
 
