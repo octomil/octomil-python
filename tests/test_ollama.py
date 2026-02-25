@@ -324,8 +324,12 @@ class TestModelsCommand:
         assert result.exit_code == 0
         assert "no models found" in result.output
 
-    def test_models_registry_no_key(self, monkeypatch):
+    def test_models_registry_no_key(self, monkeypatch, tmp_path):
         monkeypatch.delenv("OCTOMIL_API_KEY", raising=False)
+        monkeypatch.setattr(
+            "octomil.cli_helpers.os.path.expanduser",
+            lambda p: str(tmp_path / p.lstrip("~/")),
+        )
         runner = CliRunner()
         result = runner.invoke(main, ["models", "--source", "registry"])
         assert result.exit_code == 0

@@ -95,8 +95,12 @@ class TestFederationCreate:
             {"name": "bare-fed", "org_id": "org_test_123"},
         )
 
-    def test_create_requires_api_key(self, monkeypatch):
+    def test_create_requires_api_key(self, monkeypatch, tmp_path):
         monkeypatch.delenv("OCTOMIL_API_KEY", raising=False)
+        monkeypatch.setattr(
+            "octomil.cli_helpers.os.path.expanduser",
+            lambda p: str(tmp_path / p.lstrip("~/")),
+        )
         runner = CliRunner()
         result = runner.invoke(main, ["federation", "create", "test"])
         assert result.exit_code != 0

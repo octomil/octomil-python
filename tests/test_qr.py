@@ -181,8 +181,16 @@ class TestDeployPhoneQr:
             "expires_at": "2026-02-18T12:00:00Z",
         }
 
-        # Simulate connected -> done sequence
+        # Mock responses for httpx.get calls:
+        # 1. Model registry check (GET /models/{name})
+        # 2. Poll: connected
+        # 3. Poll: done
+        mock_model_check = MagicMock(
+            status_code=200,
+            json=MagicMock(return_value={"id": "gemma-1b", "name": "gemma-1b"}),
+        )
         poll_responses = [
+            mock_model_check,
             MagicMock(
                 status_code=200,
                 json=MagicMock(
