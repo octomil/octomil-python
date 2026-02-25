@@ -291,6 +291,16 @@ class ModelRegistry:
         hidden_dim: Optional[int] = None,
         output_dim: Optional[int] = None,
     ) -> dict[str, Any]:
+        import os
+
+        if os.path.isdir(file_path):
+            raise OctomilClientError(
+                f"Expected a file but got a directory: {file_path}\n"
+                "Pass a specific model file, not a directory."
+            )
+        if not os.path.isfile(file_path):
+            raise OctomilClientError(f"File not found: {file_path}")
+
         data: dict[str, Any] = {"version": version}
         if description:
             data["description"] = description
