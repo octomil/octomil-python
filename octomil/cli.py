@@ -38,7 +38,7 @@ from octomil.cli_helpers import WELCOME_MESSAGE
 
 
 @click.group(invoke_without_command=True)
-@click.version_option(version="2.1.7", prog_name="octomil")
+@click.version_option(version="2.1.8", prog_name="octomil")
 @click.pass_context
 def main(ctx: click.Context) -> None:
     """Octomil — serve, deploy, and observe ML models on edge devices."""
