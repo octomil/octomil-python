@@ -677,7 +677,7 @@ class TestRollback:
 
 
 class TestCLIDeploy:
-    @patch("octomil.cli._get_client")
+    @patch("octomil.commands.deploy._get_client")
     def test_cli_deploy_with_devices(self, mock_get_client):
         from click.testing import CliRunner
 
@@ -710,7 +710,7 @@ class TestCLIDeploy:
             group=None,
         )
 
-    @patch("octomil.cli._get_client")
+    @patch("octomil.commands.deploy._get_client")
     def test_cli_deploy_with_group(self, mock_get_client):
         from click.testing import CliRunner
 
@@ -739,7 +739,7 @@ class TestCLIDeploy:
             group="production",
         )
 
-    @patch("octomil.cli._get_client")
+    @patch("octomil.commands.deploy._get_client")
     def test_cli_deploy_dry_run(self, mock_get_client):
         from click.testing import CliRunner
 
@@ -786,7 +786,7 @@ class TestCLIDeploy:
         assert "(conversion needed)" in result.output
         mock_client.deploy.assert_not_called()
 
-    @patch("octomil.cli._get_client")
+    @patch("octomil.commands.deploy._get_client")
     def test_cli_deploy_fallback_no_targeting(self, mock_get_client):
         from click.testing import CliRunner
 
@@ -810,7 +810,7 @@ class TestCLIDeploy:
             strategy="canary",
         )
 
-    @patch("octomil.cli._get_client")
+    @patch("octomil.commands.deploy._get_client")
     def test_cli_deploy_blue_green_strategy(self, mock_get_client):
         from click.testing import CliRunner
 
@@ -847,7 +847,7 @@ class TestCLIDeploy:
 
 
 class TestCLIRollback:
-    @patch("octomil.cli._get_client")
+    @patch("octomil.commands.deploy._get_client")
     def test_cli_rollback_default(self, mock_get_client):
         from click.testing import CliRunner
 
@@ -870,7 +870,7 @@ class TestCLIRollback:
         assert "rollout-rb" in result.output
         mock_client.rollback.assert_called_once_with("gemma-1b", to_version=None)
 
-    @patch("octomil.cli._get_client")
+    @patch("octomil.commands.deploy._get_client")
     def test_cli_rollback_to_specific_version(self, mock_get_client):
         from click.testing import CliRunner
 
@@ -892,7 +892,7 @@ class TestCLIRollback:
         assert "3.0.0 -> 1.0.0" in result.output
         mock_client.rollback.assert_called_once_with("gemma-1b", to_version="1.0.0")
 
-    @patch("octomil.cli._get_client")
+    @patch("octomil.commands.deploy._get_client")
     def test_cli_rollback_error(self, mock_get_client):
         from click.testing import CliRunner
 

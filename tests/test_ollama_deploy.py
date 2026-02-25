@@ -193,7 +193,7 @@ class TestOllamaUriPrefixStripping:
 
 
 class TestDeployOllamaUri:
-    @patch("octomil.cli.webbrowser.open")
+    @patch("octomil.commands.deploy.webbrowser.open")
     @patch("octomil.ollama.get_ollama_model")
     @patch("octomil.sources.ollama.OllamaSource.resolve")
     def test_deploy_ollama_uri_resolves_and_deploys(
@@ -260,7 +260,7 @@ class TestDeployOllamaUri:
         assert result.exit_code != 0
         assert "requires a model name" in result.output
 
-    @patch("octomil.cli.webbrowser.open")
+    @patch("octomil.commands.deploy.webbrowser.open")
     @patch("octomil.ollama.get_ollama_model")
     @patch("octomil.sources.ollama.OllamaSource.resolve")
     def test_deploy_ollama_uri_without_phone_flag(

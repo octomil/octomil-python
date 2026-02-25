@@ -6,7 +6,8 @@ from unittest.mock import MagicMock, patch
 
 from click.testing import CliRunner
 
-from octomil.cli import _get_api_key, main
+from octomil.cli import main
+from octomil.cli_helpers import _get_api_key
 
 
 # ---------------------------------------------------------------------------
@@ -36,7 +37,7 @@ class TestGetApiKey:
         cred_file.write_text(json.dumps({"api_key": "file-key-456", "org": "acme"}))
 
         monkeypatch.setattr(
-            "octomil.cli.os.path.expanduser", lambda x: str(cred_dir / "credentials")
+            "octomil.cli_helpers.os.path.expanduser", lambda x: str(cred_dir / "credentials")
         )
         assert _get_api_key() == "file-key-456"
 
@@ -49,7 +50,7 @@ class TestGetApiKey:
         cred_file.write_text("api_key=legacy-key-789\n")
 
         monkeypatch.setattr(
-            "octomil.cli.os.path.expanduser", lambda x: str(cred_dir / "credentials")
+            "octomil.cli_helpers.os.path.expanduser", lambda x: str(cred_dir / "credentials")
         )
         assert _get_api_key() == "legacy-key-789"
 
@@ -142,7 +143,7 @@ class TestLoginCommand:
 
         cred_dir = tmp_path / ".octomil"
         monkeypatch.setattr(
-            "octomil.cli.os.path.expanduser",
+            "octomil.cli_helpers.os.path.expanduser",
             lambda x: str(cred_dir) if "~/.octomil" in x else x,
         )
 
@@ -164,7 +165,7 @@ class TestLoginCommand:
 
 
 class TestDashboardCommand:
-    @patch("octomil.cli.webbrowser.open")
+    @patch("octomil.commands.deploy.webbrowser.open")
     def test_dashboard_opens_browser(self, mock_open):
         runner = CliRunner()
         result = runner.invoke(main, ["dashboard"])
@@ -172,7 +173,7 @@ class TestDashboardCommand:
         assert "Opening dashboard" in result.output
         mock_open.assert_called_once_with("https://app.octomil.com")
 
-    @patch("octomil.cli.webbrowser.open")
+    @patch("octomil.commands.deploy.webbrowser.open")
     def test_dashboard_custom_url(self, mock_open, monkeypatch):
         monkeypatch.setenv("OCTOMIL_DASHBOARD_URL", "https://custom.dashboard.io")
         runner = CliRunner()
@@ -187,7 +188,7 @@ class TestDashboardCommand:
 
 
 class TestDeployCommand:
-    @patch("octomil.cli.webbrowser.open")
+    @patch("octomil.commands.deploy.webbrowser.open")
     def test_deploy_phone(self, mock_open, monkeypatch):
         monkeypatch.setenv("OCTOMIL_API_KEY", "test-key")
 
@@ -219,7 +220,7 @@ class TestDeployCommand:
         assert "token=ABC123" in call_url
         assert "host=" in call_url
 
-    @patch("octomil.cli._get_client")
+    @patch("octomil.commands.deploy._get_client")
     def test_deploy_rollout(self, mock_get_client, monkeypatch):
         monkeypatch.setenv("OCTOMIL_API_KEY", "test-key")
         mock_client = MagicMock()
@@ -240,7 +241,7 @@ class TestDeployCommand:
 
 
 class TestStatusCommand:
-    @patch("octomil.cli._get_client")
+    @patch("octomil.commands.deploy._get_client")
     def test_status(self, mock_get_client, monkeypatch):
         monkeypatch.setenv("OCTOMIL_API_KEY", "test-key")
         mock_client = MagicMock()
@@ -259,7 +260,7 @@ class TestStatusCommand:
         assert "Active rollouts: 1" in result.output
         assert "v1.0.0" in result.output
 
-    @patch("octomil.cli._get_client")
+    @patch("octomil.commands.deploy._get_client")
     def test_status_no_rollouts(self, mock_get_client, monkeypatch):
         monkeypatch.setenv("OCTOMIL_API_KEY", "test-key")
         mock_client = MagicMock()
@@ -281,7 +282,7 @@ class TestStatusCommand:
 
 
 class TestPushCommand:
-    @patch("octomil.cli._get_client")
+    @patch("octomil.commands.model_ops._get_client")
     def test_push(self, mock_get_client, tmp_path, monkeypatch):
         monkeypatch.setenv("OCTOMIL_API_KEY", "test-key")
         mock_client = MagicMock()
@@ -307,7 +308,7 @@ class TestPushCommand:
 
 
 class TestPullCommand:
-    @patch("octomil.cli._get_client")
+    @patch("octomil.commands.model_ops._get_client")
     def test_pull(self, mock_get_client, monkeypatch):
         monkeypatch.setenv("OCTOMIL_API_KEY", "test-key")
         mock_client = MagicMock()
@@ -328,7 +329,7 @@ class TestPullCommand:
 
 
 class TestTrainStartCommand:
-    @patch("octomil.cli._get_client")
+    @patch("octomil.commands.enterprise._get_client")
     def test_train_start_basic(self, mock_get_client, monkeypatch):
         from octomil.models import TrainingSession
 
@@ -351,7 +352,7 @@ class TestTrainStartCommand:
         assert "tr-123" in result.output
         mock_client.train.assert_called_once()
 
-    @patch("octomil.cli._get_client")
+    @patch("octomil.commands.enterprise._get_client")
     def test_train_start_with_options(self, mock_get_client, monkeypatch):
         from octomil.models import TrainingSession
 
@@ -404,7 +405,7 @@ class TestTrainStartCommand:
         result = runner.invoke(main, ["train", "start", "model"])
         assert result.exit_code != 0
 
-    @patch("octomil.cli._get_client")
+    @patch("octomil.commands.enterprise._get_client")
     def test_train_start_with_group(self, mock_get_client, monkeypatch):
         from octomil.models import TrainingSession
 
@@ -451,7 +452,7 @@ class TestTrainStartCommand:
 
 
 class TestTrainStatusCommand:
-    @patch("octomil.cli._get_client")
+    @patch("octomil.commands.enterprise._get_client")
     def test_train_status(self, mock_get_client, monkeypatch):
         monkeypatch.setenv("OCTOMIL_API_KEY", "test-key")
         mock_client = MagicMock()
@@ -474,7 +475,7 @@ class TestTrainStatusCommand:
         assert "0.3420" in result.output
         assert "91.2%" in result.output
 
-    @patch("octomil.cli._get_client")
+    @patch("octomil.commands.enterprise._get_client")
     def test_train_status_no_metrics(self, mock_get_client, monkeypatch):
         monkeypatch.setenv("OCTOMIL_API_KEY", "test-key")
         mock_client = MagicMock()
@@ -500,7 +501,7 @@ class TestTrainStatusCommand:
 
 
 class TestTrainStopCommand:
-    @patch("octomil.cli._get_client")
+    @patch("octomil.commands.enterprise._get_client")
     def test_train_stop(self, mock_get_client, monkeypatch):
         monkeypatch.setenv("OCTOMIL_API_KEY", "test-key")
         mock_client = MagicMock()
@@ -555,7 +556,7 @@ class TestBenchmarkCommand:
         mock_backend, mock_process, mock_vm = _make_benchmark_mocks()
 
         with (
-            patch("octomil.cli._get_api_key", return_value=api_key or ""),
+            patch("octomil.commands.benchmark._get_api_key", return_value=api_key or ""),
             patch("octomil.serve._detect_backend", return_value=mock_backend),
             patch("psutil.Process", return_value=mock_process),
             patch("psutil.virtual_memory", return_value=mock_vm),
@@ -572,7 +573,7 @@ class TestBenchmarkCommand:
         mock_backend, mock_process, mock_vm = _make_benchmark_mocks()
 
         with (
-            patch("octomil.cli._get_api_key", return_value="test-key"),
+            patch("octomil.commands.benchmark._get_api_key", return_value="test-key"),
             patch("octomil.serve._detect_backend", return_value=mock_backend),
             patch("psutil.Process", return_value=mock_process),
             patch("psutil.virtual_memory", return_value=mock_vm),
