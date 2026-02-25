@@ -2678,7 +2678,7 @@ def init(
     click.echo("  2. Create an API key:    octomil keys create deploy-key")
     click.echo("  3. Set security policy:  octomil team set-policy --require-mfa")
     click.echo(
-        "  4. Push a model:         octomil push model.pt --name my-model --version 1.0.0"
+        "  4. Push a model:         octomil push my-model --version 1.0.0"
     )
 
 
