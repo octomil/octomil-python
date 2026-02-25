@@ -89,7 +89,7 @@ class Client:
         description: Optional[str] = None,
         formats: Optional[str] = None,
         framework: str = "pytorch",
-        use_case: str = "general",
+        use_case: str = "other",
     ) -> dict[str, Any]:
         """Upload a model file and register a new version.
 
