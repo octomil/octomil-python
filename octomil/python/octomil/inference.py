@@ -309,7 +309,7 @@ class StreamingInferenceClient:
             ):
                 yield token.encode("utf-8")
             return
-        except ImportError:
+        except Exception:
             pass
 
         # Placeholder when mlx-lm is not available

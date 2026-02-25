@@ -133,7 +133,7 @@ class TestPrintQrCode:
 
 
 class TestDeployPhoneQr:
-    @patch("octomil.cli.webbrowser.open")
+    @patch("octomil.commands.deploy.webbrowser.open")
     def test_deploy_phone_shows_qr_box(self, mock_open, monkeypatch):
         monkeypatch.setenv("OCTOMIL_API_KEY", "test-key")
 
@@ -170,7 +170,7 @@ class TestDeployPhoneQr:
         assert "Or open manually:" in result.output
         assert "Expires in 5 minutes" in result.output
 
-    @patch("octomil.cli.webbrowser.open")
+    @patch("octomil.commands.deploy.webbrowser.open")
     def test_deploy_phone_shows_completion(self, mock_open, monkeypatch):
         monkeypatch.setenv("OCTOMIL_API_KEY", "test-key")
 
@@ -181,8 +181,16 @@ class TestDeployPhoneQr:
             "expires_at": "2026-02-18T12:00:00Z",
         }
 
-        # Simulate connected -> done sequence
+        # Mock responses for httpx.get calls:
+        # 1. Model registry check (GET /models/{name})
+        # 2. Poll: connected
+        # 3. Poll: done
+        mock_model_check = MagicMock(
+            status_code=200,
+            json=MagicMock(return_value={"id": "gemma-1b", "name": "gemma-1b"}),
+        )
         poll_responses = [
+            mock_model_check,
             MagicMock(
                 status_code=200,
                 json=MagicMock(
@@ -216,7 +224,7 @@ class TestDeployPhoneQr:
         assert "iPhone 15 Pro" in result.output
         assert "Deployment complete" in result.output
 
-    @patch("octomil.cli.webbrowser.open")
+    @patch("octomil.commands.deploy.webbrowser.open")
     def test_deploy_phone_opens_deep_link_url(self, mock_open, monkeypatch):
         monkeypatch.setenv("OCTOMIL_API_KEY", "test-key")
 
@@ -246,7 +254,7 @@ class TestDeployPhoneQr:
         assert "token=QR1234" in url
         assert "host=" in url
 
-    @patch("octomil.cli.webbrowser.open")
+    @patch("octomil.commands.deploy.webbrowser.open")
     def test_deploy_phone_session_expired(self, mock_open, monkeypatch):
         monkeypatch.setenv("OCTOMIL_API_KEY", "test-key")
 
@@ -271,7 +279,7 @@ class TestDeployPhoneQr:
 
         assert result.exit_code != 0
 
-    @patch("octomil.cli.webbrowser.open")
+    @patch("octomil.commands.deploy.webbrowser.open")
     def test_deploy_phone_qr_payload_is_deep_link(self, mock_open, monkeypatch):
         """The QR code payload and webbrowser.open URL must be a valid octomil:// deep link."""
         import urllib.parse
@@ -309,7 +317,7 @@ class TestDeployPhoneQr:
         # host should be the default API base URL
         assert "api.octomil.com" in params["host"][0]
 
-    @patch("octomil.cli.webbrowser.open")
+    @patch("octomil.commands.deploy.webbrowser.open")
     def test_deploy_phone_deep_link_displayed_in_output(self, mock_open, monkeypatch):
         """The deep link URL should be displayed as a fallback in the terminal output."""
         monkeypatch.setenv("OCTOMIL_API_KEY", "test-key")
@@ -336,7 +344,7 @@ class TestDeployPhoneQr:
         assert result.exit_code == 0
         assert "Or open manually: octomil://pair?token=DISP01&host=" in result.output
 
-    @patch("octomil.cli.webbrowser.open")
+    @patch("octomil.commands.deploy.webbrowser.open")
     def test_deploy_phone_custom_api_base_in_deep_link(self, mock_open, monkeypatch):
         """A custom API base URL should be encoded in the deep link host param."""
         import urllib.parse
@@ -370,7 +378,7 @@ class TestDeployPhoneQr:
         assert params["host"] == ["http://localhost:8000/api/v1"]
         assert params["token"] == ["CUST01"]
 
-    @patch("octomil.cli.webbrowser.open")
+    @patch("octomil.commands.deploy.webbrowser.open")
     def test_deploy_phone_qr_fallback(self, mock_open, monkeypatch):
         """When qrcode lib is missing, should still show the box with deep link URL."""
         monkeypatch.setenv("OCTOMIL_API_KEY", "test-key")

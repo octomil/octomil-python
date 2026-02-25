@@ -51,7 +51,7 @@ def _mock_client(api_responses: dict | None = None):
 
 
 class TestFederationCreate:
-    @patch("octomil.cli._get_client")
+    @patch("octomil.commands.federation._get_client")
     def test_create_success(self, mock_get_client, monkeypatch):
         monkeypatch.setenv("OCTOMIL_API_KEY", "test-key")
         client = _mock_client()
@@ -78,7 +78,7 @@ class TestFederationCreate:
             },
         )
 
-    @patch("octomil.cli._get_client")
+    @patch("octomil.commands.federation._get_client")
     def test_create_without_description(self, mock_get_client, monkeypatch):
         monkeypatch.setenv("OCTOMIL_API_KEY", "test-key")
         client = _mock_client()
@@ -95,8 +95,12 @@ class TestFederationCreate:
             {"name": "bare-fed", "org_id": "org_test_123"},
         )
 
-    def test_create_requires_api_key(self, monkeypatch):
+    def test_create_requires_api_key(self, monkeypatch, tmp_path):
         monkeypatch.delenv("OCTOMIL_API_KEY", raising=False)
+        monkeypatch.setattr(
+            "octomil.cli_helpers.os.path.expanduser",
+            lambda p: str(tmp_path / p.lstrip("~/")),
+        )
         runner = CliRunner()
         result = runner.invoke(main, ["federation", "create", "test"])
         assert result.exit_code != 0
@@ -108,7 +112,7 @@ class TestFederationCreate:
 
 
 class TestFederationInvite:
-    @patch("octomil.cli._get_client")
+    @patch("octomil.commands.federation._get_client")
     def test_invite_multiple_orgs(self, mock_get_client, monkeypatch):
         monkeypatch.setenv("OCTOMIL_API_KEY", "test-key")
         client = _mock_client()
@@ -134,7 +138,7 @@ class TestFederationInvite:
             {"org_ids": ["org_a", "org_b"]},
         )
 
-    @patch("octomil.cli._get_client")
+    @patch("octomil.commands.federation._get_client")
     def test_invite_single_org(self, mock_get_client, monkeypatch):
         monkeypatch.setenv("OCTOMIL_API_KEY", "test-key")
         client = _mock_client()
@@ -157,7 +161,7 @@ class TestFederationInvite:
         result = runner.invoke(main, ["federation", "invite", "my-fed"])
         assert result.exit_code != 0
 
-    @patch("octomil.cli._get_client")
+    @patch("octomil.commands.federation._get_client")
     def test_invite_resolves_federation_by_id_fallback(
         self, mock_get_client, monkeypatch
     ):
@@ -189,7 +193,7 @@ class TestFederationInvite:
 
 
 class TestFederationJoin:
-    @patch("octomil.cli._get_client")
+    @patch("octomil.commands.federation._get_client")
     def test_join_success(self, mock_get_client, monkeypatch):
         monkeypatch.setenv("OCTOMIL_API_KEY", "test-key")
         client = _mock_client()
@@ -207,7 +211,7 @@ class TestFederationJoin:
             {"org_id": "org_test_123"},
         )
 
-    @patch("octomil.cli._get_client")
+    @patch("octomil.commands.federation._get_client")
     def test_join_with_raw_id(self, mock_get_client, monkeypatch):
         monkeypatch.setenv("OCTOMIL_API_KEY", "test-key")
         client = _mock_client()
@@ -228,7 +232,7 @@ class TestFederationJoin:
 
 
 class TestFederationList:
-    @patch("octomil.cli._get_client")
+    @patch("octomil.commands.federation._get_client")
     def test_list_populated(self, mock_get_client, monkeypatch):
         monkeypatch.setenv("OCTOMIL_API_KEY", "test-key")
         client = _mock_client()
@@ -249,7 +253,7 @@ class TestFederationList:
         assert "First" in result.output
         assert "Second" in result.output
 
-    @patch("octomil.cli._get_client")
+    @patch("octomil.commands.federation._get_client")
     def test_list_empty(self, mock_get_client, monkeypatch):
         monkeypatch.setenv("OCTOMIL_API_KEY", "test-key")
         client = _mock_client()
@@ -262,7 +266,7 @@ class TestFederationList:
         assert result.exit_code == 0
         assert "No federations found" in result.output
 
-    @patch("octomil.cli._get_client")
+    @patch("octomil.commands.federation._get_client")
     def test_list_passes_org_id(self, mock_get_client, monkeypatch):
         monkeypatch.setenv("OCTOMIL_API_KEY", "test-key")
         client = _mock_client()
@@ -284,7 +288,7 @@ class TestFederationList:
 
 
 class TestFederationShow:
-    @patch("octomil.cli._get_client")
+    @patch("octomil.commands.federation._get_client")
     def test_show_success(self, mock_get_client, monkeypatch):
         monkeypatch.setenv("OCTOMIL_API_KEY", "test-key")
         client = _mock_client()
@@ -319,7 +323,7 @@ class TestFederationShow:
         assert "Detailed desc" in result.output
         assert "2026-01-15" in result.output
 
-    @patch("octomil.cli._get_client")
+    @patch("octomil.commands.federation._get_client")
     def test_show_with_no_description(self, mock_get_client, monkeypatch):
         monkeypatch.setenv("OCTOMIL_API_KEY", "test-key")
         client = _mock_client()
@@ -355,7 +359,7 @@ class TestFederationShow:
 
 
 class TestFederationMembers:
-    @patch("octomil.cli._get_client")
+    @patch("octomil.commands.federation._get_client")
     def test_members_populated(self, mock_get_client, monkeypatch):
         monkeypatch.setenv("OCTOMIL_API_KEY", "test-key")
         client = _mock_client()
@@ -387,7 +391,7 @@ class TestFederationMembers:
         assert "org_bbb" in result.output
         assert "invited" in result.output
 
-    @patch("octomil.cli._get_client")
+    @patch("octomil.commands.federation._get_client")
     def test_members_empty(self, mock_get_client, monkeypatch):
         monkeypatch.setenv("OCTOMIL_API_KEY", "test-key")
         client = _mock_client()
@@ -409,7 +413,7 @@ class TestFederationMembers:
         assert result.exit_code == 0
         assert "No members found" in result.output
 
-    @patch("octomil.cli._get_client")
+    @patch("octomil.commands.federation._get_client")
     def test_members_resolves_federation_name(self, mock_get_client, monkeypatch):
         monkeypatch.setenv("OCTOMIL_API_KEY", "test-key")
         client = _mock_client()
@@ -444,7 +448,7 @@ class TestFederationMembers:
 
 
 class TestFederationShare:
-    @patch("octomil.cli._get_client")
+    @patch("octomil.commands.federation._get_client")
     def test_share_model_success(self, mock_get_client, monkeypatch):
         monkeypatch.setenv("OCTOMIL_API_KEY", "test-key")
         client = _mock_client()
@@ -472,7 +476,7 @@ class TestFederationShare:
         assert result.exit_code == 0
         assert "shared with federation" in result.output
 
-    @patch("octomil.cli._get_client")
+    @patch("octomil.commands.federation._get_client")
     def test_share_model_not_found(self, mock_get_client, monkeypatch):
         monkeypatch.setenv("OCTOMIL_API_KEY", "test-key")
         client = _mock_client()
@@ -496,7 +500,7 @@ class TestFederationShare:
         assert result.exit_code != 0
         assert "not found" in result.output
 
-    @patch("octomil.cli._get_client")
+    @patch("octomil.commands.federation._get_client")
     def test_share_calls_correct_api(self, mock_get_client, monkeypatch):
         monkeypatch.setenv("OCTOMIL_API_KEY", "test-key")
         client = _mock_client()

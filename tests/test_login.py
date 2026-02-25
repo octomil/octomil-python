@@ -14,7 +14,8 @@ from unittest.mock import patch
 import pytest
 from click.testing import CliRunner
 
-from octomil.cli import _save_credentials, main
+from octomil.cli import main
+from octomil.cli_helpers import _save_credentials
 
 
 # ---------------------------------------------------------------------------
@@ -51,7 +52,7 @@ class TestCredentialSaving:
 
     def test_saves_api_key_as_json(self, tmp_path, monkeypatch):
         monkeypatch.setattr(
-            "octomil.cli.os.path.expanduser",
+            "octomil.cli_helpers.os.path.expanduser",
             lambda x: str(tmp_path / ".octomil") if "~/.octomil" in x else x,
         )
         _save_credentials("edg_test123")
@@ -64,7 +65,7 @@ class TestCredentialSaving:
 
     def test_saves_api_key_with_org(self, tmp_path, monkeypatch):
         monkeypatch.setattr(
-            "octomil.cli.os.path.expanduser",
+            "octomil.cli_helpers.os.path.expanduser",
             lambda x: str(tmp_path / ".octomil") if "~/.octomil" in x else x,
         )
         _save_credentials("edg_test123", org="Acme Corp")
@@ -77,14 +78,14 @@ class TestCredentialSaving:
     def test_creates_directory_if_missing(self, tmp_path, monkeypatch):
         target_dir = tmp_path / "nonexistent" / ".octomil"
         monkeypatch.setattr(
-            "octomil.cli.os.path.expanduser",
+            "octomil.cli_helpers.os.path.expanduser",
             lambda x: str(target_dir) if "~/.octomil" in x else x,
         )
         # Parent directory won't exist, but os.makedirs with exist_ok handles it
         # Actually, we need the parent to exist. Let's use tmp_path directly.
         target_dir = tmp_path / ".octomil"
         monkeypatch.setattr(
-            "octomil.cli.os.path.expanduser",
+            "octomil.cli_helpers.os.path.expanduser",
             lambda x: str(target_dir) if "~/.octomil" in x else x,
         )
         assert not target_dir.exists()
@@ -93,7 +94,7 @@ class TestCredentialSaving:
 
     def test_overwrites_existing_credentials(self, tmp_path, monkeypatch):
         monkeypatch.setattr(
-            "octomil.cli.os.path.expanduser",
+            "octomil.cli_helpers.os.path.expanduser",
             lambda x: str(tmp_path / ".octomil") if "~/.octomil" in x else x,
         )
         _save_credentials("edg_first", org="OrgA")
@@ -109,7 +110,7 @@ class TestCredentialSaving:
         import stat
 
         monkeypatch.setattr(
-            "octomil.cli.os.path.expanduser",
+            "octomil.cli_helpers.os.path.expanduser",
             lambda x: str(tmp_path / ".octomil") if "~/.octomil" in x else x,
         )
         _save_credentials("edg_secret")
@@ -128,7 +129,7 @@ class TestCredentialLoading:
     """Test _get_api_key reads both JSON and legacy formats."""
 
     def test_reads_json_format(self, tmp_path, monkeypatch):
-        from octomil.cli import _get_api_key
+        from octomil.cli_helpers import _get_api_key
 
         monkeypatch.delenv("OCTOMIL_API_KEY", raising=False)
         cred_dir = tmp_path / ".octomil"
@@ -137,46 +138,46 @@ class TestCredentialLoading:
             json.dumps({"api_key": "edg_json_key", "org": "TestOrg"})
         )
         monkeypatch.setattr(
-            "octomil.cli.os.path.expanduser",
+            "octomil.cli_helpers.os.path.expanduser",
             lambda x: str(cred_dir / "credentials"),
         )
         assert _get_api_key() == "edg_json_key"
 
     def test_reads_legacy_format(self, tmp_path, monkeypatch):
-        from octomil.cli import _get_api_key
+        from octomil.cli_helpers import _get_api_key
 
         monkeypatch.delenv("OCTOMIL_API_KEY", raising=False)
         cred_dir = tmp_path / ".octomil"
         cred_dir.mkdir()
         (cred_dir / "credentials").write_text("api_key=edg_legacy_key\n")
         monkeypatch.setattr(
-            "octomil.cli.os.path.expanduser",
+            "octomil.cli_helpers.os.path.expanduser",
             lambda x: str(cred_dir / "credentials"),
         )
         assert _get_api_key() == "edg_legacy_key"
 
     def test_env_var_takes_priority_over_file(self, tmp_path, monkeypatch):
-        from octomil.cli import _get_api_key
+        from octomil.cli_helpers import _get_api_key
 
         monkeypatch.setenv("OCTOMIL_API_KEY", "edg_env_key")
         cred_dir = tmp_path / ".octomil"
         cred_dir.mkdir()
         (cred_dir / "credentials").write_text(json.dumps({"api_key": "edg_file_key"}))
         monkeypatch.setattr(
-            "octomil.cli.os.path.expanduser",
+            "octomil.cli_helpers.os.path.expanduser",
             lambda x: str(cred_dir / "credentials"),
         )
         assert _get_api_key() == "edg_env_key"
 
     def test_empty_file_returns_empty_string(self, tmp_path, monkeypatch):
-        from octomil.cli import _get_api_key
+        from octomil.cli_helpers import _get_api_key
 
         monkeypatch.delenv("OCTOMIL_API_KEY", raising=False)
         cred_dir = tmp_path / ".octomil"
         cred_dir.mkdir()
         (cred_dir / "credentials").write_text("")
         monkeypatch.setattr(
-            "octomil.cli.os.path.expanduser",
+            "octomil.cli_helpers.os.path.expanduser",
             lambda x: str(cred_dir / "credentials"),
         )
         assert _get_api_key() == ""
@@ -193,7 +194,7 @@ class TestApiKeyFlag:
     def test_api_key_flag_saves_directly(self, tmp_path, monkeypatch):
         cred_dir = tmp_path / ".octomil"
         monkeypatch.setattr(
-            "octomil.cli.os.path.expanduser",
+            "octomil.cli_helpers.os.path.expanduser",
             lambda x: str(cred_dir) if "~/.octomil" in x else x,
         )
 
@@ -208,11 +209,11 @@ class TestApiKeyFlag:
     def test_api_key_flag_does_not_open_browser(self, tmp_path, monkeypatch):
         cred_dir = tmp_path / ".octomil"
         monkeypatch.setattr(
-            "octomil.cli.os.path.expanduser",
+            "octomil.cli_helpers.os.path.expanduser",
             lambda x: str(cred_dir) if "~/.octomil" in x else x,
         )
 
-        with patch("octomil.cli.webbrowser.open") as mock_open:
+        with patch("octomil.commands.enterprise.webbrowser.open") as mock_open:
             runner = CliRunner()
             runner.invoke(main, ["login", "--api-key", "edg_ci_key"])
         mock_open.assert_not_called()
@@ -311,7 +312,7 @@ class TestCallbackServer:
 
         cred_dir = tmp_path / ".octomil"
         monkeypatch.setattr(
-            "octomil.cli.os.path.expanduser",
+            "octomil.cli_helpers.os.path.expanduser",
             lambda x: str(cred_dir) if "~/.octomil" in x else x,
         )
 
@@ -342,7 +343,7 @@ class TestCallbackServer:
 
             threading.Thread(target=do_callback, daemon=True).start()
 
-        with patch("octomil.cli.webbrowser.open", side_effect=fake_browser_open):
+        with patch("octomil.commands.enterprise.webbrowser.open", side_effect=fake_browser_open):
             runner = CliRunner()
             result = runner.invoke(main, ["login"])
 
@@ -361,7 +362,7 @@ class TestCallbackServer:
         """Verify the URL opened in the browser has correct structure."""
         cred_dir = tmp_path / ".octomil"
         monkeypatch.setattr(
-            "octomil.cli.os.path.expanduser",
+            "octomil.cli_helpers.os.path.expanduser",
             lambda x: str(cred_dir) if "~/.octomil" in x else x,
         )
 
@@ -385,7 +386,7 @@ class TestCallbackServer:
 
             threading.Thread(target=do_callback, daemon=True).start()
 
-        with patch("octomil.cli.webbrowser.open", side_effect=fake_browser_open):
+        with patch("octomil.commands.enterprise.webbrowser.open", side_effect=fake_browser_open):
             runner = CliRunner()
             runner.invoke(main, ["login"])
 
@@ -404,7 +405,7 @@ class TestCallbackServer:
         """Verify OCTOMIL_DASHBOARD_URL env var is respected."""
         cred_dir = tmp_path / ".octomil"
         monkeypatch.setattr(
-            "octomil.cli.os.path.expanduser",
+            "octomil.cli_helpers.os.path.expanduser",
             lambda x: str(cred_dir) if "~/.octomil" in x else x,
         )
         monkeypatch.setenv("OCTOMIL_DASHBOARD_URL", "https://custom.octomil.dev")
@@ -428,7 +429,7 @@ class TestCallbackServer:
 
             threading.Thread(target=do_callback, daemon=True).start()
 
-        with patch("octomil.cli.webbrowser.open", side_effect=fake_browser_open):
+        with patch("octomil.commands.enterprise.webbrowser.open", side_effect=fake_browser_open):
             runner = CliRunner()
             runner.invoke(main, ["login"])
 
@@ -439,7 +440,7 @@ class TestCallbackServer:
         """Verify the callback response includes a success page."""
         cred_dir = tmp_path / ".octomil"
         monkeypatch.setattr(
-            "octomil.cli.os.path.expanduser",
+            "octomil.cli_helpers.os.path.expanduser",
             lambda x: str(cred_dir) if "~/.octomil" in x else x,
         )
 
@@ -462,7 +463,7 @@ class TestCallbackServer:
 
             threading.Thread(target=do_callback, daemon=True).start()
 
-        with patch("octomil.cli.webbrowser.open", side_effect=fake_browser_open):
+        with patch("octomil.commands.enterprise.webbrowser.open", side_effect=fake_browser_open):
             runner = CliRunner()
             runner.invoke(main, ["login"])
 
