@@ -28,11 +28,11 @@ logger = logging.getLogger(__name__)
 
 _MODEL_ALIASES: Dict[str, Dict[str, str]] = {
     # ── Phi family ────────────────────────────────────────────────────────
-    "phi-4-mini": {"hf": "microsoft/Phi-4-mini-instruct", "ollama": "phi4-mini"},
+    "phi-4-mini": {"hf": "microsoft/Phi-4-mini-instruct-onnx", "ollama": "phi4-mini"},
     "phi-mini": {"hf": "microsoft/Phi-3.5-mini-instruct", "ollama": "phi3.5"},
     "phi-4": {"hf": "microsoft/phi-4", "ollama": "phi4"},
     "phi4": {"hf": "microsoft/phi-4", "ollama": "phi4"},
-    "phi4-mini": {"hf": "microsoft/Phi-4-mini-instruct", "ollama": "phi4-mini"},
+    "phi4-mini": {"hf": "microsoft/Phi-4-mini-instruct-onnx", "ollama": "phi4-mini"},
     # ── Gemma 3 family ────────────────────────────────────────────────────
     "gemma-1b": {"hf": "google/gemma-3-1b-it", "ollama": "gemma3:1b"},
     "gemma-3b": {"hf": "google/gemma-3-4b-it", "ollama": "gemma3:4b"},
