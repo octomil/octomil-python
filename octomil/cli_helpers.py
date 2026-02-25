@@ -165,19 +165,121 @@ _KNOWN_QUANT_SUFFIXES = frozenset(
 )
 
 
+# ~200 most common model names for offline shell autocomplete.
+# Covers 99%+ of what users type. The API fallback below only adds
+# user-specific custom model IDs from their registry.
+_KNOWN_MODEL_NAMES = frozenset(
+    {
+        # Llama (Meta)
+        "llama2", "llama2-7b", "llama2-13b", "llama2-70b", "llama2-uncensored",
+        "llama3", "llama3-8b", "llama3-70b",
+        "llama3.1", "llama3.1-8b", "llama3.1-70b", "llama3.1-405b",
+        "llama3.2", "llama3.2-1b", "llama3.2-3b", "llama3.2-vision",
+        "llama3.3", "llama3.3-70b",
+        "llama4", "llama4-scout", "llama4-maverick",
+        "llama-guard3",
+        # Octomil catalog aliases (dash style)
+        "llama-1b", "llama-3b", "llama-8b",
+        "llama-3.2-1b", "llama-3.2-3b", "llama-3.1-8b",
+        # CodeLlama
+        "codellama", "codellama-7b", "codellama-13b", "codellama-34b",
+        "codellama-python", "codellama-instruct",
+        # Gemma (Google)
+        "gemma", "gemma-2b", "gemma-7b",
+        "gemma2", "gemma2-2b", "gemma2-9b", "gemma2-27b",
+        "gemma3", "gemma3-1b", "gemma3-4b", "gemma3-12b", "gemma3-27b",
+        "gemma3n", "gemma3n-e2b", "gemma3n-e4b",
+        "codegemma",
+        # Octomil catalog keys/aliases
+        "gemma-1b", "gemma-4b", "gemma-12b", "gemma-27b",
+        "gemma-3-1b", "gemma-3-4b", "gemma-3-12b", "gemma-3-27b", "gemma-3b",
+        # Phi (Microsoft)
+        "phi", "phi-2", "phi3", "phi3-mini", "phi3.5",
+        "phi4", "phi4-mini", "phi4-reasoning", "phi4-mini-reasoning",
+        "phi-4", "phi-mini", "phi-4-mini", "phi-3.5-mini", "phi-mini-3.8b",
+        # Qwen (Alibaba)
+        "qwen", "qwen2", "qwen2.5",
+        "qwen2.5-0.5b", "qwen2.5-1.5b", "qwen2.5-3b", "qwen2.5-7b",
+        "qwen2.5-14b", "qwen2.5-32b", "qwen2.5-72b", "qwen2.5-coder",
+        "qwen3", "qwen3-0.6b", "qwen3-1.7b", "qwen3-4b", "qwen3-8b",
+        "qwen3-14b", "qwen3-32b", "qwen3-coder",
+        "qwen3.5", "qwq", "codeqwen",
+        # Octomil catalog keys/aliases
+        "qwen-1.5b", "qwen-3b", "qwen-7b", "qwen-moe-14b",
+        "qwen-2.5-1.5b", "qwen-2.5-3b", "qwen-2.5-7b",
+        "qwen-1.5-moe", "qwen-moe", "qwen3-1b",
+        # Mistral / Mixtral
+        "mistral", "mistral-7b", "mistral-nemo", "mistral-small",
+        "mistral-small3.1", "mistral-large",
+        "mixtral", "mixtral-8x7b", "mixtral-8x22b",
+        "mixtral-instruct", "mixtral-8x22b-instruct",
+        "codestral", "devstral", "magistral", "mathstral", "ministral-3",
+        # DeepSeek
+        "deepseek-r1", "deepseek-r1-1.5b", "deepseek-r1-7b", "deepseek-r1-8b",
+        "deepseek-r1-14b", "deepseek-r1-32b", "deepseek-r1-70b",
+        "deepseek-v2", "deepseek-v2-lite", "deepseek-v2.5",
+        "deepseek-v3", "deepseek-v3.1",
+        "deepseek-coder", "deepseek-coder-v2",
+        "deepseek-v2-lite-chat",
+        # Whisper (OpenAI)
+        "whisper-tiny", "whisper-base", "whisper-small",
+        "whisper-medium", "whisper-large", "whisper-large-v2",
+        "whisper-large-v3", "whisper-turbo",
+        # Nous / Hermes
+        "nous-hermes", "nous-hermes2", "hermes3", "openhermes",
+        # Dolphin
+        "dolphin3", "dolphin-llama3", "dolphin-mistral", "dolphin-phi",
+        # Yi (01.AI)
+        "yi", "yi-coder", "yi-34b",
+        # Falcon (TII)
+        "falcon", "falcon2", "falcon3",
+        # Command-R (Cohere)
+        "command-r", "command-r-plus", "command-r7b",
+        # StarCoder
+        "starcoder", "starcoder2", "starcoder2-3b", "starcoder2-15b",
+        # SmolLM (HuggingFace)
+        "smollm", "smollm2", "smollm-360m", "smollm-1.7b",
+        "smollm2-360m", "smollm2-1.7b",
+        # TinyLlama
+        "tinyllama",
+        # Vicuna / WizardLM
+        "vicuna", "wizardlm2", "wizardcoder",
+        # GLM (Zhipu)
+        "glm4", "glm-4.7",
+        # Granite (IBM)
+        "granite-code", "granite3.2", "granite4",
+        # Aya (Cohere)
+        "aya-expanse",
+        # OLMo (AI2)
+        "olmo2",
+        # Multimodal / Vision
+        "llava", "llava-llama3", "moondream", "minicpm-v",
+        # Embedding
+        "nomic-embed-text", "mxbai-embed-large", "bge-m3", "all-minilm",
+        "snowflake-arctic-embed",
+        # Stable / Flux
+        "stable-code", "stablelm2",
+        # Other notable
+        "dbrx", "dbrx-instruct",
+        "nemotron", "nemotron-mini",
+        "neural-chat", "openchat", "solar", "solar-pro",
+        "sqlcoder", "zephyr", "orca-mini", "orca2",
+        "tinydolphin", "internlm2",
+    }
+)
+
+
 def _complete_model_name(ctx, param, incomplete):
     """Shell completion callback for model name arguments/options."""
     from click.shell_completion import CompletionItem
-    from .models.catalog import CATALOG, MODEL_ALIASES
-    from .sources.resolver import _MODEL_ALIASES as _RESOLVER_ALIASES
 
-    names = set(CATALOG) | set(MODEL_ALIASES) | set(_RESOLVER_ALIASES)
+    names = set(_KNOWN_MODEL_NAMES)
 
-    # Best-effort: include server-side model IDs
+    # Best-effort: include user's custom models from their registry.
     try:
         import httpx
 
-        api_key = os.environ.get("OCTOMIL_API_KEY", "")
+        api_key = _get_api_key()
         api_base = (
             os.environ.get("OCTOMIL_API_URL")
             or os.environ.get("OCTOMIL_API_BASE")
