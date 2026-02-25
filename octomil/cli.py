@@ -3173,11 +3173,6 @@ def keys_revoke(key_id: str) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _get_org_id() -> str:
-    """Read org_id from OCTOMIL_ORG_ID env var, defaulting to 'default'."""
-    return os.environ.get("OCTOMIL_ORG_ID", "default")
-
-
 def _resolve_federation_id(client, name_or_id: str) -> str:
     """Resolve a federation name or ID to an ID.
 
