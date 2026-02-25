@@ -13,6 +13,7 @@ from octomil.cli_helpers import (
     _complete_model_name,
     _get_api_key,
     _get_client,
+    _get_org_id,
     _has_explicit_quant,
     _require_api_key,
 )
@@ -91,10 +92,10 @@ def push(
         if use_case:
             push_kwargs["use_case"] = use_case
         result = client.push(path, **push_kwargs)
-        click.echo(click.style(f"  Done — {resolved_name} v{version}", fg="green"))
+        click.echo(click.style(f"\n  Done — {resolved_name} v{version}", fg="green"))
         for fmt, info in result.get("formats", {}).items():
             click.echo(f"    {fmt}: {info}")
-        _print_sdk_snippet()
+        _print_sdk_snippet(resolved_name, version)
         return
 
     # ── Model name → server-side HuggingFace import ───────────────────
@@ -129,36 +130,37 @@ def push(
         click.echo(f"Error: {exc}", err=True)
         sys.exit(1)
 
-    click.echo(click.style(f"  Done — {resolved_name} v{version}", fg="green"))
+    click.echo(click.style(f"\n  Done — {resolved_name} v{version}", fg="green"))
     if result.get("files"):
         click.echo(f"    Files: {', '.join(result['files'])}")
     if result.get("storage_type"):
         click.echo(f"    Storage: {result['storage_type']}")
-    _print_sdk_snippet()
+    _print_sdk_snippet(resolved_name, version)
 
 
-def _print_sdk_snippet() -> None:
-    """Print SDK integration snippet with masked credentials."""
-    import json
+def _print_sdk_snippet(model_name: str, version: str) -> None:
+    """Print ready-to-paste SDK snippets with real credentials."""
+    from octomil.cli_helpers import _get_org_id
 
-    cred_path = os.path.expanduser("~/.octomil/credentials")
-    org_id = None
-    if os.path.exists(cred_path):
-        try:
-            with open(cred_path) as f:
-                creds = json.load(f)
-            org_id = creds.get("org_id")
-        except Exception:
-            pass
+    api_key = _get_api_key()
+    org_id = _get_org_id() or "<your-org-id>"
 
-    if org_id:
-        api_key = _get_api_key()
-        masked = f"{api_key[:7]}...{api_key[-4:]}" if len(api_key) > 14 else "edg_..."
-        click.echo(
-            f"\n  Add to your app:\n"
-            f'\n  iOS:     let client = OctomilClient(apiKey: "{masked}", orgId: "{org_id}")'
-            f'\n  Android: val client = OctomilClient(apiKey = "{masked}", orgId = "{org_id}", context = this)\n'
-        )
+    click.echo(f"\n  Add to your app:\n")
+    click.secho("  Swift (iOS)", bold=True)
+    click.echo(
+        f'    let client = OctomilClient(apiKey: "{api_key}", orgId: "{org_id}")\n'
+        f'    let model = try await client.pull("{model_name}", version: "{version}")\n'
+    )
+    click.secho("  Kotlin (Android)", bold=True)
+    click.echo(
+        f'    val client = OctomilClient(apiKey = "{api_key}", orgId = "{org_id}", context = this)\n'
+        f'    val model = client.pull("{model_name}", version = "{version}")\n'
+    )
+    click.secho("  Python", bold=True)
+    click.echo(
+        f'    client = octomil.Client(api_key="{api_key}", org_id="{org_id}")\n'
+        f'    client.pull("{model_name}", version="{version}")\n'
+    )
 
 
 @click.command()
