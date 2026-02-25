@@ -218,7 +218,7 @@ Octomil — run ML on any device
 
 
 @click.group(invoke_without_command=True)
-@click.version_option(version="2.1.0", prog_name="octomil")
+@click.version_option(version="2.1.1", prog_name="octomil")
 @click.pass_context
 def main(ctx: click.Context) -> None:
     """Octomil — serve, deploy, and observe ML models on edge devices."""
