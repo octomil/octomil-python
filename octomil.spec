@@ -32,7 +32,9 @@ hidden_imports = [
     "octomil.models.resolver",
     "octomil.models._types",
     "octomil.demos",
+    "octomil.cli_hw",
     "octomil.sources",
+    "octomil.sources.resolver",
     # click needs these for shell completion
     "click.shell_completion",
     # httpx transport backends
