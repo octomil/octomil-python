@@ -3,7 +3,7 @@ from setuptools import setup, find_packages
 
 setup(
     name="octomil-sdk",
-    version="2.0.3",
+    version="2.1.6",
     description="Octomil — serve, deploy, and observe ML models on edge devices",
     long_description=open("README.md").read() if os.path.exists("README.md") else "",
     long_description_content_type="text/markdown",
