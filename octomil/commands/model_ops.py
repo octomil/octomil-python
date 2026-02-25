@@ -37,7 +37,7 @@ def register(cli: click.Group) -> None:
     help="Model ID in the registry. Inferred from path or model name if omitted.",
     shell_complete=_complete_model_name,
 )
-@click.option("--version", "-v", required=True, help="Semantic version (e.g. 1.0.0).")
+@click.option("--version", "-v", default="1.0.0", help="Semantic version (default: 1.0.0).")
 @click.option("--description", "-d", default=None, help="Version description.")
 @click.option(
     "--formats",
@@ -58,70 +58,87 @@ def push(
     formats: Optional[str],
     use_case: Optional[str],
 ) -> None:
-    """Upload model artifacts to Octomil. Downloads automatically if needed.
+    """Push a model to Octomil.
 
-    PATH can be a local file/directory, or a model name to auto-download:
+    PATH can be a local file, or a model name for server-side import:
 
     \b
-        octomil push ./converted --model-id phi-4-mini --version 1.0.0
-        octomil push phi-4-mini --version 1.0.0
-        octomil push hf:microsoft/Phi-4-mini --version 1.0.0
-        octomil push ollama:phi4-mini --version 1.0.0
+        octomil push phi-4-mini
+        octomil push deepseek-r1-7b --version 2.0.0
+        octomil push hf:microsoft/Phi-4-mini-instruct
+        octomil push ./model.safetensors --model-id my-model
     """
-    resolved_path = path
-    resolved_name = model_id
-
     if not path and not model_id:
         click.echo(
             "Error: provide a path or model name.\n\n"
-            "  octomil push phi-4-mini --version 1.0.0\n"
-            "  octomil push ./converted --model-id my-model --version 1.0.0",
+            "  octomil push phi-4-mini\n"
+            "  octomil push ./model.safetensors --model-id my-model",
             err=True,
         )
         sys.exit(1)
 
-    if path and os.path.exists(path):
-        resolved_path = path
-        if not resolved_name:
-            resolved_name = os.path.splitext(os.path.basename(path))[0]
-    else:
-        model_name = path or model_id
-        assert model_name is not None
-        if not resolved_name:
-            resolved_name = model_name.split("/")[-1].split(":")[-1]
+    # ── Local file upload ─────────────────────────────────────────────
+    if path and os.path.isfile(path):
+        resolved_name = model_id or os.path.splitext(os.path.basename(path))[0]
+        client = _get_client()
+        click.echo(f"  Uploading {resolved_name} v{version}...")
+        push_kwargs: dict[str, Any] = {
+            "name": resolved_name,
+            "version": version,
+            "description": description,
+            "formats": formats,
+        }
+        if use_case:
+            push_kwargs["use_case"] = use_case
+        result = client.push(path, **push_kwargs)
+        click.echo(click.style(f"  Done — {resolved_name} v{version}", fg="green"))
+        for fmt, info in result.get("formats", {}).items():
+            click.echo(f"    {fmt}: {info}")
+        _print_sdk_snippet()
+        return
 
-        click.echo(f"  Resolving {model_name}...")
+    # ── Model name → server-side HuggingFace import ───────────────────
+    model_name = path or model_id
+    assert model_name is not None
+    resolved_name = model_id or model_name.split("/")[-1].split(":")[-1]
 
-        from octomil.sources.resolver import resolve_and_download
+    from octomil.sources.resolver import resolve_hf_repo
 
-        try:
-            resolved_path = resolve_and_download(model_name)
-        except Exception as exc:
-            click.echo(f"Error: could not resolve model: {exc}", err=True)
-            sys.exit(1)
+    hf_repo = resolve_hf_repo(model_name)
+    if not hf_repo:
+        click.echo(f"Error: unknown model '{model_name}'", err=True)
+        click.echo(
+            "  Use a known model name (phi-4-mini, gemma-4b, llama-8b, ...)\n"
+            "  or a HuggingFace repo: hf:org/model",
+            err=True,
+        )
+        sys.exit(1)
 
-        click.echo(f"  Model ready at {resolved_path}")
-
-    assert resolved_path is not None
-    assert resolved_name is not None
+    click.echo(f"  Importing {resolved_name} from {hf_repo}...")
 
     client = _get_client()
-    click.echo(f"  Pushing {resolved_name} v{version}...")
-
-    push_kwargs: dict[str, Any] = {
-        "name": resolved_name,
-        "version": version,
-        "description": description,
-        "formats": formats,
-    }
-    if use_case:
-        push_kwargs["use_case"] = use_case
-    result = client.push(resolved_path, **push_kwargs)
+    try:
+        result = client.import_from_hf(
+            repo_id=hf_repo,
+            name=resolved_name,
+            version=version,
+            description=description,
+            use_case=use_case,
+        )
+    except Exception as exc:
+        click.echo(f"Error: {exc}", err=True)
+        sys.exit(1)
 
     click.echo(click.style(f"  Done — {resolved_name} v{version}", fg="green"))
-    for fmt, info in result.get("formats", {}).items():
-        click.echo(f"    {fmt}: {info}")
+    if result.get("files"):
+        click.echo(f"    Files: {', '.join(result['files'])}")
+    if result.get("storage_type"):
+        click.echo(f"    Storage: {result['storage_type']}")
+    _print_sdk_snippet()
 
+
+def _print_sdk_snippet() -> None:
+    """Print SDK integration snippet with masked credentials."""
     import json
 
     cred_path = os.path.expanduser("~/.octomil/credentials")

@@ -115,6 +115,51 @@ class Client:
         )
 
     # ------------------------------------------------------------------
+    # Push from HuggingFace — server-side import
+    # ------------------------------------------------------------------
+
+    def import_from_hf(
+        self,
+        repo_id: str,
+        *,
+        name: Optional[str] = None,
+        version: str = "1.0.0",
+        description: Optional[str] = None,
+        use_case: Optional[str] = None,
+        reference_only: bool = True,
+    ) -> dict[str, Any]:
+        """Import a model from HuggingFace via the server.
+
+        The server downloads, converts, and stores the model — no local
+        download needed.
+
+        Args:
+            repo_id: HuggingFace repo (e.g. ``microsoft/Phi-4-mini-instruct``).
+            name: Model name in the registry. Defaults to repo name.
+            version: Semantic version string.
+            description: Optional version description.
+            use_case: Model use case (e.g. text_generation).
+            reference_only: If True, store HF reference only (devices pull
+                from HF directly). If False, server downloads and stores.
+
+        Returns:
+            Import response with model_id, version, format, files.
+        """
+        payload: dict[str, Any] = {
+            "repo_id": repo_id,
+            "version": version,
+            "org_id": self._org_id,
+            "reference_only": reference_only,
+        }
+        if name:
+            payload["name"] = name
+        if description:
+            payload["description"] = description
+        if use_case:
+            payload["use_case"] = use_case
+        return self._api.post("/integrations/huggingface/import", payload)
+
+    # ------------------------------------------------------------------
     # Pull — download a model in a specific format
     # ------------------------------------------------------------------
 

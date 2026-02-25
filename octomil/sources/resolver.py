@@ -282,3 +282,27 @@ def resolve_and_download(name: str) -> str:
         f"  Known models: {known}\n"
         f"  Or use: hf:<org>/<model>, ollama:<name>, kaggle:<path>"
     )
+
+
+def resolve_hf_repo(name: str) -> Optional[str]:
+    """Resolve a model name to a HuggingFace repo ID without downloading.
+
+    Returns the HF repo string (e.g. ``microsoft/Phi-4-mini-instruct``) or
+    ``None`` if the name is not a known alias or explicit HF reference.
+    """
+    # Explicit hf: prefix
+    explicit = _parse_explicit_source(name)
+    if explicit:
+        source, ref = explicit
+        return ref if source == "hf" else None
+
+    # Alias lookup
+    aliases = _MODEL_ALIASES.get(name)
+    if aliases and "hf" in aliases:
+        return aliases["hf"]
+
+    # Direct org/model format
+    if "/" in name:
+        return name
+
+    return None

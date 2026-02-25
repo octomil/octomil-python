@@ -305,39 +305,17 @@ class ModelRegistry:
         if output_dim is not None:
             data["output_dim"] = str(output_dim)
 
-        import os
-        import tempfile
-
-        upload_path = file_path
-        tmp_tar = None
-
-        # If the path is a directory (e.g. HuggingFace snapshot), archive it
-        if os.path.isdir(file_path):
-            import tarfile
-
-            tmp_tar = tempfile.NamedTemporaryFile(suffix=".tar.gz", delete=False)
-            with tarfile.open(tmp_tar.name, "w:gz") as tar:
-                tar.add(file_path, arcname=os.path.basename(file_path))
-            tmp_tar.close()
-            upload_path = tmp_tar.name
-
-        try:
-            with contextlib.ExitStack() as stack:
-                files: dict[str, Any] = {
-                    "file": stack.enter_context(open(upload_path, "rb"))
-                }
-                if onnx_data_path:
-                    files["onnx_data"] = stack.enter_context(open(onnx_data_path, "rb"))
-                with httpx.Client(timeout=self.api.timeout) as client:
-                    res = client.post(
-                        f"{self.api.api_base}/models/{model_id}/versions/upload",
-                        data=data,
-                        files=files,
-                        headers=self.api._headers(),
-                    )
-        finally:
-            if tmp_tar is not None:
-                os.unlink(tmp_tar.name)
+        with contextlib.ExitStack() as stack:
+            files: dict[str, Any] = {"file": stack.enter_context(open(file_path, "rb"))}
+            if onnx_data_path:
+                files["onnx_data"] = stack.enter_context(open(onnx_data_path, "rb"))
+            with httpx.Client(timeout=self.api.timeout) as client:
+                res = client.post(
+                    f"{self.api.api_base}/models/{model_id}/versions/upload",
+                    data=data,
+                    files=files,
+                    headers=self.api._headers(),
+                )
         if res.status_code >= 400:
             raise OctomilClientError(res.text)
         return res.json()
