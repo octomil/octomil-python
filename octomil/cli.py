@@ -144,8 +144,33 @@ def _complete_model_name(ctx, param, incomplete):
     from .models.catalog import CATALOG, MODEL_ALIASES
     from .sources.resolver import _MODEL_ALIASES as _RESOLVER_ALIASES
 
-    names = sorted(set(CATALOG) | set(MODEL_ALIASES) | set(_RESOLVER_ALIASES))
-    return [CompletionItem(n) for n in names if n.startswith(incomplete)]
+    names = set(CATALOG) | set(MODEL_ALIASES) | set(_RESOLVER_ALIASES)
+
+    # Best-effort: include server-side model IDs
+    try:
+        import httpx
+
+        api_key = os.environ.get("OCTOMIL_API_KEY", "")
+        api_base = (
+            os.environ.get("OCTOMIL_API_URL")
+            or os.environ.get("OCTOMIL_API_BASE")
+            or "https://api.octomil.com/api/v1"
+        )
+        if api_key:
+            resp = httpx.get(
+                f"{api_base}/models",
+                headers={"Authorization": f"Bearer {api_key}"},
+                timeout=2.0,
+            )
+            if resp.status_code == 200:
+                for m in resp.json().get("models", []):
+                    mid = m.get("model_id") or m.get("id", "")
+                    if mid:
+                        names.add(mid)
+    except Exception:
+        pass
+
+    return [CompletionItem(n) for n in sorted(names) if n.startswith(incomplete)]
 
 
 def _has_explicit_quant(model_tag: str) -> bool:
@@ -218,7 +243,7 @@ Octomil — run ML on any device
 
 
 @click.group(invoke_without_command=True)
-@click.version_option(version="2.1.1", prog_name="octomil")
+@click.version_option(version="2.1.3", prog_name="octomil")
 @click.pass_context
 def main(ctx: click.Context) -> None:
     """Octomil — serve, deploy, and observe ML models on edge devices."""
@@ -1154,6 +1179,9 @@ def _browser_login() -> None:
         else:
             click.echo(click.style("  Authenticated", fg="green"))
         click.echo("  Credentials saved to ~/.octomil/credentials")
+        click.echo(
+            '\n  Tip: Run `octomil completions` for tab-completion setup.'
+        )
         if not received_org_id:
             click.echo(
                 click.style(
@@ -3527,6 +3555,43 @@ def launch(agent: str, model: Optional[str], port: int, select: bool) -> None:
     from .agents.launcher import launch_agent
 
     launch_agent(agent, model=model, port=port, select=select)
+
+
+# ---------------------------------------------------------------------------
+# octomil completions
+# ---------------------------------------------------------------------------
+
+
+@main.command()
+@click.argument("shell", required=False, default=None, type=click.Choice(["bash", "zsh", "fish"]))
+def completions(shell: Optional[str]) -> None:
+    """Print shell completion setup instructions.
+
+    Prints the eval snippet needed to enable tab completion for octomil
+    commands and model names in your current shell.
+    """
+    if shell is None:
+        # Auto-detect from SHELL env
+        user_shell = os.path.basename(os.environ.get("SHELL", ""))
+        if user_shell in ("bash", "zsh", "fish"):
+            shell = user_shell
+        else:
+            shell = "zsh"
+
+    snippets = {
+        "bash": 'eval "$(_OCTOMIL_COMPLETE=bash_source octomil)"',
+        "zsh": 'eval "$(_OCTOMIL_COMPLETE=zsh_source octomil)"',
+        "fish": '_OCTOMIL_COMPLETE=fish_source octomil | source',
+    }
+    rc_files = {"bash": "~/.bashrc", "zsh": "~/.zshrc", "fish": "~/.config/fish/config.fish"}
+
+    snippet = snippets[shell]
+    rc_file = rc_files[shell]
+
+    click.echo(f"Add this to {rc_file}:\n")
+    click.secho(f"  {snippet}", bold=True)
+    click.echo(f"\nOr run it now to enable for this session:\n")
+    click.echo(f"  {snippet}")
 
 
 # ---------------------------------------------------------------------------
