@@ -9,7 +9,7 @@ def interactive_cmd_factory(cli_group: click.Group) -> click.Command:
     @click.command("interactive")
     def interactive() -> None:
         """Open interactive command panel."""
-        from .interactive import launch_interactive
+        from octomil.interactive import launch_interactive
 
         launch_interactive(cli_group)
 
