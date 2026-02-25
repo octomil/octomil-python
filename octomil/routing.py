@@ -280,10 +280,9 @@ def _estimate_complexity(
 # ---------------------------------------------------------------------------
 
 # Whitelisted AST node types for safe arithmetic evaluation
-_SAFE_NODES = (
+_SAFE_NODES: tuple[type, ...] = (
     ast.Expression,
     ast.Constant,
-    ast.Num,  # Python 3.7 compat (deprecated but still parsed)
     ast.UnaryOp,
     ast.UAdd,
     ast.USub,
@@ -299,6 +298,9 @@ _SAFE_NODES = (
     ast.Name,
     ast.Load,
 )
+# ast.Num was removed in Python 3.14
+if hasattr(ast, "Num"):
+    _SAFE_NODES = _SAFE_NODES + (ast.Num,)
 
 # Allowed function names in expressions
 _SAFE_FUNCTIONS: dict[str, Any] = {
@@ -340,8 +342,8 @@ def _safe_eval_node(node: ast.AST) -> float:
             return float(v)
         raise ValueError(f"Disallowed constant type: {type(v).__name__}")
 
-    # Python 3.7 ast.Num (deprecated but still emitted by some parsers)
-    if isinstance(node, ast.Num):
+    # Python 3.7–3.13 ast.Num (removed in 3.14)
+    if hasattr(ast, "Num") and isinstance(node, ast.Num):
         n = node.n
         if isinstance(n, float):
             return n
