@@ -18,13 +18,16 @@ from typing import (
 )
 
 from octomil.device_info import get_battery_level, is_charging
-from octomil.resilience import check_network_quality, check_training_eligibility
 
 from .api_client import OctomilClientError, _ApiClient
 from .control_plane import ExperimentsAPI, RolloutsAPI
 from .data_loader import DataLoadError, DataSource, load_data, validate_target
 from .filters import FilterRegistry, FilterResult  # noqa: F401 -- re-export
 from .filters import apply_filters as _apply_filters_impl
+from .resilience import (
+    check_network_quality,  # noqa: F401 -- re-export for tests
+    check_training_eligibility,
+)
 
 if TYPE_CHECKING:
     import pandas as pd
