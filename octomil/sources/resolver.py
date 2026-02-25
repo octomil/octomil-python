@@ -71,21 +71,26 @@ def _parse_explicit_source(name: str) -> Optional[tuple[str, str]]:
     return None
 
 
+_SOURCE_HINTS: Dict[str, str] = {
+    "ollama": "Install Ollama from https://ollama.com",
+    "hf": "Install the Python package: pip install huggingface_hub",
+    "kaggle": "Install the Kaggle CLI: pip install kaggle",
+}
+
+
 def _try_source(source: str, ref: str) -> Optional[SourceResult]:
-    """Attempt a single source. Returns None on failure."""
+    """Attempt a single source. Returns None on failure (with a logged hint)."""
+    backends = {"ollama": _ollama, "hf": _hf, "kaggle": _kaggle}
+    backend = backends.get(source)
+    if backend is None:
+        return None
     try:
-        if source == "ollama":
-            if not _ollama.is_available():
-                return None
-            return _ollama.resolve(ref)
-        elif source == "hf":
-            if not _hf.is_available():
-                return None
-            return _hf.resolve(ref)
-        elif source == "kaggle":
-            if not _kaggle.is_available():
-                return None
-            return _kaggle.resolve(ref)
+        if not backend.is_available():
+            hint = _SOURCE_HINTS.get(source, "")
+            logger.debug("Source %s unavailable for %s", source, ref)
+            click.echo(f"  {source} backend unavailable. {hint}", err=True)
+            return None
+        return backend.resolve(ref)
     except Exception as exc:
         logger.debug("Source %s failed for %s: %s", source, ref, exc)
     return None

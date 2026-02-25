@@ -35,6 +35,7 @@ hidden_imports = [
     "octomil.cli_hw",
     "octomil.sources",
     "octomil.sources.resolver",
+    "huggingface_hub",
     # click needs these for shell completion
     "click.shell_completion",
     # httpx transport backends
