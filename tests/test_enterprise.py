@@ -314,7 +314,7 @@ class TestEnterpriseClient:
 
 
 class TestInitCommand:
-    @patch("octomil.cli._get_api_key", return_value="test-key")
+    @patch("octomil.commands.enterprise._get_api_key", return_value="test-key")
     @patch("octomil.enterprise.EnterpriseClient")
     @patch("octomil.enterprise.save_config")
     @patch("octomil.enterprise.load_config", return_value={})
@@ -335,7 +335,7 @@ class TestInitCommand:
         assert saved_config["org_id"] == "acme-corp"
         assert saved_config["org_name"] == "Acme Corp"
 
-    @patch("octomil.cli._get_api_key", return_value="test-key")
+    @patch("octomil.commands.enterprise._get_api_key", return_value="test-key")
     @patch("octomil.enterprise.EnterpriseClient")
     @patch("octomil.enterprise.save_config")
     @patch("octomil.enterprise.load_config", return_value={})
@@ -356,7 +356,7 @@ class TestInitCommand:
         assert saved_config["compliance"] == "hipaa"
         assert saved_config["region"] == "eu"
 
-    @patch("octomil.cli._get_api_key", return_value="")
+    @patch("octomil.commands.enterprise._get_api_key", return_value="")
     def test_init_requires_api_key(self, mock_key):
         runner = CliRunner()
         result = runner.invoke(main, ["init", "Acme Corp"])
@@ -385,8 +385,8 @@ class TestTeamCommands:
         assert "list" in result.output
         assert "set-policy" in result.output
 
-    @patch("octomil.cli._require_org_id", return_value="org-123")
-    @patch("octomil.cli._get_enterprise_client")
+    @patch("octomil.commands.enterprise._require_org_id", return_value="org-123")
+    @patch("octomil.commands.enterprise._get_enterprise_client")
     def test_team_add(self, mock_get_client, mock_org_id):
         mock_client = MagicMock()
         mock_client.invite_member.return_value = {
@@ -406,8 +406,8 @@ class TestTeamCommands:
             "org-123", "alice@acme.com", role="admin", name=None
         )
 
-    @patch("octomil.cli._require_org_id", return_value="org-123")
-    @patch("octomil.cli._get_enterprise_client")
+    @patch("octomil.commands.enterprise._require_org_id", return_value="org-123")
+    @patch("octomil.commands.enterprise._get_enterprise_client")
     def test_team_list(self, mock_get_client, mock_org_id):
         mock_client = MagicMock()
         mock_client.list_members.return_value = [
@@ -425,8 +425,8 @@ class TestTeamCommands:
         assert "member" in result.output
         assert "2 member(s)" in result.output
 
-    @patch("octomil.cli._require_org_id", return_value="org-123")
-    @patch("octomil.cli._get_enterprise_client")
+    @patch("octomil.commands.enterprise._require_org_id", return_value="org-123")
+    @patch("octomil.commands.enterprise._get_enterprise_client")
     def test_team_list_empty(self, mock_get_client, mock_org_id):
         mock_client = MagicMock()
         mock_client.list_members.return_value = []
@@ -437,8 +437,8 @@ class TestTeamCommands:
         assert result.exit_code == 0
         assert "No team members found" in result.output
 
-    @patch("octomil.cli._require_org_id", return_value="org-123")
-    @patch("octomil.cli._get_enterprise_client")
+    @patch("octomil.commands.enterprise._require_org_id", return_value="org-123")
+    @patch("octomil.commands.enterprise._get_enterprise_client")
     def test_team_set_policy_mfa(self, mock_get_client, mock_org_id):
         mock_client = MagicMock()
         mock_client.update_settings.return_value = {}
@@ -455,8 +455,8 @@ class TestTeamCommands:
             session_duration_hours=8,
         )
 
-    @patch("octomil.cli._require_org_id", return_value="org-123")
-    @patch("octomil.cli._get_enterprise_client")
+    @patch("octomil.commands.enterprise._require_org_id", return_value="org-123")
+    @patch("octomil.commands.enterprise._get_enterprise_client")
     def test_team_set_policy_auto_rollback(self, mock_get_client, mock_org_id):
         mock_client = MagicMock()
         mock_client.update_settings.return_value = {}
@@ -474,8 +474,8 @@ class TestTeamCommands:
             audit_retention_days=365,
         )
 
-    @patch("octomil.cli._require_org_id", return_value="org-123")
-    @patch("octomil.cli._get_enterprise_client")
+    @patch("octomil.commands.enterprise._require_org_id", return_value="org-123")
+    @patch("octomil.commands.enterprise._get_enterprise_client")
     def test_team_set_policy_no_changes(self, mock_get_client, mock_org_id):
         runner = CliRunner()
         result = runner.invoke(main, ["team", "set-policy"])
@@ -497,8 +497,8 @@ class TestKeysCommands:
         assert "list" in result.output
         assert "revoke" in result.output
 
-    @patch("octomil.cli._require_org_id", return_value="org-123")
-    @patch("octomil.cli._get_enterprise_client")
+    @patch("octomil.commands.enterprise._require_org_id", return_value="org-123")
+    @patch("octomil.commands.enterprise._get_enterprise_client")
     def test_keys_create(self, mock_get_client, mock_org_id):
         mock_client = MagicMock()
         mock_client.create_api_key.return_value = {
@@ -533,8 +533,8 @@ class TestKeysCommands:
         assert scopes["devices"] == "write"
         assert scopes["models"] == "read"
 
-    @patch("octomil.cli._require_org_id", return_value="org-123")
-    @patch("octomil.cli._get_enterprise_client")
+    @patch("octomil.commands.enterprise._require_org_id", return_value="org-123")
+    @patch("octomil.commands.enterprise._get_enterprise_client")
     def test_keys_create_no_scopes(self, mock_get_client, mock_org_id):
         mock_client = MagicMock()
         mock_client.create_api_key.return_value = {
@@ -550,8 +550,8 @@ class TestKeysCommands:
         call_kwargs = mock_client.create_api_key.call_args
         assert call_kwargs[1]["scopes"] is None
 
-    @patch("octomil.cli._require_org_id", return_value="org-123")
-    @patch("octomil.cli._get_enterprise_client")
+    @patch("octomil.commands.enterprise._require_org_id", return_value="org-123")
+    @patch("octomil.commands.enterprise._get_enterprise_client")
     def test_keys_list(self, mock_get_client, mock_org_id):
         mock_client = MagicMock()
         mock_client.list_api_keys.return_value = [
@@ -577,8 +577,8 @@ class TestKeysCommands:
         assert "old-key" in result.output
         assert "2 key(s)" in result.output
 
-    @patch("octomil.cli._require_org_id", return_value="org-123")
-    @patch("octomil.cli._get_enterprise_client")
+    @patch("octomil.commands.enterprise._require_org_id", return_value="org-123")
+    @patch("octomil.commands.enterprise._get_enterprise_client")
     def test_keys_list_empty(self, mock_get_client, mock_org_id):
         mock_client = MagicMock()
         mock_client.list_api_keys.return_value = []
@@ -589,7 +589,7 @@ class TestKeysCommands:
         assert result.exit_code == 0
         assert "No API keys found" in result.output
 
-    @patch("octomil.cli._get_enterprise_client")
+    @patch("octomil.commands.enterprise._get_enterprise_client")
     def test_keys_revoke(self, mock_get_client):
         mock_client = MagicMock()
         mock_client.revoke_api_key.return_value = {
@@ -620,8 +620,8 @@ class TestOrgCommand:
         assert result.exit_code == 0
         assert "No organization configured" in result.output
 
-    @patch("octomil.cli._get_api_key", return_value="test-key")
-    @patch("octomil.cli._get_enterprise_client")
+    @patch("octomil.commands.enterprise._get_api_key", return_value="test-key")
+    @patch("octomil.commands.enterprise._get_enterprise_client")
     @patch("octomil.enterprise.get_org_id", return_value="org-123")
     @patch(
         "octomil.enterprise.load_config",

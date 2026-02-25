@@ -338,7 +338,7 @@ class TestModelsCommand:
 
 
 class TestDeployWithOllama:
-    @patch("octomil.cli.webbrowser.open")
+    @patch("octomil.commands.deploy.webbrowser.open")
     @patch("octomil.ollama.get_ollama_model")
     def test_deploy_phone_detects_ollama(self, mock_get_model, mock_open, monkeypatch):
         monkeypatch.setenv("OCTOMIL_API_KEY", "test-key")
@@ -373,7 +373,7 @@ class TestDeployWithOllama:
         assert "1.6 GB" in result.output
         assert "Q4_K_M" in result.output
 
-    @patch("octomil.cli.webbrowser.open")
+    @patch("octomil.commands.deploy.webbrowser.open")
     @patch("octomil.ollama.get_ollama_model", return_value=None)
     def test_deploy_phone_no_ollama_match(self, mock_get_model, mock_open, monkeypatch):
         monkeypatch.setenv("OCTOMIL_API_KEY", "test-key")
