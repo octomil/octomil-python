@@ -15,7 +15,6 @@ from octomil.cli_helpers import (
     _get_client,
     _get_org_id,
     _has_explicit_quant,
-    _require_api_key,
 )
 
 
@@ -30,7 +29,9 @@ def register(cli: click.Group) -> None:
 
 
 @click.command()
-@click.argument("path", required=False, default=None, shell_complete=_complete_model_name)
+@click.argument(
+    "path", required=False, default=None, shell_complete=_complete_model_name
+)
 @click.option(
     "--model-id",
     "-m",
@@ -38,7 +39,9 @@ def register(cli: click.Group) -> None:
     help="Model ID in the registry. Inferred from path or model name if omitted.",
     shell_complete=_complete_model_name,
 )
-@click.option("--version", "-v", default="1.0.0", help="Semantic version (default: 1.0.0).")
+@click.option(
+    "--version", "-v", default="1.0.0", help="Semantic version (default: 1.0.0)."
+)
 @click.option("--description", "-d", default=None, help="Version description.")
 @click.option(
     "--formats",
@@ -78,9 +81,23 @@ def push(
         )
         sys.exit(1)
 
-    # ── Local file upload ─────────────────────────────────────────────
-    if path and os.path.isfile(path):
-        resolved_name = model_id or os.path.splitext(os.path.basename(path))[0]
+    # ── Local file or directory upload ────────────────────────────────
+    if path and (os.path.isfile(path) or os.path.isdir(path)):
+        if os.path.isdir(path):
+            from octomil.client import _find_model_file
+
+            model_file = _find_model_file(path)
+            if not model_file:
+                click.echo(
+                    f"Error: no model file found in {path}\n"
+                    "  Expected: .safetensors, .gguf, .pt, .pth, .bin, .onnx",
+                    err=True,
+                )
+                sys.exit(1)
+            upload_path = model_file
+        else:
+            upload_path = path
+        resolved_name = model_id or os.path.splitext(os.path.basename(upload_path))[0]
         client = _get_client()
         click.echo(f"  Uploading {resolved_name} v{version}...")
         push_kwargs: dict[str, Any] = {
@@ -91,7 +108,7 @@ def push(
         }
         if use_case:
             push_kwargs["use_case"] = use_case
-        result = client.push(path, **push_kwargs)
+        result = client.push(upload_path, **push_kwargs)
         click.echo(click.style(f"\n  Done — {resolved_name} v{version}", fg="green"))
         for fmt, info in result.get("formats", {}).items():
             click.echo(f"    {fmt}: {info}")
@@ -140,12 +157,11 @@ def push(
 
 def _print_sdk_snippet(model_name: str, version: str) -> None:
     """Print ready-to-paste SDK snippets with real credentials."""
-    from octomil.cli_helpers import _get_org_id
 
     api_key = _get_api_key()
     org_id = _get_org_id() or "<your-org-id>"
 
-    click.echo(f"\n  Add to your app:\n")
+    click.echo("\n  Add to your app:\n")
     click.secho("  Swift (iOS)", bold=True)
     click.echo(
         f'    let client = OctomilClient(apiKey: "{api_key}", orgId: "{org_id}")\n'

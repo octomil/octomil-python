@@ -14,7 +14,10 @@ simpler interface designed for CLI and script usage::
 from __future__ import annotations
 
 import os
+from pathlib import Path
 from typing import Any, Optional
+
+from .python.octomil.api_client import OctomilClientError
 
 from .models import (
     DeploymentPlan,
@@ -30,6 +33,22 @@ from .python.octomil.registry import ModelRegistry
 
 
 _DEFAULT_API_BASE = "https://api.octomil.com/api/v1"
+
+_MODEL_EXTENSIONS = {".safetensors", ".gguf", ".pt", ".pth", ".bin", ".onnx"}
+
+
+def _find_model_file(directory: str) -> str | None:
+    """Find the primary model file in a directory (e.g. HuggingFace snapshot)."""
+    dir_path = Path(directory)
+    # Direct children first
+    for child in sorted(dir_path.iterdir()):
+        if child.is_file() and child.suffix in _MODEL_EXTENSIONS:
+            return str(child)
+    # Recurse into subdirectories (HF snapshots nest files)
+    for child in sorted(dir_path.rglob("*")):
+        if child.is_file() and child.suffix in _MODEL_EXTENSIONS:
+            return str(child)
+    return None
 
 
 class Client:
@@ -93,12 +112,24 @@ class Client:
     ) -> dict[str, Any]:
         """Upload a model file and register a new version.
 
+        If *file_path* is a directory (e.g. a HuggingFace snapshot), the
+        primary model file is located automatically.
+
         Creates the model entry if it doesn't exist, then uploads the file
         and triggers server-side format conversion.
 
         Returns:
             Upload response dict with model_id, version, formats, checksums.
         """
+        if os.path.isdir(file_path):
+            resolved = _find_model_file(file_path)
+            if not resolved:
+                raise OctomilClientError(
+                    f"No model file found in directory: {file_path}\n"
+                    f"Expected extensions: {', '.join(sorted(_MODEL_EXTENSIONS))}"
+                )
+            file_path = resolved
+
         model = self._registry.ensure_model(
             name=name,
             framework=framework,

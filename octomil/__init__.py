@@ -92,8 +92,10 @@ _SUBMODULES = [
     "federated_client",
     "federation",
     "filters",
+    "gradient_cache",
     "inference",
     "registry",
+    "resilience",
     "secagg",
 ]
 
