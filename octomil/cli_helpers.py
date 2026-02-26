@@ -350,18 +350,17 @@ def _auto_optimize(model_tag: str, context_length: int = 4096) -> str | None:
 # ---------------------------------------------------------------------------
 
 WELCOME_MESSAGE = """\
-Octomil — run ML on any device
+Octomil — on-device AI for consumer apps
 
   Get started:
     1. octomil login                         authenticate
     2. octomil serve phi-4-mini              local inference server
-    3. octomil push phi-4-mini --version 1.0.0
-                                             download, convert, push
-    4. octomil deploy phi-4-mini --phone     send to device
+    3. octomil benchmark phi-4-mini          measure device performance
+    4. octomil deploy phi-4-mini --phone     deploy to device fleet
 
   Useful commands:
-    octomil benchmark <model>                measure tokens/s
     octomil models                           list available models
+    octomil push <file> --version 1.0.0      upload a model
     octomil dashboard                        open web dashboard
     octomil launch <agent>                   launch coding agent
 
