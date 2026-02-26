@@ -13,7 +13,9 @@ simpler interface designed for CLI and script usage::
 
 from __future__ import annotations
 
+import logging
 import os
+import time
 from pathlib import Path
 from typing import Any, Optional
 
@@ -35,6 +37,8 @@ from .python.octomil.registry import ModelRegistry
 _DEFAULT_API_BASE = "https://api.octomil.com/api/v1"
 
 _MODEL_EXTENSIONS = {".safetensors", ".gguf", ".pt", ".pth", ".bin", ".onnx"}
+
+_logger = logging.getLogger(__name__)
 
 
 def _find_model_file(directory: str) -> str | None:
@@ -95,6 +99,12 @@ class Client:
         )
         self._rollouts = RolloutsAPI(self._api)
 
+    @property
+    def _reporter(self):
+        """Return the global TelemetryReporter, or None."""
+        from . import get_reporter
+        return get_reporter()
+
     # ------------------------------------------------------------------
     # Push — upload a model file + trigger server-side conversion
     # ------------------------------------------------------------------
@@ -130,20 +140,48 @@ class Client:
                 )
             file_path = resolved
 
-        model = self._registry.ensure_model(
-            name=name,
-            framework=framework,
-            use_case=use_case,
-            description=description,
-        )
-        model_id = model["id"]
-        return self._registry.upload_version_from_path(
-            model_id=model_id,
-            file_path=file_path,
-            version=version,
-            description=description,
-            formats=formats,
-        )
+        t0 = time.monotonic()
+        try:
+            model = self._registry.ensure_model(
+                name=name,
+                framework=framework,
+                use_case=use_case,
+                description=description,
+            )
+            model_id = model["id"]
+            result = self._registry.upload_version_from_path(
+                model_id=model_id,
+                file_path=file_path,
+                version=version,
+                description=description,
+                formats=formats,
+            )
+        except Exception as exc:
+            if self._reporter:
+                try:
+                    self._reporter.report_funnel_event(
+                        stage="model_push",
+                        success=False,
+                        model_id=name,
+                        failure_reason=str(exc),
+                        failure_category="upload_error",
+                        duration_ms=int((time.monotonic() - t0) * 1000),
+                    )
+                except Exception:
+                    _logger.debug("Telemetry reporting failed for push()")
+            raise
+
+        if self._reporter:
+            try:
+                self._reporter.report_funnel_event(
+                    stage="model_push",
+                    success=True,
+                    model_id=name,
+                    duration_ms=int((time.monotonic() - t0) * 1000),
+                )
+            except Exception:
+                _logger.debug("Telemetry reporting failed for push()")
+        return result
 
     # ------------------------------------------------------------------
     # Push from HuggingFace — server-side import
@@ -188,7 +226,37 @@ class Client:
             payload["description"] = description
         if use_case:
             payload["use_case"] = use_case
-        return self._api.post("/integrations/huggingface/import", payload)
+
+        t0 = time.monotonic()
+        telemetry_model_id = name or repo_id
+        try:
+            result = self._api.post("/integrations/huggingface/import", payload)
+        except Exception as exc:
+            if self._reporter:
+                try:
+                    self._reporter.report_funnel_event(
+                        stage="hf_import",
+                        success=False,
+                        model_id=telemetry_model_id,
+                        failure_reason=str(exc),
+                        failure_category="import_error",
+                        duration_ms=int((time.monotonic() - t0) * 1000),
+                    )
+                except Exception:
+                    _logger.debug("Telemetry reporting failed for import_from_hf()")
+            raise
+
+        if self._reporter:
+            try:
+                self._reporter.report_funnel_event(
+                    stage="hf_import",
+                    success=True,
+                    model_id=telemetry_model_id,
+                    duration_ms=int((time.monotonic() - t0) * 1000),
+                )
+            except Exception:
+                _logger.debug("Telemetry reporting failed for import_from_hf()")
+        return result
 
     # ------------------------------------------------------------------
     # Pull — download a model in a specific format
@@ -406,41 +474,69 @@ class Client:
         Returns:
             ``RollbackResult`` with rollback details and status.
         """
-        model_id = self._registry.resolve_model_id(name)
+        t0 = time.monotonic()
+        try:
+            model_id = self._registry.resolve_model_id(name)
 
-        # Determine the current version
-        current_version = self._registry.get_latest_version(model_id)
+            # Determine the current version
+            current_version = self._registry.get_latest_version(model_id)
 
-        # Determine the target version
-        if to_version is None:
-            versions_resp = self._registry.list_versions(model_id)
-            versions = versions_resp.get("versions", [])
-            if len(versions) < 2:
-                from .python.octomil.api_client import OctomilClientError
+            # Determine the target version
+            if to_version is None:
+                versions_resp = self._registry.list_versions(model_id)
+                versions = versions_resp.get("versions", [])
+                if len(versions) < 2:
+                    from .python.octomil.api_client import OctomilClientError
 
-                raise OctomilClientError(
-                    f"Cannot rollback {name}: only one version exists"
+                    raise OctomilClientError(
+                        f"Cannot rollback {name}: only one version exists"
+                    )
+                # Versions come sorted newest-first from the API; pick the second.
+                to_version = versions[1].get("version", "")
+
+            # Deploy the target version at 100% immediately
+            rollout_resp = self._registry.deploy_version(
+                model_id=model_id,
+                version=to_version,
+                rollout_percentage=100,
+                target_percentage=100,
+                increment_step=100,
+                start_immediately=True,
+            )
+
+            result = RollbackResult(
+                model_name=name,
+                from_version=current_version,
+                to_version=to_version,
+                rollout_id=str(rollout_resp.get("id", "")),
+                status=rollout_resp.get("status", "rolling_back"),
+            )
+        except Exception as exc:
+            if self._reporter:
+                try:
+                    self._reporter.report_funnel_event(
+                        stage="rollback",
+                        success=False,
+                        model_id=name,
+                        failure_reason=str(exc),
+                        failure_category="rollback_error",
+                        duration_ms=int((time.monotonic() - t0) * 1000),
+                    )
+                except Exception:
+                    _logger.debug("Telemetry reporting failed for rollback()")
+            raise
+
+        if self._reporter:
+            try:
+                self._reporter.report_funnel_event(
+                    stage="rollback",
+                    success=True,
+                    model_id=name,
+                    duration_ms=int((time.monotonic() - t0) * 1000),
                 )
-            # Versions come sorted newest-first from the API; pick the second.
-            to_version = versions[1].get("version", "")
-
-        # Deploy the target version at 100% immediately
-        rollout_resp = self._registry.deploy_version(
-            model_id=model_id,
-            version=to_version,
-            rollout_percentage=100,
-            target_percentage=100,
-            increment_step=100,
-            start_immediately=True,
-        )
-
-        return RollbackResult(
-            model_name=name,
-            from_version=current_version,
-            to_version=to_version,
-            rollout_id=str(rollout_resp.get("id", "")),
-            status=rollout_resp.get("status", "rolling_back"),
-        )
+            except Exception:
+                _logger.debug("Telemetry reporting failed for rollback()")
+        return result
 
     # ------------------------------------------------------------------
     # Status — query inference metrics
