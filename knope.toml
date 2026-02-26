@@ -1,0 +1,15 @@
+[package]
+versioned_files = ["setup.py", "octomil/__init__.py"]
+changelog = "CHANGELOG.md"
+
+[workflows.release]
+[[workflows.release.steps]]
+type = "PrepareRelease"
+
+[[workflows.release.steps]]
+type = "CreatePullRequest"
+base = "main"
+
+[workflows.release-pr-merged]
+[[workflows.release-pr-merged.steps]]
+type = "Release"
