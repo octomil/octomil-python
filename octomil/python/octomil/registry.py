@@ -43,10 +43,14 @@ class ModelRegistry:
         self.experiments = ExperimentsAPI(self.api, org_id=self.org_id)
 
     def resolve_model_id(self, model: str) -> str:
+        # Strip variant suffix (e.g. "phi-4-mini:q8_0" → "phi-4-mini")
+        base_name = model.split(":")[0] if ":" in model else model
+
         # Check own org's models first
         data = self.api.get(_MODELS_PATH, params={"org_id": self.org_id})
         for item in data.get("models", []):
-            if item.get("name") == model:
+            name = item.get("name")
+            if name == model or name == base_name:
                 return item["id"]
 
         # Fallback: check models shared via federations the org belongs to
@@ -60,7 +64,8 @@ class ModelRegistry:
                     fed_models = self.api.get(f"/federations/{fed_id}/models")
                     if isinstance(fed_models, list):
                         for fm in fed_models:
-                            if fm.get("name") == model:
+                            name = fm.get("name")
+                            if name == model or name == base_name:
                                 return fm["id"]
         except Exception:
             pass  # Federation lookup is best-effort
