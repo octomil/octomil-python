@@ -10,7 +10,19 @@ changelog = "CHANGELOG.md"
 name = "release"
 
 [[workflows.steps]]
+type = "Command"
+command = "git switch -c release"
+
+[[workflows.steps]]
 type = "PrepareRelease"
+
+[[workflows.steps]]
+type = "Command"
+command = "git add -A && git commit -m \"chore: prepare release $version\""
+
+[[workflows.steps]]
+type = "Command"
+command = "git push --force --set-upstream origin release"
 
 [[workflows.steps]]
 type = "CreatePullRequest"
