@@ -15,6 +15,14 @@ block_cipher = None
 # Hidden imports — engines are lazily imported, PyInstaller can't detect them.
 # ---------------------------------------------------------------------------
 hidden_imports = [
+    # SDK modules imported by __init__.py
+    "octomil.model",
+    "octomil.client",
+    "octomil.telemetry",
+    "octomil.enterprise",
+    "octomil.decomposer",
+    "octomil.routing",
+    # Engines — lazily imported, PyInstaller can't detect them.
     "octomil.engines.mlx_engine",
     "octomil.engines.mlc_engine",
     "octomil.engines.llamacpp_engine",
