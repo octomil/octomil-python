@@ -1,5 +1,5 @@
 [package]
-versioned_files = ["setup.py", "octomil/__init__.py"]
+versioned_files = ["setup.py", "octomil/__init__.py", "octomil/python/pyproject.toml"]
 changelog = "CHANGELOG.md"
 
 [workflows.release]
