@@ -2,7 +2,8 @@
 Lightweight telemetry reporter for ``octomil serve``.
 
 Reports inference lifecycle events (generation_started, chunk_produced,
-generation_completed, generation_failed) to the Octomil platform API.
+generation_completed, generation_failed) to the Octomil platform API
+using the v2 OTLP envelope format.
 
 All reporting is best-effort: failures are logged as warnings and never
 propagate to the caller.  Events are dispatched on a background thread
@@ -15,6 +16,7 @@ import hashlib
 import logging
 import platform
 import queue
+import sys
 import threading
 import time
 import uuid
@@ -86,11 +88,21 @@ def _get_sdk_version() -> str:
     return __version__
 
 
+def _v2_url(api_base: str) -> str:
+    """Derive the v2 telemetry endpoint URL from the v1 api_base."""
+    base = api_base.rstrip("/")
+    if base.endswith("/api/v1"):
+        return base[: -len("/api/v1")] + "/api/v2/telemetry/events"
+    # Fallback: append v2 path
+    return base + "/v2/telemetry/events"
+
+
 class TelemetryReporter:
     """Best-effort telemetry reporter for inference events.
 
     Events are placed onto an internal queue and dispatched by a daemon
-    thread so the caller is never blocked.
+    thread so the caller is never blocked.  All events are sent as a
+    v2 OTLP envelope to a single endpoint.
 
     Parameters
     ----------
@@ -121,13 +133,19 @@ class TelemetryReporter:
         self._worker = threading.Thread(target=self._dispatch_loop, daemon=True)
         self._worker.start()
 
-        self._funnel_queue: queue.Queue[Optional[dict[str, Any]]] = queue.Queue(
-            maxsize=256
-        )
-        self._funnel_worker = threading.Thread(
-            target=self._funnel_dispatch_loop, daemon=True
-        )
-        self._funnel_worker.start()
+    # ------------------------------------------------------------------
+    # Resource envelope
+    # ------------------------------------------------------------------
+
+    def _resource(self) -> dict[str, Any]:
+        """Build the OTLP resource block."""
+        return {
+            "sdk": "python",
+            "sdk_version": _get_sdk_version(),
+            "device_id": self.device_id,
+            "platform": sys.platform,
+            "org_id": self.org_id,
+        }
 
     # ------------------------------------------------------------------
     # Public reporting methods
@@ -142,17 +160,15 @@ class TelemetryReporter:
         attention_backend: str | None = None,
     ) -> None:
         """Report that a new generation has started."""
-        metrics: dict[str, Any] | None = None
+        attributes: dict[str, Any] = {
+            "model.id": model_id,
+            "model.version": version,
+            "inference.session_id": session_id,
+            "inference.modality": modality,
+        }
         if attention_backend is not None:
-            metrics = {"attention_backend": attention_backend}
-        self._enqueue(
-            event_type="generation_started",
-            model_id=model_id,
-            version=version,
-            session_id=session_id,
-            modality=modality,
-            metrics=metrics,
-        )
+            attributes["inference.attention_backend"] = attention_backend
+        self._enqueue(name="inference.started", attributes=attributes)
 
     def report_chunk_produced(
         self,
@@ -165,19 +181,18 @@ class TelemetryReporter:
         modality: str = "text",
     ) -> None:
         """Report that a single chunk (token / frame) was produced."""
-        metrics: dict[str, Any] = {"chunk_index": chunk_index}
+        attributes: dict[str, Any] = {
+            "model.id": model_id,
+            "model.version": version,
+            "inference.session_id": session_id,
+            "inference.modality": modality,
+            "inference.chunk_index": chunk_index,
+        }
         if ttfc_ms is not None:
-            metrics["ttfc_ms"] = ttfc_ms
+            attributes["inference.ttfc_ms"] = ttfc_ms
         if chunk_latency_ms is not None:
-            metrics["chunk_latency_ms"] = chunk_latency_ms
-        self._enqueue(
-            event_type="chunk_produced",
-            model_id=model_id,
-            version=version,
-            session_id=session_id,
-            modality=modality,
-            metrics=metrics,
-        )
+            attributes["inference.chunk_latency_ms"] = chunk_latency_ms
+        self._enqueue(name="inference.chunk_produced", attributes=attributes)
 
     def report_generation_completed(
         self,
@@ -193,24 +208,28 @@ class TelemetryReporter:
         early_exit_stats: dict[str, Any] | None = None,
     ) -> None:
         """Report that a generation finished successfully."""
-        metrics: dict[str, Any] = {
-            "total_chunks": total_chunks,
-            "total_duration_ms": total_duration_ms,
-            "ttfc_ms": ttfc_ms,
-            "throughput": throughput,
+        # Compute TPOT: time per output token
+        tpot_ms: float | None = None
+        if total_chunks > 1 and total_duration_ms > 0:
+            tpot_ms = (total_duration_ms - ttfc_ms) / (total_chunks - 1)
+
+        attributes: dict[str, Any] = {
+            "model.id": model_id,
+            "model.version": version,
+            "inference.session_id": session_id,
+            "inference.modality": modality,
+            "inference.duration_ms": total_duration_ms,
+            "inference.ttft_ms": ttfc_ms,
+            "inference.total_tokens": total_chunks,
+            "inference.throughput_tps": throughput,
         }
+        if tpot_ms is not None:
+            attributes["inference.tpot_ms"] = tpot_ms
         if attention_backend is not None:
-            metrics["attention_backend"] = attention_backend
+            attributes["inference.attention_backend"] = attention_backend
         if early_exit_stats is not None:
-            metrics["early_exit"] = early_exit_stats
-        self._enqueue(
-            event_type="generation_completed",
-            model_id=model_id,
-            version=version,
-            session_id=session_id,
-            modality=modality,
-            metrics=metrics,
-        )
+            attributes["inference.early_exit"] = early_exit_stats
+        self._enqueue(name="inference.completed", attributes=attributes)
 
     def report_early_exit_stats(
         self,
@@ -223,36 +242,19 @@ class TelemetryReporter:
         avg_layers_used: float,
         avg_entropy: float,
     ) -> None:
-        """Report early exit / adaptive computation depth metrics.
-
-        Parameters
-        ----------
-        total_tokens:
-            Total tokens generated in this request.
-        early_exit_tokens:
-            Number of tokens that exited before the final layer.
-        exit_percentage:
-            Percentage of tokens that exited early (0-100).
-        avg_layers_used:
-            Average number of transformer layers used per token.
-        avg_entropy:
-            Average logit entropy at exit points.
-        """
-        metrics: dict[str, Any] = {
-            "total_tokens": total_tokens,
-            "early_exit_tokens": early_exit_tokens,
-            "exit_percentage": exit_percentage,
-            "avg_layers_used": avg_layers_used,
-            "avg_entropy": avg_entropy,
+        """Report early exit / adaptive computation depth metrics."""
+        attributes: dict[str, Any] = {
+            "model.id": model_id,
+            "model.version": version,
+            "inference.session_id": session_id,
+            "inference.modality": "text",
+            "inference.early_exit.total_tokens": total_tokens,
+            "inference.early_exit.early_exit_tokens": early_exit_tokens,
+            "inference.early_exit.exit_percentage": exit_percentage,
+            "inference.early_exit.avg_layers_used": avg_layers_used,
+            "inference.early_exit.avg_entropy": avg_entropy,
         }
-        self._enqueue(
-            event_type="early_exit_stats",
-            model_id=model_id,
-            version=version,
-            session_id=session_id,
-            modality="text",
-            metrics=metrics,
-        )
+        self._enqueue(name="inference.early_exit_stats", attributes=attributes)
 
     def report_generation_failed(
         self,
@@ -262,13 +264,14 @@ class TelemetryReporter:
         modality: str = "text",
     ) -> None:
         """Report that a generation failed."""
-        self._enqueue(
-            event_type="generation_failed",
-            model_id=model_id,
-            version=version,
-            session_id=session_id,
-            modality=modality,
-        )
+        attributes: dict[str, Any] = {
+            "model.id": model_id,
+            "model.version": version,
+            "inference.session_id": session_id,
+            "inference.modality": modality,
+            "error.type": "generation_failed",
+        }
+        self._enqueue(name="inference.failed", attributes=attributes)
 
     def report_moe_routing(
         self,
@@ -282,55 +285,28 @@ class TelemetryReporter:
         expert_memory_mb: float | None = None,
         total_tokens_routed: int = 0,
     ) -> None:
-        """Report MoE expert routing telemetry for a generation.
-
-        Parameters
-        ----------
-        session_id:
-            The generation session this routing data belongs to.
-        model_id:
-            Model identifier.
-        version:
-            Model version.
-        num_experts:
-            Total number of experts in the MoE model.
-        active_experts:
-            Number of experts activated per token.
-        expert_activation_counts:
-            Map of expert index to number of tokens routed to it.
-            Used to compute load balancing statistics.
-        load_balance_score:
-            Load balance score (0.0 = worst, 1.0 = perfectly balanced).
-            If not provided, computed from expert_activation_counts.
-        expert_memory_mb:
-            Memory used by loaded experts in MB.
-        total_tokens_routed:
-            Total number of tokens processed through expert routing.
-        """
-        metrics: dict[str, Any] = {
-            "num_experts": num_experts,
-            "active_experts": active_experts,
-            "total_tokens_routed": total_tokens_routed,
+        """Report MoE expert routing telemetry for a generation."""
+        attributes: dict[str, Any] = {
+            "model.id": model_id,
+            "model.version": version,
+            "inference.session_id": session_id,
+            "inference.modality": "text",
+            "inference.moe.num_experts": num_experts,
+            "inference.moe.active_experts": active_experts,
+            "inference.moe.total_tokens_routed": total_tokens_routed,
         }
         if expert_activation_counts is not None:
-            metrics["expert_activation_counts"] = expert_activation_counts
+            attributes["inference.moe.expert_activation_counts"] = expert_activation_counts
             if load_balance_score is None:
                 load_balance_score = _compute_load_balance(
                     expert_activation_counts, num_experts
                 )
         if load_balance_score is not None:
-            metrics["load_balance_score"] = round(load_balance_score, 4)
+            attributes["inference.moe.load_balance_score"] = round(load_balance_score, 4)
         if expert_memory_mb is not None:
-            metrics["expert_memory_mb"] = round(expert_memory_mb, 2)
+            attributes["inference.moe.expert_memory_mb"] = round(expert_memory_mb, 2)
 
-        self._enqueue(
-            event_type="moe_routing",
-            model_id=model_id,
-            version=version,
-            session_id=session_id,
-            modality="text",
-            metrics=metrics,
-        )
+        self._enqueue(name="inference.moe_routing", attributes=attributes)
 
     def report_prompt_compressed(
         self,
@@ -345,22 +321,19 @@ class TelemetryReporter:
         modality: str = "text",
     ) -> None:
         """Report that a prompt was compressed before inference."""
-        metrics: dict[str, Any] = {
-            "original_tokens": original_tokens,
-            "compressed_tokens": compressed_tokens,
-            "compression_ratio": compression_ratio,
-            "tokens_saved": original_tokens - compressed_tokens,
-            "strategy": strategy,
-            "compression_duration_ms": duration_ms,
+        attributes: dict[str, Any] = {
+            "model.id": model_id,
+            "model.version": version,
+            "inference.session_id": session_id,
+            "inference.modality": modality,
+            "inference.compression.original_tokens": original_tokens,
+            "inference.compression.compressed_tokens": compressed_tokens,
+            "inference.compression.compression_ratio": compression_ratio,
+            "inference.compression.tokens_saved": original_tokens - compressed_tokens,
+            "inference.compression.strategy": strategy,
+            "inference.compression.duration_ms": duration_ms,
         }
-        self._enqueue(
-            event_type="prompt_compressed",
-            model_id=model_id,
-            version=version,
-            session_id=session_id,
-            modality=modality,
-            metrics=metrics,
-        )
+        self._enqueue(name="inference.prompt_compressed", attributes=attributes)
 
     def report_funnel_event(
         self,
@@ -377,48 +350,37 @@ class TelemetryReporter:
         metadata: dict[str, Any] | None = None,
     ) -> None:
         """Report a funnel analytics event. Non-blocking."""
-        payload: dict[str, Any] = {
-            "stage": stage,
-            "success": success,
-            "source": "sdk_python",
-            "sdk_version": _get_sdk_version(),
-            "org_id": self.org_id,
-            "timestamp_ms": int(time.time() * 1000),
+        attributes: dict[str, Any] = {
+            "funnel.success": success,
         }
         if device_id is not None:
-            payload["device_id"] = device_id
+            attributes["funnel.device_id"] = device_id
         if model_id is not None:
-            payload["model_id"] = model_id
+            attributes["model.id"] = model_id
         if rollout_id is not None:
-            payload["rollout_id"] = rollout_id
+            attributes["funnel.rollout_id"] = rollout_id
         if session_id is not None:
-            payload["session_id"] = session_id
+            attributes["inference.session_id"] = session_id
         if failure_reason is not None:
-            payload["failure_reason"] = failure_reason
+            attributes["error.message"] = failure_reason
         if failure_category is not None:
-            payload["failure_category"] = failure_category
+            attributes["error.type"] = failure_category
         if duration_ms is not None:
-            payload["duration_ms"] = duration_ms
+            attributes["funnel.duration_ms"] = duration_ms
         if platform is not None:
-            payload["platform"] = platform
+            attributes["funnel.platform"] = platform
         if metadata is not None:
-            payload["metadata"] = metadata
-
-        try:
-            self._funnel_queue.put_nowait(payload)
-        except queue.Full:
-            logger.debug("Funnel telemetry queue full — dropping event %s", stage)
+            attributes["funnel.metadata"] = metadata
+        self._enqueue(name=f"funnel.{stage}", attributes=attributes)
 
     # ------------------------------------------------------------------
     # Shutdown
     # ------------------------------------------------------------------
 
     def close(self) -> None:
-        """Signal dispatch threads to drain remaining events and exit."""
+        """Signal dispatch thread to drain remaining events and exit."""
         self._queue.put(None)  # sentinel
-        self._funnel_queue.put(None)  # sentinel
         self._worker.join(timeout=5.0)
-        self._funnel_worker.join(timeout=5.0)
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -427,47 +389,42 @@ class TelemetryReporter:
     def _enqueue(
         self,
         *,
-        event_type: str,
-        model_id: str,
-        version: str,
-        session_id: str,
-        modality: str,
-        metrics: dict[str, Any] | None = None,
+        name: str,
+        attributes: dict[str, Any],
     ) -> None:
-        """Build the payload and place it on the queue (non-blocking)."""
-        payload: dict[str, Any] = {
-            "device_id": self.device_id,
-            "model_id": model_id,
-            "version": version,
-            "modality": modality,
-            "session_id": session_id,
-            "event_type": event_type,
+        """Build a v2 event and place it on the queue (non-blocking)."""
+        event: dict[str, Any] = {
+            "name": name,
             "timestamp_ms": int(time.time() * 1000),
-            "org_id": self.org_id,
+            "attributes": attributes,
         }
-        if metrics:
-            payload["metrics"] = metrics
         try:
-            self._queue.put_nowait(payload)
+            self._queue.put_nowait(event)
         except queue.Full:
-            logger.debug("Telemetry queue full — dropping event %s", event_type)
+            logger.debug("Telemetry queue full — dropping event %s", name)
 
     def _dispatch_loop(self) -> None:
-        """Background thread: pull payloads from the queue and POST them."""
+        """Background thread: pull events from the queue and POST them as OTLP envelopes."""
         client = httpx.Client(timeout=5.0)
-        url = f"{self.api_base}/inference/events"
+        url = _v2_url(self.api_base)
         headers = {"Authorization": f"Bearer {self.api_key}"}
+        resource = self._resource()
         try:
             while True:
-                payload = self._queue.get()
-                if payload is None:
+                event = self._queue.get()
+                if event is None:
                     # Drain remaining items before exiting
+                    remaining_events: list[dict[str, Any]] = []
                     while not self._queue.empty():
                         remaining = self._queue.get_nowait()
                         if remaining is not None:
-                            self._send(client, url, headers, remaining)
+                            remaining_events.append(remaining)
+                    if remaining_events:
+                        envelope = {"resource": resource, "events": remaining_events}
+                        self._send(client, url, headers, envelope)
                     break
-                self._send(client, url, headers, payload)
+                envelope = {"resource": resource, "events": [event]}
+                self._send(client, url, headers, envelope)
         finally:
             client.close()
 
@@ -483,21 +440,3 @@ class TelemetryReporter:
             client.post(url, json=payload, headers=headers)
         except Exception as exc:  # noqa: BLE001
             logger.warning("Telemetry event dispatch failed: %s", exc)
-
-    def _funnel_dispatch_loop(self) -> None:
-        """Background thread: pull funnel payloads and POST to /funnel/events."""
-        client = httpx.Client(timeout=5.0)
-        url = f"{self.api_base}/funnel/events"
-        headers = {"Authorization": f"Bearer {self.api_key}"}
-        try:
-            while True:
-                payload = self._funnel_queue.get()
-                if payload is None:
-                    while not self._funnel_queue.empty():
-                        remaining = self._funnel_queue.get_nowait()
-                        if remaining is not None:
-                            self._send(client, url, headers, remaining)
-                    break
-                self._send(client, url, headers, payload)
-        finally:
-            client.close()
