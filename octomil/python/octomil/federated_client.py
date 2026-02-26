@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import io
 import logging
+import time
 import uuid
 from pathlib import Path
 from typing import (
@@ -124,6 +125,24 @@ class FederatedClient:
         self.secure_aggregation = secure_aggregation
         self.rollouts = RolloutsAPI(self.api)
         self.experiments = ExperimentsAPI(self.api, org_id=self.org_id)
+
+    @property
+    def _reporter(self):
+        """Return the global TelemetryReporter, or None."""
+        try:
+            from octomil import get_reporter
+            return get_reporter()
+        except Exception:
+            return None
+
+    def _report_funnel(self, **kwargs) -> None:
+        """Best-effort funnel event reporting."""
+        reporter = self._reporter
+        if reporter:
+            try:
+                reporter.report_funnel_event(**kwargs)
+            except Exception:
+                logger.debug("Telemetry reporting failed in FederatedClient")
 
     @property
     def inference(self):
@@ -264,32 +283,79 @@ class FederatedClient:
         if not version:
             raise OctomilClientError(_MODEL_VERSION_ERROR)
 
-        for _ in range(rounds):
-            if callable(data):
-                weights_data, sample_count, metrics = data()
-            elif df is not None:
-                weights_data = df.drop(columns=[target_col]).values
-            else:
-                weights_data = data
+        t0 = time.monotonic()
+        session_id = uuid.uuid4().hex[:12]
+        self._report_funnel(
+            stage="training_started",
+            model_id=model,
+            session_id=session_id,
+        )
 
-            weights_bytes = self._serialize_weights(weights_data)
-            weights_b64 = base64.b64encode(weights_bytes).decode("ascii")
+        try:
+            for round_idx in range(rounds):
+                if callable(data):
+                    weights_data, sample_count, metrics = data()
+                elif df is not None:
+                    weights_data = df.drop(columns=[target_col]).values
+                else:
+                    weights_data = data
 
-            payload: Dict[str, Any] = {
-                "model_id": model_id,
-                "version": version,
-                "device_id": self.device_id,
-                "sample_count": sample_count or 0,
-                "metrics": metrics or {},
-                "update_format": update_format,
-                "weights_data": weights_b64,
-            }
+                weights_bytes = self._serialize_weights(weights_data)
+                weights_b64 = base64.b64encode(weights_bytes).decode("ascii")
 
-            if detected_features:
-                payload["detected_features"] = detected_features
+                payload: Dict[str, Any] = {
+                    "model_id": model_id,
+                    "version": version,
+                    "device_id": self.device_id,
+                    "sample_count": sample_count or 0,
+                    "metrics": metrics or {},
+                    "update_format": update_format,
+                    "weights_data": weights_b64,
+                }
 
-            results.append(self.api.post(_TRAINING_WEIGHTS_ENDPOINT, payload))
+                if detected_features:
+                    payload["detected_features"] = detected_features
 
+                upload_t0 = time.monotonic()
+                try:
+                    result = self.api.post(_TRAINING_WEIGHTS_ENDPOINT, payload)
+                    results.append(result)
+                    self._report_funnel(
+                        stage="weight_upload",
+                        success=True,
+                        model_id=model,
+                        session_id=session_id,
+                        duration_ms=int((time.monotonic() - upload_t0) * 1000),
+                    )
+                except Exception as exc:
+                    self._report_funnel(
+                        stage="weight_upload",
+                        success=False,
+                        model_id=model,
+                        session_id=session_id,
+                        failure_reason=str(exc),
+                        failure_category="upload_error",
+                        duration_ms=int((time.monotonic() - upload_t0) * 1000),
+                    )
+                    raise
+        except Exception as exc:
+            self._report_funnel(
+                stage="training_failed",
+                model_id=model,
+                session_id=session_id,
+                failure_reason=str(exc),
+                failure_category="training_error",
+                duration_ms=int((time.monotonic() - t0) * 1000),
+            )
+            raise
+
+        self._report_funnel(
+            stage="training_completed",
+            success=True,
+            model_id=model,
+            session_id=session_id,
+            duration_ms=int((time.monotonic() - t0) * 1000),
+        )
         return results
 
     def get_model_architecture(self, model: str) -> Dict[str, Any]:
@@ -329,24 +395,72 @@ class FederatedClient:
         if not version:
             raise OctomilClientError(_MODEL_VERSION_ERROR)
 
+        t0 = time.monotonic()
+        session_id = uuid.uuid4().hex[:12]
+        self._report_funnel(
+            stage="training_started",
+            model_id=model,
+            session_id=session_id,
+        )
+
         results = []
-        for _ in range(rounds):
-            base_bytes = self.pull_model(model_id, version=version, format=format)
-            base_state = self._deserialize_weights(base_bytes)
-            updated_state, sample_count, metrics = local_train_fn(base_state)
-            if update_format == "delta":
-                updated_state = compute_state_dict_delta(base_state, updated_state)
-            weights_data = self._serialize_weights(updated_state)
-            payload = {
-                "model_id": model_id,
-                "version": version,
-                "device_id": self.device_id,
-                "sample_count": sample_count or 0,
-                "metrics": metrics or {},
-                "update_format": update_format,
-                "weights_data": base64.b64encode(weights_data).decode("ascii"),
-            }
-            results.append(self.api.post(_TRAINING_WEIGHTS_ENDPOINT, payload))
+        try:
+            for _ in range(rounds):
+                base_bytes = self.pull_model(model_id, version=version, format=format)
+                base_state = self._deserialize_weights(base_bytes)
+                updated_state, sample_count, metrics = local_train_fn(base_state)
+                if update_format == "delta":
+                    updated_state = compute_state_dict_delta(base_state, updated_state)
+                weights_data = self._serialize_weights(updated_state)
+                payload = {
+                    "model_id": model_id,
+                    "version": version,
+                    "device_id": self.device_id,
+                    "sample_count": sample_count or 0,
+                    "metrics": metrics or {},
+                    "update_format": update_format,
+                    "weights_data": base64.b64encode(weights_data).decode("ascii"),
+                }
+                upload_t0 = time.monotonic()
+                try:
+                    result = self.api.post(_TRAINING_WEIGHTS_ENDPOINT, payload)
+                    results.append(result)
+                    self._report_funnel(
+                        stage="weight_upload",
+                        success=True,
+                        model_id=model,
+                        session_id=session_id,
+                        duration_ms=int((time.monotonic() - upload_t0) * 1000),
+                    )
+                except Exception as exc:
+                    self._report_funnel(
+                        stage="weight_upload",
+                        success=False,
+                        model_id=model,
+                        session_id=session_id,
+                        failure_reason=str(exc),
+                        failure_category="upload_error",
+                        duration_ms=int((time.monotonic() - upload_t0) * 1000),
+                    )
+                    raise
+        except Exception as exc:
+            self._report_funnel(
+                stage="training_failed",
+                model_id=model,
+                session_id=session_id,
+                failure_reason=str(exc),
+                failure_category="training_error",
+                duration_ms=int((time.monotonic() - t0) * 1000),
+            )
+            raise
+
+        self._report_funnel(
+            stage="training_completed",
+            success=True,
+            model_id=model,
+            session_id=session_id,
+            duration_ms=int((time.monotonic() - t0) * 1000),
+        )
         return results
 
     # ------------------------------------------------------------------
@@ -460,7 +574,28 @@ class FederatedClient:
             "update_format": "delta",
             "weights_data": base64.b64encode(weights_data).decode("ascii"),
         }
-        return self.api.post(_TRAINING_WEIGHTS_ENDPOINT, payload)
+        upload_t0 = time.monotonic()
+        try:
+            result = self.api.post(_TRAINING_WEIGHTS_ENDPOINT, payload)
+            self._report_funnel(
+                stage="weight_upload",
+                success=True,
+                model_id=model_id,
+                session_id=round_id,
+                duration_ms=int((time.monotonic() - upload_t0) * 1000),
+            )
+            return result
+        except Exception as exc:
+            self._report_funnel(
+                stage="weight_upload",
+                success=False,
+                model_id=model_id,
+                session_id=round_id,
+                failure_reason=str(exc),
+                failure_category="upload_error",
+                duration_ms=int((time.monotonic() - upload_t0) * 1000),
+            )
+            raise
 
     def train_if_eligible(
         self,
@@ -484,6 +619,13 @@ class FederatedClient:
             charging=charging,
         )
         if not eligibility.eligible:
+            self._report_funnel(
+                stage="training_started",
+                success=False,
+                session_id=round_id,
+                failure_category="device_ineligible",
+                failure_reason=eligibility.reason,
+            )
             return {"skipped": True, "reason": eligibility.reason}
 
         try:
@@ -502,6 +644,13 @@ class FederatedClient:
                     device_id=self.device_id or self.device_identifier,
                     weights_data=weights_bytes,
                     sample_count=0,
+                )
+                self._report_funnel(
+                    stage="weight_upload",
+                    success=False,
+                    session_id=round_id,
+                    failure_category="upload_failed_cached",
+                    failure_reason=str(exc),
                 )
             return {"skipped": True, "reason": "upload_failed"}
 
