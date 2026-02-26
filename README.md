@@ -1,6 +1,6 @@
 <p align="center">
   <strong>Octomil</strong><br>
-  Run ML models locally. Train them together.
+  On-device AI inference. Deploy, route, observe.
 </p>
 
 <p align="center">
@@ -48,7 +48,21 @@ client.experiments.create(name="v1-vs-v2", model_id=model["id"],
                           control_version="1.0.0", treatment_version="1.1.0")
 ```
 
-## Federated Learning
+## CLI
+
+| Command                     |                                            |
+| --------------------------- | ------------------------------------------ |
+| `octomil serve <model>`     | Local inference server (OpenAI-compatible) |
+| `octomil pull <model>`      | Download a model                           |
+| `octomil push <file>`       | Upload a model                             |
+| `octomil deploy <model>`    | Deploy to devices                          |
+| `octomil convert <file>`    | Convert to CoreML / TFLite                 |
+| `octomil check <file>`      | Validate a model                           |
+| `octomil scan <path>`       | Security scan                              |
+| `octomil benchmark <model>` | Latency benchmarks                         |
+| `octomil login`             | Authenticate                               |
+
+## Federated Learning (Enterprise)
 
 Train across devices without centralizing data:
 
@@ -68,20 +82,6 @@ if assignment:
     client.participate_in_round(round_id=assignment["round_id"],
                                 local_train_fn=my_train_fn)
 ```
-
-## CLI
-
-| Command                     |                                            |
-| --------------------------- | ------------------------------------------ |
-| `octomil serve <model>`     | Local inference server (OpenAI-compatible) |
-| `octomil pull <model>`      | Download a model                           |
-| `octomil push <file>`       | Upload a model                             |
-| `octomil deploy <model>`    | Deploy to devices                          |
-| `octomil convert <file>`    | Convert to CoreML / TFLite                 |
-| `octomil check <file>`      | Validate a model                           |
-| `octomil scan <path>`       | Security scan                              |
-| `octomil benchmark <model>` | Latency benchmarks                         |
-| `octomil login`             | Authenticate                               |
 
 ## Documentation
 
