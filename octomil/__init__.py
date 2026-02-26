@@ -55,32 +55,42 @@ from .routing import (
     RoutingDecision,
     assign_tiers,
 )
-from .python.octomil import (
-    Octomil,
-    OctomilClientError,
-    ExperimentsAPI,
-    FederatedAnalyticsAPI,
-    Federation,
-    FederatedClient,
-    ModelRegistry,
-    RolloutsAPI,
-    DeviceAuthClient,
-    compute_state_dict_delta,
-    apply_filters,
-    DataKind,
-    DeltaFilter,
-    FilterRegistry,
-    FilterResult,
-    ECKeyPair,
-    SecAggClient,
-    SecAggConfig,
-    SecAggPlusClient,
-    SecAggPlusConfig,
-    SECAGG_PLUS_MOD_RANGE,
-    HKDF_INFO_PAIRWISE_MASK,
-    HKDF_INFO_SHARE_ENCRYPTION,
-    HKDF_INFO_SELF_MASK,
-)
+
+# The inner SDK package has heavy optional deps (torch, cryptography, etc.)
+# that are not bundled in the standalone CLI binary (PyInstaller).
+# Only suppress ImportError when running as a frozen binary.
+_FROZEN = getattr(_sys, "frozen", False)
+
+try:
+    from .python.octomil import (
+        Octomil,
+        OctomilClientError,
+        ExperimentsAPI,
+        FederatedAnalyticsAPI,
+        Federation,
+        FederatedClient,
+        ModelRegistry,
+        RolloutsAPI,
+        DeviceAuthClient,
+        compute_state_dict_delta,
+        apply_filters,
+        DataKind,
+        DeltaFilter,
+        FilterRegistry,
+        FilterResult,
+        ECKeyPair,
+        SecAggClient,
+        SecAggConfig,
+        SecAggPlusClient,
+        SecAggPlusConfig,
+        SECAGG_PLUS_MOD_RANGE,
+        HKDF_INFO_PAIRWISE_MASK,
+        HKDF_INFO_SHARE_ENCRYPTION,
+        HKDF_INFO_SELF_MASK,
+    )
+except ImportError:
+    if not _FROZEN:
+        raise
 
 # Alias inner submodules so ``from octomil.secagg import …`` works without
 # requiring users to know about the nested ``octomil.python.octomil`` layout.
