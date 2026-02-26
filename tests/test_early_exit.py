@@ -739,14 +739,14 @@ class TestTelemetryEarlyExit:
             reporter.close()
 
         assert len(sent) >= 1
-        p = sent[0]
-        assert p["event_type"] == "early_exit_stats"
-        m = p["metrics"]
-        assert m["total_tokens"] == 100
-        assert m["early_exit_tokens"] == 30
-        assert m["exit_percentage"] == 30.0
-        assert m["avg_layers_used"] == 20.5
-        assert m["avg_entropy"] == 0.22
+        event = sent[0]["events"][0]
+        assert event["name"] == "inference.early_exit_stats"
+        attrs = event["attributes"]
+        assert attrs["inference.early_exit.total_tokens"] == 100
+        assert attrs["inference.early_exit.early_exit_tokens"] == 30
+        assert attrs["inference.early_exit.exit_percentage"] == 30.0
+        assert attrs["inference.early_exit.avg_layers_used"] == 20.5
+        assert attrs["inference.early_exit.avg_entropy"] == 0.22
 
     def test_generation_completed_includes_early_exit(self):
         from octomil.telemetry import TelemetryReporter
@@ -782,10 +782,11 @@ class TestTelemetryEarlyExit:
             reporter.close()
 
         assert len(sent) >= 1
-        p = sent[0]
-        assert p["event_type"] == "generation_completed"
-        assert "early_exit" in p["metrics"]
-        assert p["metrics"]["early_exit"]["early_exit_tokens"] == 15
+        event = sent[0]["events"][0]
+        assert event["name"] == "inference.completed"
+        attrs = event["attributes"]
+        assert "inference.early_exit" in attrs
+        assert attrs["inference.early_exit"]["early_exit_tokens"] == 15
 
     def test_generation_completed_no_early_exit_when_none(self):
         from octomil.telemetry import TelemetryReporter
@@ -816,8 +817,8 @@ class TestTelemetryEarlyExit:
             reporter.close()
 
         assert len(sent) >= 1
-        p = sent[0]
-        assert "early_exit" not in p["metrics"]
+        attrs = sent[0]["events"][0]["attributes"]
+        assert "inference.early_exit" not in attrs
 
 
 # ---------------------------------------------------------------------------
