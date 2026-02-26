@@ -42,6 +42,13 @@ except ImportError:
     pd = None  # type: ignore[assignment]
     HAS_PANDAS = False
 
+def _get_sdk_version() -> str:
+    """Return the SDK version, avoiding circular imports."""
+    from octomil import __version__
+
+    return __version__
+
+
 _MODEL_VERSION_ERROR = "Failed to resolve model version"
 _TRAINING_WEIGHTS_ENDPOINT = "/training/weights"
 
@@ -154,7 +161,7 @@ class FederatedClient:
             "org_id": self.org_id,
             "platform": self.platform,
             "os_version": "macos",
-            "sdk_version": "0.2.0",
+            "sdk_version": _get_sdk_version(),
             "app_version": "0.1.0",
             "metadata": {"client": "python-sdk"},
             "capabilities": {"training": True},

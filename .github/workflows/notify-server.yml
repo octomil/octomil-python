@@ -1,0 +1,26 @@
+name: Notify Server
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - '*.md'
+      - 'docs/**'
+
+jobs:
+  notify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Get version
+        id: version
+        run: echo "version=$(python setup.py --version)" >> $GITHUB_OUTPUT
+
+      - name: Dispatch to server
+        uses: peter-evans/repository-dispatch@v3
+        with:
+          token: ${{ secrets.CROSS_REPO_TOKEN }}
+          repository: octomil/octomil-server
+          event-type: sdk-release
+          client-payload: '{"sdk": "python", "version": "${{ steps.version.outputs.version }}"}'
