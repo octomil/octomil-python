@@ -30,6 +30,10 @@ _MODEL_ALIASES: Dict[str, Dict[str, str]] = {
     # ── Phi family ────────────────────────────────────────────────────────
     "phi-4-mini": {"hf": "microsoft/Phi-4-mini-instruct-onnx", "ollama": "phi4-mini"},
     "phi-mini": {"hf": "REDACTED", "hf_onnx": "REDACTED-onnx", "ollama": "phi3.5"},
+    "phi-3.5-mini": {"hf": "REDACTED", "hf_onnx": "REDACTED-onnx", "ollama": "phi3.5"},
+    "phi3.5": {"hf": "REDACTED", "hf_onnx": "REDACTED-onnx", "ollama": "phi3.5"},
+    "phi3.5-mini": {"hf": "REDACTED", "hf_onnx": "REDACTED-onnx", "ollama": "phi3.5"},
+    "phi-mini-3.8b": {"hf": "REDACTED", "hf_onnx": "REDACTED-onnx", "ollama": "phi3.5"},
     "phi-4": {"hf": "REDACTED", "hf_onnx": "REDACTED-onnx", "ollama": "phi4"},
     "phi4": {"hf": "REDACTED", "hf_onnx": "REDACTED-onnx", "ollama": "phi4"},
     "phi4-mini": {"hf": "microsoft/Phi-4-mini-instruct-onnx", "ollama": "phi4-mini"},
