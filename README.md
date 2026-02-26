@@ -87,6 +87,17 @@ if assignment:
 
 [docs.octomil.com/sdks/python](https://docs.octomil.com/sdks/python)
 
+## Releasing
+
+Releases are managed with [Knope](https://knope.tech). From `main`:
+
+```bash
+knope release              # bumps versions, generates changelog, opens a PR
+# merge the PR, then:
+git pull origin main
+knope release-pr-merged    # creates GitHub release + tag → triggers PyPI publish
+```
+
 ## Contributing
 
 See [CONTRIBUTING.md](CONTRIBUTING.md).
