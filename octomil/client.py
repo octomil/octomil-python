@@ -13,9 +13,17 @@ simpler interface designed for CLI and script usage::
 
 from __future__ import annotations
 
+import logging
 import os
+import time
 from pathlib import Path
-from typing import Any, Optional
+from typing import TYPE_CHECKING, Any, Optional
+
+if TYPE_CHECKING:
+    from .model import Model
+    from .telemetry import TelemetryReporter
+
+logger = logging.getLogger(__name__)
 
 from .python.octomil.api_client import OctomilClientError
 
@@ -94,6 +102,22 @@ class Client:
             api_base=self._api_base,
         )
         self._rollouts = RolloutsAPI(self._api)
+
+        # Telemetry — best-effort, never blocks or raises
+        self._reporter: TelemetryReporter | None = None
+        if self._api_key:
+            try:
+                from .telemetry import TelemetryReporter as _TR
+
+                self._reporter = _TR(
+                    api_key=self._api_key,
+                    api_base=self._api_base,
+                    org_id=self._org_id,
+                )
+            except Exception:
+                logger.debug("Failed to initialise telemetry reporter", exc_info=True)
+
+        self._models: dict[str, Model] = {}
 
     # ------------------------------------------------------------------
     # Push — upload a model file + trigger server-side conversion
@@ -216,12 +240,44 @@ class Client:
         model_id = self._registry.resolve_model_id(name)
         if version is None:
             version = self._registry.get_latest_version(model_id)
-        return self._registry.download(
-            model_id=model_id,
-            version=version,
-            destination=destination,
-            format=format,
-        )
+
+        t0 = time.monotonic()
+        try:
+            result = self._registry.download(
+                model_id=model_id,
+                version=version,
+                destination=destination,
+                format=format,
+            )
+        except Exception as exc:
+            elapsed_ms = int((time.monotonic() - t0) * 1000)
+            if self._reporter:
+                try:
+                    self._reporter.report_funnel_event(
+                        stage="model_pull",
+                        success=False,
+                        model_id=name,
+                        duration_ms=elapsed_ms,
+                        failure_reason=str(exc),
+                        failure_category="download_error",
+                    )
+                except Exception:
+                    pass
+            raise
+
+        elapsed_ms = int((time.monotonic() - t0) * 1000)
+        if self._reporter:
+            try:
+                self._reporter.report_funnel_event(
+                    stage="model_pull",
+                    success=True,
+                    model_id=name,
+                    duration_ms=elapsed_ms,
+                )
+            except Exception:
+                pass
+
+        return result
 
     # ------------------------------------------------------------------
     # Deploy — create a rollout with optional device targeting
@@ -498,6 +554,95 @@ class Client:
     def list_models(self, **kwargs: Any) -> dict[str, Any]:
         """List models in the registry."""
         return self._registry.list_models(**kwargs)
+
+    # ------------------------------------------------------------------
+    # Load — pull + auto-select engine + create Model wrapper
+    # ------------------------------------------------------------------
+
+    def load_model(
+        self,
+        name: str,
+        *,
+        version: Optional[str] = None,
+        format: Optional[str] = None,
+        destination: str = ".",
+        engine: Optional[str] = None,
+    ) -> Model:
+        """Pull a model and return a ready-to-use ``Model`` instance.
+
+        Combines :meth:`pull` with engine auto-selection and creates
+        a ``Model`` object suitable for ``model.predict()`` calls.
+
+        Args:
+            name: Model name or ID.
+            version: Specific version. Defaults to latest.
+            format: Target format (onnx, coreml, tflite). Auto-detects if omitted.
+            destination: Local directory to save files into.
+            engine: Engine override (e.g. ``"mlx-lm"``). Auto-selects if omitted.
+
+        Returns:
+            A ``Model`` instance backed by the best available engine.
+        """
+        from .engines import get_registry
+        from .model import Model as _Model
+        from .model import ModelMetadata
+
+        pull_result = self.pull(
+            name, version=version, format=format, destination=destination
+        )
+
+        model_id = self._registry.resolve_model_id(name)
+        resolved_version = version
+        if resolved_version is None:
+            resolved_version = self._registry.get_latest_version(model_id)
+
+        eng_registry = get_registry()
+        selected_engine, _ = eng_registry.auto_select(
+            name, engine_override=engine
+        )
+
+        metadata = ModelMetadata(
+            model_id=model_id,
+            name=name,
+            version=resolved_version,
+        )
+
+        t0 = time.monotonic()
+        model = _Model(
+            metadata=metadata,
+            engine=selected_engine,
+            engine_kwargs={"model_path": pull_result.get("model_path")},
+            _reporter=self._reporter,
+        )
+        elapsed_ms = int((time.monotonic() - t0) * 1000)
+
+        if self._reporter:
+            try:
+                self._reporter.report_funnel_event(
+                    stage="model_load",
+                    success=True,
+                    model_id=name,
+                    duration_ms=elapsed_ms,
+                )
+            except Exception:
+                pass
+
+        self._models[name] = model
+        return model
+
+    # ------------------------------------------------------------------
+    # Dispose — clean up models and telemetry
+    # ------------------------------------------------------------------
+
+    def dispose(self) -> None:
+        """Release all cached models and shut down the telemetry reporter."""
+        self._models.clear()
+        if self._reporter:
+            try:
+                self._reporter.close()
+            except Exception:
+                logger.debug("Failed to close telemetry reporter", exc_info=True)
+            self._reporter = None
 
 
 # ------------------------------------------------------------------
