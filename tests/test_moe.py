@@ -420,6 +420,10 @@ class TestTelemetryMoERouting:
         while len(self.sent) < expected_count and time.time() < deadline:
             time.sleep(0.05)
 
+    def _get_event_attrs(self, index: int = 0) -> dict:
+        """Extract event attributes from the sent envelope at given index."""
+        return self.sent[index]["events"][0]["attributes"]
+
     def test_moe_routing_event_structure(self) -> None:
         self.reporter.report_moe_routing(
             session_id="sess-1",
@@ -431,16 +435,18 @@ class TestTelemetryMoERouting:
         )
         self._wait_for_events()
         assert len(self.sent) >= 1
-        payload = self.sent[0]
-        assert payload["event_type"] == "moe_routing"
-        assert payload["model_id"] == "mixtral-8x7b"
-        assert payload["session_id"] == "sess-1"
-        assert payload["device_id"] == "dev-moe"
-        assert payload["org_id"] == "test-org"
-        metrics = payload["metrics"]
-        assert metrics["num_experts"] == 8
-        assert metrics["active_experts"] == 2
-        assert metrics["total_tokens_routed"] == 100
+        event = self.sent[0]["events"][0]
+        assert event["name"] == "inference.moe_routing"
+        # Resource carries device_id and org_id
+        resource = self.sent[0]["resource"]
+        assert resource["device_id"] == "dev-moe"
+        assert resource["org_id"] == "test-org"
+        attrs = event["attributes"]
+        assert attrs["model.id"] == "mixtral-8x7b"
+        assert attrs["inference.session_id"] == "sess-1"
+        assert attrs["inference.moe.num_experts"] == 8
+        assert attrs["inference.moe.active_experts"] == 2
+        assert attrs["inference.moe.total_tokens_routed"] == 100
 
     def test_moe_routing_with_activation_counts(self) -> None:
         counts = {0: 30, 1: 25, 2: 20, 3: 15, 4: 5, 5: 3, 6: 1, 7: 1}
@@ -455,11 +461,11 @@ class TestTelemetryMoERouting:
         )
         self._wait_for_events()
         assert len(self.sent) >= 1
-        metrics = self.sent[0]["metrics"]
-        assert metrics["expert_activation_counts"] == counts
+        attrs = self._get_event_attrs()
+        assert attrs["inference.moe.expert_activation_counts"] == counts
         # Load balance score should be auto-computed
-        assert "load_balance_score" in metrics
-        assert 0.0 <= metrics["load_balance_score"] <= 1.0
+        assert "inference.moe.load_balance_score" in attrs
+        assert 0.0 <= attrs["inference.moe.load_balance_score"] <= 1.0
 
     def test_moe_routing_explicit_load_balance(self) -> None:
         self.reporter.report_moe_routing(
@@ -472,8 +478,8 @@ class TestTelemetryMoERouting:
             total_tokens_routed=500,
         )
         self._wait_for_events()
-        metrics = self.sent[0]["metrics"]
-        assert metrics["load_balance_score"] == 0.85
+        attrs = self._get_event_attrs()
+        assert attrs["inference.moe.load_balance_score"] == 0.85
 
     def test_moe_routing_with_memory_info(self) -> None:
         self.reporter.report_moe_routing(
@@ -486,8 +492,8 @@ class TestTelemetryMoERouting:
             total_tokens_routed=1000,
         )
         self._wait_for_events()
-        metrics = self.sent[0]["metrics"]
-        assert metrics["expert_memory_mb"] == 4096.5
+        attrs = self._get_event_attrs()
+        assert attrs["inference.moe.expert_memory_mb"] == 4096.5
 
     def test_moe_routing_load_balance_overrides_computed(self) -> None:
         """Explicit load_balance_score should override auto-computed value."""
@@ -502,9 +508,9 @@ class TestTelemetryMoERouting:
             load_balance_score=0.99,  # Override
         )
         self._wait_for_events()
-        metrics = self.sent[0]["metrics"]
+        attrs = self._get_event_attrs()
         # Explicit value wins
-        assert metrics["load_balance_score"] == 0.99
+        assert attrs["inference.moe.load_balance_score"] == 0.99
 
 
 # =====================================================================
