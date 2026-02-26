@@ -1,16 +1,17 @@
-"""Tests for octomil.telemetry — TelemetryReporter and octomil.init()."""
+"""Tests for octomil.telemetry — TelemetryReporter v2 OTLP format and octomil.init()."""
 
 from __future__ import annotations
 
 import asyncio
 import os
+import sys
 import time
 from unittest.mock import MagicMock, patch
 
 import pytest
 from httpx import ASGITransport, AsyncClient
 
-from octomil.telemetry import TelemetryReporter, _generate_device_id
+from octomil.telemetry import TelemetryReporter, _generate_device_id, _v2_url
 
 
 # ---------------------------------------------------------------------------
@@ -32,26 +33,233 @@ class TestGenerateDeviceId:
 
 
 # ---------------------------------------------------------------------------
-# TelemetryReporter — payload construction
+# _v2_url helper
 # ---------------------------------------------------------------------------
 
 
-class TestTelemetryReporterPayloads:
-    """Verify that reporter methods enqueue correct payloads."""
+class TestV2Url:
+    def test_standard_api_base(self):
+        assert _v2_url("https://api.octomil.com/api/v1") == "https://api.octomil.com/api/v2/telemetry/events"
 
-    def setup_method(self):
-        self.reporter = TelemetryReporter(
-            api_key="test-key",
-            api_base="https://api.example.com/api/v1",
-            org_id="test-org",
-            device_id="dev-001",
+    def test_trailing_slash(self):
+        assert _v2_url("https://api.octomil.com/api/v1/") == "https://api.octomil.com/api/v2/telemetry/events"
+
+    def test_custom_host(self):
+        assert _v2_url("https://custom.host.com/api/v1") == "https://custom.host.com/api/v2/telemetry/events"
+
+    def test_no_v1_suffix_fallback(self):
+        url = _v2_url("https://example.com/custom")
+        assert url == "https://example.com/custom/v2/telemetry/events"
+
+
+# ---------------------------------------------------------------------------
+# TelemetryReporter — v2 OTLP envelope structure
+# ---------------------------------------------------------------------------
+
+
+class TestTelemetryV2Envelope:
+    """Verify that dispatched payloads use the OTLP envelope format."""
+
+    def test_envelope_structure(self):
+        """Every POST should contain resource + events list."""
+        sent = []
+
+        def mock_send(client, url, headers, payload):
+            sent.append(payload)
+
+        with patch.object(TelemetryReporter, "_send", side_effect=mock_send):
+            reporter = TelemetryReporter(
+                api_key="key",
+                api_base="https://api.test.com/api/v1",
+                org_id="org-1",
+                device_id="dev-1",
+            )
+            reporter.report_generation_started(
+                model_id="gemma-1b",
+                version="1.0",
+                session_id="sess-001",
+            )
+            time.sleep(0.15)
+            reporter.close()
+
+        assert len(sent) >= 1
+        envelope = sent[0]
+        assert "resource" in envelope
+        assert "events" in envelope
+        assert isinstance(envelope["events"], list)
+        assert len(envelope["events"]) >= 1
+
+    def test_resource_fields(self):
+        """Resource block should contain sdk, sdk_version, device_id, platform, org_id."""
+        sent = []
+
+        def mock_send(client, url, headers, payload):
+            sent.append(payload)
+
+        with patch.object(TelemetryReporter, "_send", side_effect=mock_send):
+            reporter = TelemetryReporter(
+                api_key="key",
+                api_base="https://api.test.com/api/v1",
+                org_id="test-org",
+                device_id="dev-abc",
+            )
+            reporter.report_generation_started(
+                model_id="m", version="v", session_id="s",
+            )
+            time.sleep(0.15)
+            reporter.close()
+
+        resource = sent[0]["resource"]
+        assert resource["sdk"] == "python"
+        assert resource["device_id"] == "dev-abc"
+        assert resource["platform"] == sys.platform
+        assert resource["org_id"] == "test-org"
+        assert "sdk_version" in resource
+
+    def test_v2_endpoint_used(self):
+        """Dispatch should POST to the v2 telemetry endpoint."""
+        urls = []
+
+        def mock_send(client, url, headers, payload):
+            urls.append(url)
+
+        with patch.object(TelemetryReporter, "_send", side_effect=mock_send):
+            reporter = TelemetryReporter(
+                api_key="key",
+                api_base="https://api.test.com/api/v1",
+                org_id="org-1",
+                device_id="dev-1",
+            )
+            reporter.report_generation_started(
+                model_id="m", version="v", session_id="s",
+            )
+            time.sleep(0.15)
+            reporter.close()
+
+        assert len(urls) >= 1
+        assert urls[0] == "https://api.test.com/api/v2/telemetry/events"
+
+    def test_single_endpoint_for_inference_and_funnel(self):
+        """Both inference and funnel events should go to the same v2 endpoint."""
+        urls = []
+
+        def mock_send(client, url, headers, payload):
+            urls.append(url)
+
+        with patch.object(TelemetryReporter, "_send", side_effect=mock_send):
+            reporter = TelemetryReporter(
+                api_key="key",
+                api_base="https://api.test.com/api/v1",
+                org_id="org-1",
+                device_id="dev-1",
+            )
+            reporter.report_generation_started(
+                model_id="m", version="v", session_id="s",
+            )
+            reporter.report_funnel_event(stage="download", success=True)
+            time.sleep(0.15)
+            reporter.close()
+
+        assert len(urls) >= 2
+        expected = "https://api.test.com/api/v2/telemetry/events"
+        for url in urls:
+            assert url == expected
+
+
+# ---------------------------------------------------------------------------
+# TelemetryReporter — event name dot notation
+# ---------------------------------------------------------------------------
+
+
+class TestEventNameDotNotation:
+    """Verify event names use dot notation."""
+
+    def _capture_events(self):
+        """Helper: returns (reporter, sent_list) with _send patched."""
+        sent = []
+
+        def mock_send(client, url, headers, payload):
+            sent.append(payload)
+
+        patcher = patch.object(TelemetryReporter, "_send", side_effect=mock_send)
+        patcher.start()
+        reporter = TelemetryReporter(
+            api_key="key",
+            api_base="https://api.test.com/api/v1",
+            org_id="org-1",
+            device_id="dev-1",
         )
+        return reporter, sent, patcher
 
-    def teardown_method(self):
-        self.reporter.close()
+    def _get_event(self, sent, index=0):
+        """Extract the first event from the first envelope."""
+        return sent[index]["events"][0]
 
-    def test_report_generation_started(self):
-        """Verify report_generation_started enqueues a correctly-formed payload."""
+    def test_inference_started(self):
+        reporter, sent, patcher = self._capture_events()
+        reporter.report_generation_started(
+            model_id="m", version="v", session_id="s",
+        )
+        time.sleep(0.15)
+        reporter.close()
+        patcher.stop()
+        event = self._get_event(sent)
+        assert event["name"] == "inference.started"
+
+    def test_inference_completed(self):
+        reporter, sent, patcher = self._capture_events()
+        reporter.report_generation_completed(
+            session_id="s", model_id="m", version="v",
+            total_chunks=10, total_duration_ms=500.0,
+            ttfc_ms=30.0, throughput=20.0,
+        )
+        time.sleep(0.15)
+        reporter.close()
+        patcher.stop()
+        event = self._get_event(sent)
+        assert event["name"] == "inference.completed"
+
+    def test_inference_failed(self):
+        reporter, sent, patcher = self._capture_events()
+        reporter.report_generation_failed(
+            session_id="s", model_id="m", version="v",
+        )
+        time.sleep(0.15)
+        reporter.close()
+        patcher.stop()
+        event = self._get_event(sent)
+        assert event["name"] == "inference.failed"
+
+    def test_inference_chunk_produced(self):
+        reporter, sent, patcher = self._capture_events()
+        reporter.report_chunk_produced(
+            session_id="s", model_id="m", version="v", chunk_index=0,
+        )
+        time.sleep(0.15)
+        reporter.close()
+        patcher.stop()
+        event = self._get_event(sent)
+        assert event["name"] == "inference.chunk_produced"
+
+    def test_funnel_event(self):
+        reporter, sent, patcher = self._capture_events()
+        reporter.report_funnel_event(stage="download", success=True)
+        time.sleep(0.15)
+        reporter.close()
+        patcher.stop()
+        event = self._get_event(sent)
+        assert event["name"] == "funnel.download"
+
+
+# ---------------------------------------------------------------------------
+# TelemetryReporter — attribute mapping per event type
+# ---------------------------------------------------------------------------
+
+
+class TestAttributeMapping:
+    """Verify correct attribute keys for each event type."""
+
+    def test_generation_started_attributes(self):
         sent = []
 
         def mock_send(client, url, headers, payload):
@@ -69,18 +277,20 @@ class TestTelemetryReporterPayloads:
                 version="1.0",
                 session_id="sess-001",
                 modality="text",
+                attention_backend="flash_attention",
             )
             time.sleep(0.15)
             reporter.close()
 
-        assert len(sent) == 1
-        assert sent[0]["event_type"] == "generation_started"
-        assert sent[0]["model_id"] == "gemma-1b"
-        assert sent[0]["session_id"] == "sess-001"
-        assert sent[0]["modality"] == "text"
+        event = sent[0]["events"][0]
+        attrs = event["attributes"]
+        assert attrs["model.id"] == "gemma-1b"
+        assert attrs["model.version"] == "1.0"
+        assert attrs["inference.session_id"] == "sess-001"
+        assert attrs["inference.modality"] == "text"
+        assert attrs["inference.attention_backend"] == "flash_attention"
 
-    def test_generation_started_payload_structure(self):
-        """Verify the payload structure using a mock HTTP client."""
+    def test_generation_started_no_attention_backend(self):
         sent = []
 
         def mock_send(client, url, headers, payload):
@@ -94,27 +304,15 @@ class TestTelemetryReporterPayloads:
                 device_id="dev-1",
             )
             reporter.report_generation_started(
-                model_id="model-a",
-                version="2.0",
-                session_id="s1",
-                modality="text",
+                model_id="m", version="v", session_id="s",
             )
-            # Allow background thread to process
             time.sleep(0.15)
             reporter.close()
 
-        assert len(sent) >= 1
-        p = sent[0]
-        assert p["device_id"] == "dev-1"
-        assert p["model_id"] == "model-a"
-        assert p["version"] == "2.0"
-        assert p["session_id"] == "s1"
-        assert p["event_type"] == "generation_started"
-        assert p["modality"] == "text"
-        assert p["org_id"] == "org-1"
-        assert "timestamp_ms" in p
+        attrs = sent[0]["events"][0]["attributes"]
+        assert "inference.attention_backend" not in attrs
 
-    def test_chunk_produced_payload(self):
+    def test_chunk_produced_attributes(self):
         sent = []
 
         def mock_send(client, url, headers, payload):
@@ -138,14 +336,16 @@ class TestTelemetryReporterPayloads:
             time.sleep(0.15)
             reporter.close()
 
-        assert len(sent) >= 1
-        p = sent[0]
-        assert p["event_type"] == "chunk_produced"
-        assert p["metrics"]["chunk_index"] == 0
-        assert p["metrics"]["ttfc_ms"] == 42.5
-        assert p["metrics"]["chunk_latency_ms"] == 3.1
+        event = sent[0]["events"][0]
+        assert event["name"] == "inference.chunk_produced"
+        attrs = event["attributes"]
+        assert attrs["inference.chunk_index"] == 0
+        assert attrs["inference.ttfc_ms"] == 42.5
+        assert attrs["inference.chunk_latency_ms"] == 3.1
+        assert attrs["model.id"] == "model-a"
+        assert attrs["inference.session_id"] == "s1"
 
-    def test_generation_completed_payload(self):
+    def test_generation_completed_attributes(self):
         sent = []
 
         def mock_send(client, url, headers, payload):
@@ -166,19 +366,22 @@ class TestTelemetryReporterPayloads:
                 total_duration_ms=500.0,
                 ttfc_ms=30.0,
                 throughput=20.0,
+                attention_backend="metal_fused",
             )
             time.sleep(0.15)
             reporter.close()
 
-        assert len(sent) >= 1
-        p = sent[0]
-        assert p["event_type"] == "generation_completed"
-        assert p["metrics"]["total_chunks"] == 10
-        assert p["metrics"]["total_duration_ms"] == 500.0
-        assert p["metrics"]["ttfc_ms"] == 30.0
-        assert p["metrics"]["throughput"] == 20.0
+        event = sent[0]["events"][0]
+        assert event["name"] == "inference.completed"
+        attrs = event["attributes"]
+        assert attrs["inference.duration_ms"] == 500.0
+        assert attrs["inference.ttft_ms"] == 30.0
+        assert attrs["inference.total_tokens"] == 10
+        assert attrs["inference.throughput_tps"] == 20.0
+        assert attrs["inference.attention_backend"] == "metal_fused"
+        assert attrs["model.id"] == "model-a"
 
-    def test_generation_failed_payload(self):
+    def test_generation_failed_attributes(self):
         sent = []
 
         def mock_send(client, url, headers, payload):
@@ -199,10 +402,249 @@ class TestTelemetryReporterPayloads:
             time.sleep(0.15)
             reporter.close()
 
-        assert len(sent) >= 1
-        p = sent[0]
-        assert p["event_type"] == "generation_failed"
-        assert "metrics" not in p
+        event = sent[0]["events"][0]
+        assert event["name"] == "inference.failed"
+        attrs = event["attributes"]
+        assert attrs["error.type"] == "generation_failed"
+        assert attrs["model.id"] == "model-a"
+        assert attrs["inference.session_id"] == "s1"
+
+    def test_funnel_event_attributes(self):
+        sent = []
+
+        def mock_send(client, url, headers, payload):
+            sent.append(payload)
+
+        with patch.object(TelemetryReporter, "_send", side_effect=mock_send):
+            reporter = TelemetryReporter(
+                api_key="key",
+                api_base="https://api.test.com/api/v1",
+                org_id="org-1",
+                device_id="dev-1",
+            )
+            reporter.report_funnel_event(
+                stage="deploy",
+                success=False,
+                model_id="model-a",
+                session_id="s1",
+                failure_reason="timeout",
+                failure_category="network_error",
+            )
+            time.sleep(0.15)
+            reporter.close()
+
+        event = sent[0]["events"][0]
+        assert event["name"] == "funnel.deploy"
+        attrs = event["attributes"]
+        assert attrs["funnel.success"] is False
+        assert attrs["model.id"] == "model-a"
+        assert attrs["inference.session_id"] == "s1"
+        assert attrs["error.message"] == "timeout"
+        assert attrs["error.type"] == "network_error"
+
+
+# ---------------------------------------------------------------------------
+# TelemetryReporter — TPOT calculation
+# ---------------------------------------------------------------------------
+
+
+class TestTPOTCalculation:
+    """Verify TPOT (time per output token) is computed correctly."""
+
+    def test_tpot_basic(self):
+        """TPOT = (total_duration_ms - ttft_ms) / (total_tokens - 1)."""
+        sent = []
+
+        def mock_send(client, url, headers, payload):
+            sent.append(payload)
+
+        with patch.object(TelemetryReporter, "_send", side_effect=mock_send):
+            reporter = TelemetryReporter(
+                api_key="key",
+                api_base="https://api.test.com/api/v1",
+                org_id="org-1",
+                device_id="dev-1",
+            )
+            reporter.report_generation_completed(
+                session_id="s1",
+                model_id="m",
+                version="v",
+                total_chunks=10,
+                total_duration_ms=500.0,
+                ttfc_ms=50.0,
+                throughput=20.0,
+            )
+            time.sleep(0.15)
+            reporter.close()
+
+        attrs = sent[0]["events"][0]["attributes"]
+        # (500 - 50) / (10 - 1) = 450 / 9 = 50.0
+        assert attrs["inference.tpot_ms"] == pytest.approx(50.0)
+
+    def test_tpot_not_present_when_single_token(self):
+        """When total_tokens <= 1, TPOT should not be included."""
+        sent = []
+
+        def mock_send(client, url, headers, payload):
+            sent.append(payload)
+
+        with patch.object(TelemetryReporter, "_send", side_effect=mock_send):
+            reporter = TelemetryReporter(
+                api_key="key",
+                api_base="https://api.test.com/api/v1",
+                org_id="org-1",
+                device_id="dev-1",
+            )
+            reporter.report_generation_completed(
+                session_id="s1",
+                model_id="m",
+                version="v",
+                total_chunks=1,
+                total_duration_ms=100.0,
+                ttfc_ms=50.0,
+                throughput=10.0,
+            )
+            time.sleep(0.15)
+            reporter.close()
+
+        attrs = sent[0]["events"][0]["attributes"]
+        assert "inference.tpot_ms" not in attrs
+
+    def test_tpot_not_present_when_zero_duration(self):
+        """When total_duration_ms is 0, TPOT should not be included."""
+        sent = []
+
+        def mock_send(client, url, headers, payload):
+            sent.append(payload)
+
+        with patch.object(TelemetryReporter, "_send", side_effect=mock_send):
+            reporter = TelemetryReporter(
+                api_key="key",
+                api_base="https://api.test.com/api/v1",
+                org_id="org-1",
+                device_id="dev-1",
+            )
+            reporter.report_generation_completed(
+                session_id="s1",
+                model_id="m",
+                version="v",
+                total_chunks=5,
+                total_duration_ms=0.0,
+                ttfc_ms=0.0,
+                throughput=0.0,
+            )
+            time.sleep(0.15)
+            reporter.close()
+
+        attrs = sent[0]["events"][0]["attributes"]
+        assert "inference.tpot_ms" not in attrs
+
+    def test_tpot_with_two_tokens(self):
+        """With exactly 2 tokens, TPOT = total_duration - ttft."""
+        sent = []
+
+        def mock_send(client, url, headers, payload):
+            sent.append(payload)
+
+        with patch.object(TelemetryReporter, "_send", side_effect=mock_send):
+            reporter = TelemetryReporter(
+                api_key="key",
+                api_base="https://api.test.com/api/v1",
+                org_id="org-1",
+                device_id="dev-1",
+            )
+            reporter.report_generation_completed(
+                session_id="s1",
+                model_id="m",
+                version="v",
+                total_chunks=2,
+                total_duration_ms=200.0,
+                ttfc_ms=50.0,
+                throughput=10.0,
+            )
+            time.sleep(0.15)
+            reporter.close()
+
+        attrs = sent[0]["events"][0]["attributes"]
+        # (200 - 50) / (2 - 1) = 150.0
+        assert attrs["inference.tpot_ms"] == pytest.approx(150.0)
+
+
+# ---------------------------------------------------------------------------
+# TelemetryReporter — modality propagation
+# ---------------------------------------------------------------------------
+
+
+class TestModalityPropagation:
+    """Verify modality is included in all inference event attributes."""
+
+    def test_modality_in_started(self):
+        sent = []
+
+        def mock_send(client, url, headers, payload):
+            sent.append(payload)
+
+        with patch.object(TelemetryReporter, "_send", side_effect=mock_send):
+            reporter = TelemetryReporter(
+                api_key="key",
+                api_base="https://api.test.com/api/v1",
+                org_id="org-1",
+                device_id="dev-1",
+            )
+            reporter.report_generation_started(
+                model_id="m", version="v", session_id="s", modality="audio",
+            )
+            time.sleep(0.15)
+            reporter.close()
+
+        attrs = sent[0]["events"][0]["attributes"]
+        assert attrs["inference.modality"] == "audio"
+
+    def test_default_modality_is_text(self):
+        sent = []
+
+        def mock_send(client, url, headers, payload):
+            sent.append(payload)
+
+        with patch.object(TelemetryReporter, "_send", side_effect=mock_send):
+            reporter = TelemetryReporter(
+                api_key="key",
+                api_base="https://api.test.com/api/v1",
+                org_id="org-1",
+                device_id="dev-1",
+            )
+            reporter.report_generation_started(
+                model_id="m", version="v", session_id="s",
+            )
+            time.sleep(0.15)
+            reporter.close()
+
+        attrs = sent[0]["events"][0]["attributes"]
+        assert attrs["inference.modality"] == "text"
+
+    def test_modality_in_completed(self):
+        sent = []
+
+        def mock_send(client, url, headers, payload):
+            sent.append(payload)
+
+        with patch.object(TelemetryReporter, "_send", side_effect=mock_send):
+            reporter = TelemetryReporter(
+                api_key="key",
+                api_base="https://api.test.com/api/v1",
+                org_id="org-1",
+                device_id="dev-1",
+            )
+            reporter.report_generation_completed(
+                session_id="s", model_id="m", version="v",
+                total_chunks=5, total_duration_ms=100.0,
+                ttfc_ms=10.0, throughput=50.0, modality="image",
+            )
+            time.sleep(0.15)
+            reporter.close()
+
+        attrs = sent[0]["events"][0]["attributes"]
+        assert attrs["inference.modality"] == "image"
 
 
 # ---------------------------------------------------------------------------
@@ -240,7 +682,7 @@ class TestTelemetryBestEffort:
             client,
             "https://unreachable.invalid/events",
             {"Authorization": "Bearer x"},
-            {"event_type": "test"},
+            {"resource": {}, "events": [{"name": "test"}]},
         )
         client.close()
 
@@ -527,10 +969,13 @@ async def test_serve_telemetry_reports_on_non_streaming(echo_app_with_telemetry)
 
         time.sleep(0.3)
 
-    # Should have generation_started and generation_completed
-    event_types = [p.get("event_type") for p in sent]
-    assert "generation_started" in event_types
-    assert "generation_completed" in event_types
+    # Collect event names from envelopes
+    event_names = []
+    for envelope in sent:
+        for event in envelope.get("events", []):
+            event_names.append(event.get("name"))
+    assert "inference.started" in event_names
+    assert "inference.completed" in event_names
 
 
 @pytest.mark.asyncio
@@ -562,11 +1007,14 @@ async def test_serve_telemetry_reports_on_streaming(echo_app_with_telemetry):
 
         time.sleep(0.5)
 
-    event_types = [p.get("event_type") for p in sent]
-    assert "generation_started" in event_types
+    event_names = []
+    for envelope in sent:
+        for event in envelope.get("events", []):
+            event_names.append(event.get("name"))
+    assert "inference.started" in event_names
     # Should have chunk_produced events and a generation_completed
-    assert "chunk_produced" in event_types
-    assert "generation_completed" in event_types
+    assert "inference.chunk_produced" in event_names
+    assert "inference.completed" in event_names
 
 
 @pytest.mark.asyncio
@@ -614,7 +1062,9 @@ class TestTelemetryClose:
                 )
             reporter.close()
 
-        assert len(sent) == 5
+        # Count total events across all envelopes
+        total_events = sum(len(e.get("events", [])) for e in sent)
+        assert total_events == 5
 
     def test_close_is_idempotent(self):
         """Calling close() multiple times should not hang or error."""
@@ -654,4 +1104,54 @@ class TestAutoDeviceId:
             device_id="custom-device-id",
         )
         assert reporter.device_id == "custom-device-id"
+        reporter.close()
+
+
+# ---------------------------------------------------------------------------
+# Backward compatibility — all public methods still work
+# ---------------------------------------------------------------------------
+
+
+class TestBackwardCompat:
+    """All existing report_* method signatures must still work."""
+
+    def test_all_report_methods_callable(self):
+        reporter = TelemetryReporter(
+            api_key="key",
+            api_base="https://api.test.com/api/v1",
+            org_id="org-1",
+            device_id="dev-1",
+        )
+
+        # These should not raise
+        reporter.report_generation_started(
+            model_id="m", version="v", session_id="s",
+        )
+        reporter.report_chunk_produced(
+            session_id="s", model_id="m", version="v", chunk_index=0,
+        )
+        reporter.report_generation_completed(
+            session_id="s", model_id="m", version="v",
+            total_chunks=5, total_duration_ms=100.0,
+            ttfc_ms=10.0, throughput=50.0,
+        )
+        reporter.report_generation_failed(
+            session_id="s", model_id="m", version="v",
+        )
+        reporter.report_early_exit_stats(
+            session_id="s", model_id="m", version="v",
+            total_tokens=100, early_exit_tokens=30,
+            exit_percentage=30.0, avg_layers_used=20.5, avg_entropy=0.22,
+        )
+        reporter.report_moe_routing(
+            session_id="s", model_id="m", version="v",
+            num_experts=8, active_experts=2,
+        )
+        reporter.report_prompt_compressed(
+            session_id="s", model_id="m", version="v",
+            original_tokens=500, compressed_tokens=250,
+            compression_ratio=0.5, strategy="token_pruning", duration_ms=3.5,
+        )
+        reporter.report_funnel_event(stage="download", success=True)
+
         reporter.close()
