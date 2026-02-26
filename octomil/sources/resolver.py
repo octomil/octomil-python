@@ -30,6 +30,10 @@ _MODEL_ALIASES: Dict[str, Dict[str, str]] = {
     # ── Phi family ────────────────────────────────────────────────────────
     "phi-4-mini": {"hf": "microsoft/Phi-4-mini-instruct-onnx", "ollama": "phi4-mini"},
     "phi-mini": {"hf": "microsoft/Phi-3.5-mini-instruct", "hf_onnx": "microsoft/Phi-3.5-mini-instruct-onnx", "ollama": "phi3.5"},
+    "phi-3.5-mini": {"hf": "microsoft/Phi-3.5-mini-instruct", "hf_onnx": "microsoft/Phi-3.5-mini-instruct-onnx", "ollama": "phi3.5"},
+    "phi3.5": {"hf": "microsoft/Phi-3.5-mini-instruct", "hf_onnx": "microsoft/Phi-3.5-mini-instruct-onnx", "ollama": "phi3.5"},
+    "phi3.5-mini": {"hf": "microsoft/Phi-3.5-mini-instruct", "hf_onnx": "microsoft/Phi-3.5-mini-instruct-onnx", "ollama": "phi3.5"},
+    "phi-mini-3.8b": {"hf": "microsoft/Phi-3.5-mini-instruct", "hf_onnx": "microsoft/Phi-3.5-mini-instruct-onnx", "ollama": "phi3.5"},
     "phi-4": {"hf": "microsoft/phi-4", "hf_onnx": "microsoft/phi-4-onnx", "ollama": "phi4"},
     "phi4": {"hf": "microsoft/phi-4", "hf_onnx": "microsoft/phi-4-onnx", "ollama": "phi4"},
     "phi4-mini": {"hf": "microsoft/Phi-4-mini-instruct-onnx", "ollama": "phi4-mini"},
