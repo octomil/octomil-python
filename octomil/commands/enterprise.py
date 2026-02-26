@@ -157,9 +157,14 @@ def _browser_login() -> None:
         else:
             click.echo(click.style("  Authenticated", fg="green"))
         click.echo("  Credentials saved to ~/.octomil/credentials")
-        click.echo(
-            '\n  Tip: Run `octomil completions` for tab-completion setup.'
-        )
+        try:
+            from .completions import _install_completions
+
+            _install_completions()
+        except Exception:
+            click.echo(
+                "\n  Tip: Run `octomil completions --install` for tab-completion setup."
+            )
         if not received_org_id:
             click.echo(
                 click.style(
