@@ -496,12 +496,14 @@ class TestCompressionTelemetry:
             reporter.close()
 
         assert len(sent) == 1
-        assert sent[0]["event_type"] == "prompt_compressed"
-        assert sent[0]["metrics"]["original_tokens"] == 500
-        assert sent[0]["metrics"]["compressed_tokens"] == 250
-        assert sent[0]["metrics"]["tokens_saved"] == 250
-        assert sent[0]["metrics"]["strategy"] == "token_pruning"
-        assert sent[0]["metrics"]["compression_duration_ms"] == 3.5
+        event = sent[0]["events"][0]
+        assert event["name"] == "inference.prompt_compressed"
+        attrs = event["attributes"]
+        assert attrs["inference.compression.original_tokens"] == 500
+        assert attrs["inference.compression.compressed_tokens"] == 250
+        assert attrs["inference.compression.tokens_saved"] == 250
+        assert attrs["inference.compression.strategy"] == "token_pruning"
+        assert attrs["inference.compression.duration_ms"] == 3.5
 
     def test_report_prompt_compressed_enqueue(self):
         """Verify the payload structure via mock."""
@@ -536,15 +538,16 @@ class TestCompressionTelemetry:
 
         assert len(captured) == 1
         call = captured[0]
-        assert call["event_type"] == "prompt_compressed"
-        assert call["model_id"] == "phi-mini"
-        assert call["session_id"] == "sess-002"
-        assert call["metrics"]["original_tokens"] == 1000
-        assert call["metrics"]["compressed_tokens"] == 400
-        assert call["metrics"]["compression_ratio"] == 0.4
-        assert call["metrics"]["tokens_saved"] == 600
-        assert call["metrics"]["strategy"] == "sliding_window"
-        assert call["metrics"]["compression_duration_ms"] == 7.2
+        assert call["name"] == "inference.prompt_compressed"
+        attrs = call["attributes"]
+        assert attrs["model.id"] == "phi-mini"
+        assert attrs["inference.session_id"] == "sess-002"
+        assert attrs["inference.compression.original_tokens"] == 1000
+        assert attrs["inference.compression.compressed_tokens"] == 400
+        assert attrs["inference.compression.compression_ratio"] == 0.4
+        assert attrs["inference.compression.tokens_saved"] == 600
+        assert attrs["inference.compression.strategy"] == "sliding_window"
+        assert attrs["inference.compression.duration_ms"] == 7.2
 
         reporter.close()
 
