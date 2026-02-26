@@ -175,7 +175,12 @@ def _print_sdk_snippet(model_name: str, version: str) -> None:
     click.secho("  Python", bold=True)
     click.echo(
         f'    client = octomil.Client(api_key="{api_key}", org_id="{org_id}")\n'
-        f'    client.pull("{model_name}", version="{version}")\n'
+        f'    text = client.predict("{model_name}", [{{"role": "user", "content": "Hello"}}])\n'
+    )
+    click.secho("  Node.js", bold=True)
+    click.echo(
+        f'    const client = new OctomilClient({{ apiKey: "{api_key}", orgId: "{org_id}" }});\n'
+        f'    const result = await client.predict("{model_name}", {{ text: "Hello" }});\n'
     )
 
 
