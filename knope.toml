@@ -3,6 +3,8 @@ versioned_files = [
     "octomil/python/pyproject.toml",
     { path = "setup.py", regex = 'version="(?<version>\d+\.\d+\.\d+)"' },
     { path = "octomil/__init__.py", regex = '__version__ = "(?<version>\d+\.\d+\.\d+)"' },
+    { path = "homebrew/octomil.rb", regex = 'version "(?<version>\d+\.\d+\.\d+)"' },
+    { path = "tests/test_cli.py", regex = '"(?<version>\d+\.\d+\.\d+)" in result' },
 ]
 changelog = "CHANGELOG.md"
 
