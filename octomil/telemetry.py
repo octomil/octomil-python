@@ -79,6 +79,13 @@ def _compute_load_balance(
     return score
 
 
+def _get_sdk_version() -> str:
+    """Return the SDK version, avoiding circular imports."""
+    from octomil import __version__
+
+    return __version__
+
+
 class TelemetryReporter:
     """Best-effort telemetry reporter for inference events.
 
@@ -374,7 +381,7 @@ class TelemetryReporter:
             "stage": stage,
             "success": success,
             "source": "sdk_python",
-            "sdk_version": "1.0.0",
+            "sdk_version": _get_sdk_version(),
             "org_id": self.org_id,
             "timestamp_ms": int(time.time() * 1000),
         }
