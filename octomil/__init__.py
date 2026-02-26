@@ -57,7 +57,10 @@ from .routing import (
 )
 
 # The inner SDK package has heavy optional deps (torch, cryptography, etc.)
-# that may not be available in the standalone CLI binary.
+# that are not bundled in the standalone CLI binary (PyInstaller).
+# Only suppress ImportError when running as a frozen binary.
+_FROZEN = getattr(_sys, "frozen", False)
+
 try:
     from .python.octomil import (
         Octomil,
@@ -86,7 +89,8 @@ try:
         HKDF_INFO_SELF_MASK,
     )
 except ImportError:
-    pass
+    if not _FROZEN:
+        raise
 
 # Alias inner submodules so ``from octomil.secagg import …`` works without
 # requiring users to know about the nested ``octomil.python.octomil`` layout.
