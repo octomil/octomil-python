@@ -17,11 +17,12 @@ import logging
 import os
 import time
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, AsyncIterator, Optional
+from typing import TYPE_CHECKING, Any, AsyncIterator, Iterator, Optional
 
 if TYPE_CHECKING:
     from .model import Model, Prediction
     from .serve import GenerationChunk
+    from .streaming import StreamToken
 
 from .python.octomil.api_client import OctomilClientError
 
@@ -108,6 +109,7 @@ class Client:
     def _reporter(self):
         """Return the global TelemetryReporter, or None."""
         from . import get_reporter
+
         return get_reporter()
 
     # ------------------------------------------------------------------
@@ -442,6 +444,68 @@ class Client:
             top_p=top_p,
         ):
             yield chunk
+
+    # ------------------------------------------------------------------
+    # Cloud streaming inference (SSE)
+    # ------------------------------------------------------------------
+
+    def stream_predict(
+        self,
+        model_id: str,
+        input_data: str | list[dict[str, str]],
+        *,
+        parameters: dict[str, Any] | None = None,
+        timeout: float = 120.0,
+    ) -> "Iterator[StreamToken]":
+        """Stream tokens from the cloud inference endpoint (sync).
+
+        Requires ``api_key`` and ``api_base`` to be configured.  This is
+        a cloud-only method — it does **not** download or run models
+        locally.
+
+        Args:
+            model_id: Model identifier (e.g. ``"phi-4-mini"``).
+            input_data: A plain string prompt or chat-style messages.
+            parameters: Generation parameters (temperature, max_tokens, etc.).
+            timeout: HTTP timeout in seconds for the streaming connection.
+
+        Yields:
+            :class:`~octomil.streaming.StreamToken` for each SSE event.
+        """
+        from .streaming import stream_inference
+
+        return stream_inference(
+            server_url=self._api_base,
+            api_key=self._api_key,
+            model_id=model_id,
+            input_data=input_data,
+            parameters=parameters,
+            timeout=timeout,
+        )
+
+    async def stream_predict_async(
+        self,
+        model_id: str,
+        input_data: str | list[dict[str, str]],
+        *,
+        parameters: dict[str, Any] | None = None,
+        timeout: float = 120.0,
+    ) -> "AsyncIterator[StreamToken]":
+        """Stream tokens from the cloud inference endpoint (async).
+
+        Async variant of :meth:`stream_predict`.
+        """
+        from .streaming import stream_inference_async
+
+        async for token in stream_inference_async(
+            server_url=self._api_base,
+            api_key=self._api_key,
+            model_id=model_id,
+            input_data=input_data,
+            parameters=parameters,
+            timeout=timeout,
+        ):
+            yield token
 
     def dispose(self) -> None:
         """Dispose all cached models."""
