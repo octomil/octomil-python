@@ -868,19 +868,26 @@ class Client:
         from .model import Model as _Model
         from .model import ModelMetadata
 
-        pull_result = self.pull(
-            name, version=version, format=format, destination=destination
+        eng_registry = get_registry()
+        selected_engine, _ = eng_registry.auto_select(
+            name, engine_override=engine
         )
+
+        # Skip registry pull for engines that manage their own downloads
+        # (e.g. mlx-lm loads from HuggingFace, ollama pulls via its API).
+        engine_kwargs: dict[str, Any] = {}
+        if selected_engine.manages_own_download:
+            pull_result = {}
+        else:
+            pull_result = self.pull(
+                name, version=version, format=format, destination=destination
+            )
+            engine_kwargs["model_path"] = pull_result.get("model_path")
 
         model_id = self._registry.resolve_model_id(name)
         resolved_version = version
         if resolved_version is None:
             resolved_version = self._registry.get_latest_version(model_id)
-
-        eng_registry = get_registry()
-        selected_engine, _ = eng_registry.auto_select(
-            name, engine_override=engine
-        )
 
         metadata = ModelMetadata(
             model_id=model_id,
@@ -892,7 +899,7 @@ class Client:
         model = _Model(
             metadata=metadata,
             engine=selected_engine,
-            engine_kwargs={"model_path": pull_result.get("model_path")},
+            engine_kwargs=engine_kwargs,
             _reporter=self._reporter,
         )
         elapsed_ms = int((time.monotonic() - t0) * 1000)

@@ -30,6 +30,7 @@ def _make_metadata(**overrides: Any) -> ModelMetadata:
 def _make_engine(backend: MagicMock | None = None) -> MagicMock:
     engine = MagicMock()
     engine.name = "echo"
+    engine.manages_own_download = False
     engine.create_backend.return_value = backend or MagicMock()
     return engine
 
