@@ -289,6 +289,8 @@ class MLXBackend(InferenceBackend):
         self,
         cache_size_mb: int = 2048,
         cache_enabled: bool = True,
+        kv_bits: Optional[int] = None,
+        kv_group_size: int = 32,
     ) -> None:
         from .cache import KVCacheManager
 
@@ -297,6 +299,8 @@ class MLXBackend(InferenceBackend):
         self._model_name: str = ""
         self._repo_id: str = ""
         self._cache_enabled = cache_enabled
+        self._kv_bits = kv_bits
+        self._kv_group_size = kv_group_size
         self._kv_cache: KVCacheManager = KVCacheManager(max_cache_size_mb=cache_size_mb)
 
     def load_model(self, model_name: str) -> None:
@@ -405,6 +409,11 @@ class MLXBackend(InferenceBackend):
         if self._draft_model is not None:
             extra_kwargs["draft_model"] = self._draft_model
 
+        # Quantized KV cache: 4-bit KV reduces memory bandwidth → faster attention
+        if self._kv_bits is not None:
+            extra_kwargs["kv_bits"] = self._kv_bits
+            extra_kwargs["kv_group_size"] = self._kv_group_size
+
         for response in mlx_lm.stream_generate(
             self._model,
             self._tokenizer,
@@ -466,6 +475,11 @@ class MLXBackend(InferenceBackend):
         # Speculative decoding: use draft model when available
         if self._draft_model is not None:
             extra_kwargs["draft_model"] = self._draft_model
+
+        # Quantized KV cache: 4-bit KV reduces memory bandwidth → faster attention
+        if self._kv_bits is not None:
+            extra_kwargs["kv_bits"] = self._kv_bits
+            extra_kwargs["kv_group_size"] = self._kv_group_size
 
         # mlx_lm.stream_generate is a sync generator that yields
         # GenerationResponse objects as tokens are produced.

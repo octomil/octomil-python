@@ -161,6 +161,8 @@ class MLXEngine(EnginePlugin):
         backend = MLXBackend(
             cache_size_mb=kwargs.get("cache_size_mb", 2048),
             cache_enabled=kwargs.get("cache_enabled", True),
+            kv_bits=kwargs.get("kv_bits"),
+            kv_group_size=kwargs.get("kv_group_size", 32),
         )
         backend.load_model(model_name)
         return backend
