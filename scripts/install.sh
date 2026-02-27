@@ -82,18 +82,42 @@ get_version() {
 
     info "Fetching latest release..."
 
+    # Fetch recent releases and pick the first one that has a binary for
+    # this platform.  This handles the race where the latest tag exists
+    # but the binary hasn't finished building yet.
+    ASSET_NAME="${BINARY_NAME}-${PLATFORM}.tar.gz"
+    RELEASES_JSON=""
     if command -v curl >/dev/null 2>&1; then
-        VERSION=$(curl -fsSL "https://api.github.com/repos/${REPO}/releases/latest" | \
-            grep '"tag_name"' | head -1 | sed -E 's/.*"tag_name":[[:space:]]*"([^"]+)".*/\1/')
+        RELEASES_JSON=$(curl -fsSL "https://api.github.com/repos/${REPO}/releases?per_page=5" 2>/dev/null) || true
     elif command -v wget >/dev/null 2>&1; then
-        VERSION=$(wget -qO- "https://api.github.com/repos/${REPO}/releases/latest" | \
-            grep '"tag_name"' | head -1 | sed -E 's/.*"tag_name":[[:space:]]*"([^"]+)".*/\1/')
+        RELEASES_JSON=$(wget -qO- "https://api.github.com/repos/${REPO}/releases?per_page=5" 2>/dev/null) || true
     else
         error "curl or wget is required to download octomil."
     fi
 
+    if [ -z "$RELEASES_JSON" ]; then
+        error "Could not fetch releases. Set OCTOMIL_VERSION manually."
+    fi
+
+    # Extract tag names from the JSON (lightweight grep, no jq needed)
+    TAGS=$(printf '%s' "$RELEASES_JSON" | grep '"tag_name"' | sed -E 's/.*"tag_name":[[:space:]]*"([^"]+)".*/\1/')
+
+    VERSION=""
+    for tag in $TAGS; do
+        CHECK_URL="https://github.com/${REPO}/releases/download/${tag}/${ASSET_NAME}"
+        if command -v curl >/dev/null 2>&1; then
+            HTTP_STATUS=$(curl -sI -o /dev/null -w '%{http_code}' -L "$CHECK_URL" 2>/dev/null) || true
+        else
+            HTTP_STATUS=$(wget --spider -S "$CHECK_URL" 2>&1 | grep 'HTTP/' | tail -1 | awk '{print $2}') || true
+        fi
+        if [ "${HTTP_STATUS:-}" = "200" ]; then
+            VERSION="$tag"
+            break
+        fi
+    done
+
     if [ -z "$VERSION" ]; then
-        error "Could not determine latest version. Set OCTOMIL_VERSION manually."
+        error "No release found with a binary for ${PLATFORM}. Set OCTOMIL_VERSION manually."
     fi
 }
 
