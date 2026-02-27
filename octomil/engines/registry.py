@@ -75,13 +75,21 @@ class EngineRegistry:
         """Detect which engines are available on this system.
 
         If model_name is provided, also checks model support.
+        Resolves model name aliases before checking engine support.
         """
+        # Resolve alias once, pass canonical name to all engines
+        canonical_name = model_name
+        if model_name:
+            from ..models.catalog import _resolve_alias
+
+            canonical_name = _resolve_alias(model_name)
+
         results: list[DetectionResult] = []
         for engine in self._engines:
             try:
                 available = engine.detect()
-                if available and model_name:
-                    available = engine.supports_model(model_name)
+                if available and canonical_name:
+                    available = engine.supports_model(canonical_name)
                 info = engine.detect_info() if available else ""
                 results.append(
                     DetectionResult(engine=engine, available=available, info=info)
