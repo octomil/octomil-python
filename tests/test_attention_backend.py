@@ -251,7 +251,7 @@ class TestORTAttentionBackend:
 
 
 class TestTelemetryAttentionBackend:
-    def test_generation_started_includes_attention_backend(self):
+    def test_inference_started_includes_attention_backend(self):
         sent: list[dict] = []
 
         def mock_send(client, url, headers, payload):
@@ -264,7 +264,7 @@ class TestTelemetryAttentionBackend:
                 org_id="org-1",
                 device_id="dev-1",
             )
-            reporter.report_generation_started(
+            reporter.report_inference_started(
                 model_id="model-a",
                 version="1.0",
                 session_id="s1",
@@ -278,7 +278,7 @@ class TestTelemetryAttentionBackend:
         assert event["name"] == "inference.started"
         assert event["attributes"]["inference.attention_backend"] == "flash_attention"
 
-    def test_generation_started_no_attention_backend_has_no_attr(self):
+    def test_inference_started_no_attention_backend_has_no_attr(self):
         sent: list[dict] = []
 
         def mock_send(client, url, headers, payload):
@@ -291,7 +291,7 @@ class TestTelemetryAttentionBackend:
                 org_id="org-1",
                 device_id="dev-1",
             )
-            reporter.report_generation_started(
+            reporter.report_inference_started(
                 model_id="model-a",
                 version="1.0",
                 session_id="s1",
@@ -303,7 +303,7 @@ class TestTelemetryAttentionBackend:
         attrs = sent[0]["events"][0]["attributes"]
         assert "inference.attention_backend" not in attrs
 
-    def test_generation_completed_includes_attention_backend(self):
+    def test_inference_completed_includes_attention_backend(self):
         sent: list[dict] = []
 
         def mock_send(client, url, headers, payload):
@@ -316,7 +316,7 @@ class TestTelemetryAttentionBackend:
                 org_id="org-1",
                 device_id="dev-1",
             )
-            reporter.report_generation_completed(
+            reporter.report_inference_completed(
                 session_id="s1",
                 model_id="model-a",
                 version="1.0",
@@ -338,7 +338,7 @@ class TestTelemetryAttentionBackend:
         assert attrs["inference.total_tokens"] == 10
         assert attrs["inference.throughput_tps"] == 20.0
 
-    def test_generation_completed_without_attention_backend(self):
+    def test_inference_completed_without_attention_backend(self):
         """When attention_backend is not passed, it should not appear in attributes."""
         sent: list[dict] = []
 
@@ -352,7 +352,7 @@ class TestTelemetryAttentionBackend:
                 org_id="org-1",
                 device_id="dev-1",
             )
-            reporter.report_generation_completed(
+            reporter.report_inference_completed(
                 session_id="s1",
                 model_id="model-a",
                 version="1.0",

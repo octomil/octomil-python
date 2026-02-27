@@ -1204,10 +1204,10 @@ def create_app(
         model_version = "latest"
         _reporter = state.reporter
 
-        # Report generation_started (best-effort)
+        # Report inference_started (best-effort)
         if _reporter is not None:
             try:
-                _reporter.report_generation_started(
+                _reporter.report_inference_started(
                     model_id=gen_req.model,
                     version=model_version,
                     session_id=session_id,
@@ -1272,7 +1272,7 @@ def create_app(
         except Exception:
             if _reporter is not None:
                 try:
-                    _reporter.report_generation_failed(
+                    _reporter.report_inference_failed(
                         session_id=session_id,
                         model_id=gen_req.model,
                         version=model_version,
@@ -1328,7 +1328,7 @@ def create_app(
             except Exception:
                 pass
 
-        # Report generation_completed (best-effort)
+        # Report inference_completed (best-effort)
         if _reporter is not None:
             try:
                 total_tokens = metrics.total_tokens
@@ -1337,7 +1337,7 @@ def create_app(
                     if gen_elapsed_ms > 0
                     else 0.0
                 )
-                _reporter.report_generation_completed(
+                _reporter.report_inference_completed(
                     session_id=session_id,
                     model_id=gen_req.model,
                     version=model_version,
@@ -1586,7 +1586,7 @@ async def _stream_response(
                         if first_chunk_time is not None and chunk_index == 0
                         else None
                     )
-                    _reporter.report_chunk_produced(
+                    _reporter.report_inference_chunk(
                         session_id=session_id,
                         model_id=request.model,
                         version=model_version,
@@ -1616,7 +1616,7 @@ async def _stream_response(
         failed = True
         if _reporter is not None:
             try:
-                _reporter.report_generation_failed(
+                _reporter.report_inference_failed(
                     session_id=session_id,
                     model_id=request.model,
                     version=model_version,
@@ -1627,7 +1627,7 @@ async def _stream_response(
 
     yield "data: [DONE]\n\n"
 
-    # Report generation_completed (best-effort)
+    # Report inference_completed (best-effort)
     if _reporter is not None and not failed:
         try:
             total_duration_ms = (time.monotonic() - stream_start) * 1000
@@ -1641,7 +1641,7 @@ async def _stream_response(
                 if total_duration_ms > 0
                 else 0.0
             )
-            _reporter.report_generation_completed(
+            _reporter.report_inference_completed(
                 session_id=session_id,
                 model_id=request.model,
                 version=model_version,
@@ -1705,7 +1705,7 @@ async def _queued_stream_response(
                         if first_chunk_time is not None and chunk_index == 0
                         else None
                     )
-                    _reporter.report_chunk_produced(
+                    _reporter.report_inference_chunk(
                         session_id=session_id,
                         model_id=request.model,
                         version=model_version,
@@ -1734,7 +1734,7 @@ async def _queued_stream_response(
 
         yield "data: [DONE]\n\n"
 
-        # Report generation_completed (best-effort)
+        # Report inference_completed (best-effort)
         if _reporter is not None:
             try:
                 total_duration_ms = (time.monotonic() - stream_start) * 1000
@@ -1748,7 +1748,7 @@ async def _queued_stream_response(
                     if total_duration_ms > 0
                     else 0.0
                 )
-                _reporter.report_generation_completed(
+                _reporter.report_inference_completed(
                     session_id=session_id,
                     model_id=request.model,
                     version=model_version,
@@ -2039,10 +2039,10 @@ def create_multi_model_app(
             model_version = "latest"
             _reporter = state.reporter
 
-            # Report generation_started
+            # Report inference_started
             if _reporter is not None:
                 try:
-                    _reporter.report_generation_started(
+                    _reporter.report_inference_started(
                         model_id=model_name,
                         version=model_version,
                         session_id=session_id,
@@ -2080,7 +2080,7 @@ def create_multi_model_app(
                 logger.warning("Model %s failed, trying fallback: %s", model_name, exc)
                 if _reporter is not None:
                     try:
-                        _reporter.report_generation_failed(
+                        _reporter.report_inference_failed(
                             session_id=session_id,
                             model_id=model_name,
                             version=model_version,
@@ -2117,7 +2117,7 @@ def create_multi_model_app(
                             if extracted is not None:
                                 text = json.dumps(extracted)
 
-            # Report generation_completed
+            # Report inference_completed
             if _reporter is not None:
                 try:
                     total_tokens = metrics.total_tokens
@@ -2126,7 +2126,7 @@ def create_multi_model_app(
                         if gen_elapsed_ms > 0
                         else 0.0
                     )
-                    _reporter.report_generation_completed(
+                    _reporter.report_inference_completed(
                         session_id=session_id,
                         model_id=model_name,
                         version=model_version,

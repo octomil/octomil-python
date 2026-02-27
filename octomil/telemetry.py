@@ -1,8 +1,8 @@
 """
 Lightweight telemetry reporter for ``octomil serve``.
 
-Reports inference lifecycle events (generation_started, chunk_produced,
-generation_completed, generation_failed) to the Octomil platform API
+Reports inference lifecycle events (inference_started, inference_chunk,
+inference_completed, inference_failed) to the Octomil platform API
 using the v2 OTLP envelope format.
 
 All reporting is best-effort: failures are logged as warnings and never
@@ -151,7 +151,7 @@ class TelemetryReporter:
     # Public reporting methods
     # ------------------------------------------------------------------
 
-    def report_generation_started(
+    def report_inference_started(
         self,
         model_id: str,
         version: str,
@@ -170,7 +170,7 @@ class TelemetryReporter:
             attributes["inference.attention_backend"] = attention_backend
         self._enqueue(name="inference.started", attributes=attributes)
 
-    def report_chunk_produced(
+    def report_inference_chunk(
         self,
         session_id: str,
         model_id: str,
@@ -194,7 +194,7 @@ class TelemetryReporter:
             attributes["inference.chunk_latency_ms"] = chunk_latency_ms
         self._enqueue(name="inference.chunk_produced", attributes=attributes)
 
-    def report_generation_completed(
+    def report_inference_completed(
         self,
         session_id: str,
         model_id: str,
@@ -256,7 +256,7 @@ class TelemetryReporter:
         }
         self._enqueue(name="inference.early_exit_stats", attributes=attributes)
 
-    def report_generation_failed(
+    def report_inference_failed(
         self,
         session_id: str,
         model_id: str,
