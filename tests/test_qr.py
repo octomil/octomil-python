@@ -2,12 +2,32 @@
 
 from __future__ import annotations
 
+from contextlib import contextmanager
+
 from unittest.mock import MagicMock, patch
 
 from click.testing import CliRunner
 
 from octomil.cli import main
 from octomil.qr import build_deep_link, print_qr_code, render_qr_terminal
+
+
+def _mock_deploy_http(*responses):
+    """Create a mock httpx.Client whose request() returns responses in order.
+
+    The deploy --phone command calls http_request() which uses
+    httpx.Client().request(), not httpx.post/get directly.  Also mocks
+    scan_for_devices and time.sleep to avoid real I/O.
+    """
+    mock_client = MagicMock()
+    mock_client.request.side_effect = list(responses)
+    mock_client.__enter__ = MagicMock(return_value=mock_client)
+    mock_client.__exit__ = MagicMock(return_value=False)
+    return (
+        patch("httpx.Client", return_value=mock_client),
+        patch("octomil.discovery.scan_for_devices", return_value=[]),
+        patch("time.sleep"),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -137,25 +157,18 @@ class TestDeployPhoneQr:
     def test_deploy_phone_shows_qr_box(self, mock_open, monkeypatch):
         monkeypatch.setenv("OCTOMIL_API_KEY", "test-key")
 
-        mock_post_resp = MagicMock()
-        mock_post_resp.status_code = 200
-        mock_post_resp.json.return_value = {
+        mock_check_resp = MagicMock(status_code=200, json=MagicMock(return_value={"name": "gemma-1b"}))
+        mock_post_resp = MagicMock(status_code=200, json=MagicMock(return_value={
             "code": "XYZ789",
             "expires_at": "2026-02-18T12:00:00Z",
-        }
-
-        mock_poll_resp = MagicMock()
-        mock_poll_resp.status_code = 200
-        mock_poll_resp.json.return_value = {
+        }))
+        mock_poll_resp = MagicMock(status_code=200, json=MagicMock(return_value={
             "status": "done",
             "device_name": "iPhone 15",
-        }
+        }))
 
-        with (
-            patch("httpx.post", return_value=mock_post_resp),
-            patch("httpx.get", return_value=mock_poll_resp),
-            patch("time.sleep"),
-        ):
+        p1, p2, p3 = _mock_deploy_http(mock_check_resp, mock_post_resp, mock_poll_resp)
+        with p1, p2, p3:
             runner = CliRunner()
             result = runner.invoke(main, ["deploy", "gemma-1b", "--phone"])
 
@@ -174,49 +187,23 @@ class TestDeployPhoneQr:
     def test_deploy_phone_shows_completion(self, mock_open, monkeypatch):
         monkeypatch.setenv("OCTOMIL_API_KEY", "test-key")
 
-        mock_post_resp = MagicMock()
-        mock_post_resp.status_code = 200
-        mock_post_resp.json.return_value = {
+        mock_check_resp = MagicMock(status_code=200, json=MagicMock(return_value={"name": "gemma-1b"}))
+        mock_post_resp = MagicMock(status_code=200, json=MagicMock(return_value={
             "code": "ABC123",
             "expires_at": "2026-02-18T12:00:00Z",
-        }
+        }))
+        mock_connected = MagicMock(status_code=200, json=MagicMock(return_value={
+            "status": "connected",
+            "device_name": "iPhone 15 Pro",
+            "device_platform": "iOS 18.2",
+        }))
+        mock_done = MagicMock(status_code=200, json=MagicMock(return_value={
+            "status": "done",
+            "device_name": "iPhone 15 Pro",
+        }))
 
-        # Mock responses for httpx.get calls:
-        # 1. Model registry check (GET /models/{name})
-        # 2. Poll: connected
-        # 3. Poll: done
-        mock_model_check = MagicMock(
-            status_code=200,
-            json=MagicMock(return_value={"id": "gemma-1b", "name": "gemma-1b"}),
-        )
-        poll_responses = [
-            mock_model_check,
-            MagicMock(
-                status_code=200,
-                json=MagicMock(
-                    return_value={
-                        "status": "connected",
-                        "device_name": "iPhone 15 Pro",
-                        "device_platform": "iOS 18.2",
-                    }
-                ),
-            ),
-            MagicMock(
-                status_code=200,
-                json=MagicMock(
-                    return_value={
-                        "status": "done",
-                        "device_name": "iPhone 15 Pro",
-                    }
-                ),
-            ),
-        ]
-
-        with (
-            patch("httpx.post", return_value=mock_post_resp),
-            patch("httpx.get", side_effect=poll_responses),
-            patch("time.sleep"),
-        ):
+        p1, p2, p3 = _mock_deploy_http(mock_check_resp, mock_post_resp, mock_connected, mock_done)
+        with p1, p2, p3:
             runner = CliRunner()
             result = runner.invoke(main, ["deploy", "gemma-1b", "--phone"])
 
@@ -228,22 +215,15 @@ class TestDeployPhoneQr:
     def test_deploy_phone_opens_deep_link_url(self, mock_open, monkeypatch):
         monkeypatch.setenv("OCTOMIL_API_KEY", "test-key")
 
-        mock_post_resp = MagicMock()
-        mock_post_resp.status_code = 200
-        mock_post_resp.json.return_value = {
+        mock_check = MagicMock(status_code=200, json=MagicMock(return_value={"name": "test-model"}))
+        mock_post_resp = MagicMock(status_code=200, json=MagicMock(return_value={
             "code": "QR1234",
             "expires_at": "2026-02-18T12:00:00Z",
-        }
+        }))
+        mock_poll_resp = MagicMock(status_code=200, json=MagicMock(return_value={"status": "done"}))
 
-        mock_poll_resp = MagicMock()
-        mock_poll_resp.status_code = 200
-        mock_poll_resp.json.return_value = {"status": "done"}
-
-        with (
-            patch("httpx.post", return_value=mock_post_resp),
-            patch("httpx.get", return_value=mock_poll_resp),
-            patch("time.sleep"),
-        ):
+        p1, p2, p3 = _mock_deploy_http(mock_check, mock_post_resp, mock_poll_resp)
+        with p1, p2, p3:
             runner = CliRunner()
             result = runner.invoke(main, ["deploy", "test-model", "--phone"])
 
@@ -258,22 +238,15 @@ class TestDeployPhoneQr:
     def test_deploy_phone_session_expired(self, mock_open, monkeypatch):
         monkeypatch.setenv("OCTOMIL_API_KEY", "test-key")
 
-        mock_post_resp = MagicMock()
-        mock_post_resp.status_code = 200
-        mock_post_resp.json.return_value = {
+        mock_check = MagicMock(status_code=200, json=MagicMock(return_value={"name": "test-model"}))
+        mock_post_resp = MagicMock(status_code=200, json=MagicMock(return_value={
             "code": "EXP001",
             "expires_at": "2026-02-18T12:00:00Z",
-        }
+        }))
+        mock_poll_resp = MagicMock(status_code=200, json=MagicMock(return_value={"status": "expired"}))
 
-        mock_poll_resp = MagicMock()
-        mock_poll_resp.status_code = 200
-        mock_poll_resp.json.return_value = {"status": "expired"}
-
-        with (
-            patch("httpx.post", return_value=mock_post_resp),
-            patch("httpx.get", return_value=mock_poll_resp),
-            patch("time.sleep"),
-        ):
+        p1, p2, p3 = _mock_deploy_http(mock_check, mock_post_resp, mock_poll_resp)
+        with p1, p2, p3:
             runner = CliRunner()
             result = runner.invoke(main, ["deploy", "test-model", "--phone"])
 
@@ -286,22 +259,15 @@ class TestDeployPhoneQr:
 
         monkeypatch.setenv("OCTOMIL_API_KEY", "test-key")
 
-        mock_post_resp = MagicMock()
-        mock_post_resp.status_code = 200
-        mock_post_resp.json.return_value = {
+        mock_check = MagicMock(status_code=200, json=MagicMock(return_value={"name": "test-model"}))
+        mock_post_resp = MagicMock(status_code=200, json=MagicMock(return_value={
             "code": "DL_TEST",
             "expires_at": "2026-02-18T12:00:00Z",
-        }
+        }))
+        mock_poll_resp = MagicMock(status_code=200, json=MagicMock(return_value={"status": "done"}))
 
-        mock_poll_resp = MagicMock()
-        mock_poll_resp.status_code = 200
-        mock_poll_resp.json.return_value = {"status": "done"}
-
-        with (
-            patch("httpx.post", return_value=mock_post_resp),
-            patch("httpx.get", return_value=mock_poll_resp),
-            patch("time.sleep"),
-        ):
+        p1, p2, p3 = _mock_deploy_http(mock_check, mock_post_resp, mock_poll_resp)
+        with p1, p2, p3:
             runner = CliRunner()
             result = runner.invoke(main, ["deploy", "test-model", "--phone"])
 
@@ -322,22 +288,15 @@ class TestDeployPhoneQr:
         """The deep link URL should be displayed as a fallback in the terminal output."""
         monkeypatch.setenv("OCTOMIL_API_KEY", "test-key")
 
-        mock_post_resp = MagicMock()
-        mock_post_resp.status_code = 200
-        mock_post_resp.json.return_value = {
+        mock_check = MagicMock(status_code=200, json=MagicMock(return_value={"name": "test-model"}))
+        mock_post_resp = MagicMock(status_code=200, json=MagicMock(return_value={
             "code": "DISP01",
             "expires_at": "2026-02-18T12:00:00Z",
-        }
+        }))
+        mock_poll_resp = MagicMock(status_code=200, json=MagicMock(return_value={"status": "done"}))
 
-        mock_poll_resp = MagicMock()
-        mock_poll_resp.status_code = 200
-        mock_poll_resp.json.return_value = {"status": "done"}
-
-        with (
-            patch("httpx.post", return_value=mock_post_resp),
-            patch("httpx.get", return_value=mock_poll_resp),
-            patch("time.sleep"),
-        ):
+        p1, p2, p3 = _mock_deploy_http(mock_check, mock_post_resp, mock_poll_resp)
+        with p1, p2, p3:
             runner = CliRunner()
             result = runner.invoke(main, ["deploy", "test-model", "--phone"])
 
@@ -352,22 +311,15 @@ class TestDeployPhoneQr:
         monkeypatch.setenv("OCTOMIL_API_KEY", "test-key")
         monkeypatch.setenv("OCTOMIL_API_BASE", "http://localhost:8000/api/v1")
 
-        mock_post_resp = MagicMock()
-        mock_post_resp.status_code = 200
-        mock_post_resp.json.return_value = {
+        mock_check = MagicMock(status_code=200, json=MagicMock(return_value={"name": "test-model"}))
+        mock_post_resp = MagicMock(status_code=200, json=MagicMock(return_value={
             "code": "CUST01",
             "expires_at": "2026-02-18T12:00:00Z",
-        }
+        }))
+        mock_poll_resp = MagicMock(status_code=200, json=MagicMock(return_value={"status": "done"}))
 
-        mock_poll_resp = MagicMock()
-        mock_poll_resp.status_code = 200
-        mock_poll_resp.json.return_value = {"status": "done"}
-
-        with (
-            patch("httpx.post", return_value=mock_post_resp),
-            patch("httpx.get", return_value=mock_poll_resp),
-            patch("time.sleep"),
-        ):
+        p1, p2, p3 = _mock_deploy_http(mock_check, mock_post_resp, mock_poll_resp)
+        with p1, p2, p3:
             runner = CliRunner()
             result = runner.invoke(main, ["deploy", "test-model", "--phone"])
 
@@ -383,22 +335,17 @@ class TestDeployPhoneQr:
         """When qrcode lib is missing, should still show the box with deep link URL."""
         monkeypatch.setenv("OCTOMIL_API_KEY", "test-key")
 
-        mock_post_resp = MagicMock()
-        mock_post_resp.status_code = 200
-        mock_post_resp.json.return_value = {
+        mock_check = MagicMock(status_code=200, json=MagicMock(return_value={"name": "test-model"}))
+        mock_post_resp = MagicMock(status_code=200, json=MagicMock(return_value={
             "code": "FB0001",
             "expires_at": "2026-02-18T12:00:00Z",
-        }
+        }))
+        mock_poll_resp = MagicMock(status_code=200, json=MagicMock(return_value={"status": "done"}))
 
-        mock_poll_resp = MagicMock()
-        mock_poll_resp.status_code = 200
-        mock_poll_resp.json.return_value = {"status": "done"}
-
+        p1, p2, p3 = _mock_deploy_http(mock_check, mock_post_resp, mock_poll_resp)
         with (
             patch.dict("sys.modules", {"qrcode": None}),
-            patch("httpx.post", return_value=mock_post_resp),
-            patch("httpx.get", return_value=mock_poll_resp),
-            patch("time.sleep"),
+            p1, p2, p3,
         ):
             runner = CliRunner()
             result = runner.invoke(main, ["deploy", "test-model", "--phone"])
