@@ -85,7 +85,7 @@ class _ApiClient:
                     and res.text.strip() in ('{"detail":"Not Found"}', "Not Found")
                 ):
                     wait = self.backoff_base * (2**attempt)
-                    logger.warning(
+                    logger.debug(
                         "Generic 404 on %s %s — likely cold start (attempt %d/%d, waiting %.1fs)",
                         method, url, attempt + 1, self.max_retries, wait,
                     )
