@@ -570,32 +570,71 @@ class Client:
         if version is None:
             version = self._registry.get_latest_version(model_id)
 
-        # Targeted deployment via orchestration endpoint
-        if devices is not None or group is not None:
-            payload: dict[str, Any] = {
-                "model_id": model_id,
-                "model_name": name,
-                "version": version,
-                "rollout_percentage": rollout,
-                "strategy": strategy,
-            }
-            if devices is not None:
-                payload["devices"] = devices
-            if group is not None:
-                payload["group"] = group
+        if self._reporter:
+            try:
+                self._reporter.report_deploy_started(
+                    model_id=name,
+                    version=version,
+                    target_platform=strategy,
+                )
+            except Exception:
+                _logger.debug("Telemetry reporting failed for deploy()")
 
-            resp = self._api.post("/deploy/execute", payload)
-            return _parse_deployment_result(resp, name, version)
+        t0 = time.monotonic()
+        try:
+            # Targeted deployment via orchestration endpoint
+            if devices is not None or group is not None:
+                payload: dict[str, Any] = {
+                    "model_id": model_id,
+                    "model_name": name,
+                    "version": version,
+                    "rollout_percentage": rollout,
+                    "strategy": strategy,
+                }
+                if devices is not None:
+                    payload["devices"] = devices
+                if group is not None:
+                    payload["group"] = group
 
-        # Fallback: existing rollout-based deploy
-        return self._registry.deploy_version(
-            model_id=model_id,
-            version=version,
-            rollout_percentage=rollout,
-            target_percentage=100,
-            increment_step=increment,
-            start_immediately=(strategy == "immediate"),
-        )
+                resp = self._api.post("/deploy/execute", payload)
+                result = _parse_deployment_result(resp, name, version)
+            else:
+                # Fallback: existing rollout-based deploy
+                result = self._registry.deploy_version(
+                    model_id=model_id,
+                    version=version,
+                    rollout_percentage=rollout,
+                    target_percentage=100,
+                    increment_step=increment,
+                    start_immediately=(strategy == "immediate"),
+                )
+        except Exception as exc:
+            if self._reporter:
+                try:
+                    self._reporter.report_funnel_event(
+                        stage="deploy",
+                        success=False,
+                        model_id=name,
+                        failure_reason=str(exc),
+                        failure_category="deploy_error",
+                        duration_ms=int((time.monotonic() - t0) * 1000),
+                    )
+                except Exception:
+                    _logger.debug("Telemetry reporting failed for deploy()")
+            raise
+
+        elapsed_ms = (time.monotonic() - t0) * 1000
+        if self._reporter:
+            try:
+                self._reporter.report_deploy_completed(
+                    model_id=name,
+                    version=version,
+                    duration_ms=elapsed_ms,
+                )
+            except Exception:
+                _logger.debug("Telemetry reporting failed for deploy()")
+
+        return result
 
     # ------------------------------------------------------------------
     # Deploy prepare — dry-run / preview
@@ -869,9 +908,7 @@ class Client:
         from .model import ModelMetadata
 
         eng_registry = get_registry()
-        selected_engine, _ = eng_registry.auto_select(
-            name, engine_override=engine
-        )
+        selected_engine, _ = eng_registry.auto_select(name, engine_override=engine)
 
         # Skip registry pull for engines that manage their own downloads
         # (e.g. mlx-lm loads from HuggingFace, ollama pulls via its API).

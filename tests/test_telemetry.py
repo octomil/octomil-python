@@ -39,13 +39,22 @@ class TestGenerateDeviceId:
 
 class TestV2Url:
     def test_standard_api_base(self):
-        assert _v2_url("https://api.octomil.com/api/v1") == "https://api.octomil.com/api/v2/telemetry/events"
+        assert (
+            _v2_url("https://api.octomil.com/api/v1")
+            == "https://api.octomil.com/api/v2/telemetry/events"
+        )
 
     def test_trailing_slash(self):
-        assert _v2_url("https://api.octomil.com/api/v1/") == "https://api.octomil.com/api/v2/telemetry/events"
+        assert (
+            _v2_url("https://api.octomil.com/api/v1/")
+            == "https://api.octomil.com/api/v2/telemetry/events"
+        )
 
     def test_custom_host(self):
-        assert _v2_url("https://custom.host.com/api/v1") == "https://custom.host.com/api/v2/telemetry/events"
+        assert (
+            _v2_url("https://custom.host.com/api/v1")
+            == "https://custom.host.com/api/v2/telemetry/events"
+        )
 
     def test_no_v1_suffix_fallback(self):
         url = _v2_url("https://example.com/custom")
@@ -104,7 +113,9 @@ class TestTelemetryV2Envelope:
                 device_id="dev-abc",
             )
             reporter.report_generation_started(
-                model_id="m", version="v", session_id="s",
+                model_id="m",
+                version="v",
+                session_id="s",
             )
             time.sleep(0.15)
             reporter.close()
@@ -131,7 +142,9 @@ class TestTelemetryV2Envelope:
                 device_id="dev-1",
             )
             reporter.report_generation_started(
-                model_id="m", version="v", session_id="s",
+                model_id="m",
+                version="v",
+                session_id="s",
             )
             time.sleep(0.15)
             reporter.close()
@@ -154,7 +167,9 @@ class TestTelemetryV2Envelope:
                 device_id="dev-1",
             )
             reporter.report_generation_started(
-                model_id="m", version="v", session_id="s",
+                model_id="m",
+                version="v",
+                session_id="s",
             )
             reporter.report_funnel_event(stage="download", success=True)
             time.sleep(0.15)
@@ -198,7 +213,9 @@ class TestEventNameDotNotation:
     def test_inference_started(self):
         reporter, sent, patcher = self._capture_events()
         reporter.report_generation_started(
-            model_id="m", version="v", session_id="s",
+            model_id="m",
+            version="v",
+            session_id="s",
         )
         time.sleep(0.15)
         reporter.close()
@@ -209,9 +226,13 @@ class TestEventNameDotNotation:
     def test_inference_completed(self):
         reporter, sent, patcher = self._capture_events()
         reporter.report_generation_completed(
-            session_id="s", model_id="m", version="v",
-            total_chunks=10, total_duration_ms=500.0,
-            ttfc_ms=30.0, throughput=20.0,
+            session_id="s",
+            model_id="m",
+            version="v",
+            total_chunks=10,
+            total_duration_ms=500.0,
+            ttfc_ms=30.0,
+            throughput=20.0,
         )
         time.sleep(0.15)
         reporter.close()
@@ -222,7 +243,9 @@ class TestEventNameDotNotation:
     def test_inference_failed(self):
         reporter, sent, patcher = self._capture_events()
         reporter.report_generation_failed(
-            session_id="s", model_id="m", version="v",
+            session_id="s",
+            model_id="m",
+            version="v",
         )
         time.sleep(0.15)
         reporter.close()
@@ -233,7 +256,10 @@ class TestEventNameDotNotation:
     def test_inference_chunk_produced(self):
         reporter, sent, patcher = self._capture_events()
         reporter.report_chunk_produced(
-            session_id="s", model_id="m", version="v", chunk_index=0,
+            session_id="s",
+            model_id="m",
+            version="v",
+            chunk_index=0,
         )
         time.sleep(0.15)
         reporter.close()
@@ -304,7 +330,9 @@ class TestAttributeMapping:
                 device_id="dev-1",
             )
             reporter.report_generation_started(
-                model_id="m", version="v", session_id="s",
+                model_id="m",
+                version="v",
+                session_id="s",
             )
             time.sleep(0.15)
             reporter.close()
@@ -592,7 +620,10 @@ class TestModalityPropagation:
                 device_id="dev-1",
             )
             reporter.report_generation_started(
-                model_id="m", version="v", session_id="s", modality="audio",
+                model_id="m",
+                version="v",
+                session_id="s",
+                modality="audio",
             )
             time.sleep(0.15)
             reporter.close()
@@ -614,7 +645,9 @@ class TestModalityPropagation:
                 device_id="dev-1",
             )
             reporter.report_generation_started(
-                model_id="m", version="v", session_id="s",
+                model_id="m",
+                version="v",
+                session_id="s",
             )
             time.sleep(0.15)
             reporter.close()
@@ -636,9 +669,14 @@ class TestModalityPropagation:
                 device_id="dev-1",
             )
             reporter.report_generation_completed(
-                session_id="s", model_id="m", version="v",
-                total_chunks=5, total_duration_ms=100.0,
-                ttfc_ms=10.0, throughput=50.0, modality="image",
+                session_id="s",
+                model_id="m",
+                version="v",
+                total_chunks=5,
+                total_duration_ms=100.0,
+                ttfc_ms=10.0,
+                throughput=50.0,
+                modality="image",
             )
             time.sleep(0.15)
             reporter.close()
@@ -1125,33 +1163,288 @@ class TestBackwardCompat:
 
         # These should not raise
         reporter.report_generation_started(
-            model_id="m", version="v", session_id="s",
+            model_id="m",
+            version="v",
+            session_id="s",
         )
         reporter.report_chunk_produced(
-            session_id="s", model_id="m", version="v", chunk_index=0,
+            session_id="s",
+            model_id="m",
+            version="v",
+            chunk_index=0,
         )
         reporter.report_generation_completed(
-            session_id="s", model_id="m", version="v",
-            total_chunks=5, total_duration_ms=100.0,
-            ttfc_ms=10.0, throughput=50.0,
+            session_id="s",
+            model_id="m",
+            version="v",
+            total_chunks=5,
+            total_duration_ms=100.0,
+            ttfc_ms=10.0,
+            throughput=50.0,
         )
         reporter.report_generation_failed(
-            session_id="s", model_id="m", version="v",
+            session_id="s",
+            model_id="m",
+            version="v",
         )
         reporter.report_early_exit_stats(
-            session_id="s", model_id="m", version="v",
-            total_tokens=100, early_exit_tokens=30,
-            exit_percentage=30.0, avg_layers_used=20.5, avg_entropy=0.22,
+            session_id="s",
+            model_id="m",
+            version="v",
+            total_tokens=100,
+            early_exit_tokens=30,
+            exit_percentage=30.0,
+            avg_layers_used=20.5,
+            avg_entropy=0.22,
         )
         reporter.report_moe_routing(
-            session_id="s", model_id="m", version="v",
-            num_experts=8, active_experts=2,
+            session_id="s",
+            model_id="m",
+            version="v",
+            num_experts=8,
+            active_experts=2,
         )
         reporter.report_prompt_compressed(
-            session_id="s", model_id="m", version="v",
-            original_tokens=500, compressed_tokens=250,
-            compression_ratio=0.5, strategy="token_pruning", duration_ms=3.5,
+            session_id="s",
+            model_id="m",
+            version="v",
+            original_tokens=500,
+            compressed_tokens=250,
+            compression_ratio=0.5,
+            strategy="token_pruning",
+            duration_ms=3.5,
         )
         reporter.report_funnel_event(stage="download", success=True)
+        reporter.report_deploy_started(
+            model_id="m",
+            version="v",
+            target_platform="canary",
+        )
+        reporter.report_deploy_completed(
+            model_id="m",
+            version="v",
+            duration_ms=123.0,
+        )
+        reporter.report_deploy_rollback(
+            model_id="m",
+            from_version="2.0",
+            to_version="1.0",
+            reason="regression",
+        )
+        reporter.report_experiment_assigned(
+            model_id="m",
+            experiment_id="exp-1",
+            variant="control",
+        )
+        reporter.report_experiment_metric(
+            experiment_id="exp-1",
+            metric_name="latency_p99",
+            metric_value=42.0,
+        )
 
         reporter.close()
+
+
+# ---------------------------------------------------------------------------
+# Timestamp format — ISO 8601
+# ---------------------------------------------------------------------------
+
+
+class TestTimestampISO8601:
+    """Verify events use ISO 8601 timestamp instead of timestamp_ms."""
+
+    def test_timestamp_is_iso8601_string(self):
+        sent = []
+
+        def mock_send(client, url, headers, payload):
+            sent.append(payload)
+
+        with patch.object(TelemetryReporter, "_send", side_effect=mock_send):
+            reporter = TelemetryReporter(
+                api_key="key",
+                api_base="https://api.test.com/api/v1",
+                org_id="org-1",
+                device_id="dev-1",
+            )
+            reporter.report_generation_started(
+                model_id="m",
+                version="v",
+                session_id="s",
+            )
+            time.sleep(0.15)
+            reporter.close()
+
+        event = sent[0]["events"][0]
+        assert "timestamp" in event
+        assert "timestamp_ms" not in event
+        # Verify it's a valid ISO 8601 string ending in Z
+        ts = event["timestamp"]
+        assert isinstance(ts, str)
+        assert ts.endswith("Z")
+        # Should parse without error
+        from datetime import datetime
+
+        datetime.fromisoformat(ts.replace("Z", "+00:00"))
+
+    def test_timestamp_ms_not_present(self):
+        sent = []
+
+        def mock_send(client, url, headers, payload):
+            sent.append(payload)
+
+        with patch.object(TelemetryReporter, "_send", side_effect=mock_send):
+            reporter = TelemetryReporter(
+                api_key="key",
+                api_base="https://api.test.com/api/v1",
+                org_id="org-1",
+                device_id="dev-1",
+            )
+            reporter.report_funnel_event(stage="test", success=True)
+            time.sleep(0.15)
+            reporter.close()
+
+        event = sent[0]["events"][0]
+        assert "timestamp_ms" not in event
+        assert "timestamp" in event
+
+
+# ---------------------------------------------------------------------------
+# Deploy event methods
+# ---------------------------------------------------------------------------
+
+
+class TestDeployEvents:
+    """Verify deploy event names and attributes."""
+
+    def _capture_events(self):
+        sent = []
+
+        def mock_send(client, url, headers, payload):
+            sent.append(payload)
+
+        patcher = patch.object(TelemetryReporter, "_send", side_effect=mock_send)
+        patcher.start()
+        reporter = TelemetryReporter(
+            api_key="key",
+            api_base="https://api.test.com/api/v1",
+            org_id="org-1",
+            device_id="dev-1",
+        )
+        return reporter, sent, patcher
+
+    def test_deploy_started(self):
+        reporter, sent, patcher = self._capture_events()
+        reporter.report_deploy_started(
+            model_id="sentiment-v1",
+            version="2.0.0",
+            target_platform="canary",
+        )
+        time.sleep(0.15)
+        reporter.close()
+        patcher.stop()
+
+        event = sent[0]["events"][0]
+        assert event["name"] == "deploy.started"
+        attrs = event["attributes"]
+        assert attrs["model.id"] == "sentiment-v1"
+        assert attrs["model.version"] == "2.0.0"
+        assert attrs["deploy.target_platform"] == "canary"
+
+    def test_deploy_completed(self):
+        reporter, sent, patcher = self._capture_events()
+        reporter.report_deploy_completed(
+            model_id="sentiment-v1",
+            version="2.0.0",
+            duration_ms=1500.0,
+        )
+        time.sleep(0.15)
+        reporter.close()
+        patcher.stop()
+
+        event = sent[0]["events"][0]
+        assert event["name"] == "deploy.completed"
+        attrs = event["attributes"]
+        assert attrs["model.id"] == "sentiment-v1"
+        assert attrs["model.version"] == "2.0.0"
+        assert attrs["deploy.duration_ms"] == 1500.0
+
+    def test_deploy_rollback(self):
+        reporter, sent, patcher = self._capture_events()
+        reporter.report_deploy_rollback(
+            model_id="sentiment-v1",
+            from_version="2.0.0",
+            to_version="1.0.0",
+            reason="accuracy regression",
+        )
+        time.sleep(0.15)
+        reporter.close()
+        patcher.stop()
+
+        event = sent[0]["events"][0]
+        assert event["name"] == "deploy.rollback"
+        attrs = event["attributes"]
+        assert attrs["model.id"] == "sentiment-v1"
+        assert attrs["deploy.from_version"] == "2.0.0"
+        assert attrs["deploy.to_version"] == "1.0.0"
+        assert attrs["deploy.reason"] == "accuracy regression"
+
+
+# ---------------------------------------------------------------------------
+# Experiment event methods
+# ---------------------------------------------------------------------------
+
+
+class TestExperimentEvents:
+    """Verify experiment event names and attributes."""
+
+    def _capture_events(self):
+        sent = []
+
+        def mock_send(client, url, headers, payload):
+            sent.append(payload)
+
+        patcher = patch.object(TelemetryReporter, "_send", side_effect=mock_send)
+        patcher.start()
+        reporter = TelemetryReporter(
+            api_key="key",
+            api_base="https://api.test.com/api/v1",
+            org_id="org-1",
+            device_id="dev-1",
+        )
+        return reporter, sent, patcher
+
+    def test_experiment_assigned(self):
+        reporter, sent, patcher = self._capture_events()
+        reporter.report_experiment_assigned(
+            model_id="sentiment-v1",
+            experiment_id="exp-abc",
+            variant="treatment-a",
+        )
+        time.sleep(0.15)
+        reporter.close()
+        patcher.stop()
+
+        event = sent[0]["events"][0]
+        assert event["name"] == "experiment.assigned"
+        attrs = event["attributes"]
+        assert attrs["model.id"] == "sentiment-v1"
+        assert attrs["experiment.id"] == "exp-abc"
+        assert attrs["experiment.variant"] == "treatment-a"
+
+    def test_experiment_metric_recorded(self):
+        reporter, sent, patcher = self._capture_events()
+        reporter.report_experiment_metric(
+            experiment_id="exp-abc",
+            metric_name="latency_p99",
+            metric_value=42.5,
+        )
+        time.sleep(0.15)
+        reporter.close()
+        patcher.stop()
+
+        event = sent[0]["events"][0]
+        assert event["name"] == "experiment.metric_recorded"
+        attrs = event["attributes"]
+        assert attrs["experiment.id"] == "exp-abc"
+        assert attrs["experiment.metric_name"] == "latency_p99"
+        assert attrs["experiment.metric_value"] == 42.5

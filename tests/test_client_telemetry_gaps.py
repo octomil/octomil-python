@@ -145,7 +145,9 @@ class TestPushTelemetry:
         client._registry = mock_registry
 
         broken_reporter = MagicMock()
-        broken_reporter.report_funnel_event.side_effect = RuntimeError("reporter broken")
+        broken_reporter.report_funnel_event.side_effect = RuntimeError(
+            "reporter broken"
+        )
 
         with patch("octomil.get_reporter", return_value=broken_reporter):
             result = client.push(
@@ -327,3 +329,160 @@ class TestRollbackTelemetry:
 
         funnel_events = _extract_funnel_events(sent)
         assert funnel_events[0]["attributes"]["funnel.duration_ms"] >= 0
+
+
+# ---------------------------------------------------------------------------
+# deploy() telemetry — deploy.started / deploy.completed / failure
+# ---------------------------------------------------------------------------
+
+
+def _extract_deploy_events(sent_envelopes):
+    """Extract all deploy.* events from sent envelopes."""
+    events = []
+    for envelope in sent_envelopes:
+        for event in envelope.get("events", []):
+            if event["name"].startswith("deploy."):
+                events.append(event)
+    return events
+
+
+class TestDeployTelemetry:
+    def test_deploy_rollout_emits_started_and_completed(self):
+        client, reporter, sent, patcher = _make_client_with_reporter()
+
+        mock_registry = MagicMock()
+        mock_registry.resolve_model_id.return_value = "model-123"
+        mock_registry.get_latest_version.return_value = "2.0.0"
+        mock_registry.deploy_version.return_value = {"id": "r-1", "status": "active"}
+        client._registry = mock_registry
+
+        time.sleep(0.1)
+        sent.clear()
+
+        client.deploy("sentiment-v1", version="2.0.0", strategy="canary")
+
+        time.sleep(0.15)
+        reporter.close()
+        patcher.stop()
+
+        deploy_events = _extract_deploy_events(sent)
+        names = [e["name"] for e in deploy_events]
+        assert "deploy.started" in names
+        assert "deploy.completed" in names
+
+        started = next(e for e in deploy_events if e["name"] == "deploy.started")
+        assert started["attributes"]["model.id"] == "sentiment-v1"
+        assert started["attributes"]["model.version"] == "2.0.0"
+        assert started["attributes"]["deploy.target_platform"] == "canary"
+
+        completed = next(e for e in deploy_events if e["name"] == "deploy.completed")
+        assert completed["attributes"]["model.id"] == "sentiment-v1"
+        assert completed["attributes"]["model.version"] == "2.0.0"
+        assert completed["attributes"]["deploy.duration_ms"] >= 0
+
+    def test_deploy_targeted_emits_started_and_completed(self):
+        client, reporter, sent, patcher = _make_client_with_reporter()
+
+        mock_registry = MagicMock()
+        mock_registry.resolve_model_id.return_value = "model-123"
+        mock_registry.get_latest_version.return_value = "2.0.0"
+        client._registry = mock_registry
+
+        mock_api = MagicMock()
+        mock_api.post.return_value = {
+            "deployment_id": "d-1",
+            "status": "created",
+            "device_statuses": [],
+        }
+        client._api = mock_api
+
+        time.sleep(0.1)
+        sent.clear()
+
+        client.deploy(
+            "sentiment-v1",
+            version="2.0.0",
+            devices=["dev-a", "dev-b"],
+            strategy="immediate",
+        )
+
+        time.sleep(0.15)
+        reporter.close()
+        patcher.stop()
+
+        deploy_events = _extract_deploy_events(sent)
+        names = [e["name"] for e in deploy_events]
+        assert "deploy.started" in names
+        assert "deploy.completed" in names
+
+    def test_deploy_failure_emits_started_and_funnel_error(self):
+        client, reporter, sent, patcher = _make_client_with_reporter()
+
+        mock_registry = MagicMock()
+        mock_registry.resolve_model_id.return_value = "model-123"
+        mock_registry.get_latest_version.return_value = "2.0.0"
+        mock_registry.deploy_version.side_effect = RuntimeError("server down")
+        client._registry = mock_registry
+
+        time.sleep(0.1)
+        sent.clear()
+
+        with pytest.raises(RuntimeError, match="server down"):
+            client.deploy("sentiment-v1", version="2.0.0")
+
+        time.sleep(0.15)
+        reporter.close()
+        patcher.stop()
+
+        deploy_events = _extract_deploy_events(sent)
+        started_events = [e for e in deploy_events if e["name"] == "deploy.started"]
+        assert len(started_events) == 1
+
+        completed_events = [e for e in deploy_events if e["name"] == "deploy.completed"]
+        assert len(completed_events) == 0
+
+        funnel_events = _extract_funnel_events(sent)
+        deploy_funnel = [e for e in funnel_events if e["name"] == "funnel.deploy"]
+        assert len(deploy_funnel) == 1
+        attrs = deploy_funnel[0]["attributes"]
+        assert attrs["funnel.success"] is False
+        assert attrs["error.type"] == "deploy_error"
+        assert "server down" in attrs["error.message"]
+
+    def test_deploy_without_reporter(self):
+        client, reporter, sent, patcher = _make_client_with_reporter()
+        reporter.close()
+        patcher.stop()
+
+        client._reporter = None
+
+        mock_registry = MagicMock()
+        mock_registry.resolve_model_id.return_value = "model-123"
+        mock_registry.get_latest_version.return_value = "2.0.0"
+        mock_registry.deploy_version.return_value = {"id": "r-1", "status": "active"}
+        client._registry = mock_registry
+
+        result = client.deploy("sentiment-v1", version="2.0.0")
+        assert result["status"] == "active"
+
+    def test_deploy_resolves_latest_version(self):
+        client, reporter, sent, patcher = _make_client_with_reporter()
+
+        mock_registry = MagicMock()
+        mock_registry.resolve_model_id.return_value = "model-123"
+        mock_registry.get_latest_version.return_value = "3.1.0"
+        mock_registry.deploy_version.return_value = {"id": "r-1", "status": "active"}
+        client._registry = mock_registry
+
+        time.sleep(0.1)
+        sent.clear()
+
+        client.deploy("sentiment-v1")
+
+        time.sleep(0.15)
+        reporter.close()
+        patcher.stop()
+
+        deploy_events = _extract_deploy_events(sent)
+        started = next(e for e in deploy_events if e["name"] == "deploy.started")
+        assert started["attributes"]["model.version"] == "3.1.0"
