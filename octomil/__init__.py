@@ -18,6 +18,7 @@ import sys as _sys
 from typing import Optional as _Optional
 
 from .telemetry import TelemetryReporter
+from .integrations import IntegrationsAPI, LogIntegration, MetricsIntegration
 
 from .client import Client
 from .model import Model, ModelMetadata, Prediction
@@ -260,6 +261,9 @@ __all__ = [
     "get_moe_metadata",
     "is_moe_model",
     "list_moe_models",
+    "IntegrationsAPI",
+    "LogIntegration",
+    "MetricsIntegration",
     "TelemetryReporter",
     "init",
     "get_reporter",
