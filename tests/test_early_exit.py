@@ -21,6 +21,15 @@ import time
 from unittest.mock import patch
 
 import pytest
+
+try:
+    import fastapi  # noqa: F401
+    import pytest_asyncio  # noqa: F401
+
+    _has_serve_deps = True
+except ImportError:
+    _has_serve_deps = False
+
 from click.testing import CliRunner
 
 from octomil.early_exit import (
@@ -512,6 +521,8 @@ class TestEarlyExitMonitor:
 @pytest.fixture
 def echo_app_with_early_exit():
     """Create a FastAPI app with EchoBackend and early exit enabled."""
+    if not _has_serve_deps:
+        pytest.skip("fastapi and pytest-asyncio required")
     from octomil.serve import EchoBackend, create_app
 
     ee_cfg = EarlyExitConfig(enabled=True, threshold=0.3, total_layers=32)
@@ -535,6 +546,8 @@ def echo_app_with_early_exit():
 @pytest.fixture
 def echo_app_without_early_exit():
     """Create a FastAPI app with EchoBackend and no early exit."""
+    if not _has_serve_deps:
+        pytest.skip("fastapi and pytest-asyncio required")
     from octomil.serve import EchoBackend, create_app
 
     with patch("octomil.serve._detect_backend") as mock_detect:

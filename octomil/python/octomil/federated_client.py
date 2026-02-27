@@ -73,6 +73,9 @@ def _apply_fedprox_correction(delta: Dict[str, Any], mu: float) -> Dict[str, Any
     Returns:
         A new delta dict with the correction applied.
     """
+    if not delta:
+        return {}
+
     try:
         import torch  # type: ignore
     except Exception as exc:
@@ -638,7 +641,9 @@ class FederatedClient:
         except Exception as exc:
             logger.warning("Training upload failed for round %s: %s", round_id, exc)
             if gradient_cache is not None:
-                weights_bytes = self._serialize_weights({"error_round": round_id})
+                import json as _json
+
+                weights_bytes = _json.dumps({"error_round": round_id}).encode()
                 gradient_cache.store(
                     round_id=round_id,
                     device_id=self.device_id or self.device_identifier,

@@ -8,6 +8,16 @@ import time
 from unittest.mock import patch
 
 import pytest
+
+try:
+    import pytest_asyncio  # noqa: F401
+
+    _has_async = True
+except ImportError:
+    _has_async = False
+
+pytestmark = pytest.mark.skipif(not _has_async, reason="pytest-asyncio not installed")
+
 from httpx import ASGITransport, AsyncClient
 
 from octomil.batch import (
