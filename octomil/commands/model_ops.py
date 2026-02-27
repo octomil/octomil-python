@@ -164,21 +164,33 @@ def _print_sdk_snippet(model_name: str, version: str) -> None:
     click.echo("\n  Add to your app:\n")
     click.secho("  Swift (iOS)", bold=True)
     click.echo(
+        f"    // Swift Package Manager: https://github.com/octomil/octomil-ios\n"
+        f"    import OctomilSDK\n"
+        f"\n"
         f'    let client = OctomilClient(apiKey: "{api_key}", orgId: "{org_id}")\n'
         f'    let model = try await client.pull("{model_name}", version: "{version}")\n'
     )
     click.secho("  Kotlin (Android)", bold=True)
     click.echo(
+        f'    // implementation("com.octomil:octomil-android:1.0.0")\n'
+        f"    import com.octomil.sdk.OctomilClient\n"
+        f"\n"
         f'    val client = OctomilClient(apiKey = "{api_key}", orgId = "{org_id}", context = this)\n'
         f'    val model = client.pull("{model_name}", version = "{version}")\n'
     )
     click.secho("  Python", bold=True)
     click.echo(
+        f"    # pip install octomil-sdk\n"
+        f"    import octomil\n"
+        f"\n"
         f'    client = octomil.Client(api_key="{api_key}", org_id="{org_id}")\n'
         f'    text = client.predict("{model_name}", [{{"role": "user", "content": "Hello"}}])\n'
     )
     click.secho("  Node.js", bold=True)
     click.echo(
+        f"    // npm install @octomil/sdk\n"
+        f'    import {{ OctomilClient }} from "@octomil/sdk";\n'
+        f"\n"
         f'    const client = new OctomilClient({{ apiKey: "{api_key}", orgId: "{org_id}" }});\n'
         f'    const result = await client.predict("{model_name}", {{ text: "Hello" }});\n'
     )
