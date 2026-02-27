@@ -353,20 +353,21 @@ class TestDeployWithOllama:
             quantization="Q4_K_M",
         )
 
-        mock_post_resp = MagicMock()
-        mock_post_resp.status_code = 200
-        mock_post_resp.json.return_value = {
+        mock_check = MagicMock(status_code=200, json=MagicMock(return_value={"name": "gemma:2b"}))
+        mock_post_resp = MagicMock(status_code=200, json=MagicMock(return_value={
             "code": "XYZ789",
             "expires_at": "2026-02-18T12:00:00Z",
-        }
+        }))
+        mock_poll_resp = MagicMock(status_code=200, json=MagicMock(return_value={"status": "done"}))
 
-        mock_poll_resp = MagicMock()
-        mock_poll_resp.status_code = 200
-        mock_poll_resp.json.return_value = {"status": "done"}
+        mock_client = MagicMock()
+        mock_client.request.side_effect = [mock_check, mock_post_resp, mock_poll_resp]
+        mock_client.__enter__ = MagicMock(return_value=mock_client)
+        mock_client.__exit__ = MagicMock(return_value=False)
 
         with (
-            patch("httpx.post", return_value=mock_post_resp),
-            patch("httpx.get", return_value=mock_poll_resp),
+            patch("httpx.Client", return_value=mock_client),
+            patch("octomil.discovery.scan_for_devices", return_value=[]),
             patch("time.sleep"),
         ):
             runner = CliRunner()
@@ -382,20 +383,21 @@ class TestDeployWithOllama:
     def test_deploy_phone_no_ollama_match(self, mock_get_model, mock_open, monkeypatch):
         monkeypatch.setenv("OCTOMIL_API_KEY", "test-key")
 
-        mock_post_resp = MagicMock()
-        mock_post_resp.status_code = 200
-        mock_post_resp.json.return_value = {
+        mock_check = MagicMock(status_code=200, json=MagicMock(return_value={"name": "my-custom-model"}))
+        mock_post_resp = MagicMock(status_code=200, json=MagicMock(return_value={
             "code": "ABC123",
             "expires_at": "2026-02-18T12:00:00Z",
-        }
+        }))
+        mock_poll_resp = MagicMock(status_code=200, json=MagicMock(return_value={"status": "done"}))
 
-        mock_poll_resp = MagicMock()
-        mock_poll_resp.status_code = 200
-        mock_poll_resp.json.return_value = {"status": "done"}
+        mock_client = MagicMock()
+        mock_client.request.side_effect = [mock_check, mock_post_resp, mock_poll_resp]
+        mock_client.__enter__ = MagicMock(return_value=mock_client)
+        mock_client.__exit__ = MagicMock(return_value=False)
 
         with (
-            patch("httpx.post", return_value=mock_post_resp),
-            patch("httpx.get", return_value=mock_poll_resp),
+            patch("httpx.Client", return_value=mock_client),
+            patch("octomil.discovery.scan_for_devices", return_value=[]),
             patch("time.sleep"),
         ):
             runner = CliRunner()
