@@ -71,11 +71,17 @@ def _suppress_hf_noise():
     except ImportError:
         pass
 
+    # Suppress the transformers rope_parameters warning (emitted via logging)
+    transformers_logger = logging.getLogger("transformers.modeling_rope_utils")
+    prev_level = transformers_logger.level
+    transformers_logger.setLevel(logging.ERROR)
+
     with warnings.catch_warnings():
         warnings.filterwarnings("ignore", message=".*rope_parameters.*")
         try:
             yield
         finally:
+            transformers_logger.setLevel(prev_level)
             if prev is None:
                 os.environ.pop("HF_HUB_DISABLE_PROGRESS_BARS", None)
             else:
@@ -294,7 +300,6 @@ class MLXBackend(InferenceBackend):
         self._kv_cache: KVCacheManager = KVCacheManager(max_cache_size_mb=cache_size_mb)
 
     def load_model(self, model_name: str) -> None:
-        import mlx.core as mx  # type: ignore[import-untyped]
         import mlx_lm  # type: ignore[import-untyped]
 
         self._model_name = model_name
@@ -324,18 +329,19 @@ class MLXBackend(InferenceBackend):
             except Exception:
                 logger.debug("Draft model load failed, skipping speculative decoding", exc_info=True)
 
-        # Warm-up: run a single-token generation to JIT-compile Metal shaders.
+        # Warm-up: run a minimal generation to JIT-compile Metal shaders
+        # on the exact code path (stream_generate) we use for real requests.
         # This moves the ~200ms compilation cost from the first real request
         # to model load time where users expect latency.
         logger.info("Warming up model...")
         t0 = time.monotonic()
         try:
-            warmup_tokens = self._tokenizer.encode("hi")
-            warmup_prompt = mx.array(warmup_tokens)
-            from mlx_lm.generate import generate_step
-
-            for token, _ in generate_step(warmup_prompt, self._model, max_tokens=1):
-                mx.eval(token)
+            for resp in mlx_lm.stream_generate(
+                self._model,
+                self._tokenizer,
+                prompt="hi",
+                max_tokens=1,
+            ):
                 break
         except Exception:
             logger.debug("Warm-up failed (non-fatal)", exc_info=True)
