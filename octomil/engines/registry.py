@@ -226,6 +226,7 @@ def _auto_register(registry: EngineRegistry) -> None:
     from .mlc_engine import MLCEngine
     from .mlx_engine import MLXEngine
     from .mnn_engine import MNNEngine
+    from .ollama_engine import OllamaEngine
     from .ort_engine import ONNXRuntimeEngine
     from .samsung_one_engine import SamsungOneEngine
     from .whisper_engine import WhisperCppEngine
@@ -239,4 +240,5 @@ def _auto_register(registry: EngineRegistry) -> None:
     registry.register(ExecuTorchEngine())
     registry.register(ONNXRuntimeEngine())
     registry.register(WhisperCppEngine())
+    registry.register(OllamaEngine())  # Zero-pip fallback, before echo
     registry.register(EchoEngine())
