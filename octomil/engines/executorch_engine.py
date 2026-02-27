@@ -113,8 +113,11 @@ class ExecuTorchEngine(EnginePlugin):
         return ", ".join(parts)
 
     def supports_model(self, model_name: str) -> bool:
+        from ..models.catalog import _resolve_alias
+
+        canonical = _resolve_alias(model_name)
         return (
-            model_name in _ET_CATALOG
+            canonical in _ET_CATALOG
             or model_name.endswith(".pte")
             or "/" in model_name
         )

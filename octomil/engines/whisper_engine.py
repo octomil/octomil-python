@@ -82,6 +82,8 @@ class WhisperCppEngine(EnginePlugin):
         return f"pywhispercpp {version}; models: {models}"
 
     def supports_model(self, model_name: str) -> bool:
+        # Whisper models have their own naming; no alias resolution needed
+        # but include it for consistency
         return is_whisper_model(model_name)
 
     def benchmark(self, model_name: str, n_tokens: int = 32) -> BenchmarkResult:

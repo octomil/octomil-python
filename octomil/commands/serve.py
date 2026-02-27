@@ -49,7 +49,7 @@ def register(cli: click.Group) -> None:
     "--engine",
     "-e",
     default=None,
-    help="Force a specific engine (mlx-lm, llama.cpp, mnn, onnxruntime). "
+    help="Force a specific engine (mlx-lm, llama.cpp, mnn, onnxruntime, ollama). "
     "Default: auto-benchmark all available engines and pick fastest.",
 )
 @click.option(
@@ -392,41 +392,24 @@ def _serve_multi_model(
     )
 
 
-def _get_recommended_engines() -> list[tuple[str, str, str]]:
-    """Return platform-aware engine recommendations as (package, pip_extra, description)."""
+def _prompt_engine_install() -> bool:
+    """Prompt user to install an inference engine. Recommends max performance first.
+
+    Platform-specific recommendations:
+    - macOS Apple Silicon: MLX (fastest) → llama.cpp → Ollama fallback
+    - macOS Intel: llama.cpp → ONNX Runtime → Ollama fallback
+    - Linux: llama.cpp → ONNX Runtime → Ollama fallback
+    - Windows: llama.cpp → Ollama fallback
+
+    Returns True if an engine was installed and is ready.
+    """
     import platform as _platform
+    import shutil
+    import subprocess
 
     system = _platform.system()
     machine = _platform.machine()
-
-    if system == "Darwin" and machine == "arm64":
-        return [
-            ("mlx-lm", "mlx", "MLX — best performance on Apple Silicon"),
-            ("llama-cpp-python", "llama", "llama.cpp — good alternative"),
-        ]
-    elif system == "Darwin":
-        return [
-            ("llama-cpp-python", "llama", "llama.cpp"),
-            ("onnxruntime", "onnx", "ONNX Runtime"),
-        ]
-    elif system == "Linux":
-        return [
-            ("llama-cpp-python", "llama", "llama.cpp"),
-            ("onnxruntime", "onnx", "ONNX Runtime"),
-        ]
-    else:
-        return [("llama-cpp-python", "llama", "llama.cpp")]
-
-
-def _prompt_engine_install() -> bool:
-    """Prompt user to install the recommended engine. Returns True if installed."""
-    import subprocess
-
-    recommendations = _get_recommended_engines()
-    if not recommendations:
-        return False
-
-    top_pkg, top_extra, top_desc = recommendations[0]
+    is_apple_silicon = system == "Darwin" and machine == "arm64"
 
     click.echo(
         click.style(
@@ -434,54 +417,131 @@ def _prompt_engine_install() -> bool:
             fg="yellow",
         )
     )
-    click.echo(f"  Recommended: {top_desc}\n")
+
+    # Check if Ollama binary is on PATH but not running
+    ollama_installed = shutil.which("ollama") is not None
+
+    # Build platform-specific recommendation list (best performance first)
+    recommendations: list[tuple[str, str]] = []  # (label, install_cmd)
+    if is_apple_silicon:
+        recommendations.append(
+            ("MLX — fastest on Apple Silicon", "pip install octomil-sdk[mlx]")
+        )
+        recommendations.append(
+            ("llama.cpp — good alternative", "pip install llama-cpp-python")
+        )
+    elif system == "Darwin":
+        recommendations.append(
+            ("llama.cpp", "pip install llama-cpp-python")
+        )
+        recommendations.append(
+            ("ONNX Runtime", "pip install onnxruntime")
+        )
+    elif system == "Linux":
+        recommendations.append(
+            ("llama.cpp", "pip install llama-cpp-python")
+        )
+        recommendations.append(
+            ("ONNX Runtime", "pip install onnxruntime")
+        )
+    else:
+        recommendations.append(
+            ("llama.cpp", "pip install llama-cpp-python")
+        )
+
+    # Ollama always last — zero-pip fallback
+    if system == "Darwin":
+        recommendations.append(
+            ("Ollama — no pip needed", "brew install ollama")
+        )
+    elif system == "Linux":
+        recommendations.append(
+            ("Ollama — no pip needed", "curl -fsSL https://ollama.com/install.sh | sh")
+        )
+    else:
+        recommendations.append(
+            ("Ollama — no pip needed", "Visit https://ollama.com/download")
+        )
 
     if not sys.stdin.isatty():
-        click.echo(f"    pip install {top_pkg}\n")
+        # Non-interactive: print all options
+        if ollama_installed:
+            click.echo("  Ollama is installed but not running.\n")
+            click.echo("    ollama serve\n")
+        click.echo("  Install an inference engine:\n")
+        for label, cmd in recommendations:
+            click.echo(f"    {cmd:<45s} # {label}")
+        click.echo()
         return False
 
-    if click.confirm(f"  Install {top_pkg} now?", default=True):
-        click.echo()
-        if getattr(sys, "frozen", False):
-            pip_cmd = ["pip", "install", top_pkg]
-        else:
-            pip_cmd = [sys.executable, "-m", "pip", "install", top_pkg]
-        try:
-            subprocess.check_call(pip_cmd)
-            click.echo(
-                click.style(f"\n  {top_pkg} installed successfully.\n", fg="green")
-            )
+    # Interactive: if Ollama is installed but not running, offer to start it
+    if ollama_installed:
+        click.echo("  Ollama is installed but not running.\n")
+        if click.confirm("  Start Ollama now?", default=True):
             try:
-                reporter = _get_telemetry_reporter()
-                if reporter:
-                    reporter.report_funnel_event("cli_install", success=True)
+                subprocess.Popen(
+                    ["ollama", "serve"],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+                import time
+
+                time.sleep(2)  # Give Ollama a moment to start
+                from octomil.ollama import is_ollama_running
+
+                if is_ollama_running():
+                    click.echo(
+                        click.style("  Ollama started.\n", fg="green")
+                    )
+                    return True
             except Exception:
                 pass
-            return True
-        except subprocess.CalledProcessError:
             click.echo(
-                click.style(f"\n  Failed to install {top_pkg}.", fg="red"),
+                click.style("  Could not start Ollama.", fg="red"),
                 err=True,
             )
-            click.echo(f"  Try manually: pip install {top_pkg}\n")
+            click.echo("  Start manually: ollama serve\n")
+        return False
+
+    # Interactive: show recommendations (best performance first)
+    top_label, top_cmd = recommendations[0]
+    click.echo(f"  Recommended: {top_label}\n")
+
+    if click.confirm(f"  Install now? ({top_cmd})", default=True):
+        click.echo()
+        # Parse pip command
+        if top_cmd.startswith("pip install"):
+            pkg = top_cmd.split("pip install ", 1)[1]
+            if getattr(sys, "frozen", False):
+                pip_cmd = ["pip", "install", pkg]
+            else:
+                pip_cmd = [sys.executable, "-m", "pip", "install", pkg]
             try:
-                reporter = _get_telemetry_reporter()
-                if reporter:
-                    reporter.report_funnel_event(
-                        "cli_install",
-                        success=False,
-                        failure_reason=f"Failed to install {top_pkg}",
-                        failure_category="engine_install",
-                    )
-            except Exception:
-                pass
-            return False
+                subprocess.check_call(pip_cmd)
+                click.echo(
+                    click.style(f"\n  {pkg} installed successfully.\n", fg="green")
+                )
+                try:
+                    reporter = _get_telemetry_reporter()
+                    if reporter:
+                        reporter.report_funnel_event("cli_install", success=True)
+                except Exception:
+                    pass
+                return True
+            except subprocess.CalledProcessError:
+                click.echo(
+                    click.style(f"\n  Failed to install {pkg}.", fg="red"),
+                    err=True,
+                )
+        else:
+            click.echo(f"  Run: {top_cmd}\n")
     else:
         click.echo("\n  Other options:\n")
-        for pkg, _extra, desc in recommendations:
-            click.echo(f"    pip install {pkg:<22s} # {desc}")
+        for label, cmd in recommendations:
+            click.echo(f"    {cmd:<45s} # {label}")
         click.echo()
-        return False
+
+    return False
 
 
 def _print_engine_detection(model: str, engine_override: str | None) -> None:

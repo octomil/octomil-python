@@ -108,9 +108,12 @@ class LlamaCppEngine(EnginePlugin):
         return "CPU"
 
     def supports_model(self, model_name: str) -> bool:
-        # Supports catalog names, .gguf files, and HuggingFace repo IDs
+        # Supports catalog names (with alias resolution), .gguf files, and HuggingFace repo IDs
+        from ..models.catalog import _resolve_alias
+
+        canonical = _resolve_alias(model_name)
         return (
-            model_name in _GGUF_CATALOG
+            canonical in _GGUF_CATALOG
             or model_name.endswith(".gguf")
             or "/" in model_name
         )

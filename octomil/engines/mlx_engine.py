@@ -72,8 +72,11 @@ class MLXEngine(EnginePlugin):
             return "Apple Silicon"
 
     def supports_model(self, model_name: str) -> bool:
-        # Supports catalog names and any HuggingFace repo ID
-        return model_name in _MLX_CATALOG or "/" in model_name
+        # Supports catalog names (with alias resolution) and any HuggingFace repo ID
+        from ..models.catalog import _resolve_alias
+
+        canonical = _resolve_alias(model_name)
+        return canonical in _MLX_CATALOG or "/" in model_name
 
     def benchmark(self, model_name: str, n_tokens: int = 32) -> BenchmarkResult:
         try:

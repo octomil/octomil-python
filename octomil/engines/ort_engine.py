@@ -102,8 +102,11 @@ class ONNXRuntimeEngine(EnginePlugin):
         return "; ".join(parts)
 
     def supports_model(self, model_name: str) -> bool:
+        from ..models.catalog import _resolve_alias
+
+        canonical = _resolve_alias(model_name)
         return (
-            model_name in _ORT_CATALOG
+            canonical in _ORT_CATALOG
             or model_name.endswith(".onnx")
             or "/" in model_name
         )
