@@ -84,6 +84,31 @@ def _suppress_hf_noise():
                 hf_hub_disable()
 
 
+# Draft model mappings for speculative decoding.
+# Key: canonical model name, Value: MLX HuggingFace repo for the draft model.
+# Draft models must share the same tokenizer (same model family, smaller size).
+_DRAFT_MODEL_MAP: dict[str, str] = {
+    # Llama family
+    "llama-3b": "mlx-community/Llama-3.2-1B-Instruct-4bit",
+    "llama-8b": "mlx-community/Llama-3.2-1B-Instruct-4bit",
+    # Qwen family
+    "qwen-3b": "mlx-community/Qwen2.5-1.5B-Instruct-4bit",
+    "qwen-7b": "mlx-community/Qwen2.5-1.5B-Instruct-4bit",
+    # Gemma family
+    "gemma-4b": "mlx-community/gemma-3-1b-it-4bit",
+    "gemma-12b": "mlx-community/gemma-3-1b-it-4bit",
+    "gemma-27b": "mlx-community/gemma-3-1b-it-4bit",
+}
+
+
+def _get_draft_model_repo(model_name: str) -> Optional[str]:
+    """Return the MLX repo ID for a draft model, or None if unavailable."""
+    from .models.catalog import _resolve_alias
+
+    canonical = _resolve_alias(model_name)
+    return _DRAFT_MODEL_MAP.get(canonical)
+
+
 # ---------------------------------------------------------------------------
 # Pydantic models for OpenAI-compatible API
 # ---------------------------------------------------------------------------
@@ -269,6 +294,7 @@ class MLXBackend(InferenceBackend):
         self._kv_cache: KVCacheManager = KVCacheManager(max_cache_size_mb=cache_size_mb)
 
     def load_model(self, model_name: str) -> None:
+        import mlx.core as mx  # type: ignore[import-untyped]
         import mlx_lm  # type: ignore[import-untyped]
 
         self._model_name = model_name
@@ -277,7 +303,6 @@ class MLXBackend(InferenceBackend):
         logger.info("Loading %s (%s) with mlx-lm...", model_name, self._repo_id)
         with _suppress_hf_noise():
             self._model, self._tokenizer = mlx_lm.load(self._repo_id)
-        logger.info("Model loaded: %s", self._repo_id)
 
         # Collect special token strings for output filtering
         self._stop_strings: set[str] = set()
@@ -286,6 +311,36 @@ class MLXBackend(InferenceBackend):
         # Common chat model turn markers
         for marker in ("<end_of_turn>", "<|eot_id|>", "<|im_end|>", "</s>"):
             self._stop_strings.add(marker)
+
+        # Load draft model for speculative decoding if available
+        self._draft_model: Any = None
+        draft_repo = _get_draft_model_repo(model_name)
+        if draft_repo:
+            try:
+                logger.info("Loading draft model for speculative decoding: %s", draft_repo)
+                with _suppress_hf_noise():
+                    self._draft_model, _ = mlx_lm.load(draft_repo)
+                logger.info("Draft model loaded: %s", draft_repo)
+            except Exception:
+                logger.debug("Draft model load failed, skipping speculative decoding", exc_info=True)
+
+        # Warm-up: run a single-token generation to JIT-compile Metal shaders.
+        # This moves the ~200ms compilation cost from the first real request
+        # to model load time where users expect latency.
+        logger.info("Warming up model...")
+        t0 = time.monotonic()
+        try:
+            warmup_tokens = self._tokenizer.encode("hi")
+            warmup_prompt = mx.array(warmup_tokens)
+            from mlx_lm.generate import generate_step
+
+            for token, _ in generate_step(warmup_prompt, self._model, max_tokens=1):
+                mx.eval(token)
+                break
+        except Exception:
+            logger.debug("Warm-up failed (non-fatal)", exc_info=True)
+        warmup_ms = (time.monotonic() - t0) * 1000
+        logger.info("Model ready: %s (warm-up: %.0fms)", self._repo_id, warmup_ms)
 
     def _apply_chat_template(self, messages: list[dict[str, str]]) -> str:
         """Format messages using the model's chat template."""
@@ -339,6 +394,10 @@ class MLXBackend(InferenceBackend):
                     cached.prefix_length,
                     prompt_tokens,
                 )
+
+        # Speculative decoding: use draft model when available
+        if self._draft_model is not None:
+            extra_kwargs["draft_model"] = self._draft_model
 
         for response in mlx_lm.stream_generate(
             self._model,
@@ -397,6 +456,10 @@ class MLXBackend(InferenceBackend):
             cached = self._kv_cache.get_cached_prefix(prompt_token_ids)
             if cached is not None:
                 extra_kwargs["prompt_cache"] = cached.kv_state
+
+        # Speculative decoding: use draft model when available
+        if self._draft_model is not None:
+            extra_kwargs["draft_model"] = self._draft_model
 
         # mlx_lm.stream_generate is a sync generator that yields
         # GenerationResponse objects as tokens are produced.
