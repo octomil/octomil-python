@@ -284,7 +284,11 @@ install_python_sdk() {
     fi
 
     info "Installing Python SDK..."
+    # Try normal install first, then --break-system-packages for
+    # Homebrew/externally-managed Python (PEP 668).
     if $PIP_CMD install --quiet --upgrade octomil-sdk 2>/dev/null; then
+        info "Python SDK installed (import octomil)"
+    elif $PIP_CMD install --quiet --upgrade --break-system-packages octomil-sdk 2>/dev/null; then
         info "Python SDK installed (import octomil)"
     else
         warn "Could not install Python SDK. Install manually: pip install octomil-sdk"
