@@ -29,6 +29,7 @@ class ModelMetadata:
     model_id: str
     name: str
     version: str
+    experiment_id: Optional[str] = None
 
 
 @dataclass
@@ -64,9 +65,7 @@ class Model:
     ) -> None:
         self.metadata = metadata
         self._engine = engine
-        self._backend = engine.create_backend(
-            metadata.name, **(engine_kwargs or {})
-        )
+        self._backend = engine.create_backend(metadata.name, **(engine_kwargs or {}))
         self._reporter_override = _reporter
 
     # ------------------------------------------------------------------
@@ -142,6 +141,27 @@ class Model:
             except Exception:
                 pass
 
+            # Emit experiment metrics when model is part of an experiment
+            if self.metadata.experiment_id:
+                try:
+                    reporter.report_experiment_metric(
+                        experiment_id=self.metadata.experiment_id,
+                        metric_name="inference.duration_ms",
+                        metric_value=gen_elapsed_ms,
+                    )
+                    reporter.report_experiment_metric(
+                        experiment_id=self.metadata.experiment_id,
+                        metric_name="inference.ttfc_ms",
+                        metric_value=metrics.ttfc_ms,
+                    )
+                    reporter.report_experiment_metric(
+                        experiment_id=self.metadata.experiment_id,
+                        metric_name="inference.throughput_tps",
+                        metric_value=throughput,
+                    )
+                except Exception:
+                    pass
+
         return Prediction(text=text, metrics=metrics)
 
     # ------------------------------------------------------------------
@@ -186,8 +206,7 @@ class Model:
                     try:
                         ttfc = (
                             (first_chunk_time - stream_start) * 1000
-                            if first_chunk_time is not None
-                            and chunk_index == 0
+                            if first_chunk_time is not None and chunk_index == 0
                             else None
                         )
                         reporter.report_chunk_produced(
@@ -238,3 +257,24 @@ class Model:
                 )
             except Exception:
                 pass
+
+            # Emit experiment metrics when model is part of an experiment
+            if self.metadata.experiment_id:
+                try:
+                    reporter.report_experiment_metric(
+                        experiment_id=self.metadata.experiment_id,
+                        metric_name="inference.duration_ms",
+                        metric_value=total_duration_ms,
+                    )
+                    reporter.report_experiment_metric(
+                        experiment_id=self.metadata.experiment_id,
+                        metric_name="inference.ttfc_ms",
+                        metric_value=ttfc_ms,
+                    )
+                    reporter.report_experiment_metric(
+                        experiment_id=self.metadata.experiment_id,
+                        metric_name="inference.throughput_tps",
+                        metric_value=throughput,
+                    )
+                except Exception:
+                    pass
