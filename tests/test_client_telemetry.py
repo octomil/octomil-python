@@ -173,6 +173,7 @@ class TestClientLoadModelTelemetry:
 
         mock_reporter = MagicMock()
         mock_engine = MagicMock()
+        mock_engine.manages_own_download = False
         mock_engine_registry = MagicMock()
         mock_engine_registry.auto_select.return_value = (mock_engine, [])
         mock_model_instance = MagicMock()
@@ -205,6 +206,7 @@ class TestClientLoadModelTelemetry:
 
         mock_reporter = MagicMock()
         mock_engine = MagicMock()
+        mock_engine.manages_own_download = False
         mock_engine_registry = MagicMock()
         mock_engine_registry.auto_select.return_value = (mock_engine, [])
 
@@ -244,6 +246,7 @@ class TestClientLoadModelTelemetry:
         mock_registry.download.return_value = {"model_path": "/tmp/m.onnx"}
 
         mock_engine = MagicMock()
+        mock_engine.manages_own_download = False
         mock_engine_registry = MagicMock()
         mock_engine_registry.auto_select.return_value = (mock_engine, [])
         mock_model_instance = MagicMock()
