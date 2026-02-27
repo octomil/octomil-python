@@ -274,11 +274,11 @@ class TestTelemetryAttentionBackend:
             reporter.close()
 
         assert len(sent) >= 1
-        p = sent[0]
-        assert p["event_type"] == "generation_started"
-        assert p["metrics"]["attention_backend"] == "flash_attention"
+        event = sent[0]["events"][0]
+        assert event["name"] == "inference.started"
+        assert event["attributes"]["inference.attention_backend"] == "flash_attention"
 
-    def test_generation_started_no_attention_backend_has_no_metrics(self):
+    def test_generation_started_no_attention_backend_has_no_attr(self):
         sent: list[dict] = []
 
         def mock_send(client, url, headers, payload):
@@ -300,8 +300,8 @@ class TestTelemetryAttentionBackend:
             reporter.close()
 
         assert len(sent) >= 1
-        p = sent[0]
-        assert "metrics" not in p
+        attrs = sent[0]["events"][0]["attributes"]
+        assert "inference.attention_backend" not in attrs
 
     def test_generation_completed_includes_attention_backend(self):
         sent: list[dict] = []
@@ -330,15 +330,16 @@ class TestTelemetryAttentionBackend:
             reporter.close()
 
         assert len(sent) >= 1
-        p = sent[0]
-        assert p["event_type"] == "generation_completed"
-        assert p["metrics"]["attention_backend"] == "metal_fused"
-        # Original metrics should still be present
-        assert p["metrics"]["total_chunks"] == 10
-        assert p["metrics"]["throughput"] == 20.0
+        event = sent[0]["events"][0]
+        assert event["name"] == "inference.completed"
+        attrs = event["attributes"]
+        assert attrs["inference.attention_backend"] == "metal_fused"
+        # Original attributes should still be present
+        assert attrs["inference.total_tokens"] == 10
+        assert attrs["inference.throughput_tps"] == 20.0
 
     def test_generation_completed_without_attention_backend(self):
-        """When attention_backend is not passed, it should not appear in metrics."""
+        """When attention_backend is not passed, it should not appear in attributes."""
         sent: list[dict] = []
 
         def mock_send(client, url, headers, payload):
@@ -364,8 +365,8 @@ class TestTelemetryAttentionBackend:
             reporter.close()
 
         assert len(sent) >= 1
-        p = sent[0]
-        assert "attention_backend" not in p["metrics"]
+        attrs = sent[0]["events"][0]["attributes"]
+        assert "inference.attention_backend" not in attrs
 
 
 # ---------------------------------------------------------------------------

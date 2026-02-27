@@ -1,44 +1,31 @@
 """
-Query routing for multi-model serving with tier-0 deterministic answers.
+Thin policy-based query routing client.
 
-Routes incoming queries to the most appropriate model based on estimated
-complexity.  Simple queries (greetings, short factual questions) go to
-the smallest/fastest model; complex queries (code generation, multi-step
-reasoning) go to the largest/most capable model.
+Routes incoming queries to the most appropriate model tier by fetching
+a routing policy from the Octomil server and applying simple threshold
+comparisons locally.  Complex scoring logic lives server-side.
 
-**Tier 0 (deterministic)**: Intercepts arithmetic, unit conversions, and
-other queries that can be answered without invoking any model.  Uses safe
-AST-based evaluation -- never ``eval()`` or ``exec()``.
+**Online mode**: POST /api/v1/route/query for full server-side routing.
+**Offline mode**: Apply cached policy with simple word-count / keyword
+thresholds.  Falls back to an embedded default policy on first use.
 
-The complexity heuristic is pure Python — no ML model required.
-
-Usage::
-
-    from octomil.routing import QueryRouter, ModelInfo
-
-    models = {
-        "smollm-360m": ModelInfo(name="smollm-360m", tier="fast", param_b=0.36),
-        "phi-4-mini":  ModelInfo(name="phi-4-mini",  tier="balanced", param_b=3.8),
-        "llama-3.2-3b": ModelInfo(name="llama-3.2-3b", tier="quality", param_b=3.0),
-    }
-    router = QueryRouter(models, strategy="complexity")
-    chosen = router.route(messages)
-
-    # Tier-0 deterministic routing:
-    from octomil.routing import check_deterministic
-    result = check_deterministic("what is 2+2?")
-    if result is not None:
-        print(result.answer)  # "4"
+Backward-compatible public API:
+- ``ModelInfo``, ``RoutingDecision``, ``DecomposedRoutingDecision``,
+  ``DeterministicResult`` dataclasses
+- ``QueryRouter`` class with ``route()``, ``route_decomposed()``,
+  ``get_fallback()``
+- ``check_deterministic()`` and ``assign_tiers()`` module-level functions
 """
 
 from __future__ import annotations
 
-import ast
+import json
 import logging
-import math
-import operator
+import os
 import re
+import time
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Optional, Union
 
 logger = logging.getLogger(__name__)
@@ -47,7 +34,6 @@ logger = logging.getLogger(__name__)
 # Model metadata
 # ---------------------------------------------------------------------------
 
-# Tiers ordered from smallest to largest capability.
 TIER_ORDER: list[str] = ["fast", "balanced", "quality"]
 
 
@@ -57,7 +43,7 @@ class ModelInfo:
 
     name: str
     tier: str = "balanced"
-    param_b: float = 0.0  # parameter count in billions (for display)
+    param_b: float = 0.0
     loaded: bool = True
 
     @property
@@ -66,7 +52,7 @@ class ModelInfo:
         try:
             return TIER_ORDER.index(self.tier)
         except ValueError:
-            return 1  # default to balanced
+            return 1
 
 
 # ---------------------------------------------------------------------------
@@ -79,7 +65,7 @@ class DeterministicResult:
     """Result from a deterministic (no-model) computation."""
 
     answer: str
-    method: str  # e.g. "arithmetic", "unit_conversion"
+    method: str
     confidence: float = 1.0
 
 
@@ -102,11 +88,7 @@ class RoutingDecision:
 
 @dataclass
 class DecomposedRoutingDecision:
-    """Routing decision for a decomposed multi-task query.
-
-    Contains one ``RoutingDecision`` per sub-task, allowing each
-    sub-task to be routed to a different model tier.
-    """
+    """Routing decision for a decomposed multi-task query."""
 
     sub_decisions: list[RoutingDecision]
     tasks: list  # list[SubTask] — typed loosely to avoid circular import
@@ -115,472 +97,399 @@ class DecomposedRoutingDecision:
 
 
 # ---------------------------------------------------------------------------
-# Complexity heuristic signals
+# Routing policy (fetched from server, cached locally)
 # ---------------------------------------------------------------------------
 
-# Words that indicate simple / conversational queries.
-_SIMPLE_PATTERNS: list[re.Pattern[str]] = [
-    re.compile(r"\b(hi|hello|hey|howdy|greetings|yo|sup)\b", re.IGNORECASE),
-    re.compile(r"\b(thanks|thank you|bye|goodbye|see ya)\b", re.IGNORECASE),
-    re.compile(r"\b(what time|what day|what year|how old)\b", re.IGNORECASE),
-    re.compile(r"\bwhat is (a |an |the )?\w+\b", re.IGNORECASE),
-    re.compile(r"\bdefine \w+\b", re.IGNORECASE),
-]
-
-# Words/phrases that indicate complex queries.
-_COMPLEX_PATTERNS: list[re.Pattern[str]] = [
-    # Code generation
-    re.compile(
-        r"\b(write|implement|code|program|function|class|algorithm|refactor|debug)\b",
-        re.IGNORECASE,
-    ),
-    # Reasoning
-    re.compile(
-        r"\b(explain why|reason|analyze|compare|contrast|evaluate|critique)\b",
-        re.IGNORECASE,
-    ),
-    # Multi-step
-    re.compile(
-        r"\b(step by step|step-by-step|first .* then|multi-step)\b",
-        re.IGNORECASE,
-    ),
-    # Math / logic
-    re.compile(
-        r"\b(prove|derive|calculate|compute|integral|derivative|equation|theorem)\b",
-        re.IGNORECASE,
-    ),
-    # Creative / long-form
-    re.compile(
-        r"\b(write a (story|essay|article|poem|report|document))\b",
-        re.IGNORECASE,
-    ),
-    # Technical terms
-    re.compile(
-        r"\b(API|REST|GraphQL|microservice|kubernetes|docker|terraform|CICD|CI/CD)\b",
-        re.IGNORECASE,
-    ),
-    re.compile(
-        r"\b(neural network|transformer|attention|backpropagation|gradient)\b",
-        re.IGNORECASE,
-    ),
-]
-
-# Technical / uncommon vocabulary (presence raises complexity).
-_TECHNICAL_WORDS: set[str] = {
-    "asynchronous",
-    "concurrency",
-    "parallelism",
-    "mutex",
-    "semaphore",
-    "deadlock",
-    "recursion",
-    "polymorphism",
-    "inheritance",
-    "abstraction",
-    "encapsulation",
-    "middleware",
-    "serialization",
-    "deserialization",
-    "latency",
-    "throughput",
-    "idempotent",
-    "deterministic",
-    "stochastic",
-    "heuristic",
-    "eigenvalue",
-    "convolution",
-    "embedding",
-    "tokenization",
-    "quantization",
-    "optimization",
-    "regularization",
-    "normalization",
-    "hyperparameter",
-    "inference",
-    "fine-tuning",
-    "federated",
-    "differential",
-    "cryptographic",
-    "authentication",
-    "authorization",
-    "orchestration",
-    "containerization",
-}
-
-
-def _word_count(text: str) -> int:
-    """Count whitespace-delimited tokens."""
-    return len(text.split())
-
-
-def _estimate_complexity(
-    text: str,
-    system_prompt: str = "",
-    turn_count: int = 1,
-) -> float:
-    """Estimate query complexity on a 0.0 (trivial) to 1.0 (complex) scale.
-
-    Signals used:
-    1. Token/word count — short queries tend to be simpler.
-    2. Vocabulary complexity — presence of technical terms.
-    3. Pattern matching — greeting vs. code/reasoning patterns.
-    4. System prompt length — longer system prompts imply complex tasks.
-    5. Multi-turn context — deeper conversations are generally harder.
-
-    Returns a float in [0.0, 1.0].
-    """
-    signals: list[float] = []
-
-    # 1. Length signal (0-1, log-scaled)
-    wc = _word_count(text)
-    # 1 word → ~0.0, 10 words → ~0.33, 50 words → ~0.56, 200 words → ~0.77
-    length_score = min(math.log1p(wc) / math.log1p(200), 1.0)
-    signals.append(length_score * 0.20)
-
-    # 2. Simple pattern match (each match lowers complexity)
-    simple_hits = sum(1 for p in _SIMPLE_PATTERNS if p.search(text))
-    simple_penalty = min(simple_hits * 0.15, 0.30)
-    signals.append(-simple_penalty)
-
-    # 3. Complex pattern match (each match raises complexity)
-    complex_hits = sum(1 for p in _COMPLEX_PATTERNS if p.search(text))
-    complex_boost = min(complex_hits * 0.12, 0.40)
-    signals.append(complex_boost)
-
-    # 4. Technical vocabulary ratio
-    words_lower = {w.lower().strip(".,;:!?()[]{}\"'") for w in text.split()}
-    tech_count = len(words_lower & _TECHNICAL_WORDS)
-    tech_score = min(tech_count / 5.0, 1.0) * 0.15
-    signals.append(tech_score)
-
-    # 5. Code indicators (backticks, indentation patterns)
-    code_indicators = text.count("```") + text.count("def ") + text.count("class ")
-    code_score = min(code_indicators / 3.0, 1.0) * 0.10
-    signals.append(code_score)
-
-    # 6. System prompt length (longer → more complex task)
-    if system_prompt:
-        sys_wc = _word_count(system_prompt)
-        sys_score = min(math.log1p(sys_wc) / math.log1p(500), 1.0) * 0.10
-        signals.append(sys_score)
-
-    # 7. Multi-turn depth (deeper → harder)
-    turn_score = min((turn_count - 1) / 10.0, 1.0) * 0.05
-    signals.append(turn_score)
-
-    # Base complexity (avoids everything summing to exactly 0)
-    base = 0.25
-
-    raw = base + sum(signals)
-    return max(0.0, min(1.0, raw))
-
-
-# ---------------------------------------------------------------------------
-# Safe AST-based arithmetic evaluator (Tier-0 deterministic)
-# ---------------------------------------------------------------------------
-
-# Whitelisted AST node types for safe arithmetic evaluation
-_SAFE_NODES: tuple[type, ...] = (
-    ast.Expression,
-    ast.Constant,
-    ast.UnaryOp,
-    ast.UAdd,
-    ast.USub,
-    ast.BinOp,
-    ast.Add,
-    ast.Sub,
-    ast.Mult,
-    ast.Div,
-    ast.FloorDiv,
-    ast.Mod,
-    ast.Pow,
-    ast.Call,
-    ast.Name,
-    ast.Load,
+_MATH_PATTERN = re.compile(
+    r"^[\s\d+\-*/^().%]+$"
+    r"|[\d]+\s*[+\-*/^%]\s*[\d]"
+    r"|\b(sqrt|abs|log|sin|cos|tan|ceil|floor)\s*\("
+    r"|[\d.]+\s*%\s*of\s+[\d.]+",
 )
-# ast.Num was removed in Python 3.14
-if hasattr(ast, "Num"):
-    _SAFE_NODES = _SAFE_NODES + (ast.Num,)
 
-# Allowed function names in expressions
-_SAFE_FUNCTIONS: dict[str, Any] = {
-    "sqrt": math.sqrt,
-    "abs": abs,
-    "round": round,
-    "ceil": math.ceil,
-    "floor": math.floor,
-    "log": math.log,
-    "log2": math.log2,
-    "log10": math.log10,
-    "sin": math.sin,
-    "cos": math.cos,
-    "tan": math.tan,
-    "pi": math.pi,
-    "e": math.e,
+_DEFAULT_POLICY: dict[str, Any] = {
+    "version": 1,
+    "thresholds": {"fast_max_words": 10, "quality_min_words": 50},
+    "complex_indicators": [
+        "implement",
+        "refactor",
+        "debug",
+        "analyze",
+        "compare",
+        "step by step",
+        "prove",
+        "derive",
+        "calculate",
+        "write a story",
+        "write a essay",
+        "write a report",
+        "algorithm",
+        "kubernetes",
+        "docker",
+        "neural network",
+        "transformer",
+    ],
+    "deterministic_enabled": True,
+    "ttl_seconds": 3600,
 }
 
-# Allowed constants (names that resolve to values, not functions)
-_SAFE_CONSTANTS: dict[str, float] = {
-    "pi": math.pi,
-    "e": math.e,
-}
 
+@dataclass
+class RoutingPolicy:
+    """Cached routing policy from the server."""
 
-def _safe_eval_node(node: ast.AST) -> float:
-    """Recursively evaluate an AST node, allowing only arithmetic operations.
+    version: int
+    fast_max_words: int
+    quality_min_words: int
+    complex_indicators: list[str]
+    deterministic_enabled: bool
+    ttl_seconds: int
+    fetched_at: float = 0.0
+    etag: str = ""
 
-    Raises ``ValueError`` for any disallowed node type.
-    """
-    if isinstance(node, ast.Expression):
-        return _safe_eval_node(node.body)
+    @classmethod
+    def from_dict(cls, d: dict[str, Any]) -> RoutingPolicy:
+        thresholds = d.get("thresholds", {})
+        return cls(
+            version=d.get("version", 1),
+            fast_max_words=thresholds.get("fast_max_words", 10),
+            quality_min_words=thresholds.get("quality_min_words", 50),
+            complex_indicators=d.get("complex_indicators", []),
+            deterministic_enabled=d.get("deterministic_enabled", True),
+            ttl_seconds=d.get("ttl_seconds", 3600),
+            fetched_at=d.get("fetched_at", 0.0),
+            etag=d.get("etag", ""),
+        )
 
-    if isinstance(node, ast.Constant):
-        v = node.value
-        if isinstance(v, float):
-            return v
-        if isinstance(v, int):
-            return float(v)
-        raise ValueError(f"Disallowed constant type: {type(v).__name__}")
-
-    # Python 3.7–3.13 ast.Num (removed in 3.14)
-    if hasattr(ast, "Num") and isinstance(node, ast.Num):
-        n = node.n
-        if isinstance(n, float):
-            return n
-        if isinstance(n, int):
-            return float(n)
-        raise ValueError(f"Disallowed constant type: {type(n).__name__}")
-
-    if isinstance(node, ast.UnaryOp):
-        operand = _safe_eval_node(node.operand)
-        if isinstance(node.op, ast.UAdd):
-            return +operand
-        if isinstance(node.op, ast.USub):
-            return -operand
-        raise ValueError(f"Disallowed unary op: {type(node.op).__name__}")
-
-    if isinstance(node, ast.BinOp):
-        left = _safe_eval_node(node.left)
-        right = _safe_eval_node(node.right)
-        ops = {
-            ast.Add: operator.add,
-            ast.Sub: operator.sub,
-            ast.Mult: operator.mul,
-            ast.Div: operator.truediv,
-            ast.FloorDiv: operator.floordiv,
-            ast.Mod: operator.mod,
-            ast.Pow: operator.pow,
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "version": self.version,
+            "thresholds": {
+                "fast_max_words": self.fast_max_words,
+                "quality_min_words": self.quality_min_words,
+            },
+            "complex_indicators": self.complex_indicators,
+            "deterministic_enabled": self.deterministic_enabled,
+            "ttl_seconds": self.ttl_seconds,
+            "fetched_at": self.fetched_at,
+            "etag": self.etag,
         }
-        op_func = ops.get(type(node.op))
-        if op_func is None:
-            raise ValueError(f"Disallowed binary op: {type(node.op).__name__}")
 
-        # Guard against exponent bombs (e.g. 2**999999999)
-        if isinstance(node.op, ast.Pow) and abs(right) > 10000:
-            raise ValueError("Exponent too large")
-
-        return op_func(left, right)
-
-    if isinstance(node, ast.Call):
-        # Only allow whitelisted function names
-        if not isinstance(node.func, ast.Name):
-            raise ValueError("Only simple function calls allowed")
-        func_name = node.func.id
-        if func_name not in _SAFE_FUNCTIONS:
-            raise ValueError(f"Disallowed function: {func_name}")
-        func = _SAFE_FUNCTIONS[func_name]
-        if not callable(func):
-            raise ValueError(f"{func_name} is not callable")
-        args = [_safe_eval_node(arg) for arg in node.args]
-        if node.keywords:
-            raise ValueError("Keyword arguments not allowed")
-        return func(*args)
-
-    if isinstance(node, ast.Name):
-        name = node.id
-        if name in _SAFE_CONSTANTS:
-            return _SAFE_CONSTANTS[name]
-        raise ValueError(f"Disallowed name: {name}")
-
-    raise ValueError(f"Disallowed AST node: {type(node).__name__}")
+    @property
+    def is_expired(self) -> bool:
+        if self.fetched_at == 0.0:
+            return True
+        return (time.time() - self.fetched_at) > self.ttl_seconds
 
 
-def _safe_arithmetic_eval(expr: str) -> Optional[float]:
-    """Safely evaluate a pure arithmetic expression string.
+# ---------------------------------------------------------------------------
+# Policy client — fetches and caches policy from server
+# ---------------------------------------------------------------------------
 
-    Returns the numeric result, or ``None`` if the expression is not
-    valid arithmetic.  Never uses ``eval()``/``exec()``.
+_CACHE_DIR = Path(os.environ.get("OCTOMIL_CACHE_DIR", Path.home() / ".octomil"))
+_POLICY_FILE = "routing_policy.json"
+
+
+class PolicyClient:
+    """Fetches routing policy from the server and caches to disk."""
+
+    def __init__(
+        self,
+        api_base: str = "https://api.octomil.com/api/v1",
+        api_key: str = "",
+    ) -> None:
+        self.api_base = api_base.rstrip("/")
+        self.api_key = api_key
+        self._policy: Optional[RoutingPolicy] = None
+
+    def get_policy(self) -> RoutingPolicy:
+        """Return the current policy, refreshing from server if expired."""
+        if self._policy is not None and not self._policy.is_expired:
+            return self._policy
+
+        # Try loading from disk cache
+        if self._policy is None:
+            self._policy = self._load_from_disk()
+
+        # If still valid after loading from disk, return it
+        if self._policy is not None and not self._policy.is_expired:
+            return self._policy
+
+        # Try fetching from server
+        fetched = self._fetch_from_server()
+        if fetched is not None:
+            self._policy = fetched
+            self._save_to_disk(fetched)
+            return self._policy
+
+        # Use disk cache even if expired, or fall back to defaults
+        if self._policy is not None:
+            logger.debug("Using expired cached policy (server unreachable)")
+            return self._policy
+
+        logger.debug("Using default embedded policy (no cache, server unreachable)")
+        self._policy = RoutingPolicy.from_dict(_DEFAULT_POLICY)
+        return self._policy
+
+    def _fetch_from_server(self) -> Optional[RoutingPolicy]:
+        """Fetch policy from GET /api/v1/route/policy."""
+        try:
+            import httpx
+        except ImportError:
+            logger.debug("httpx not available — cannot fetch routing policy")
+            return None
+
+        headers: dict[str, str] = {}
+        if self.api_key:
+            headers["Authorization"] = f"Bearer {self.api_key}"
+        if self._policy and self._policy.etag:
+            headers["If-None-Match"] = self._policy.etag
+
+        try:
+            with httpx.Client(timeout=5.0) as client:
+                resp = client.get(
+                    f"{self.api_base}/route/policy",
+                    headers=headers,
+                )
+
+            if resp.status_code == 304:
+                # Not modified — refresh TTL on existing policy
+                if self._policy:
+                    self._policy.fetched_at = time.time()
+                    self._save_to_disk(self._policy)
+                return self._policy
+
+            if resp.status_code != 200:
+                logger.debug("Policy fetch returned HTTP %d", resp.status_code)
+                return None
+
+            data = resp.json()
+
+            # Extract TTL from Cache-Control header if present
+            cc = resp.headers.get("cache-control", "")
+            ttl = data.get("ttl_seconds", 3600)
+            if "max-age=" in cc:
+                try:
+                    ttl = int(cc.split("max-age=")[1].split(",")[0].strip())
+                except (ValueError, IndexError):
+                    pass
+            data["ttl_seconds"] = ttl
+
+            etag = resp.headers.get("etag", "")
+            data["etag"] = etag
+            data["fetched_at"] = time.time()
+
+            return RoutingPolicy.from_dict(data)
+
+        except Exception:
+            logger.debug("Failed to fetch routing policy from server", exc_info=True)
+            return None
+
+    def _load_from_disk(self) -> Optional[RoutingPolicy]:
+        """Load cached policy from disk."""
+        path = _CACHE_DIR / _POLICY_FILE
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            return RoutingPolicy.from_dict(data)
+        except (FileNotFoundError, json.JSONDecodeError, KeyError):
+            return None
+
+    def _save_to_disk(self, policy: RoutingPolicy) -> None:
+        """Persist policy to disk cache."""
+        path = _CACHE_DIR / _POLICY_FILE
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(
+                json.dumps(policy.to_dict(), indent=2),
+                encoding="utf-8",
+            )
+        except OSError:
+            logger.debug("Failed to write policy cache to %s", path, exc_info=True)
+
+
+# ---------------------------------------------------------------------------
+# Deterministic detection (thin — delegates to server when online)
+# ---------------------------------------------------------------------------
+
+
+def check_deterministic(query: str) -> Optional[DeterministicResult]:
+    """Check if a query looks like pure arithmetic.
+
+    In online mode the server handles actual evaluation.  This function
+    only detects obvious math patterns and returns ``None`` for anything
+    that needs a model.  Returns a ``DeterministicResult`` stub when a
+    math pattern is detected, suitable for the server to evaluate.
     """
+    text = query.strip().rstrip("?.")
+
+    # Strip common prefixes
+    for prefix in (
+        "what is ",
+        "what's ",
+        "calculate ",
+        "compute ",
+        "evaluate ",
+        "how much is ",
+        "solve ",
+        "find ",
+    ):
+        if text.lower().startswith(prefix):
+            text = text[len(prefix) :]
+            break
+
+    if not text:
+        return None
+
+    # Quick check: if remaining text is purely numeric/operator characters
+    # or contains a known math function call, treat as arithmetic
+    if _MATH_PATTERN.search(text):
+        # Reject if there are alphabetic chars that aren't math function names
+        check = text
+        for fname in (
+            "sqrt",
+            "abs",
+            "round",
+            "ceil",
+            "floor",
+            "log2",
+            "log10",
+            "log",
+            "sin",
+            "cos",
+            "tan",
+            "pi",
+        ):
+            check = check.replace(fname, "")
+        check = re.sub(r"\bof\b", "", check, flags=re.IGNORECASE)
+        if re.search(r"[a-zA-Z_]", check):
+            return None
+
+        # Basic safe evaluation for simple expressions
+        result = _safe_eval(text)
+        if result is not None:
+            return DeterministicResult(
+                answer=_format_number(result),
+                method="arithmetic",
+                confidence=1.0,
+            )
+
+    return None
+
+
+def _safe_eval(expr: str) -> Optional[float]:
+    """Evaluate a simple arithmetic expression safely via ast."""
+    import ast
+    import math
+    import operator
+
+    # Normalise: ^ to **, implicit multiplication
+    expr = re.sub(r"(\d)\s*\^\s*(\d)", r"\1**\2", expr)
+    expr = re.sub(r"(\d)\s*\(", r"\1*(", expr)
+
+    # Handle percentage: "N% of M"
+    pct = re.match(r"^([\d.]+)\s*%\s*(?:of)\s+([\d.]+)$", expr, re.IGNORECASE)
+    if pct:
+        return (float(pct.group(1)) / 100.0) * float(pct.group(2))
+
+    _SAFE_NODES = (
+        ast.Expression,
+        ast.Constant,
+        ast.UnaryOp,
+        ast.UAdd,
+        ast.USub,
+        ast.BinOp,
+        ast.Add,
+        ast.Sub,
+        ast.Mult,
+        ast.Div,
+        ast.FloorDiv,
+        ast.Mod,
+        ast.Pow,
+        ast.Call,
+        ast.Name,
+        ast.Load,
+    )
+    if hasattr(ast, "Num"):
+        _SAFE_NODES = _SAFE_NODES + (ast.Num,)
+
+    _FUNCS: dict[str, Any] = {
+        "sqrt": math.sqrt,
+        "abs": abs,
+        "round": round,
+        "ceil": math.ceil,
+        "floor": math.floor,
+        "log": math.log,
+        "log2": math.log2,
+        "log10": math.log10,
+        "sin": math.sin,
+        "cos": math.cos,
+        "tan": math.tan,
+    }
+    _CONSTS: dict[str, float] = {"pi": math.pi, "e": math.e}
+
+    def _eval_node(node: ast.AST) -> float:
+        if isinstance(node, ast.Expression):
+            return _eval_node(node.body)
+        if isinstance(node, ast.Constant) and isinstance(node.value, (int, float)):
+            return float(node.value)
+        if hasattr(ast, "Num") and isinstance(node, ast.Num):
+            return float(node.n)
+        if isinstance(node, ast.UnaryOp):
+            val = _eval_node(node.operand)
+            if isinstance(node.op, ast.UAdd):
+                return +val
+            if isinstance(node.op, ast.USub):
+                return -val
+            raise ValueError
+        if isinstance(node, ast.BinOp):
+            left, right = _eval_node(node.left), _eval_node(node.right)
+            ops = {
+                ast.Add: operator.add,
+                ast.Sub: operator.sub,
+                ast.Mult: operator.mul,
+                ast.Div: operator.truediv,
+                ast.FloorDiv: operator.floordiv,
+                ast.Mod: operator.mod,
+                ast.Pow: operator.pow,
+            }
+            fn = ops.get(type(node.op))
+            if fn is None:
+                raise ValueError
+            if isinstance(node.op, ast.Pow) and abs(right) > 10000:
+                raise ValueError("Exponent too large")
+            return fn(left, right)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
+            if node.func.id not in _FUNCS or node.keywords:
+                raise ValueError
+            return _FUNCS[node.func.id](*[_eval_node(a) for a in node.args])
+        if isinstance(node, ast.Name) and node.id in _CONSTS:
+            return _CONSTS[node.id]
+        raise ValueError
+
     try:
         tree = ast.parse(expr, mode="eval")
     except SyntaxError:
         return None
 
-    # Reject any node type not in our whitelist
     for node in ast.walk(tree):
         if not isinstance(node, _SAFE_NODES):
             return None
 
     try:
-        result = _safe_eval_node(tree)
+        return _eval_node(tree)
     except (ValueError, TypeError, ZeroDivisionError, OverflowError, ArithmeticError):
         return None
 
-    return result
-
-
-# ---------------------------------------------------------------------------
-# Query normalisation helpers
-# ---------------------------------------------------------------------------
-
-# Phrases to strip from the beginning of queries to extract the core expression
-_STRIP_PREFIXES = [
-    r"what\s+is\s+",
-    r"what's\s+",
-    r"calculate\s+",
-    r"compute\s+",
-    r"evaluate\s+",
-    r"how\s+much\s+is\s+",
-    r"solve\s+",
-    r"find\s+",
-]
-
-# Compiled pattern that matches any prefix (case-insensitive)
-_PREFIX_PATTERN = re.compile(
-    r"^(?:" + "|".join(_STRIP_PREFIXES) + r")",
-    re.IGNORECASE,
-)
-
-# Percentage pattern: "N% of M"
-_PERCENTAGE_PATTERN = re.compile(
-    r"^([\d.]+)\s*%\s*(?:of)\s+([\d.]+)$",
-    re.IGNORECASE,
-)
-
-# Caret exponent: "2^10" → "2**10"
-_CARET_PATTERN = re.compile(r"(\d+)\s*\^\s*(\d+)")
-
-
-def _normalise_query(query: str) -> str:
-    """Strip natural language wrappers to get the core arithmetic expression."""
-    text = query.strip()
-
-    # Remove trailing question mark / period
-    text = text.rstrip("?.")
-
-    # Remove common prefixes ("what is", "calculate", etc.)
-    text = _PREFIX_PATTERN.sub("", text).strip()
-
-    return text
-
-
-def _try_percentage(expr: str) -> Optional[float]:
-    """Try to evaluate 'N% of M' patterns."""
-    m = _PERCENTAGE_PATTERN.match(expr)
-    if m:
-        pct = float(m.group(1))
-        base = float(m.group(2))
-        return (pct / 100.0) * base
-    return None
-
-
-def _prepare_expression(expr: str) -> str:
-    """Convert human-friendly math notation into Python-parseable expressions.
-
-    Handles:
-    - ``^`` → ``**``  (exponentiation)
-    - Implicit multiplication before parentheses: ``2(3)`` → ``2*(3)``
-    """
-    # Replace ^ with **
-    result = _CARET_PATTERN.sub(r"\1**\2", expr)
-    # Implicit multiplication: digit followed by '(' → digit * '('
-    result = re.sub(r"(\d)\s*\(", r"\1*(", result)
-    return result
-
-
-# ---------------------------------------------------------------------------
-# Format result
-# ---------------------------------------------------------------------------
-
 
 def _format_number(value: float) -> str:
-    """Format a numeric result for display.
+    """Format a numeric result for display."""
+    import math as _math
 
-    Integers are shown without decimals. Floats are rounded to 10 significant
-    digits and trailing zeros are stripped.
-    """
-    if value == float("inf") or value == float("-inf") or math.isnan(value):
+    if value == float("inf") or value == float("-inf") or _math.isnan(value):
         return str(value)
-
-    # If it's effectively an integer, display without decimal
     if value == int(value) and abs(value) < 1e15:
         return str(int(value))
-
-    # Otherwise, use reasonable precision
-    formatted = f"{value:.10g}"
-    return formatted
-
-
-# ---------------------------------------------------------------------------
-# Main deterministic checker
-# ---------------------------------------------------------------------------
-
-
-def check_deterministic(query: str) -> Optional[DeterministicResult]:
-    """Check if a query can be answered deterministically (no model needed).
-
-    Handles:
-    - Pure arithmetic: ``2+2``, ``15*3``, ``100/4``
-    - Exponents: ``2^10``, ``2**10``
-    - Functions: ``sqrt(16)``, ``abs(-5)``
-    - Percentages: ``15% of 200``
-
-    Returns a ``DeterministicResult`` if the query is answerable, or ``None``
-    if a model is needed.
-
-    Security: uses AST parsing only. No ``eval()`` or ``exec()``.
-    """
-    normalised = _normalise_query(query)
-
-    if not normalised:
-        return None
-
-    # Quick heuristic: if the normalised expression contains letters that
-    # aren't function names or constants, it's probably a natural language
-    # query that needs a model.
-    # Allow: digits, operators, parens, dots, whitespace, known function/const names
-    # Check by removing known function names and seeing what letters remain
-    check_str = normalised
-    for name in sorted(_SAFE_FUNCTIONS.keys(), key=len, reverse=True):
-        check_str = check_str.replace(name, "")
-    # Remove 'of' (used in percentage patterns)
-    check_str = re.sub(r"\bof\b", "", check_str, flags=re.IGNORECASE)
-    # If there are still alphabetic characters, this isn't pure arithmetic
-    if re.search(r"[a-zA-Z_]", check_str):
-        return None
-
-    # Try percentage pattern first
-    pct_result = _try_percentage(normalised)
-    if pct_result is not None:
-        return DeterministicResult(
-            answer=_format_number(pct_result),
-            method="percentage",
-            confidence=1.0,
-        )
-
-    # Prepare expression (convert ^ to **, etc.)
-    prepared = _prepare_expression(normalised)
-
-    # Try safe arithmetic evaluation
-    result = _safe_arithmetic_eval(prepared)
-    if result is not None:
-        return DeterministicResult(
-            answer=_format_number(result),
-            method="arithmetic",
-            confidence=1.0,
-        )
-
-    return None
+    return f"{value:.10g}"
 
 
 # ---------------------------------------------------------------------------
@@ -589,25 +498,22 @@ def check_deterministic(query: str) -> Optional[DeterministicResult]:
 
 
 class QueryRouter:
-    """Routes queries to the best model based on complexity.
-
-    Supports an optional tier-0 deterministic layer that intercepts simple
-    arithmetic and returns answers without invoking any model.
+    """Routes queries to the best model based on server-side policy.
 
     Parameters
     ----------
     models:
-        Dict mapping model name to ``ModelInfo``.  Models should be
-        ordered from smallest to largest (or tagged with tiers).
+        Dict mapping model name to ``ModelInfo``.
     strategy:
-        Routing strategy.  Currently only ``"complexity"`` is supported.
+        Routing strategy. Currently only ``"complexity"`` is supported.
     thresholds:
         Two-element tuple ``(low, high)`` defining tier boundaries.
-        Complexity in ``[0, low)`` → fast, ``[low, high)`` → balanced,
-        ``[high, 1.0]`` → quality.
     enable_deterministic:
-        If ``True`` (default), check for tier-0 deterministic answers
-        before scoring complexity.
+        If ``True``, check for tier-0 deterministic answers.
+    api_base:
+        Server URL for policy fetching and server-side routing.
+    api_key:
+        API key for server authentication.
     """
 
     def __init__(
@@ -616,6 +522,8 @@ class QueryRouter:
         strategy: str = "complexity",
         thresholds: tuple[float, float] = (0.3, 0.7),
         enable_deterministic: bool = True,
+        api_base: Optional[str] = None,
+        api_key: Optional[str] = None,
     ) -> None:
         if not models:
             raise ValueError("At least one model must be provided")
@@ -630,17 +538,21 @@ class QueryRouter:
         self.thresholds = thresholds
         self.enable_deterministic = enable_deterministic
 
-        # Build tier → model mapping (pick first model per tier)
         self._tier_models: dict[str, str] = {}
         for name, info in models.items():
             if info.tier not in self._tier_models:
                 self._tier_models[info.tier] = name
 
-        # Ordered list of model names from smallest to largest tier
         self._ordered_models: list[str] = sorted(
             models.keys(),
             key=lambda n: models[n].tier_index,
         )
+
+        _base = api_base or os.environ.get(
+            "OCTOMIL_API_BASE", "https://api.octomil.com/api/v1"
+        )
+        _key = api_key or os.environ.get("OCTOMIL_API_KEY", "")
+        self._policy_client = PolicyClient(api_base=_base, api_key=_key)
 
         logger.info(
             "QueryRouter initialised: strategy=%s, models=%s, thresholds=%s, deterministic=%s",
@@ -661,24 +573,14 @@ class QueryRouter:
         Returns
         -------
         RoutingDecision with the chosen model name, complexity score,
-        tier, and fallback chain.  If the query is answered deterministically,
-        ``deterministic_result`` is populated and ``tier`` is ``"deterministic"``.
+        tier, and fallback chain.
         """
-        # Extract relevant text
         user_text = ""
-        system_prompt = ""
-        turn_count = 0
-
         for msg in messages:
-            role = msg.get("role", "")
-            content = msg.get("content", "")
-            if role == "system":
-                system_prompt = content
-            elif role == "user":
-                user_text = content  # use the last user message
-                turn_count += 1
+            if msg.get("role") == "user":
+                user_text = msg.get("content", "")
 
-        # Tier 0: deterministic (no model needed)
+        # Tier 0: deterministic
         if self.enable_deterministic and user_text:
             det = check_deterministic(user_text)
             if det is not None:
@@ -696,51 +598,52 @@ class QueryRouter:
                     deterministic_result=det,
                 )
 
-        complexity = _estimate_complexity(
-            user_text,
-            system_prompt=system_prompt,
-            turn_count=turn_count,
-        )
+        # Apply policy-based routing
+        policy = self._policy_client.get_policy()
+        target_tier, score = self._apply_policy(user_text, policy)
 
-        # Map complexity to tier
-        low, high = self.thresholds
-        if complexity < low:
-            target_tier = "fast"
-        elif complexity < high:
-            target_tier = "balanced"
-        else:
-            target_tier = "quality"
-
-        # Find the best model for the target tier
         model_name = self._resolve_model(target_tier)
-
-        # Build fallback chain: all models from current tier upward
         fallback_chain = self._build_fallback_chain(model_name)
 
         decision = RoutingDecision(
             model_name=model_name,
-            complexity_score=round(complexity, 4),
+            complexity_score=round(score, 4),
             tier=target_tier,
             strategy=self.strategy,
             fallback_chain=fallback_chain,
         )
 
         logger.debug(
-            "Routing decision: complexity=%.3f, tier=%s, model=%s",
-            complexity,
+            "Routing decision: score=%.3f, tier=%s, model=%s",
+            score,
             target_tier,
             model_name,
         )
 
         return decision
 
+    def _apply_policy(self, query: str, policy: RoutingPolicy) -> tuple[str, float]:
+        """Apply cached policy to classify query into a tier.
+
+        Returns (tier, approximate_complexity_score).
+        """
+        word_count = len(query.split())
+        query_lower = query.lower()
+
+        has_complex = any(kw in query_lower for kw in policy.complex_indicators)
+
+        if word_count < policy.fast_max_words and not has_complex:
+            return "fast", round(word_count / 100.0, 4)
+        elif word_count > policy.quality_min_words or has_complex:
+            return "quality", round(min(word_count / 100.0 + 0.5, 1.0), 4)
+        else:
+            return "balanced", round(word_count / 100.0 + 0.25, 4)
+
     def _resolve_model(self, target_tier: str) -> str:
         """Find the best available model for a tier, falling back upward."""
-        # Try exact tier match
         if target_tier in self._tier_models:
             return self._tier_models[target_tier]
 
-        # Fall back to the next larger tier
         try:
             target_idx = TIER_ORDER.index(target_tier)
         except ValueError:
@@ -750,19 +653,14 @@ class QueryRouter:
             if tier in self._tier_models:
                 return self._tier_models[tier]
 
-        # Last resort: fall back downward
         for tier in reversed(TIER_ORDER[:target_idx]):
             if tier in self._tier_models:
                 return self._tier_models[tier]
 
-        # Absolute fallback: first model
         return self._ordered_models[0]
 
     def _build_fallback_chain(self, primary: str) -> list[str]:
-        """Build ordered list of fallback models (excluding primary).
-
-        Order: models with higher capability than primary first, then lower.
-        """
+        """Build ordered list of fallback models (excluding primary)."""
         primary_idx = self.models[primary].tier_index
         higher = [
             n
@@ -774,7 +672,6 @@ class QueryRouter:
             for n in self._ordered_models
             if n != primary and self.models[n].tier_index < primary_idx
         ]
-        # Same-tier models that aren't the primary
         same = [
             n
             for n in self._ordered_models
@@ -800,11 +697,9 @@ class QueryRouter:
         if not decomposition.decomposed:
             return self.route(messages)
 
-        # Route each sub-task independently
         sub_decisions: list[RoutingDecision] = []
         for task in decomposition.tasks:
             sub_messages = [{"role": "user", "content": task.text}]
-            # Carry over any system prompt from the original messages
             for msg in messages:
                 if msg.get("role") == "system":
                     sub_messages.insert(0, msg)
@@ -821,19 +716,16 @@ class QueryRouter:
     def get_fallback(self, failed_model: str) -> Optional[str]:
         """Return the next model to try after ``failed_model`` fails.
 
-        Tries models with higher capability first, then lower.
         Returns ``None`` if no fallback is available.
         """
         failed_idx = self.models.get(failed_model, ModelInfo(name="")).tier_index
-        # Try higher-tier models first
+
         for name in self._ordered_models:
             if name != failed_model and self.models[name].tier_index > failed_idx:
                 return name
-        # Then try same-tier
         for name in self._ordered_models:
             if name != failed_model and self.models[name].tier_index == failed_idx:
                 return name
-        # Then try lower-tier
         for name in reversed(self._ordered_models):
             if name != failed_model and self.models[name].tier_index < failed_idx:
                 return name
@@ -847,26 +739,18 @@ def assign_tiers(
     """Auto-assign tiers to an ordered list of model names.
 
     Assumes ``model_names`` is ordered from smallest to largest.
-    Splits into three tiers: fast, balanced, quality.
-
-    For 1 model:  all traffic goes to it (balanced).
-    For 2 models: first is fast, second is quality.
-    For 3+:       even split across fast/balanced/quality.
     """
     n = len(model_names)
     if n == 0:
         return {}
-
     if n == 1:
         return {model_names[0]: ModelInfo(name=model_names[0], tier="balanced")}
-
     if n == 2:
         return {
             model_names[0]: ModelInfo(name=model_names[0], tier="fast"),
             model_names[1]: ModelInfo(name=model_names[1], tier="quality"),
         }
 
-    # 3+ models: divide into thirds
     result: dict[str, ModelInfo] = {}
     fast_end = n // 3
     quality_start = n - (n // 3)

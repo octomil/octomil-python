@@ -9,7 +9,7 @@ Submodules are aliased here so ``from octomil.secagg import …`` works.
 
 from __future__ import annotations
 
-__version__ = "2.2.0"
+__version__ = "2.4.0"
 
 import importlib as _importlib
 import logging as _logging
@@ -20,6 +20,7 @@ from typing import Optional as _Optional
 from .telemetry import TelemetryReporter
 
 from .client import Client
+from .model import Model, ModelMetadata, Prediction
 from .enterprise import (
     COMPLIANCE_PRESETS,
     EnterpriseClient,
@@ -54,32 +55,52 @@ from .routing import (
     RoutingDecision,
     assign_tiers,
 )
-from .python.octomil import (
-    Octomil,
-    OctomilClientError,
-    ExperimentsAPI,
-    FederatedAnalyticsAPI,
-    Federation,
-    FederatedClient,
-    ModelRegistry,
-    RolloutsAPI,
-    DeviceAuthClient,
-    compute_state_dict_delta,
-    apply_filters,
-    DataKind,
-    DeltaFilter,
-    FilterRegistry,
-    FilterResult,
-    ECKeyPair,
-    SecAggClient,
-    SecAggConfig,
-    SecAggPlusClient,
-    SecAggPlusConfig,
-    SECAGG_PLUS_MOD_RANGE,
-    HKDF_INFO_PAIRWISE_MASK,
-    HKDF_INFO_SHARE_ENCRYPTION,
-    HKDF_INFO_SELF_MASK,
+from .embeddings import (
+    EmbeddingResult,
+    EmbeddingUsage,
+    embed,
 )
+from .streaming import (
+    StreamToken,
+    stream_inference,
+    stream_inference_async,
+)
+
+# The inner SDK package has heavy optional deps (torch, cryptography, etc.)
+# that are not bundled in the standalone CLI binary (PyInstaller).
+# Only suppress ImportError when running as a frozen binary.
+_FROZEN = getattr(_sys, "frozen", False)
+
+try:
+    from .python.octomil import (
+        Octomil,
+        OctomilClientError,
+        ExperimentsAPI,
+        FederatedAnalyticsAPI,
+        Federation,
+        FederatedClient,
+        ModelRegistry,
+        RolloutsAPI,
+        DeviceAuthClient,
+        compute_state_dict_delta,
+        apply_filters,
+        DataKind,
+        DeltaFilter,
+        FilterRegistry,
+        FilterResult,
+        ECKeyPair,
+        SecAggClient,
+        SecAggConfig,
+        SecAggPlusClient,
+        SecAggPlusConfig,
+        SECAGG_PLUS_MOD_RANGE,
+        HKDF_INFO_PAIRWISE_MASK,
+        HKDF_INFO_SHARE_ENCRYPTION,
+        HKDF_INFO_SELF_MASK,
+    )
+except ImportError:
+    if not _FROZEN:
+        raise
 
 # Alias inner submodules so ``from octomil.secagg import …`` works without
 # requiring users to know about the nested ``octomil.python.octomil`` layout.
@@ -206,6 +227,9 @@ def get_reporter() -> _Optional[TelemetryReporter]:
 __all__ = [
     "__version__",
     "Client",
+    "Model",
+    "ModelMetadata",
+    "Prediction",
     "COMPLIANCE_PRESETS",
     "EnterpriseClient",
     "EnterpriseClientError",
@@ -259,4 +283,10 @@ __all__ = [
     "SubTask",
     "SubTaskResult",
     "assign_tiers",
+    "StreamToken",
+    "stream_inference",
+    "stream_inference_async",
+    "EmbeddingResult",
+    "EmbeddingUsage",
+    "embed",
 ]

@@ -3,7 +3,7 @@ from setuptools import setup, find_packages
 
 setup(
     name="octomil-sdk",
-    version="2.2.0",
+    version="2.4.0",
     description="Octomil — serve, deploy, and observe ML models on edge devices",
     long_description=open("README.md").read() if os.path.exists("README.md") else "",
     long_description_content_type="text/markdown",
@@ -19,6 +19,8 @@ setup(
         "pyarrow>=10.0.0",
         "qrcode[pil]>=7.0",
         "huggingface_hub>=0.20.0",
+        "mlx-lm>=0.10.0; sys_platform == 'darwin' and platform_machine == 'arm64'",
+        "llama-cpp-python>=0.2.0; sys_platform != 'darwin' or platform_machine != 'arm64'",
     ],
     extras_require={
         "serve": [

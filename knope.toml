@@ -1,15 +1,52 @@
 [package]
-versioned_files = ["setup.py", "octomil/__init__.py", "octomil/python/pyproject.toml"]
+versioned_files = [
+    "octomil/python/pyproject.toml",
+    { path = "setup.py", regex = 'version="(?<version>\d+\.\d+\.\d+)"' },
+    { path = "octomil/__init__.py", regex = '__version__ = "(?<version>\d+\.\d+\.\d+)"' },
+    { path = "homebrew/octomil.rb", regex = 'version "(?<version>\d+\.\d+\.\d+)"' },
+    { path = "tests/test_cli.py", regex = '"(?<version>\d+\.\d+\.\d+)" in result' },
+    { path = "sonar-project.properties", regex = 'sonar.projectVersion=(?<version>\d+\.\d+\.\d+)' },
+]
 changelog = "CHANGELOG.md"
 
-[workflows.release]
-[[workflows.release.steps]]
+[[workflows]]
+name = "release"
+
+[[workflows.steps]]
+type = "Command"
+command = "git switch -c release"
+
+[[workflows.steps]]
 type = "PrepareRelease"
 
-[[workflows.release.steps]]
+[[workflows.steps]]
+type = "Command"
+command = "git add -A"
+
+[[workflows.steps]]
+type = "Command"
+command = "git commit -m 'chore: prepare release $version'"
+
+[[workflows.steps]]
+type = "Command"
+command = "git push --force --set-upstream origin release"
+
+[[workflows.steps]]
 type = "CreatePullRequest"
 base = "main"
 
-[workflows.release-pr-merged]
-[[workflows.release-pr-merged.steps]]
+[workflows.steps.title]
+template = "chore: release v$version"
+
+[workflows.steps.body]
+template = "Automated release PR created by Knope.\n\n$changelog"
+
+[[workflows]]
+name = "release-pr-merged"
+
+[[workflows.steps]]
 type = "Release"
+
+[github]
+owner = "octomil"
+repo = "octomil-python"

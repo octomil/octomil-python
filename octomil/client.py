@@ -17,10 +17,13 @@ import logging
 import os
 import time
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Optional
+from typing import TYPE_CHECKING, Any, AsyncIterator, Iterator, Optional
 
 if TYPE_CHECKING:
-    from .model import Model
+    from .embeddings import EmbeddingResult
+    from .model import Model, Prediction
+    from .serve import GenerationChunk
+    from .streaming import StreamToken
     from .telemetry import TelemetryReporter
 
 logger = logging.getLogger(__name__)
@@ -43,6 +46,8 @@ from .python.octomil.registry import ModelRegistry
 _DEFAULT_API_BASE = "https://api.octomil.com/api/v1"
 
 _MODEL_EXTENSIONS = {".safetensors", ".gguf", ".pt", ".pth", ".bin", ".onnx"}
+
+_logger = logging.getLogger(__name__)
 
 
 def _find_model_file(directory: str) -> str | None:
@@ -88,6 +93,7 @@ class Client:
         self._api_key: str = _key
         self._org_id: str = _oid
         self._api_base: str = _base
+        self._models: dict[str, "Model"] = {}
 
         def _token_provider() -> str:
             return self._api_key
@@ -154,20 +160,48 @@ class Client:
                 )
             file_path = resolved
 
-        model = self._registry.ensure_model(
-            name=name,
-            framework=framework,
-            use_case=use_case,
-            description=description,
-        )
-        model_id = model["id"]
-        return self._registry.upload_version_from_path(
-            model_id=model_id,
-            file_path=file_path,
-            version=version,
-            description=description,
-            formats=formats,
-        )
+        t0 = time.monotonic()
+        try:
+            model = self._registry.ensure_model(
+                name=name,
+                framework=framework,
+                use_case=use_case,
+                description=description,
+            )
+            model_id = model["id"]
+            result = self._registry.upload_version_from_path(
+                model_id=model_id,
+                file_path=file_path,
+                version=version,
+                description=description,
+                formats=formats,
+            )
+        except Exception as exc:
+            if self._reporter:
+                try:
+                    self._reporter.report_funnel_event(
+                        stage="model_push",
+                        success=False,
+                        model_id=name,
+                        failure_reason=str(exc),
+                        failure_category="upload_error",
+                        duration_ms=int((time.monotonic() - t0) * 1000),
+                    )
+                except Exception:
+                    _logger.debug("Telemetry reporting failed for push()")
+            raise
+
+        if self._reporter:
+            try:
+                self._reporter.report_funnel_event(
+                    stage="model_push",
+                    success=True,
+                    model_id=name,
+                    duration_ms=int((time.monotonic() - t0) * 1000),
+                )
+            except Exception:
+                _logger.debug("Telemetry reporting failed for push()")
+        return result
 
     # ------------------------------------------------------------------
     # Push from HuggingFace — server-side import
@@ -212,7 +246,37 @@ class Client:
             payload["description"] = description
         if use_case:
             payload["use_case"] = use_case
-        return self._api.post("/integrations/huggingface/import", payload)
+
+        t0 = time.monotonic()
+        telemetry_model_id = name or repo_id
+        try:
+            result = self._api.post("/integrations/huggingface/import", payload)
+        except Exception as exc:
+            if self._reporter:
+                try:
+                    self._reporter.report_funnel_event(
+                        stage="hf_import",
+                        success=False,
+                        model_id=telemetry_model_id,
+                        failure_reason=str(exc),
+                        failure_category="import_error",
+                        duration_ms=int((time.monotonic() - t0) * 1000),
+                    )
+                except Exception:
+                    _logger.debug("Telemetry reporting failed for import_from_hf()")
+            raise
+
+        if self._reporter:
+            try:
+                self._reporter.report_funnel_event(
+                    stage="hf_import",
+                    success=True,
+                    model_id=telemetry_model_id,
+                    duration_ms=int((time.monotonic() - t0) * 1000),
+                )
+            except Exception:
+                _logger.debug("Telemetry reporting failed for import_from_hf()")
+        return result
 
     # ------------------------------------------------------------------
     # Pull — download a model in a specific format
@@ -278,6 +342,255 @@ class Client:
                 pass
 
         return result
+
+    # ------------------------------------------------------------------
+    # Load — pull + create a Model for programmatic inference
+    # ------------------------------------------------------------------
+
+    def load_model(
+        self,
+        name: str,
+        *,
+        version: Optional[str] = None,
+        format: Optional[str] = None,
+        destination: str = ".",
+        engine: Optional[str] = None,
+        cache_size_mb: int = 2048,
+        cache_enabled: bool = True,
+    ) -> "Model":
+        """Download a model and prepare it for local inference.
+
+        Combines ``pull()`` with engine auto-selection to return a
+        ready-to-use ``Model`` instance.
+
+        Args:
+            name: Model name or ID.
+            version: Specific version. Defaults to latest.
+            format: Target format (onnx, coreml, tflite). Auto-detects if omitted.
+            destination: Local directory to save files into.
+            engine: Override the engine (e.g. ``"mlx-lm"``, ``"llama.cpp"``).
+            cache_size_mb: KV cache size in MB for the backend.
+            cache_enabled: Whether to enable KV cache.
+
+        Returns:
+            A ``Model`` ready for ``predict()`` calls.
+        """
+        from .engines.registry import get_registry
+        from .model import Model, ModelMetadata
+
+        pull_result = self.pull(
+            name, version=version, format=format, destination=destination
+        )
+
+        selected_engine, _ranked = get_registry().auto_select(
+            name, engine_override=engine
+        )
+
+        # Resolve the version that was actually pulled
+        model_id = self._registry.resolve_model_id(name)
+        resolved_version = version or self._registry.get_latest_version(model_id)
+
+        metadata = ModelMetadata(
+            model_id=model_id,
+            model_name=name,
+            version=resolved_version,
+            format=format or "auto",
+            model_path=pull_result.get("model_path", ""),
+            engine_name=selected_engine.name,
+        )
+
+        return Model(
+            metadata=metadata,
+            engine=selected_engine,
+            engine_kwargs={
+                "cache_size_mb": cache_size_mb,
+                "cache_enabled": cache_enabled,
+            },
+        )
+
+    def _get_model(self, name: str, **kwargs: Any) -> "Model":
+        """Return a cached Model, or load one."""
+        if name not in self._models or self._models[name]._disposed:
+            self._models[name] = self.load_model(name, **kwargs)
+        return self._models[name]
+
+    # ------------------------------------------------------------------
+    # Predict — one-call download + load + infer
+    # ------------------------------------------------------------------
+
+    def predict(
+        self,
+        name: str,
+        messages: list[dict[str, str]],
+        *,
+        max_tokens: int = 512,
+        temperature: float = 0.7,
+        top_p: float = 1.0,
+        version: Optional[str] = None,
+        engine: Optional[str] = None,
+    ) -> "Prediction":
+        """Download, load, and run inference in one call.
+
+        The model is cached after the first call — subsequent calls
+        with the same *name* reuse the loaded backend.
+
+        Args:
+            name: Model name (e.g. ``"phi-4-mini"``).
+            messages: Chat-style messages (role + content dicts).
+            max_tokens: Maximum tokens to generate.
+            temperature: Sampling temperature.
+            top_p: Nucleus sampling threshold.
+            version: Specific version. Defaults to latest.
+            engine: Override the engine (e.g. ``"mlx-lm"``).
+
+        Returns:
+            A ``Prediction`` — a ``str`` with a ``.metrics`` attribute.
+        """
+        model = self._get_model(name, version=version, engine=engine)
+        return model.predict(
+            messages,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            top_p=top_p,
+        )
+
+    async def predict_stream(
+        self,
+        name: str,
+        messages: list[dict[str, str]],
+        *,
+        max_tokens: int = 512,
+        temperature: float = 0.7,
+        top_p: float = 1.0,
+        version: Optional[str] = None,
+        engine: Optional[str] = None,
+    ) -> "AsyncIterator[GenerationChunk]":
+        """Download, load, and stream inference in one call.
+
+        The model is cached after the first call.
+
+        Args:
+            name: Model name (e.g. ``"phi-4-mini"``).
+            messages: Chat-style messages (role + content dicts).
+            max_tokens: Maximum tokens to generate.
+            temperature: Sampling temperature.
+            top_p: Nucleus sampling threshold.
+            version: Specific version. Defaults to latest.
+            engine: Override the engine (e.g. ``"mlx-lm"``).
+
+        Yields:
+            ``GenerationChunk`` objects with incremental text.
+        """
+        model = self._get_model(name, version=version, engine=engine)
+        async for chunk in model.predict_stream(
+            messages,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            top_p=top_p,
+        ):
+            yield chunk
+
+    # ------------------------------------------------------------------
+    # Cloud streaming inference (SSE)
+    # ------------------------------------------------------------------
+
+    def stream_predict(
+        self,
+        model_id: str,
+        input_data: str | list[dict[str, str]],
+        *,
+        parameters: dict[str, Any] | None = None,
+        timeout: float = 120.0,
+    ) -> "Iterator[StreamToken]":
+        """Stream tokens from the cloud inference endpoint (sync).
+
+        Requires ``api_key`` and ``api_base`` to be configured.  This is
+        a cloud-only method — it does **not** download or run models
+        locally.
+
+        Args:
+            model_id: Model identifier (e.g. ``"phi-4-mini"``).
+            input_data: A plain string prompt or chat-style messages.
+            parameters: Generation parameters (temperature, max_tokens, etc.).
+            timeout: HTTP timeout in seconds for the streaming connection.
+
+        Yields:
+            :class:`~octomil.streaming.StreamToken` for each SSE event.
+        """
+        from .streaming import stream_inference
+
+        return stream_inference(
+            server_url=self._api_base,
+            api_key=self._api_key,
+            model_id=model_id,
+            input_data=input_data,
+            parameters=parameters,
+            timeout=timeout,
+        )
+
+    async def stream_predict_async(
+        self,
+        model_id: str,
+        input_data: str | list[dict[str, str]],
+        *,
+        parameters: dict[str, Any] | None = None,
+        timeout: float = 120.0,
+    ) -> "AsyncIterator[StreamToken]":
+        """Stream tokens from the cloud inference endpoint (async).
+
+        Async variant of :meth:`stream_predict`.
+        """
+        from .streaming import stream_inference_async
+
+        async for token in stream_inference_async(
+            server_url=self._api_base,
+            api_key=self._api_key,
+            model_id=model_id,
+            input_data=input_data,
+            parameters=parameters,
+            timeout=timeout,
+        ):
+            yield token
+
+    # ------------------------------------------------------------------
+    # Embeddings
+    # ------------------------------------------------------------------
+
+    def embed(
+        self,
+        model_id: str,
+        input: str | list[str],
+        *,
+        timeout: float = 30.0,
+    ) -> "EmbeddingResult":
+        """Generate embeddings via the Octomil cloud endpoint.
+
+        Requires ``api_key`` and ``api_base`` to be configured.
+
+        Args:
+            model_id: Embedding model identifier (e.g. ``"nomic-embed-text"``).
+            input: A single string or list of strings to embed.
+            timeout: HTTP timeout in seconds.
+
+        Returns:
+            :class:`~octomil.embeddings.EmbeddingResult` with dense vectors.
+        """
+        from .embeddings import embed
+
+        return embed(
+            server_url=self._api_base,
+            api_key=self._api_key,
+            model_id=model_id,
+            input=input,
+            timeout=timeout,
+        )
+
+    def dispose(self) -> None:
+        """Dispose all cached models."""
+        for model in self._models.values():
+            if not model._disposed:
+                model.dispose()
+        self._models.clear()
 
     # ------------------------------------------------------------------
     # Deploy — create a rollout with optional device targeting
@@ -462,41 +775,69 @@ class Client:
         Returns:
             ``RollbackResult`` with rollback details and status.
         """
-        model_id = self._registry.resolve_model_id(name)
+        t0 = time.monotonic()
+        try:
+            model_id = self._registry.resolve_model_id(name)
 
-        # Determine the current version
-        current_version = self._registry.get_latest_version(model_id)
+            # Determine the current version
+            current_version = self._registry.get_latest_version(model_id)
 
-        # Determine the target version
-        if to_version is None:
-            versions_resp = self._registry.list_versions(model_id)
-            versions = versions_resp.get("versions", [])
-            if len(versions) < 2:
-                from .python.octomil.api_client import OctomilClientError
+            # Determine the target version
+            if to_version is None:
+                versions_resp = self._registry.list_versions(model_id)
+                versions = versions_resp.get("versions", [])
+                if len(versions) < 2:
+                    from .python.octomil.api_client import OctomilClientError
 
-                raise OctomilClientError(
-                    f"Cannot rollback {name}: only one version exists"
+                    raise OctomilClientError(
+                        f"Cannot rollback {name}: only one version exists"
+                    )
+                # Versions come sorted newest-first from the API; pick the second.
+                to_version = versions[1].get("version", "")
+
+            # Deploy the target version at 100% immediately
+            rollout_resp = self._registry.deploy_version(
+                model_id=model_id,
+                version=to_version,
+                rollout_percentage=100,
+                target_percentage=100,
+                increment_step=100,
+                start_immediately=True,
+            )
+
+            result = RollbackResult(
+                model_name=name,
+                from_version=current_version,
+                to_version=to_version,
+                rollout_id=str(rollout_resp.get("id", "")),
+                status=rollout_resp.get("status", "rolling_back"),
+            )
+        except Exception as exc:
+            if self._reporter:
+                try:
+                    self._reporter.report_funnel_event(
+                        stage="rollback",
+                        success=False,
+                        model_id=name,
+                        failure_reason=str(exc),
+                        failure_category="rollback_error",
+                        duration_ms=int((time.monotonic() - t0) * 1000),
+                    )
+                except Exception:
+                    _logger.debug("Telemetry reporting failed for rollback()")
+            raise
+
+        if self._reporter:
+            try:
+                self._reporter.report_funnel_event(
+                    stage="rollback",
+                    success=True,
+                    model_id=name,
+                    duration_ms=int((time.monotonic() - t0) * 1000),
                 )
-            # Versions come sorted newest-first from the API; pick the second.
-            to_version = versions[1].get("version", "")
-
-        # Deploy the target version at 100% immediately
-        rollout_resp = self._registry.deploy_version(
-            model_id=model_id,
-            version=to_version,
-            rollout_percentage=100,
-            target_percentage=100,
-            increment_step=100,
-            start_immediately=True,
-        )
-
-        return RollbackResult(
-            model_name=name,
-            from_version=current_version,
-            to_version=to_version,
-            rollout_id=str(rollout_resp.get("id", "")),
-            status=rollout_resp.get("status", "rolling_back"),
-        )
+            except Exception:
+                _logger.debug("Telemetry reporting failed for rollback()")
+        return result
 
     # ------------------------------------------------------------------
     # Status — query inference metrics
