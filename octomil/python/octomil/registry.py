@@ -3,10 +3,16 @@ from __future__ import annotations
 import contextlib
 from typing import Any, Callable, Optional
 
-import httpx
-
 from .api_client import OctomilClientError, _ApiClient
 from .control_plane import ExperimentsAPI, RolloutsAPI
+
+# Lazy httpx — defer ~55ms import cost. Exposed as module attribute for test mocking.
+def __getattr__(name: str) -> object:
+    if name == "httpx":
+        import httpx as _httpx
+        globals()["httpx"] = _httpx
+        return _httpx
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 _MODELS_PATH = "/models"
 
@@ -252,6 +258,7 @@ class ModelRegistry:
         url = payload.get("url")
         if not url:
             raise OctomilClientError("Download URL missing from response")
+
         with httpx.Client(timeout=self.api.timeout) as client:
             res = client.get(url)
         if res.status_code >= 400:

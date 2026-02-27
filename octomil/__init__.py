@@ -17,8 +17,6 @@ import os as _os
 import sys as _sys
 from typing import Optional as _Optional
 
-from .telemetry import TelemetryReporter
-
 from .client import Client
 from .model import Model, ModelMetadata, Prediction
 from .enterprise import (
@@ -102,8 +100,14 @@ except ImportError:
     if not _FROZEN:
         raise
 
-# Alias inner submodules so ``from octomil.secagg import …`` works without
-# requiring users to know about the nested ``octomil.python.octomil`` layout.
+# ---------------------------------------------------------------------------
+# Lazy submodule aliasing
+# ---------------------------------------------------------------------------
+# ``from octomil.secagg import …`` must resolve to
+# ``octomil.python.octomil.secagg``.  Rather than eagerly importing every
+# submodule (~240ms for pandas + httpx), we register lazy aliases that only
+# import the real module on first attribute access.
+
 _SUBMODULES = [
     "api_client",
     "auth",
@@ -122,22 +126,64 @@ _SUBMODULES = [
     "secagg",
 ]
 
+
+class _LazyModule:
+    """Proxy that imports the real module on first attribute access.
+
+    Installed into ``sys.modules`` so ``from octomil.secagg import X`` works
+    without eagerly importing ``octomil.python.octomil.secagg``.
+    """
+
+    def __init__(self, alias: str, real_fq: str) -> None:
+        self.__alias = alias
+        self.__real_fq = real_fq
+        self.__mod = None
+
+    def _load(self) -> object:
+        if self.__mod is None:
+            self.__mod = _importlib.import_module(self.__real_fq)
+            # Replace ourselves in sys.modules with the real module
+            _sys.modules[self.__alias] = self.__mod
+        return self.__mod
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(self._load(), name)
+
+    def __repr__(self) -> str:
+        return f"<lazy alias {self.__alias!r} -> {self.__real_fq!r}>"
+
+
 for _name in _SUBMODULES:
+    _alias = f"octomil.{_name}"
     _fq = f"octomil.python.octomil.{_name}"
-    if _fq not in _sys.modules:
-        try:
-            _importlib.import_module(_fq)
-        except ImportError:
-            continue
-    _mod = _sys.modules[_fq]
-    _sys.modules[f"octomil.{_name}"] = _mod
-    # Also set as attribute on parent module so getattr() works (required by
-    # unittest.mock._dot_lookup on Python <3.12).
-    _parts = _name.split(".")
-    _parent = _sys.modules[__name__]
-    for _part in _parts[:-1]:
-        _parent = getattr(_parent, _part, _parent)
-    setattr(_parent, _parts[-1], _mod)
+    # If already eagerly imported (e.g. via the from .python.octomil import block),
+    # just alias it.  Otherwise install a lazy proxy.
+    if _fq in _sys.modules:
+        _sys.modules[_alias] = _sys.modules[_fq]
+    else:
+        _sys.modules[_alias] = _LazyModule(_alias, _fq)  # type: ignore[assignment]
+
+# ---------------------------------------------------------------------------
+# Lazy attribute access for deferred imports
+# ---------------------------------------------------------------------------
+
+
+def __getattr__(name: str) -> object:
+    if name == "TelemetryReporter":
+        from .telemetry import TelemetryReporter
+
+        globals()["TelemetryReporter"] = TelemetryReporter
+        return TelemetryReporter
+    # Support lazy submodule access as attributes (e.g. octomil.secagg)
+    _alias = f"octomil.{name}"
+    if _alias in _sys.modules:
+        _mod = _sys.modules[_alias]
+        if isinstance(_mod, _LazyModule):
+            _mod = _mod._load()
+        globals()[name] = _mod
+        return _mod
+    raise AttributeError(f"module 'octomil' has no attribute {name!r}")
+
 
 # ---------------------------------------------------------------------------
 # Module-level telemetry state
@@ -146,7 +192,7 @@ for _name in _SUBMODULES:
 _logger = _logging.getLogger(__name__)
 
 _config: dict[str, str] = {}
-_reporter: _Optional[TelemetryReporter] = None
+_reporter: _Optional["TelemetryReporter"] = None
 
 
 def init(
@@ -211,6 +257,8 @@ def init(
                 "Check your OCTOMIL_API_KEY."
             )
 
+    from .telemetry import TelemetryReporter
+
     _reporter = TelemetryReporter(
         api_key=resolved_key,
         api_base=resolved_base,
@@ -219,7 +267,7 @@ def init(
     _logger.info("Octomil telemetry initialised (org=%s)", resolved_org)
 
 
-def get_reporter() -> _Optional[TelemetryReporter]:
+def get_reporter() -> _Optional["TelemetryReporter"]:
     """Return the global ``TelemetryReporter``, or ``None`` if :func:`init` has not been called."""
     return _reporter
 

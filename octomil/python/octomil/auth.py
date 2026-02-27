@@ -11,9 +11,15 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
-import httpx
-
 logger = logging.getLogger(__name__)
+
+# Lazy httpx — defer ~55ms import cost. Exposed as module attribute for test mocking.
+def __getattr__(name: str) -> object:
+    if name == "httpx":
+        import httpx as _httpx
+        globals()["httpx"] = _httpx
+        return _httpx
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 try:
     import keyring

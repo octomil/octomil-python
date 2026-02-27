@@ -19,9 +19,15 @@ import os
 from pathlib import Path
 from typing import Any
 
-import httpx
-
 logger = logging.getLogger(__name__)
+
+# Lazy httpx — defer ~55ms import cost. Exposed as module attribute for test mocking.
+def __getattr__(name: str) -> object:
+    if name == "httpx":
+        import httpx as _httpx
+        globals()["httpx"] = _httpx
+        return _httpx
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 _DEFAULT_API_BASE = "https://api.octomil.com/api/v1"
 
@@ -145,7 +151,7 @@ class EnterpriseClient:
 
     # -- helpers ----------------------------------------------------------
 
-    def _raise_for_status(self, resp: httpx.Response) -> None:
+    def _raise_for_status(self, resp: Any) -> None:
         if resp.status_code >= 400:
             try:
                 detail = resp.json().get("detail", resp.text)

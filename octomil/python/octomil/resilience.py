@@ -6,9 +6,15 @@ import logging
 from dataclasses import dataclass
 from typing import Optional
 
-import httpx
-
 logger = logging.getLogger(__name__)
+
+# Lazy httpx — defer ~55ms import cost. Exposed as module attribute for test mocking.
+def __getattr__(name: str) -> object:
+    if name == "httpx":
+        import httpx as _httpx
+        globals()["httpx"] = _httpx
+        return _httpx
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 @dataclass
@@ -69,6 +75,7 @@ def check_network_quality(
     """
     try:
         import time
+
         start = time.monotonic()
         response = httpx.get(f"{api_base.rstrip('/')}/health", timeout=timeout)
         latency = (time.monotonic() - start) * 1000

@@ -305,6 +305,9 @@ class MLXBackend(InferenceBackend):
         # MLX prompt_cache — created once, reused across calls.
         # mlx_lm updates it in-place during generation.
         self._prompt_cache: Any = None
+        # Token IDs currently stored in the prompt_cache, for prefix-skip.
+        # After generation, this contains all processed tokens (prompt + generated).
+        self._cached_token_ids: list[int] = []
 
     def load_model(self, model_name: str) -> None:
         import mlx_lm  # type: ignore[import-untyped]
@@ -414,6 +417,113 @@ class MLXBackend(InferenceBackend):
             prefix_text = self._apply_chat_template([{"role": "user", "content": ""}])
         return len(self._tokenizer.encode(prefix_text))
 
+    def _prepare_prefix_skip(
+        self, prompt_token_ids: list[int]
+    ) -> tuple[list[int], bool]:
+        """Compare new prompt tokens against the cached prefix and return only new tokens.
+
+        If the new prompt shares a prefix with the cached tokens, returns only
+        the suffix that needs processing.  If there's no match or no cache,
+        resets the prompt_cache and returns the full token list.
+
+        Returns:
+            (tokens_to_process, cache_hit)
+        """
+        if self._prompt_cache is None or not self._cached_token_ids:
+            return prompt_token_ids, False
+
+        try:
+            cached_offset = self._prompt_cache[0].offset
+        except (AttributeError, IndexError):
+            return prompt_token_ids, False
+
+        if cached_offset == 0:
+            return prompt_token_ids, False
+
+        # Find the longest matching prefix between new tokens and cached tokens
+        cached = self._cached_token_ids
+        match_len = 0
+        max_check = min(len(prompt_token_ids), len(cached), cached_offset)
+        for i in range(max_check):
+            if prompt_token_ids[i] == cached[i]:
+                match_len += 1
+            else:
+                break
+
+        if match_len < 4:
+            # No meaningful prefix overlap — reset cache and process full prompt
+            self._reset_prompt_cache()
+            return prompt_token_ids, False
+
+        # We have a matching prefix of match_len tokens.
+        # Trim the cache to match_len if it has more tokens (from previous generation).
+        if cached_offset > match_len:
+            try:
+                from mlx_lm.models.cache import (  # type: ignore[import-untyped]
+                    can_trim_prompt_cache,
+                    trim_prompt_cache,
+                )
+
+                if can_trim_prompt_cache(self._prompt_cache):
+                    num_to_trim = cached_offset - match_len
+                    trim_prompt_cache(self._prompt_cache, num_to_trim)
+                    self._cached_token_ids = self._cached_token_ids[:match_len]
+                    logger.debug(
+                        "Prefix-skip: trimmed cache by %d tokens (cached=%d, match=%d)",
+                        num_to_trim, cached_offset, match_len,
+                    )
+                else:
+                    # Can't trim — reset and process full prompt
+                    self._reset_prompt_cache()
+                    return prompt_token_ids, False
+            except Exception:
+                self._reset_prompt_cache()
+                return prompt_token_ids, False
+
+        # Return only the tokens after the cached prefix.
+        # generate_step needs at least 1 token, so when the entire prompt is
+        # cached we trim one extra token and re-feed it.
+        suffix = prompt_token_ids[match_len:]
+        if not suffix:
+            # Entire prompt is cached.  Trim the last cached token so
+            # generate_step can "re-process" it to obtain initial logits.
+            try:
+                from mlx_lm.models.cache import (  # type: ignore[import-untyped]
+                    can_trim_prompt_cache,
+                    trim_prompt_cache,
+                )
+
+                if can_trim_prompt_cache(self._prompt_cache):
+                    trim_prompt_cache(self._prompt_cache, 1)
+                    self._cached_token_ids = self._cached_token_ids[:match_len - 1]
+                    logger.debug(
+                        "Prefix-skip: exact match (%d tokens), re-feeding last token",
+                        match_len,
+                    )
+                    return [prompt_token_ids[-1]], True
+            except Exception:
+                pass
+            # Fallback: reset and process full prompt
+            self._reset_prompt_cache()
+            return prompt_token_ids, False
+
+        logger.debug(
+            "Prefix-skip: reusing %d cached tokens, processing %d new tokens",
+            match_len, len(suffix),
+        )
+        return suffix, True
+
+    def _reset_prompt_cache(self) -> None:
+        """Reset the prompt_cache to a fresh state."""
+        try:
+            from mlx_lm.models.cache import make_prompt_cache  # type: ignore[import-untyped]
+
+            self._prompt_cache = make_prompt_cache(self._model)
+            self._cached_token_ids = []
+        except Exception:
+            self._prompt_cache = None
+            self._cached_token_ids = []
+
     def generate(self, request: GenerationRequest) -> tuple[str, InferenceMetrics]:
         import mlx_lm  # type: ignore[import-untyped]
 
@@ -429,11 +539,12 @@ class MLXBackend(InferenceBackend):
 
         extra_kwargs: dict[str, Any] = {}
 
-        # Reuse the persistent prompt_cache — mlx_lm detects matching
-        # prefix tokens and skips recomputation automatically.
+        # True prefix-skip: compare new prompt tokens against cached KV state
+        # and only pass the new suffix to the model.
+        tokens_to_process = prompt_token_ids
         if self._prompt_cache is not None:
+            tokens_to_process, cache_hit = self._prepare_prefix_skip(prompt_token_ids)
             extra_kwargs["prompt_cache"] = self._prompt_cache
-            cache_hit = True
 
         # Speculative decoding: use draft model when available
         if self._draft_model is not None:
@@ -444,10 +555,11 @@ class MLXBackend(InferenceBackend):
             extra_kwargs["kv_bits"] = self._kv_bits
             extra_kwargs["kv_group_size"] = self._kv_group_size
 
+        generated_token_ids: list[int] = []
         for response in mlx_lm.stream_generate(
             self._model,
             self._tokenizer,
-            prompt=prompt,
+            prompt=tokens_to_process,
             max_tokens=request.max_tokens,
             sampler=sampler,
             **extra_kwargs,
@@ -455,12 +567,20 @@ class MLXBackend(InferenceBackend):
             if first_token_time is None:
                 first_token_time = time.monotonic()
             final_tps = response.generation_tps
+            # Collect the actual token ID from the response
+            if hasattr(response, "token"):
+                generated_token_ids.append(int(response.token))
             if response.finish_reason or self._is_stop_token(response.text):
                 break
             tokens.append(response.text)
 
         elapsed = time.monotonic() - start
         ttfc = ((first_token_time or start) - start) * 1000
+
+        # Update cached token tracking with actual token IDs (not re-encoded).
+        # The prompt_cache now contains KV for: prompt + generated tokens.
+        self._cached_token_ids = prompt_token_ids + generated_token_ids
+
         text = "".join(tokens)
 
         return (
@@ -472,7 +592,7 @@ class MLXBackend(InferenceBackend):
                 tokens_per_second=final_tps,
                 total_duration_ms=elapsed * 1000,
                 cache_hit=cache_hit,
-                attention_backend="metal_fused",  # MLX uses Metal fused attention automatically
+                attention_backend="metal_fused",
             ),
         )
 
@@ -490,8 +610,10 @@ class MLXBackend(InferenceBackend):
 
         extra_kwargs: dict[str, Any] = {}
 
-        # Reuse persistent prompt_cache
+        # True prefix-skip: only pass new tokens after cached prefix
+        tokens_to_process = prompt_token_ids
         if self._prompt_cache is not None:
+            tokens_to_process, _hit = self._prepare_prefix_skip(prompt_token_ids)
             extra_kwargs["prompt_cache"] = self._prompt_cache
 
         # Speculative decoding: use draft model when available
@@ -509,13 +631,14 @@ class MLXBackend(InferenceBackend):
         gen = mlx_lm.stream_generate(
             self._model,
             self._tokenizer,
-            prompt=prompt,
+            prompt=tokens_to_process,
             max_tokens=request.max_tokens,
             sampler=sampler,
             **extra_kwargs,
         )
 
         loop = asyncio.get_event_loop()
+        generated_token_ids: list[int] = []
 
         def _next_token() -> Any:
             try:
@@ -527,6 +650,9 @@ class MLXBackend(InferenceBackend):
             response = await loop.run_in_executor(None, _next_token)
             if response is None:
                 break
+            # Collect actual token IDs
+            if hasattr(response, "token"):
+                generated_token_ids.append(int(response.token))
             if response.finish_reason or self._is_stop_token(response.text):
                 yield GenerationChunk(
                     text="",
@@ -538,6 +664,9 @@ class MLXBackend(InferenceBackend):
                 token_count=response.generation_tokens,
                 tokens_per_second=response.generation_tps,
             )
+
+        # Update cached token tracking with actual token IDs
+        self._cached_token_ids = prompt_token_ids + generated_token_ids
 
     @property
     def kv_cache(self) -> Any:
