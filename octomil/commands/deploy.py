@@ -16,6 +16,7 @@ from octomil.cli_helpers import (
     _get_org_id,
     _get_telemetry_reporter,
     _require_api_key,
+    http_request,
 )
 
 
@@ -124,8 +125,6 @@ def deploy(
         name = ollama_ref.split(":")[0]
 
     if phone:
-        import httpx
-
         from octomil.qr import build_deep_link, render_qr_terminal
 
         # Detect ollama models before deploying
@@ -178,7 +177,8 @@ def deploy(
         headers = {"Authorization": f"Bearer {api_key}"}
 
         # Ensure model exists in registry — auto-download, convert, push if needed
-        check_resp = httpx.get(
+        check_resp = http_request(
+            "GET",
             f"{api_base}/models/{name}",
             headers=headers,
             timeout=10.0,
@@ -230,7 +230,8 @@ def deploy(
                 sys.exit(1)
 
         click.echo(f"Creating pairing session for {name}...")
-        resp = httpx.post(
+        resp = http_request(
+            "POST",
             f"{api_base}/deploy/pair",
             json={"model_name": name, "model_version": version},
             headers=headers,
@@ -286,7 +287,10 @@ def deploy(
                 import time
 
                 time.sleep(2)
-                poll = httpx.get(f"{api_base}/deploy/pair/{code}", timeout=5.0)
+                try:
+                    poll = http_request("GET", f"{api_base}/deploy/pair/{code}", timeout=5.0)
+                except SystemExit:
+                    continue  # retry silently during polling
                 if poll.status_code != 200:
                     continue
                 data = poll.json()
@@ -341,11 +345,15 @@ def deploy(
                     sys.exit(1)
         except KeyboardInterrupt:
             click.echo("\nCancelled.")
-            httpx.post(
-                f"{api_base}/deploy/pair/{code}/cancel",
-                headers={"Authorization": f"Bearer {api_key}"},
-                timeout=5.0,
-            )
+            try:
+                http_request(
+                    "POST",
+                    f"{api_base}/deploy/pair/{code}/cancel",
+                    headers={"Authorization": f"Bearer {api_key}"},
+                    timeout=5.0,
+                )
+            except SystemExit:
+                pass  # Best-effort cancel
         return
 
     client = _get_client()
@@ -474,8 +482,6 @@ def pair(
     import platform as _platform
     import uuid
 
-    import httpx
-
     api_base: str = (
         os.environ.get("OCTOMIL_API_URL")
         or os.environ.get("OCTOMIL_API_BASE")
@@ -488,7 +494,8 @@ def pair(
     click.echo(f"Connecting to pairing session {code.upper()}...")
     click.echo(f"Device: {device_name} ({platform})")
 
-    resp = httpx.post(
+    resp = http_request(
+        "POST",
         f"{api_base}/deploy/pair/{code}/connect",
         json={
             "device_id": device_id,
@@ -536,7 +543,10 @@ def pair(
 
     while True:
         time.sleep(2)
-        poll = httpx.get(f"{api_base}/deploy/pair/{code}", timeout=5.0)
+        try:
+            poll = http_request("GET", f"{api_base}/deploy/pair/{code}", timeout=5.0)
+        except SystemExit:
+            continue  # retry silently during polling
         if poll.status_code != 200:
             continue
         data = poll.json()
