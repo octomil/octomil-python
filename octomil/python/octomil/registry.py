@@ -41,8 +41,19 @@ class ModelRegistry:
         self.org_id = org_id
         self.rollouts = RolloutsAPI(self.api)
         self.experiments = ExperimentsAPI(self.api, org_id=self.org_id)
+        # Cache API results — model IDs and versions rarely change mid-process
+        self._resolve_cache: dict[str, str] = {}
+        self._version_cache: dict[str, str] = {}
 
     def resolve_model_id(self, model: str) -> str:
+        if model in self._resolve_cache:
+            return self._resolve_cache[model]
+
+        result = self._resolve_model_id_uncached(model)
+        self._resolve_cache[model] = result
+        return result
+
+    def _resolve_model_id_uncached(self, model: str) -> str:
         # Strip variant suffix (e.g. "phi-4-mini:q8_0" → "phi-4-mini")
         base_name = model.split(":")[0] if ":" in model else model
 
@@ -99,11 +110,16 @@ class ModelRegistry:
         return self.api.delete(f"/models/{model_id}")
 
     def get_latest_version(self, model_id: str) -> str:
+        if model_id in self._version_cache:
+            return self._version_cache[model_id]
+
         info = self.get_latest_version_info(model_id)
         version = info.get("version")
         if not version:
             raise OctomilClientError("Latest version not found")
-        return str(version)
+        result = str(version)
+        self._version_cache[model_id] = result
+        return result
 
     def list_versions(
         self,
