@@ -48,6 +48,20 @@ client.experiments.create(name="v1-vs-v2", model_id=model["id"],
                           control_version="1.0.0", treatment_version="1.1.0")
 ```
 
+```python
+# Manage observability integrations
+from octomil import IntegrationsAPI
+
+api = IntegrationsAPI(api_key="oct_...", org_id="org_123")
+
+# One-command OTLP setup (metrics + logs)
+api.connect_otlp_collector("Production Grafana", "http://otel-collector:4318")
+
+# Or manage individually
+api.list_metrics_integrations()
+api.create_log_integration("Splunk", "splunk", "https://splunk.example.com", format="hec")
+```
+
 ## CLI
 
 | Command                     |                                            |
@@ -60,6 +74,7 @@ client.experiments.create(name="v1-vs-v2", model_id=model["id"],
 | `octomil check <file>`      | Validate a model                           |
 | `octomil scan <path>`       | Security scan                              |
 | `octomil benchmark <model>` | Latency benchmarks                         |
+| `octomil integrations`      | Manage export integrations                 |
 | `octomil login`             | Authenticate                               |
 
 ## Federated Learning (Enterprise)
