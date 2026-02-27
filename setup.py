@@ -12,6 +12,7 @@ setup(
     url="https://github.com/octomil/octomil-python",
     packages=find_packages(),
     install_requires=[
+        "pydantic>=2.0.0",
         "psutil>=5.9.0",
         "httpx>=0.24.0",
         "click>=8.0.0",
