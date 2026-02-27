@@ -7,11 +7,19 @@ from .api_client import OctomilClientError, _ApiClient
 from .control_plane import ExperimentsAPI, RolloutsAPI
 
 # Lazy httpx — defer ~55ms import cost. Exposed as module attribute for test mocking.
+def _get_httpx():
+    """Return httpx module, loading lazily. Uses globals so test mocks work."""
+    _h = globals().get("httpx")
+    if _h is not None:
+        return _h
+    import httpx as _httpx
+    globals()["httpx"] = _httpx
+    return _httpx
+
+
 def __getattr__(name: str) -> object:
     if name == "httpx":
-        import httpx as _httpx
-        globals()["httpx"] = _httpx
-        return _httpx
+        return _get_httpx()
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 _MODELS_PATH = "/models"
@@ -254,12 +262,13 @@ class ModelRegistry:
         destination: str,
     ) -> None:
         """Download a single model file by format."""
+        _httpx = _get_httpx()
         payload = self.get_download_url(model_id, version, fmt=fmt)
         url = payload.get("url")
         if not url:
             raise OctomilClientError("Download URL missing from response")
 
-        with httpx.Client(timeout=self.api.timeout) as client:
+        with _httpx.Client(timeout=self.api.timeout) as client:
             res = client.get(url)
         if res.status_code >= 400:
             raise OctomilClientError(res.text)
@@ -319,6 +328,7 @@ class ModelRegistry:
         hidden_dim: Optional[int] = None,
         output_dim: Optional[int] = None,
     ) -> dict[str, Any]:
+        _httpx = _get_httpx()
         import os
 
         if os.path.isdir(file_path):
@@ -347,7 +357,7 @@ class ModelRegistry:
             files: dict[str, Any] = {"file": stack.enter_context(open(file_path, "rb"))}
             if onnx_data_path:
                 files["onnx_data"] = stack.enter_context(open(onnx_data_path, "rb"))
-            with httpx.Client(timeout=self.api.timeout) as client:
+            with _httpx.Client(timeout=self.api.timeout) as client:
                 res = client.post(
                     f"{self.api.api_base}/models/{model_id}/versions/upload",
                     data=data,

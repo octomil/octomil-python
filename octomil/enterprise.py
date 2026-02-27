@@ -133,6 +133,8 @@ class EnterpriseClient:
         api_key: str,
         api_base: str | None = None,
     ) -> None:
+        import httpx
+
         base = (
             api_base
             or os.environ.get("OCTOMIL_API_URL")

@@ -13,12 +13,20 @@ logger = logging.getLogger(__name__)
 httpx: ModuleType
 
 
+def _get_httpx() -> ModuleType:
+    """Return httpx module, loading lazily. Uses globals so test mocks work."""
+    _h = globals().get("httpx")
+    if _h is not None and not isinstance(_h, type):
+        return _h  # type: ignore[return-value]
+    import httpx as _httpx  # type: ignore[no-redef]
+
+    globals()["httpx"] = _httpx
+    return _httpx
+
+
 def __getattr__(name: str) -> Any:
     if name == "httpx":
-        import httpx as _httpx  # type: ignore[no-redef]
-
-        globals()["httpx"] = _httpx
-        return _httpx
+        return _get_httpx()
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
@@ -50,9 +58,10 @@ class _ApiClient:
 
     def _get_client(self, timeout: Optional[float] = None) -> Any:
         """Return a shared httpx.Client, creating one if needed."""
+        _http = _get_httpx()
         effective_timeout = timeout or self.timeout
         if self._client is None or self._client.is_closed:
-            self._client = httpx.Client(timeout=effective_timeout)
+            self._client = _http.Client(timeout=effective_timeout)
         return self._client
 
     def close(self) -> None:
@@ -81,6 +90,8 @@ class _ApiClient:
         (502, 503, 504, 429).  Non-retryable errors (4xx except 429)
         are raised immediately.
         """
+        _http = _get_httpx()
+        _retryable_exc = (_http.ConnectError, _http.TimeoutException, _http.RemoteProtocolError)
         last_exc: Optional[Exception] = None
         for attempt in range(self.max_retries):
             try:
@@ -129,7 +140,7 @@ class _ApiClient:
 
             except OctomilClientError:
                 raise
-            except (httpx.ConnectError, httpx.TimeoutException, httpx.RemoteProtocolError) as exc:
+            except _retryable_exc as exc:
                 last_exc = exc
                 if attempt < self.max_retries - 1:
                     wait = self.backoff_base * (2**attempt)

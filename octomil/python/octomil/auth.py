@@ -14,11 +14,18 @@ from typing import Any, Optional
 logger = logging.getLogger(__name__)
 
 # Lazy httpx — defer ~55ms import cost. Exposed as module attribute for test mocking.
+def _get_httpx():
+    _h = globals().get("httpx")
+    if _h is not None:
+        return _h
+    import httpx as _httpx
+    globals()["httpx"] = _httpx
+    return _httpx
+
+
 def __getattr__(name: str) -> object:
     if name == "httpx":
-        import httpx as _httpx
-        globals()["httpx"] = _httpx
-        return _httpx
+        return _get_httpx()
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 try:
@@ -123,6 +130,7 @@ class DeviceAuthClient:
         access_ttl_seconds: Optional[int] = None,
         device_id: Optional[str] = None,
     ) -> DeviceTokenState:
+        _httpx = _get_httpx()
         payload: dict[str, Any] = {
             "org_id": self.org_id,
             "device_identifier": self.device_identifier,
@@ -133,7 +141,7 @@ class DeviceAuthClient:
         if device_id:
             payload["device_id"] = device_id
 
-        async with httpx.AsyncClient(timeout=self._timeout) as client:
+        async with _httpx.AsyncClient(timeout=self._timeout) as client:
             response = await client.post(
                 f"{self.base_url}/api/v1/device-auth/bootstrap",
                 json=payload,
@@ -145,11 +153,12 @@ class DeviceAuthClient:
             return state
 
     async def refresh(self) -> DeviceTokenState:
+        _httpx = _get_httpx()
         state = self._load_token_state()
         if not state:
             raise RuntimeError("No token state found in keyring")
 
-        async with httpx.AsyncClient(timeout=self._timeout) as client:
+        async with _httpx.AsyncClient(timeout=self._timeout) as client:
             response = await client.post(
                 f"{self.base_url}/api/v1/device-auth/refresh",
                 json={"refresh_token": state.refresh_token},
@@ -160,10 +169,11 @@ class DeviceAuthClient:
             return next_state
 
     async def revoke(self, reason: str = "sdk_revoke") -> None:
+        _httpx = _get_httpx()
         state = self._load_token_state()
         if not state:
             return
-        async with httpx.AsyncClient(timeout=self._timeout) as client:
+        async with _httpx.AsyncClient(timeout=self._timeout) as client:
             response = await client.post(
                 f"{self.base_url}/api/v1/device-auth/revoke",
                 json={"refresh_token": state.refresh_token, "reason": reason},

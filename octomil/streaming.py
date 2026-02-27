@@ -15,11 +15,18 @@ from typing import Any, AsyncIterator, Iterator, Optional, Union
 logger = logging.getLogger(__name__)
 
 # Lazy httpx — defer ~55ms import cost. Exposed as module attribute for test mocking.
+def _get_httpx():
+    _h = globals().get("httpx")
+    if _h is not None:
+        return _h
+    import httpx as _httpx
+    globals()["httpx"] = _httpx
+    return _httpx
+
+
 def __getattr__(name: str) -> object:
     if name == "httpx":
-        import httpx as _httpx
-        globals()["httpx"] = _httpx
-        return _httpx
+        return _get_httpx()
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
@@ -56,6 +63,7 @@ def stream_inference(
     Yields:
         :class:`StreamToken` for each SSE ``data:`` event.
     """
+    _httpx = _get_httpx()
     url = f"{server_url.rstrip('/')}/inference/stream"
     payload = _build_payload(model_id, input_data, parameters)
     headers = {
@@ -64,7 +72,7 @@ def stream_inference(
         "Accept": "text/event-stream",
     }
 
-    with httpx.Client(timeout=timeout) as client:
+    with _httpx.Client(timeout=timeout) as client:
         with client.stream("POST", url, json=payload, headers=headers) as response:
             response.raise_for_status()
             yield from _parse_sse_lines(response.iter_lines())
@@ -82,6 +90,7 @@ async def stream_inference_async(
 
     Same interface as :func:`stream_inference` but uses ``httpx.AsyncClient``.
     """
+    _httpx = _get_httpx()
     url = f"{server_url.rstrip('/')}/inference/stream"
     payload = _build_payload(model_id, input_data, parameters)
     headers = {
@@ -90,7 +99,7 @@ async def stream_inference_async(
         "Accept": "text/event-stream",
     }
 
-    async with httpx.AsyncClient(timeout=timeout) as client:
+    async with _httpx.AsyncClient(timeout=timeout) as client:
         async with client.stream(
             "POST", url, json=payload, headers=headers
         ) as response:
