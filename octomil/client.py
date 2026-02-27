@@ -343,74 +343,9 @@ class Client:
 
         return result
 
-    # ------------------------------------------------------------------
-    # Load — pull + create a Model for programmatic inference
-    # ------------------------------------------------------------------
-
-    def load_model(
-        self,
-        name: str,
-        *,
-        version: Optional[str] = None,
-        format: Optional[str] = None,
-        destination: str = ".",
-        engine: Optional[str] = None,
-        cache_size_mb: int = 2048,
-        cache_enabled: bool = True,
-    ) -> "Model":
-        """Download a model and prepare it for local inference.
-
-        Combines ``pull()`` with engine auto-selection to return a
-        ready-to-use ``Model`` instance.
-
-        Args:
-            name: Model name or ID.
-            version: Specific version. Defaults to latest.
-            format: Target format (onnx, coreml, tflite). Auto-detects if omitted.
-            destination: Local directory to save files into.
-            engine: Override the engine (e.g. ``"mlx-lm"``, ``"llama.cpp"``).
-            cache_size_mb: KV cache size in MB for the backend.
-            cache_enabled: Whether to enable KV cache.
-
-        Returns:
-            A ``Model`` ready for ``predict()`` calls.
-        """
-        from .engines.registry import get_registry
-        from .model import Model, ModelMetadata
-
-        pull_result = self.pull(
-            name, version=version, format=format, destination=destination
-        )
-
-        selected_engine, _ranked = get_registry().auto_select(
-            name, engine_override=engine
-        )
-
-        # Resolve the version that was actually pulled
-        model_id = self._registry.resolve_model_id(name)
-        resolved_version = version or self._registry.get_latest_version(model_id)
-
-        metadata = ModelMetadata(
-            model_id=model_id,
-            model_name=name,
-            version=resolved_version,
-            format=format or "auto",
-            model_path=pull_result.get("model_path", ""),
-            engine_name=selected_engine.name,
-        )
-
-        return Model(
-            metadata=metadata,
-            engine=selected_engine,
-            engine_kwargs={
-                "cache_size_mb": cache_size_mb,
-                "cache_enabled": cache_enabled,
-            },
-        )
-
     def _get_model(self, name: str, **kwargs: Any) -> "Model":
         """Return a cached Model, or load one."""
-        if name not in self._models or self._models[name]._disposed:
+        if name not in self._models:
             self._models[name] = self.load_model(name, **kwargs)
         return self._models[name]
 
@@ -595,9 +530,6 @@ class Client:
 
     def dispose(self) -> None:
         """Dispose all cached models."""
-        for model in self._models.values():
-            if not model._disposed:
-                model.dispose()
         self._models.clear()
 
     # ------------------------------------------------------------------
