@@ -28,7 +28,11 @@ def _make_client_with_reporter():
         device_id="dev-1",
     )
 
-    client = Client(api_key="test-key", org_id="test-org")
+    # Create Client without api_key to suppress internal reporter creation,
+    # then assign the test's controlled reporter to avoid duplicate events.
+    client = Client(api_key="", org_id="test-org")
+    client._api_key = "test-key"
+    client._reporter = reporter
 
     return client, reporter, sent_events, patcher
 
@@ -56,6 +60,9 @@ class TestPushTelemetry:
         mock_registry.ensure_model.return_value = {"id": "model-123"}
         mock_registry.upload_version_from_path.return_value = {"status": "ok"}
         client._registry = mock_registry
+
+        time.sleep(0.1)
+        sent.clear()
 
         with patch("octomil.get_reporter", return_value=reporter):
             result = client.push(
@@ -85,6 +92,9 @@ class TestPushTelemetry:
         mock_registry = MagicMock()
         mock_registry.ensure_model.side_effect = RuntimeError("upload failed")
         client._registry = mock_registry
+
+        time.sleep(0.1)
+        sent.clear()
 
         with patch("octomil.get_reporter", return_value=reporter):
             with pytest.raises(RuntimeError, match="upload failed"):
@@ -160,6 +170,10 @@ class TestImportFromHfTelemetry:
         mock_api.post.return_value = {"model_id": "m1", "status": "imported"}
         client._api = mock_api
 
+        # Drain any events from setup before measuring
+        time.sleep(0.1)
+        sent.clear()
+
         with patch("octomil.get_reporter", return_value=reporter):
             result = client.import_from_hf("microsoft/phi-4-mini")
 
@@ -184,6 +198,9 @@ class TestImportFromHfTelemetry:
         mock_api.post.return_value = {"status": "imported"}
         client._api = mock_api
 
+        time.sleep(0.1)
+        sent.clear()
+
         with patch("octomil.get_reporter", return_value=reporter):
             client.import_from_hf("microsoft/phi-4-mini", name="phi4")
 
@@ -200,6 +217,9 @@ class TestImportFromHfTelemetry:
         mock_api = MagicMock()
         mock_api.post.side_effect = RuntimeError("network timeout")
         client._api = mock_api
+
+        time.sleep(0.1)
+        sent.clear()
 
         with patch("octomil.get_reporter", return_value=reporter):
             with pytest.raises(RuntimeError, match="network timeout"):
@@ -241,6 +261,9 @@ class TestRollbackTelemetry:
         }
         client._registry = mock_registry
 
+        time.sleep(0.1)
+        sent.clear()
+
         with patch("octomil.get_reporter", return_value=reporter):
             result = client.rollback("test-model")
 
@@ -264,6 +287,9 @@ class TestRollbackTelemetry:
         mock_registry = MagicMock()
         mock_registry.resolve_model_id.side_effect = RuntimeError("model not found")
         client._registry = mock_registry
+
+        time.sleep(0.1)
+        sent.clear()
 
         with patch("octomil.get_reporter", return_value=reporter):
             with pytest.raises(RuntimeError, match="model not found"):
