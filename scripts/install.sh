@@ -283,15 +283,21 @@ install_python_sdk() {
         return
     fi
 
-    info "Installing Python SDK..."
+    # On Apple Silicon, install with mlx backend for on-device inference.
+    SDK_EXTRA="octomil-sdk"
+    if [ "$PLATFORM" = "darwin-arm64" ]; then
+        SDK_EXTRA="octomil-sdk[mlx]"
+    fi
+
+    info "Installing Python SDK ($SDK_EXTRA)..."
     # Try normal install first, then --break-system-packages for
     # Homebrew/externally-managed Python (PEP 668).
-    if $PIP_CMD install --quiet --upgrade octomil-sdk 2>/dev/null; then
+    if $PIP_CMD install --quiet --upgrade "$SDK_EXTRA" 2>/dev/null; then
         info "Python SDK installed (import octomil)"
-    elif $PIP_CMD install --quiet --upgrade --break-system-packages octomil-sdk 2>/dev/null; then
+    elif $PIP_CMD install --quiet --upgrade --break-system-packages "$SDK_EXTRA" 2>/dev/null; then
         info "Python SDK installed (import octomil)"
     else
-        warn "Could not install Python SDK. Install manually: pip install octomil-sdk"
+        warn "Could not install Python SDK. Install manually: pip install $SDK_EXTRA"
     fi
 }
 
