@@ -55,6 +55,11 @@ from .routing import (
     RoutingDecision,
     assign_tiers,
 )
+from .embeddings import (
+    EmbeddingResult,
+    EmbeddingUsage,
+    embed,
+)
 from .streaming import (
     StreamToken,
     stream_inference,
@@ -281,4 +286,7 @@ __all__ = [
     "StreamToken",
     "stream_inference",
     "stream_inference_async",
+    "EmbeddingResult",
+    "EmbeddingUsage",
+    "embed",
 ]

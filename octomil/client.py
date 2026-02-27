@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, AsyncIterator, Iterator, Optional
 
 if TYPE_CHECKING:
+    from .embeddings import EmbeddingResult
     from .model import Model, Prediction
     from .serve import GenerationChunk
     from .streaming import StreamToken
@@ -506,6 +507,39 @@ class Client:
             timeout=timeout,
         ):
             yield token
+
+    # ------------------------------------------------------------------
+    # Embeddings
+    # ------------------------------------------------------------------
+
+    def embed(
+        self,
+        model_id: str,
+        input: str | list[str],
+        *,
+        timeout: float = 30.0,
+    ) -> "EmbeddingResult":
+        """Generate embeddings via the Octomil cloud endpoint.
+
+        Requires ``api_key`` and ``api_base`` to be configured.
+
+        Args:
+            model_id: Embedding model identifier (e.g. ``"nomic-embed-text"``).
+            input: A single string or list of strings to embed.
+            timeout: HTTP timeout in seconds.
+
+        Returns:
+            :class:`~octomil.embeddings.EmbeddingResult` with dense vectors.
+        """
+        from .embeddings import embed
+
+        return embed(
+            server_url=self._api_base,
+            api_key=self._api_key,
+            model_id=model_id,
+            input=input,
+            timeout=timeout,
+        )
 
     def dispose(self) -> None:
         """Dispose all cached models."""
