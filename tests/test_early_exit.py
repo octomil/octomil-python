@@ -10,7 +10,7 @@ Covers:
 - EarlyExitRequestMetrics serialization
 - serve.py integration: /v1/early-exit/stats endpoint, usage.early_exit in responses
 - CLI --early-exit-threshold and --speed-quality flags
-- telemetry report_early_exit_stats and report_generation_completed with early_exit_stats
+- telemetry report_early_exit_stats and report_inference_completed with early_exit_stats
 """
 
 from __future__ import annotations
@@ -748,7 +748,7 @@ class TestTelemetryEarlyExit:
         assert attrs["inference.early_exit.avg_layers_used"] == 20.5
         assert attrs["inference.early_exit.avg_entropy"] == 0.22
 
-    def test_generation_completed_includes_early_exit(self):
+    def test_inference_completed_includes_early_exit(self):
         from octomil.telemetry import TelemetryReporter
 
         sent = []
@@ -768,7 +768,7 @@ class TestTelemetryEarlyExit:
                 "early_exit_tokens": 15,
                 "exit_percentage": 30.0,
             }
-            reporter.report_generation_completed(
+            reporter.report_inference_completed(
                 session_id="s1",
                 model_id="model-a",
                 version="2.0",
@@ -788,7 +788,7 @@ class TestTelemetryEarlyExit:
         assert "inference.early_exit" in attrs
         assert attrs["inference.early_exit"]["early_exit_tokens"] == 15
 
-    def test_generation_completed_no_early_exit_when_none(self):
+    def test_inference_completed_no_early_exit_when_none(self):
         from octomil.telemetry import TelemetryReporter
 
         sent = []
@@ -803,7 +803,7 @@ class TestTelemetryEarlyExit:
                 org_id="org-1",
                 device_id="dev-1",
             )
-            reporter.report_generation_completed(
+            reporter.report_inference_completed(
                 session_id="s1",
                 model_id="model-a",
                 version="2.0",

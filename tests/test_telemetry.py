@@ -83,7 +83,7 @@ class TestTelemetryV2Envelope:
                 org_id="org-1",
                 device_id="dev-1",
             )
-            reporter.report_generation_started(
+            reporter.report_inference_started(
                 model_id="gemma-1b",
                 version="1.0",
                 session_id="sess-001",
@@ -112,7 +112,7 @@ class TestTelemetryV2Envelope:
                 org_id="test-org",
                 device_id="dev-abc",
             )
-            reporter.report_generation_started(
+            reporter.report_inference_started(
                 model_id="m",
                 version="v",
                 session_id="s",
@@ -141,7 +141,7 @@ class TestTelemetryV2Envelope:
                 org_id="org-1",
                 device_id="dev-1",
             )
-            reporter.report_generation_started(
+            reporter.report_inference_started(
                 model_id="m",
                 version="v",
                 session_id="s",
@@ -166,7 +166,7 @@ class TestTelemetryV2Envelope:
                 org_id="org-1",
                 device_id="dev-1",
             )
-            reporter.report_generation_started(
+            reporter.report_inference_started(
                 model_id="m",
                 version="v",
                 session_id="s",
@@ -212,7 +212,7 @@ class TestEventNameDotNotation:
 
     def test_inference_started(self):
         reporter, sent, patcher = self._capture_events()
-        reporter.report_generation_started(
+        reporter.report_inference_started(
             model_id="m",
             version="v",
             session_id="s",
@@ -225,7 +225,7 @@ class TestEventNameDotNotation:
 
     def test_inference_completed(self):
         reporter, sent, patcher = self._capture_events()
-        reporter.report_generation_completed(
+        reporter.report_inference_completed(
             session_id="s",
             model_id="m",
             version="v",
@@ -242,7 +242,7 @@ class TestEventNameDotNotation:
 
     def test_inference_failed(self):
         reporter, sent, patcher = self._capture_events()
-        reporter.report_generation_failed(
+        reporter.report_inference_failed(
             session_id="s",
             model_id="m",
             version="v",
@@ -253,9 +253,9 @@ class TestEventNameDotNotation:
         event = self._get_event(sent)
         assert event["name"] == "inference.failed"
 
-    def test_inference_chunk_produced(self):
+    def test_inference_chunk(self):
         reporter, sent, patcher = self._capture_events()
-        reporter.report_chunk_produced(
+        reporter.report_inference_chunk(
             session_id="s",
             model_id="m",
             version="v",
@@ -285,7 +285,7 @@ class TestEventNameDotNotation:
 class TestAttributeMapping:
     """Verify correct attribute keys for each event type."""
 
-    def test_generation_started_attributes(self):
+    def test_inference_started_attributes(self):
         sent = []
 
         def mock_send(client, url, headers, payload):
@@ -298,7 +298,7 @@ class TestAttributeMapping:
                 org_id="org-1",
                 device_id="dev-1",
             )
-            reporter.report_generation_started(
+            reporter.report_inference_started(
                 model_id="gemma-1b",
                 version="1.0",
                 session_id="sess-001",
@@ -316,7 +316,7 @@ class TestAttributeMapping:
         assert attrs["inference.modality"] == "text"
         assert attrs["inference.attention_backend"] == "flash_attention"
 
-    def test_generation_started_no_attention_backend(self):
+    def test_inference_started_no_attention_backend(self):
         sent = []
 
         def mock_send(client, url, headers, payload):
@@ -329,7 +329,7 @@ class TestAttributeMapping:
                 org_id="org-1",
                 device_id="dev-1",
             )
-            reporter.report_generation_started(
+            reporter.report_inference_started(
                 model_id="m",
                 version="v",
                 session_id="s",
@@ -340,7 +340,7 @@ class TestAttributeMapping:
         attrs = sent[0]["events"][0]["attributes"]
         assert "inference.attention_backend" not in attrs
 
-    def test_chunk_produced_attributes(self):
+    def test_inference_chunk_attributes(self):
         sent = []
 
         def mock_send(client, url, headers, payload):
@@ -353,7 +353,7 @@ class TestAttributeMapping:
                 org_id="org-1",
                 device_id="dev-1",
             )
-            reporter.report_chunk_produced(
+            reporter.report_inference_chunk(
                 session_id="s1",
                 model_id="model-a",
                 version="2.0",
@@ -373,7 +373,7 @@ class TestAttributeMapping:
         assert attrs["model.id"] == "model-a"
         assert attrs["inference.session_id"] == "s1"
 
-    def test_generation_completed_attributes(self):
+    def test_inference_completed_attributes(self):
         sent = []
 
         def mock_send(client, url, headers, payload):
@@ -386,7 +386,7 @@ class TestAttributeMapping:
                 org_id="org-1",
                 device_id="dev-1",
             )
-            reporter.report_generation_completed(
+            reporter.report_inference_completed(
                 session_id="s1",
                 model_id="model-a",
                 version="2.0",
@@ -409,7 +409,7 @@ class TestAttributeMapping:
         assert attrs["inference.attention_backend"] == "metal_fused"
         assert attrs["model.id"] == "model-a"
 
-    def test_generation_failed_attributes(self):
+    def test_inference_failed_attributes(self):
         sent = []
 
         def mock_send(client, url, headers, payload):
@@ -422,7 +422,7 @@ class TestAttributeMapping:
                 org_id="org-1",
                 device_id="dev-1",
             )
-            reporter.report_generation_failed(
+            reporter.report_inference_failed(
                 session_id="s1",
                 model_id="model-a",
                 version="2.0",
@@ -493,7 +493,7 @@ class TestTPOTCalculation:
                 org_id="org-1",
                 device_id="dev-1",
             )
-            reporter.report_generation_completed(
+            reporter.report_inference_completed(
                 session_id="s1",
                 model_id="m",
                 version="v",
@@ -523,7 +523,7 @@ class TestTPOTCalculation:
                 org_id="org-1",
                 device_id="dev-1",
             )
-            reporter.report_generation_completed(
+            reporter.report_inference_completed(
                 session_id="s1",
                 model_id="m",
                 version="v",
@@ -552,7 +552,7 @@ class TestTPOTCalculation:
                 org_id="org-1",
                 device_id="dev-1",
             )
-            reporter.report_generation_completed(
+            reporter.report_inference_completed(
                 session_id="s1",
                 model_id="m",
                 version="v",
@@ -581,7 +581,7 @@ class TestTPOTCalculation:
                 org_id="org-1",
                 device_id="dev-1",
             )
-            reporter.report_generation_completed(
+            reporter.report_inference_completed(
                 session_id="s1",
                 model_id="m",
                 version="v",
@@ -619,7 +619,7 @@ class TestModalityPropagation:
                 org_id="org-1",
                 device_id="dev-1",
             )
-            reporter.report_generation_started(
+            reporter.report_inference_started(
                 model_id="m",
                 version="v",
                 session_id="s",
@@ -644,7 +644,7 @@ class TestModalityPropagation:
                 org_id="org-1",
                 device_id="dev-1",
             )
-            reporter.report_generation_started(
+            reporter.report_inference_started(
                 model_id="m",
                 version="v",
                 session_id="s",
@@ -668,7 +668,7 @@ class TestModalityPropagation:
                 org_id="org-1",
                 device_id="dev-1",
             )
-            reporter.report_generation_completed(
+            reporter.report_inference_completed(
                 session_id="s",
                 model_id="m",
                 version="v",
@@ -700,7 +700,7 @@ class TestTelemetryBestEffort:
             device_id="dev-1",
         )
         # This should not raise even though the endpoint doesn't exist
-        reporter.report_generation_started(
+        reporter.report_inference_started(
             model_id="model-a",
             version="1.0",
             session_id="s1",
@@ -738,7 +738,7 @@ class TestTelemetryBestEffort:
 
         # Fill the queue (maxsize=1024)
         for i in range(1100):
-            reporter.report_generation_started(
+            reporter.report_inference_started(
                 model_id="m", version="v", session_id=f"s{i}"
             )
         # Should not raise
@@ -1050,7 +1050,7 @@ async def test_serve_telemetry_reports_on_streaming(echo_app_with_telemetry):
         for event in envelope.get("events", []):
             event_names.append(event.get("name"))
     assert "inference.started" in event_names
-    # Should have chunk_produced events and a generation_completed
+    # Should have inference_chunk events and an inference_completed
     assert "inference.chunk_produced" in event_names
     assert "inference.completed" in event_names
 
@@ -1093,7 +1093,7 @@ class TestTelemetryClose:
                 device_id="dev-1",
             )
             for i in range(5):
-                reporter.report_generation_started(
+                reporter.report_inference_started(
                     model_id="m",
                     version="v",
                     session_id=f"s{i}",
@@ -1162,18 +1162,18 @@ class TestBackwardCompat:
         )
 
         # These should not raise
-        reporter.report_generation_started(
+        reporter.report_inference_started(
             model_id="m",
             version="v",
             session_id="s",
         )
-        reporter.report_chunk_produced(
+        reporter.report_inference_chunk(
             session_id="s",
             model_id="m",
             version="v",
             chunk_index=0,
         )
-        reporter.report_generation_completed(
+        reporter.report_inference_completed(
             session_id="s",
             model_id="m",
             version="v",
@@ -1182,7 +1182,7 @@ class TestBackwardCompat:
             ttfc_ms=10.0,
             throughput=50.0,
         )
-        reporter.report_generation_failed(
+        reporter.report_inference_failed(
             session_id="s",
             model_id="m",
             version="v",
@@ -1266,7 +1266,7 @@ class TestTimestampISO8601:
                 org_id="org-1",
                 device_id="dev-1",
             )
-            reporter.report_generation_started(
+            reporter.report_inference_started(
                 model_id="m",
                 version="v",
                 session_id="s",

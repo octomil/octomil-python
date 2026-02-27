@@ -82,20 +82,20 @@ class TestPredictTelemetry:
         assert isinstance(result, Prediction)
         assert result.text == "hello world"
 
-        reporter.report_generation_started.assert_called_once()
-        call_kwargs = reporter.report_generation_started.call_args.kwargs
+        reporter.report_inference_started.assert_called_once()
+        call_kwargs = reporter.report_inference_started.call_args.kwargs
         assert call_kwargs["model_id"] == "model-abc"
         assert call_kwargs["version"] == "1.0.0"
         assert _UUID_HEX_RE.match(call_kwargs["session_id"])
 
-        reporter.report_generation_completed.assert_called_once()
-        comp_kwargs = reporter.report_generation_completed.call_args.kwargs
+        reporter.report_inference_completed.assert_called_once()
+        comp_kwargs = reporter.report_inference_completed.call_args.kwargs
         assert comp_kwargs["model_id"] == "model-abc"
         assert comp_kwargs["total_chunks"] == 10
         assert comp_kwargs["ttfc_ms"] == 50.0
         assert comp_kwargs["total_duration_ms"] > 0
 
-        reporter.report_generation_failed.assert_not_called()
+        reporter.report_inference_failed.assert_not_called()
 
     def test_predict_reports_failed_on_backend_error(self):
         reporter = MagicMock()
@@ -107,13 +107,13 @@ class TestPredictTelemetry:
         with pytest.raises(RuntimeError, match="boom"):
             model.predict(_make_request())
 
-        reporter.report_generation_started.assert_called_once()
-        reporter.report_generation_failed.assert_called_once()
-        fail_kwargs = reporter.report_generation_failed.call_args.kwargs
+        reporter.report_inference_started.assert_called_once()
+        reporter.report_inference_failed.assert_called_once()
+        fail_kwargs = reporter.report_inference_failed.call_args.kwargs
         assert fail_kwargs["model_id"] == "model-abc"
         assert _UUID_HEX_RE.match(fail_kwargs["session_id"])
 
-        reporter.report_generation_completed.assert_not_called()
+        reporter.report_inference_completed.assert_not_called()
 
     def test_predict_unique_session_ids(self):
         reporter = MagicMock()
@@ -124,7 +124,7 @@ class TestPredictTelemetry:
         model.predict(_make_request())
         model.predict(_make_request())
 
-        calls = reporter.report_generation_started.call_args_list
+        calls = reporter.report_inference_started.call_args_list
         session_ids = [c.kwargs["session_id"] for c in calls]
         assert len(session_ids) == 2
         assert session_ids[0] != session_ids[1]
@@ -163,24 +163,24 @@ class TestPredictStreamTelemetry:
 
         assert len(collected) == 3
 
-        reporter.report_generation_started.assert_called_once()
+        reporter.report_inference_started.assert_called_once()
 
-        # Two text chunks should produce two chunk_produced calls
-        assert reporter.report_chunk_produced.call_count == 2
-        first_chunk_call = reporter.report_chunk_produced.call_args_list[0].kwargs
+        # Two text chunks should produce two inference_chunk calls
+        assert reporter.report_inference_chunk.call_count == 2
+        first_chunk_call = reporter.report_inference_chunk.call_args_list[0].kwargs
         assert first_chunk_call["chunk_index"] == 0
         assert first_chunk_call["ttfc_ms"] is not None  # first chunk has ttfc
 
-        second_chunk_call = reporter.report_chunk_produced.call_args_list[1].kwargs
+        second_chunk_call = reporter.report_inference_chunk.call_args_list[1].kwargs
         assert second_chunk_call["chunk_index"] == 1
         assert second_chunk_call["ttfc_ms"] is None  # only first has ttfc
 
-        reporter.report_generation_completed.assert_called_once()
-        comp_kwargs = reporter.report_generation_completed.call_args.kwargs
+        reporter.report_inference_completed.assert_called_once()
+        comp_kwargs = reporter.report_inference_completed.call_args.kwargs
         assert comp_kwargs["total_chunks"] == 2
         assert comp_kwargs["total_duration_ms"] > 0
 
-        reporter.report_generation_failed.assert_not_called()
+        reporter.report_inference_failed.assert_not_called()
 
     def test_stream_reports_failed_on_mid_stream_error(self):
         reporter = MagicMock()
@@ -199,9 +199,9 @@ class TestPredictStreamTelemetry:
         with pytest.raises(RuntimeError, match="stream exploded"):
             asyncio.run(_run())
 
-        reporter.report_generation_started.assert_called_once()
-        reporter.report_generation_failed.assert_called_once()
-        reporter.report_generation_completed.assert_not_called()
+        reporter.report_inference_started.assert_called_once()
+        reporter.report_inference_failed.assert_called_once()
+        reporter.report_inference_completed.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -248,8 +248,8 @@ class TestNoReporter:
 class TestReporterExceptionSwallowed:
     def test_predict_succeeds_when_reporter_raises(self):
         reporter = MagicMock()
-        reporter.report_generation_started.side_effect = Exception("telemetry down")
-        reporter.report_generation_completed.side_effect = Exception("telemetry down")
+        reporter.report_inference_started.side_effect = Exception("telemetry down")
+        reporter.report_inference_completed.side_effect = Exception("telemetry down")
 
         backend = MagicMock()
         backend.generate.return_value = ("ok", _make_metrics())
@@ -261,9 +261,9 @@ class TestReporterExceptionSwallowed:
 
     def test_predict_stream_succeeds_when_reporter_raises(self):
         reporter = MagicMock()
-        reporter.report_generation_started.side_effect = Exception("telemetry down")
-        reporter.report_chunk_produced.side_effect = Exception("telemetry down")
-        reporter.report_generation_completed.side_effect = Exception("telemetry down")
+        reporter.report_inference_started.side_effect = Exception("telemetry down")
+        reporter.report_inference_chunk.side_effect = Exception("telemetry down")
+        reporter.report_inference_completed.side_effect = Exception("telemetry down")
 
         backend = MagicMock()
         chunks = [GenerationChunk(text="ok", finish_reason="stop")]
@@ -299,8 +299,8 @@ class TestGlobalReporterFallback:
         with patch("octomil.get_reporter", return_value=global_reporter):
             model.predict(_make_request())
 
-        global_reporter.report_generation_started.assert_called_once()
-        global_reporter.report_generation_completed.assert_called_once()
+        global_reporter.report_inference_started.assert_called_once()
+        global_reporter.report_inference_completed.assert_called_once()
 
     def test_override_reporter_takes_precedence(self):
         global_reporter = MagicMock()
@@ -315,5 +315,5 @@ class TestGlobalReporterFallback:
         with patch("octomil.get_reporter", return_value=global_reporter):
             model.predict(_make_request())
 
-        override_reporter.report_generation_started.assert_called_once()
-        global_reporter.report_generation_started.assert_not_called()
+        override_reporter.report_inference_started.assert_called_once()
+        global_reporter.report_inference_started.assert_not_called()
