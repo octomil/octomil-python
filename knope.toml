@@ -5,6 +5,7 @@ versioned_files = [
     { path = "octomil/__init__.py", regex = '__version__ = "(?<version>\d+\.\d+\.\d+)"' },
     { path = "homebrew/octomil.rb", regex = 'version "(?<version>\d+\.\d+\.\d+)"' },
     { path = "tests/test_cli.py", regex = '"(?<version>\d+\.\d+\.\d+)" in result' },
+    { path = "sonar-project.properties", regex = 'sonar.projectVersion=(?<version>\d+\.\d+\.\d+)' },
 ]
 changelog = "CHANGELOG.md"
 
