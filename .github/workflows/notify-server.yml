@@ -24,7 +24,7 @@ jobs:
 
       - name: Get version
         id: version
-        run: echo "version=$(python setup.py --version)" >> $GITHUB_OUTPUT
+        run: echo "version=$(python -c "import octomil; print(octomil.__version__)")" >> $GITHUB_OUTPUT
 
       - name: Dispatch to server
         uses: peter-evans/repository-dispatch@v3
