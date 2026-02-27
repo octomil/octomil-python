@@ -18,8 +18,8 @@ import platform
 import queue
 import sys
 import threading
-import time
 import uuid
+from datetime import datetime, timezone
 from typing import Any, Optional
 
 import httpx
@@ -296,13 +296,17 @@ class TelemetryReporter:
             "inference.moe.total_tokens_routed": total_tokens_routed,
         }
         if expert_activation_counts is not None:
-            attributes["inference.moe.expert_activation_counts"] = expert_activation_counts
+            attributes["inference.moe.expert_activation_counts"] = (
+                expert_activation_counts
+            )
             if load_balance_score is None:
                 load_balance_score = _compute_load_balance(
                     expert_activation_counts, num_experts
                 )
         if load_balance_score is not None:
-            attributes["inference.moe.load_balance_score"] = round(load_balance_score, 4)
+            attributes["inference.moe.load_balance_score"] = round(
+                load_balance_score, 4
+            )
         if expert_memory_mb is not None:
             attributes["inference.moe.expert_memory_mb"] = round(expert_memory_mb, 2)
 
@@ -374,6 +378,86 @@ class TelemetryReporter:
         self._enqueue(name=f"funnel.{stage}", attributes=attributes)
 
     # ------------------------------------------------------------------
+    # Deploy events
+    # ------------------------------------------------------------------
+
+    def report_deploy_started(
+        self,
+        model_id: str,
+        version: str,
+        target_platform: str,
+    ) -> None:
+        """Report that a model deployment has started."""
+        attributes: dict[str, Any] = {
+            "model.id": model_id,
+            "model.version": version,
+            "deploy.target_platform": target_platform,
+        }
+        self._enqueue(name="deploy.started", attributes=attributes)
+
+    def report_deploy_completed(
+        self,
+        model_id: str,
+        version: str,
+        duration_ms: float,
+    ) -> None:
+        """Report that a model deployment completed successfully."""
+        attributes: dict[str, Any] = {
+            "model.id": model_id,
+            "model.version": version,
+            "deploy.duration_ms": duration_ms,
+        }
+        self._enqueue(name="deploy.completed", attributes=attributes)
+
+    def report_deploy_rollback(
+        self,
+        model_id: str,
+        from_version: str,
+        to_version: str,
+        reason: str,
+    ) -> None:
+        """Report that a deployment was rolled back."""
+        attributes: dict[str, Any] = {
+            "model.id": model_id,
+            "deploy.from_version": from_version,
+            "deploy.to_version": to_version,
+            "deploy.reason": reason,
+        }
+        self._enqueue(name="deploy.rollback", attributes=attributes)
+
+    # ------------------------------------------------------------------
+    # Experiment events
+    # ------------------------------------------------------------------
+
+    def report_experiment_assigned(
+        self,
+        model_id: str,
+        experiment_id: str,
+        variant: str,
+    ) -> None:
+        """Report that a device was assigned to an experiment variant."""
+        attributes: dict[str, Any] = {
+            "model.id": model_id,
+            "experiment.id": experiment_id,
+            "experiment.variant": variant,
+        }
+        self._enqueue(name="experiment.assigned", attributes=attributes)
+
+    def report_experiment_metric(
+        self,
+        experiment_id: str,
+        metric_name: str,
+        metric_value: float,
+    ) -> None:
+        """Report a metric value for an experiment."""
+        attributes: dict[str, Any] = {
+            "experiment.id": experiment_id,
+            "experiment.metric_name": metric_name,
+            "experiment.metric_value": metric_value,
+        }
+        self._enqueue(name="experiment.metric_recorded", attributes=attributes)
+
+    # ------------------------------------------------------------------
     # Shutdown
     # ------------------------------------------------------------------
 
@@ -395,7 +479,9 @@ class TelemetryReporter:
         """Build a v2 event and place it on the queue (non-blocking)."""
         event: dict[str, Any] = {
             "name": name,
-            "timestamp_ms": int(time.time() * 1000),
+            "timestamp": datetime.now(timezone.utc)
+            .isoformat(timespec="milliseconds")
+            .replace("+00:00", "Z"),
             "attributes": attributes,
         }
         try:
