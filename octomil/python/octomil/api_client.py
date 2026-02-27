@@ -77,6 +77,21 @@ class _ApiClient:
                 if res.status_code < 400:
                     return res
 
+                # Generic 404 with FastAPI's default body is likely a
+                # cold-start race (routes not yet registered).  Retry it.
+                if (
+                    res.status_code == 404
+                    and attempt < self.max_retries - 1
+                    and res.text.strip() in ('{"detail":"Not Found"}', "Not Found")
+                ):
+                    wait = self.backoff_base * (2**attempt)
+                    logger.warning(
+                        "Generic 404 on %s %s — likely cold start (attempt %d/%d, waiting %.1fs)",
+                        method, url, attempt + 1, self.max_retries, wait,
+                    )
+                    time.sleep(wait)
+                    continue
+
                 # Non-retryable client error -- fail immediately.
                 if res.status_code < 500 and res.status_code not in _RETRYABLE_STATUS_CODES:
                     raise OctomilClientError(res.text)
