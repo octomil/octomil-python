@@ -97,7 +97,7 @@ class Model:
 
         if reporter:
             try:
-                reporter.report_generation_started(
+                reporter.report_inference_started(
                     model_id=model_id,
                     version=version,
                     session_id=session_id,
@@ -111,7 +111,7 @@ class Model:
         except Exception:
             if reporter:
                 try:
-                    reporter.report_generation_failed(
+                    reporter.report_inference_failed(
                         session_id=session_id,
                         model_id=model_id,
                         version=version,
@@ -129,7 +129,7 @@ class Model:
                     if gen_elapsed_ms > 0
                     else 0.0
                 )
-                reporter.report_generation_completed(
+                reporter.report_inference_completed(
                     session_id=session_id,
                     model_id=model_id,
                     version=version,
@@ -173,9 +173,9 @@ class Model:
     ) -> AsyncIterator[GenerationChunk]:
         """Stream inference results as an async generator.
 
-        Reports ``generation_started`` before the first chunk,
-        ``chunk_produced`` for each chunk, ``generation_completed``
-        after the stream ends, and ``generation_failed`` on error.
+        Reports ``inference_started`` before the first chunk,
+        ``inference_chunk`` for each chunk, ``inference_completed``
+        after the stream ends, and ``inference_failed`` on error.
         """
         reporter = self._get_reporter()
         session_id = uuid.uuid4().hex
@@ -184,7 +184,7 @@ class Model:
 
         if reporter:
             try:
-                reporter.report_generation_started(
+                reporter.report_inference_started(
                     model_id=model_id,
                     version=version,
                     session_id=session_id,
@@ -209,7 +209,7 @@ class Model:
                             if first_chunk_time is not None and chunk_index == 0
                             else None
                         )
-                        reporter.report_chunk_produced(
+                        reporter.report_inference_chunk(
                             session_id=session_id,
                             model_id=model_id,
                             version=version,
@@ -224,7 +224,7 @@ class Model:
         except Exception:
             if reporter:
                 try:
-                    reporter.report_generation_failed(
+                    reporter.report_inference_failed(
                         session_id=session_id,
                         model_id=model_id,
                         version=version,
@@ -246,7 +246,7 @@ class Model:
                     if total_duration_ms > 0
                     else 0.0
                 )
-                reporter.report_generation_completed(
+                reporter.report_inference_completed(
                     session_id=session_id,
                     model_id=model_id,
                     version=version,

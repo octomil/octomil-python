@@ -284,7 +284,7 @@ class TestPredictExperimentMetrics:
             model.predict(_make_request())
 
         reporter.report_experiment_metric.assert_not_called()
-        reporter.report_generation_failed.assert_called_once()
+        reporter.report_inference_failed.assert_called_once()
 
 
 # ---------------------------------------------------------------------------
