@@ -302,6 +302,9 @@ class MLXBackend(InferenceBackend):
         self._kv_bits = kv_bits
         self._kv_group_size = kv_group_size
         self._kv_cache: KVCacheManager = KVCacheManager(max_cache_size_mb=cache_size_mb)
+        # MLX prompt_cache — created once, reused across calls.
+        # mlx_lm updates it in-place during generation.
+        self._prompt_cache: Any = None
 
     def load_model(self, model_name: str) -> None:
         import mlx_lm  # type: ignore[import-untyped]
@@ -350,6 +353,17 @@ class MLXBackend(InferenceBackend):
         except Exception:
             logger.debug("Warm-up failed (non-fatal)", exc_info=True)
         warmup_ms = (time.monotonic() - t0) * 1000
+
+        # Create a reusable prompt_cache for KV state persistence across calls.
+        # mlx_lm updates this in-place during generation, so subsequent calls
+        # with shared prompt prefixes skip recomputation.
+        try:
+            from mlx_lm.models.cache import make_prompt_cache  # type: ignore[import-untyped]
+
+            self._prompt_cache = make_prompt_cache(self._model)
+        except Exception:
+            logger.debug("Failed to create prompt_cache (non-fatal)", exc_info=True)
+
         logger.info("Model ready: %s (warm-up: %.0fms)", self._repo_id, warmup_ms)
 
     def _apply_chat_template(self, messages: list[dict[str, str]]) -> str:
@@ -379,6 +393,27 @@ class MLXBackend(InferenceBackend):
         stripped = text.strip()
         return stripped in self._stop_strings
 
+    def _template_prefix_length(self, messages: list[dict[str, str]]) -> int:
+        """Compute the token length of the chat template prefix before user content.
+
+        This is the number of tokens that are identical across all calls
+        with the same system prompt (or no system prompt).  Used to store
+        KV cache checkpoints that can be reused across different user messages.
+        """
+        # Build a minimal template with a placeholder to find where user content starts
+        prefix_messages = []
+        for msg in messages:
+            if msg.get("role") == "system":
+                prefix_messages.append(msg)
+            else:
+                break
+        # Encode template up to (but not including) user content
+        if prefix_messages:
+            prefix_text = self._apply_chat_template(prefix_messages + [{"role": "user", "content": ""}])
+        else:
+            prefix_text = self._apply_chat_template([{"role": "user", "content": ""}])
+        return len(self._tokenizer.encode(prefix_text))
+
     def generate(self, request: GenerationRequest) -> tuple[str, InferenceMetrics]:
         import mlx_lm  # type: ignore[import-untyped]
 
@@ -392,18 +427,13 @@ class MLXBackend(InferenceBackend):
         final_tps: float = 0.0
         cache_hit = False
 
-        # Check KV cache for a matching prefix
         extra_kwargs: dict[str, Any] = {}
-        if self._cache_enabled:
-            cached = self._kv_cache.get_cached_prefix(prompt_token_ids)
-            if cached is not None:
-                extra_kwargs["prompt_cache"] = cached.kv_state
-                cache_hit = True
-                logger.debug(
-                    "MLX cache hit: reusing %d/%d prompt tokens",
-                    cached.prefix_length,
-                    prompt_tokens,
-                )
+
+        # Reuse the persistent prompt_cache — mlx_lm detects matching
+        # prefix tokens and skips recomputation automatically.
+        if self._prompt_cache is not None:
+            extra_kwargs["prompt_cache"] = self._prompt_cache
+            cache_hit = True
 
         # Speculative decoding: use draft model when available
         if self._draft_model is not None:
@@ -426,13 +456,6 @@ class MLXBackend(InferenceBackend):
                 first_token_time = time.monotonic()
             final_tps = response.generation_tps
             if response.finish_reason or self._is_stop_token(response.text):
-                # Capture prompt_cache from the final response for storage
-                if (
-                    self._cache_enabled
-                    and hasattr(response, "prompt_cache")
-                    and response.prompt_cache is not None
-                ):
-                    self._kv_cache.store_prefix(prompt_token_ids, response.prompt_cache)
                 break
             tokens.append(response.text)
 
@@ -465,18 +488,17 @@ class MLXBackend(InferenceBackend):
         prompt_token_ids = self._tokenizer.encode(prompt)
         sampler = self._make_sampler(request.temperature, request.top_p)
 
-        # Check KV cache for a matching prefix
         extra_kwargs: dict[str, Any] = {}
-        if self._cache_enabled:
-            cached = self._kv_cache.get_cached_prefix(prompt_token_ids)
-            if cached is not None:
-                extra_kwargs["prompt_cache"] = cached.kv_state
+
+        # Reuse persistent prompt_cache
+        if self._prompt_cache is not None:
+            extra_kwargs["prompt_cache"] = self._prompt_cache
 
         # Speculative decoding: use draft model when available
         if self._draft_model is not None:
             extra_kwargs["draft_model"] = self._draft_model
 
-        # Quantized KV cache: 4-bit KV reduces memory bandwidth → faster attention
+        # Quantized KV cache
         if self._kv_bits is not None:
             extra_kwargs["kv_bits"] = self._kv_bits
             extra_kwargs["kv_group_size"] = self._kv_group_size
@@ -506,13 +528,6 @@ class MLXBackend(InferenceBackend):
             if response is None:
                 break
             if response.finish_reason or self._is_stop_token(response.text):
-                # Store prompt cache from the final response
-                if (
-                    self._cache_enabled
-                    and hasattr(response, "prompt_cache")
-                    and response.prompt_cache is not None
-                ):
-                    self._kv_cache.store_prefix(prompt_token_ids, response.prompt_cache)
                 yield GenerationChunk(
                     text="",
                     finish_reason="stop",
