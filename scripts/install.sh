@@ -243,6 +243,31 @@ setup_completions() {
 }
 
 # ---------------------------------------------------------------------------
+# Install Python SDK
+# ---------------------------------------------------------------------------
+
+install_python_sdk() {
+    # Find a working pip/pip3
+    PIP_CMD=""
+    if command -v pip3 >/dev/null 2>&1; then
+        PIP_CMD="pip3"
+    elif command -v pip >/dev/null 2>&1; then
+        PIP_CMD="pip"
+    fi
+
+    if [ -z "$PIP_CMD" ]; then
+        return
+    fi
+
+    info "Installing Python SDK..."
+    if $PIP_CMD install --quiet --upgrade octomil-sdk 2>/dev/null; then
+        info "Python SDK installed (import octomil)"
+    else
+        warn "Could not install Python SDK. Install manually: pip install octomil-sdk"
+    fi
+}
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
@@ -253,6 +278,7 @@ main() {
     download_and_install
     verify
     setup_completions
+    install_python_sdk
 
     echo ""
     info "Octomil ${VERSION} installed successfully."
