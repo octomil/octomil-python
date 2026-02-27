@@ -212,20 +212,21 @@ class TestDeployOllamaUri:
             quantization="Q4_K_M",
         )
 
-        mock_post_resp = MagicMock()
-        mock_post_resp.status_code = 200
-        mock_post_resp.json.return_value = {
+        mock_check = MagicMock(status_code=200, json=MagicMock(return_value={"name": "gemma"}))
+        mock_post_resp = MagicMock(status_code=200, json=MagicMock(return_value={
             "code": "OLL123",
             "expires_at": "2026-02-25T12:00:00Z",
-        }
+        }))
+        mock_poll_resp = MagicMock(status_code=200, json=MagicMock(return_value={"status": "done"}))
 
-        mock_poll_resp = MagicMock()
-        mock_poll_resp.status_code = 200
-        mock_poll_resp.json.return_value = {"status": "done"}
+        mock_client = MagicMock()
+        mock_client.request.side_effect = [mock_check, mock_post_resp, mock_poll_resp]
+        mock_client.__enter__ = MagicMock(return_value=mock_client)
+        mock_client.__exit__ = MagicMock(return_value=False)
 
         with (
-            patch("httpx.post", return_value=mock_post_resp),
-            patch("httpx.get", return_value=mock_poll_resp),
+            patch("httpx.Client", return_value=mock_client),
+            patch("octomil.discovery.scan_for_devices", return_value=[]),
             patch("time.sleep"),
         ):
             runner = CliRunner()

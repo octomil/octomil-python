@@ -159,7 +159,7 @@ class TestPredictStreamTelemetry:
             async for chunk in model.predict_stream(_make_request()):
                 collected.append(chunk)
 
-        asyncio.get_event_loop().run_until_complete(_run())
+        asyncio.run(_run())
 
         assert len(collected) == 3
 
@@ -197,7 +197,7 @@ class TestPredictStreamTelemetry:
                 pass
 
         with pytest.raises(RuntimeError, match="stream exploded"):
-            asyncio.get_event_loop().run_until_complete(_run())
+            asyncio.run(_run())
 
         reporter.report_generation_started.assert_called_once()
         reporter.report_generation_failed.assert_called_once()
@@ -236,7 +236,7 @@ class TestNoReporter:
             async for chunk in model.predict_stream(_make_request()):
                 collected.append(chunk)
 
-        asyncio.get_event_loop().run_until_complete(_run())
+        asyncio.run(_run())
         assert len(collected) == 1
 
 
@@ -279,7 +279,7 @@ class TestReporterExceptionSwallowed:
             async for chunk in model.predict_stream(_make_request()):
                 collected.append(chunk)
 
-        asyncio.get_event_loop().run_until_complete(_run())
+        asyncio.run(_run())
         assert len(collected) == 1
 
 

@@ -185,7 +185,12 @@ class TestDeployCommand:
     def test_deploy_phone(self, mock_open, monkeypatch):
         monkeypatch.setenv("OCTOMIL_API_KEY", "test-key")
 
-        # Mock httpx for pairing session creation + polling
+        # Mock the model registry check (returns 200 = model exists)
+        mock_check_resp = MagicMock()
+        mock_check_resp.status_code = 200
+        mock_check_resp.json.return_value = {"name": "gemma-1b"}
+
+        # Mock pairing session creation
         mock_post_resp = MagicMock()
         mock_post_resp.status_code = 200
         mock_post_resp.json.return_value = {
@@ -197,15 +202,27 @@ class TestDeployCommand:
         mock_poll_resp.status_code = 200
         mock_poll_resp.json.return_value = {"status": "done"}
 
+        # http_request uses httpx.Client().request(), not httpx.post/get
+        mock_client_instance = MagicMock()
+        mock_client_instance.request.side_effect = [
+            mock_check_resp,
+            mock_post_resp,
+            mock_poll_resp,
+        ]
+        mock_client_instance.__enter__ = MagicMock(
+            return_value=mock_client_instance
+        )
+        mock_client_instance.__exit__ = MagicMock(return_value=False)
+
         with (
-            patch("httpx.post", return_value=mock_post_resp),
-            patch("httpx.get", return_value=mock_poll_resp),
+            patch("httpx.Client", return_value=mock_client_instance),
+            patch("octomil.discovery.scan_for_devices", return_value=[]),
             patch("time.sleep"),
         ):
             runner = CliRunner()
             result = runner.invoke(main, ["deploy", "gemma-1b", "--phone"])
 
-        assert result.exit_code == 0
+        assert result.exit_code == 0, f"CLI failed: {result.output}"
         assert "ABC123" in result.output
         mock_open.assert_called_once()
         call_url = mock_open.call_args[0][0]
