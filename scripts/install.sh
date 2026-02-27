@@ -270,35 +270,39 @@ setup_completions() {
 # Install Python SDK
 # ---------------------------------------------------------------------------
 
-install_python_sdk() {
-    # Find a working pip/pip3
-    PIP_CMD=""
-    if command -v pip3 >/dev/null 2>&1; then
-        PIP_CMD="pip3"
-    elif command -v pip >/dev/null 2>&1; then
-        PIP_CMD="pip"
-    fi
-
-    if [ -z "$PIP_CMD" ]; then
+detect_or_install_ollama() {
+    # Check if ollama is already installed
+    if command -v ollama >/dev/null 2>&1; then
+        OLLAMA_VERSION=$(ollama --version 2>&1 || true)
+        info "Ollama detected: ${OLLAMA_VERSION}"
         return
     fi
 
-    # On Apple Silicon, install with mlx backend for on-device inference.
-    SDK_EXTRA="octomil-sdk"
-    if [ "$PLATFORM" = "darwin-arm64" ]; then
-        SDK_EXTRA="octomil-sdk[mlx]"
-    fi
+    info "Ollama not found — recommended for on-device inference."
+    echo ""
+    echo "  Install Ollama (no pip needed):"
+    echo ""
 
-    info "Installing Python SDK ($SDK_EXTRA)..."
-    # Try normal install first, then --break-system-packages for
-    # Homebrew/externally-managed Python (PEP 668).
-    if $PIP_CMD install --quiet --upgrade "$SDK_EXTRA" 2>/dev/null; then
-        info "Python SDK installed (import octomil)"
-    elif $PIP_CMD install --quiet --upgrade --break-system-packages "$SDK_EXTRA" 2>/dev/null; then
-        info "Python SDK installed (import octomil)"
-    else
-        warn "Could not install Python SDK. Install manually: pip install $SDK_EXTRA"
-    fi
+    OS_NAME="$(uname -s)"
+    case "$OS_NAME" in
+        Darwin)
+            echo "    brew install ollama"
+            echo ""
+            echo "  Or download from: https://ollama.com/download/mac"
+            ;;
+        Linux)
+            echo "    curl -fsSL https://ollama.com/install.sh | sh"
+            ;;
+        *)
+            echo "    Visit https://ollama.com/download"
+            ;;
+    esac
+
+    echo ""
+    echo "  After installing, start the server:"
+    echo ""
+    echo "    ollama serve"
+    echo ""
 }
 
 # ---------------------------------------------------------------------------
@@ -312,7 +316,7 @@ main() {
     download_and_install
     verify
     setup_completions
-    install_python_sdk
+    detect_or_install_ollama
 
     echo ""
     info "Octomil ${VERSION} installed successfully."

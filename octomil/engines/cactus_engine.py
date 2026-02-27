@@ -114,8 +114,12 @@ class CactusEngine(EnginePlugin):
         """
         import os
 
+        from ..models.catalog import _resolve_alias
+
+        canonical = _resolve_alias(model_name)
+
         # Catalog models supported by llama.cpp are also Cactus-compatible
-        if model_name in _CACTUS_CATALOG:
+        if canonical in _CACTUS_CATALOG:
             return True
 
         # Local directory with Cactus weight format
