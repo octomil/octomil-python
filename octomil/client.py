@@ -446,13 +446,17 @@ class Client:
         Returns:
             A ``Prediction`` — a ``str`` with a ``.metrics`` attribute.
         """
+        from .serve import GenerationRequest
+
         model = self._get_model(name, version=version, engine=engine)
-        return model.predict(
-            messages,
+        req = GenerationRequest(
+            model=name,
+            messages=messages,
             max_tokens=max_tokens,
             temperature=temperature,
             top_p=top_p,
         )
+        return model.predict(req)
 
     async def predict_stream(
         self,
@@ -481,13 +485,17 @@ class Client:
         Yields:
             ``GenerationChunk`` objects with incremental text.
         """
+        from .serve import GenerationRequest
+
         model = self._get_model(name, version=version, engine=engine)
-        async for chunk in model.predict_stream(
-            messages,
+        req = GenerationRequest(
+            model=name,
+            messages=messages,
             max_tokens=max_tokens,
             temperature=temperature,
             top_p=top_p,
-        ):
+        )
+        async for chunk in model.predict_stream(req):
             yield chunk
 
     # ------------------------------------------------------------------
