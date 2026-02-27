@@ -70,6 +70,7 @@ _ENGINE_ALIASES: dict[str, str] = {
     "whisper.cpp": "whisper.cpp",
     "whisper": "whisper.cpp",
     "whispercpp": "whisper.cpp",
+    "ollama": "ollama",
     "echo": "echo",
 }
 
@@ -83,6 +84,7 @@ _ENGINE_PRIORITY = [
     "executorch",
     "onnxruntime",
     "whisper.cpp",
+    "ollama",
     "echo",
 ]
 
@@ -118,6 +120,11 @@ def _pick_engine(
     for engine in _ENGINE_PRIORITY:
         if engine not in normalized_available:
             continue
+
+        # Ollama support is derived from catalog tags, not entry.engines
+        if engine == "ollama" and variant.ollama:
+            return engine
+
         if engine not in entry.engines:
             continue
 
@@ -233,6 +240,9 @@ def resolve(
         filename = variant.gguf.filename
     elif resolved_engine == "onnxruntime" and variant.ort:
         hf_repo = variant.ort
+    elif resolved_engine == "ollama" and variant.ollama:
+        # For Ollama, hf_repo stores the ollama tag
+        hf_repo = variant.ollama
     elif variant.gguf:
         # Fallback to GGUF for engines that can consume GGUF (mnn, etc.)
         hf_repo = variant.gguf.repo
