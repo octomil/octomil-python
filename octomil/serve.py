@@ -45,6 +45,46 @@ logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
+# Internal helpers
+# ---------------------------------------------------------------------------
+
+import contextlib
+import warnings
+
+
+@contextlib.contextmanager
+def _suppress_hf_noise():
+    """Suppress HuggingFace Hub progress bars and noisy transformer warnings.
+
+    Restores the original state on exit so user code is unaffected.
+    """
+    prev = os.environ.get("HF_HUB_DISABLE_PROGRESS_BARS")
+    os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] = "1"
+
+    # Try to disable at the library level too (huggingface_hub >= 0.19)
+    hf_hub_disable = None
+    try:
+        from huggingface_hub.utils import disable_progress_bars, enable_progress_bars
+
+        disable_progress_bars()
+        hf_hub_disable = enable_progress_bars
+    except ImportError:
+        pass
+
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", message=".*rope_parameters.*")
+        try:
+            yield
+        finally:
+            if prev is None:
+                os.environ.pop("HF_HUB_DISABLE_PROGRESS_BARS", None)
+            else:
+                os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] = prev
+            if hf_hub_disable is not None:
+                hf_hub_disable()
+
+
+# ---------------------------------------------------------------------------
 # Pydantic models for OpenAI-compatible API
 # ---------------------------------------------------------------------------
 
@@ -235,7 +275,8 @@ class MLXBackend(InferenceBackend):
         self._repo_id = resolve_model_name(model_name, "mlx")
 
         logger.info("Loading %s (%s) with mlx-lm...", model_name, self._repo_id)
-        self._model, self._tokenizer = mlx_lm.load(self._repo_id)
+        with _suppress_hf_noise():
+            self._model, self._tokenizer = mlx_lm.load(self._repo_id)
         logger.info("Model loaded: %s", self._repo_id)
 
         # Collect special token strings for output filtering

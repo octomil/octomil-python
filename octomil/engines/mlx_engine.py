@@ -86,10 +86,11 @@ class MLXEngine(EnginePlugin):
         try:
             import mlx_lm  # type: ignore[import-untyped]
 
-            from ..serve import resolve_model_name
+            from ..serve import _suppress_hf_noise, resolve_model_name
 
             repo_id = resolve_model_name(model_name, "mlx")
-            model, tokenizer = mlx_lm.load(repo_id)
+            with _suppress_hf_noise():
+                model, tokenizer = mlx_lm.load(repo_id)
 
             # Build a simple prompt
             prompt = "Hello, how are you?"
