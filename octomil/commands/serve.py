@@ -393,7 +393,13 @@ def _serve_multi_model(
 
 
 def _prompt_engine_install() -> bool:
-    """Prompt user to install an inference engine. Recommends Ollama first.
+    """Prompt user to install an inference engine. Recommends max performance first.
+
+    Platform-specific recommendations:
+    - macOS Apple Silicon: MLX (fastest) → llama.cpp → Ollama fallback
+    - macOS Intel: llama.cpp → ONNX Runtime → Ollama fallback
+    - Linux: llama.cpp → ONNX Runtime → Ollama fallback
+    - Windows: llama.cpp → Ollama fallback
 
     Returns True if an engine was installed and is ready.
     """
@@ -415,23 +421,60 @@ def _prompt_engine_install() -> bool:
     # Check if Ollama binary is on PATH but not running
     ollama_installed = shutil.which("ollama") is not None
 
+    # Build platform-specific recommendation list (best performance first)
+    recommendations: list[tuple[str, str]] = []  # (label, install_cmd)
+    if is_apple_silicon:
+        recommendations.append(
+            ("MLX — fastest on Apple Silicon", "pip install octomil-sdk[mlx]")
+        )
+        recommendations.append(
+            ("llama.cpp — good alternative", "pip install llama-cpp-python")
+        )
+    elif system == "Darwin":
+        recommendations.append(
+            ("llama.cpp", "pip install llama-cpp-python")
+        )
+        recommendations.append(
+            ("ONNX Runtime", "pip install onnxruntime")
+        )
+    elif system == "Linux":
+        recommendations.append(
+            ("llama.cpp", "pip install llama-cpp-python")
+        )
+        recommendations.append(
+            ("ONNX Runtime", "pip install onnxruntime")
+        )
+    else:
+        recommendations.append(
+            ("llama.cpp", "pip install llama-cpp-python")
+        )
+
+    # Ollama always last — zero-pip fallback
+    if system == "Darwin":
+        recommendations.append(
+            ("Ollama — no pip needed", "brew install ollama")
+        )
+    elif system == "Linux":
+        recommendations.append(
+            ("Ollama — no pip needed", "curl -fsSL https://ollama.com/install.sh | sh")
+        )
+    else:
+        recommendations.append(
+            ("Ollama — no pip needed", "Visit https://ollama.com/download")
+        )
+
     if not sys.stdin.isatty():
-        # Non-interactive: print instructions and return
+        # Non-interactive: print all options
         if ollama_installed:
             click.echo("  Ollama is installed but not running.\n")
             click.echo("    ollama serve\n")
-        else:
-            click.echo("  Install Ollama (no pip needed):\n")
-            if system == "Darwin":
-                click.echo("    brew install ollama\n")
-            else:
-                click.echo("    curl -fsSL https://ollama.com/install.sh | sh\n")
-        if is_apple_silicon:
-            click.echo("  For best performance on Apple Silicon:\n")
-            click.echo("    pip install octomil-sdk[mlx]\n")
+        click.echo("  Install an inference engine:\n")
+        for label, cmd in recommendations:
+            click.echo(f"    {cmd:<45s} # {label}")
+        click.echo()
         return False
 
-    # Interactive: offer choices
+    # Interactive: if Ollama is installed but not running, offer to start it
     if ollama_installed:
         click.echo("  Ollama is installed but not running.\n")
         if click.confirm("  Start Ollama now?", default=True):
@@ -460,19 +503,43 @@ def _prompt_engine_install() -> bool:
             click.echo("  Start manually: ollama serve\n")
         return False
 
-    # Ollama not installed — recommend it
-    click.echo("  Recommended: Ollama (no pip needed, works everywhere)\n")
-    if system == "Darwin":
-        click.echo("    brew install ollama\n")
-    else:
-        click.echo("    curl -fsSL https://ollama.com/install.sh | sh\n")
+    # Interactive: show recommendations (best performance first)
+    top_label, top_cmd = recommendations[0]
+    click.echo(f"  Recommended: {top_label}\n")
 
-    if is_apple_silicon:
-        click.echo("  For best performance on Apple Silicon:")
-        click.echo("    pip install octomil-sdk[mlx]\n")
+    if click.confirm(f"  Install now? ({top_cmd})", default=True):
+        click.echo()
+        # Parse pip command
+        if top_cmd.startswith("pip install"):
+            pkg = top_cmd.split("pip install ", 1)[1]
+            if getattr(sys, "frozen", False):
+                pip_cmd = ["pip", "install", pkg]
+            else:
+                pip_cmd = [sys.executable, "-m", "pip", "install", pkg]
+            try:
+                subprocess.check_call(pip_cmd)
+                click.echo(
+                    click.style(f"\n  {pkg} installed successfully.\n", fg="green")
+                )
+                try:
+                    reporter = _get_telemetry_reporter()
+                    if reporter:
+                        reporter.report_funnel_event("cli_install", success=True)
+                except Exception:
+                    pass
+                return True
+            except subprocess.CalledProcessError:
+                click.echo(
+                    click.style(f"\n  Failed to install {pkg}.", fg="red"),
+                    err=True,
+                )
+        else:
+            click.echo(f"  Run: {top_cmd}\n")
     else:
-        click.echo("  Alternative (pip):")
-        click.echo("    pip install llama-cpp-python\n")
+        click.echo("\n  Other options:\n")
+        for label, cmd in recommendations:
+            click.echo(f"    {cmd:<45s} # {label}")
+        click.echo()
 
     return False
 
