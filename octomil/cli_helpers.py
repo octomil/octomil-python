@@ -6,11 +6,85 @@ to share common utilities (auth, client creation, model completion, etc.).
 
 from __future__ import annotations
 
+import logging
 import os
 import sys
+import time
 from typing import Any, Optional
 
 import click
+import httpx
+
+_logger = logging.getLogger(__name__)
+
+# Status codes safe to retry (transient server errors + rate limiting).
+_RETRYABLE_STATUS_CODES = {502, 503, 504, 429}
+
+
+def http_request(
+    method: str,
+    url: str,
+    *,
+    max_retries: int = 3,
+    backoff_base: float = 0.5,
+    timeout: float = 15.0,
+    headers: Optional[dict[str, str]] = None,
+    **kwargs: Any,
+) -> httpx.Response:
+    """HTTP request with automatic retry on transient failures.
+
+    Retries on connection errors, timeouts, 502/503/504/429, and generic
+    404s (FastAPI cold-start artifact).  Use this instead of raw
+    ``httpx.get()`` / ``httpx.post()`` in CLI commands.
+    """
+    last_exc: Optional[Exception] = None
+    for attempt in range(max_retries):
+        try:
+            with httpx.Client(timeout=timeout) as client:
+                resp = client.request(method, url, headers=headers, **kwargs)
+
+            if resp.status_code < 400:
+                return resp
+
+            # Generic 404 from cold start — retry.
+            if (
+                resp.status_code == 404
+                and attempt < max_retries - 1
+                and resp.text.strip() in ('{"detail":"Not Found"}', "Not Found")
+            ):
+                wait = backoff_base * (2 ** attempt)
+                _logger.debug("Generic 404 on %s %s, retrying in %.1fs", method, url, wait)
+                time.sleep(wait)
+                continue
+
+            # Retryable server error — backoff and retry.
+            if resp.status_code in _RETRYABLE_STATUS_CODES and attempt < max_retries - 1:
+                wait = backoff_base * (2 ** attempt)
+                _logger.debug("HTTP %d on %s %s, retrying in %.1fs", resp.status_code, method, url, wait)
+                time.sleep(wait)
+                continue
+
+            return resp  # Non-retryable — let caller handle
+
+        except (httpx.ConnectError, httpx.TimeoutException, httpx.RemoteProtocolError) as exc:
+            last_exc = exc
+            if attempt < max_retries - 1:
+                wait = backoff_base * (2 ** attempt)
+                click.echo(
+                    f"  Connection failed, retrying ({attempt + 1}/{max_retries})...",
+                    err=True,
+                )
+                time.sleep(wait)
+            else:
+                click.echo(
+                    f"Error: failed to connect to Octomil after {max_retries} attempts: {exc}",
+                    err=True,
+                )
+                sys.exit(1)
+
+    # Should not reach here.
+    click.echo(f"Error: request failed after {max_retries} attempts", err=True)
+    sys.exit(1)
 
 
 # ---------------------------------------------------------------------------
