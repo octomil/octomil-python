@@ -51,6 +51,16 @@ class EnginePlugin(abc.ABC):
         """Default priority when benchmark results are tied. Lower = higher priority."""
         return 100
 
+    @property
+    def manages_own_download(self) -> bool:
+        """Whether create_backend() handles model downloading internally.
+
+        Engines that load directly from HuggingFace (mlx-lm) or manage their
+        own model cache (ollama) should return True so that Client.load_model()
+        skips the redundant registry pull step.
+        """
+        return False
+
     @abc.abstractmethod
     def detect(self) -> bool:
         """Check if this engine is available on the current system.

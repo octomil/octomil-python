@@ -74,6 +74,10 @@ class OllamaEngine(EnginePlugin):
     def priority(self) -> int:
         return 50  # After all native engines, before echo (999)
 
+    @property
+    def manages_own_download(self) -> bool:
+        return True  # Ollama pulls models via its own API
+
     def detect(self) -> bool:
         return _is_ollama_reachable(self._base_url)
 

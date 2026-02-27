@@ -54,6 +54,10 @@ class MLXEngine(EnginePlugin):
     def priority(self) -> int:
         return 10  # Highest priority on Apple Silicon
 
+    @property
+    def manages_own_download(self) -> bool:
+        return True  # mlx_lm.load() handles HuggingFace download + caching
+
     def detect(self) -> bool:
         if platform.system() != "Darwin" or platform.machine() != "arm64":
             return False
