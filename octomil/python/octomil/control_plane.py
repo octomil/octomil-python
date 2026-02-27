@@ -1,8 +1,14 @@
 from __future__ import annotations
 
-from typing import Any, List, Optional
+import logging
+from typing import TYPE_CHECKING, Any, List, Optional
 
 from .api_client import _ApiClient
+
+if TYPE_CHECKING:
+    from octomil.telemetry import TelemetryReporter
+
+logger = logging.getLogger(__name__)
 
 
 class RolloutsAPI:
@@ -178,9 +184,27 @@ class FederatedAnalyticsAPI:
 class ExperimentsAPI:
     """Control-plane experiment management and analytics API."""
 
-    def __init__(self, api: _ApiClient, org_id: str):
+    def __init__(
+        self,
+        api: _ApiClient,
+        org_id: str,
+        reporter: Optional["TelemetryReporter"] = None,
+    ):
         self.api = api
         self.org_id = org_id
+        self._reporter_override = reporter
+
+    @property
+    def _reporter(self) -> Optional["TelemetryReporter"]:
+        """Return the reporter to use, falling back to the global one."""
+        if self._reporter_override is not None:
+            return self._reporter_override
+        try:
+            from octomil import get_reporter
+
+            return get_reporter()
+        except Exception:
+            return None
 
     def create(
         self,
@@ -220,7 +244,22 @@ class ExperimentsAPI:
                 },
             ],
         }
-        return self.api.post("/experiments", payload)
+        result = self.api.post("/experiments", payload)
+
+        # Emit experiment-assigned telemetry for each variant
+        if self._reporter:
+            experiment_id = result.get("id", "")
+            for variant in payload["variants"]:
+                try:
+                    self._reporter.report_experiment_assigned(
+                        model_id=model_id,
+                        experiment_id=experiment_id,
+                        variant=variant["name"],
+                    )
+                except Exception:
+                    logger.debug("Telemetry reporting failed for experiment.assigned")
+
+        return result
 
     def list(
         self,
