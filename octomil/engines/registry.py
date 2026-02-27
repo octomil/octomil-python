@@ -75,13 +75,21 @@ class EngineRegistry:
         """Detect which engines are available on this system.
 
         If model_name is provided, also checks model support.
+        Resolves model name aliases before checking engine support.
         """
+        # Resolve alias once, pass canonical name to all engines
+        canonical_name = model_name
+        if model_name:
+            from ..models.catalog import _resolve_alias
+
+            canonical_name = _resolve_alias(model_name)
+
         results: list[DetectionResult] = []
         for engine in self._engines:
             try:
                 available = engine.detect()
-                if available and model_name:
-                    available = engine.supports_model(model_name)
+                if available and canonical_name:
+                    available = engine.supports_model(canonical_name)
                 info = engine.detect_info() if available else ""
                 results.append(
                     DetectionResult(engine=engine, available=available, info=info)
@@ -218,6 +226,7 @@ def _auto_register(registry: EngineRegistry) -> None:
     from .mlc_engine import MLCEngine
     from .mlx_engine import MLXEngine
     from .mnn_engine import MNNEngine
+    from .ollama_engine import OllamaEngine
     from .ort_engine import ONNXRuntimeEngine
     from .samsung_one_engine import SamsungOneEngine
     from .whisper_engine import WhisperCppEngine
@@ -231,4 +240,5 @@ def _auto_register(registry: EngineRegistry) -> None:
     registry.register(ExecuTorchEngine())
     registry.register(ONNXRuntimeEngine())
     registry.register(WhisperCppEngine())
+    registry.register(OllamaEngine())  # Zero-pip fallback, before echo
     registry.register(EchoEngine())

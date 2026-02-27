@@ -87,8 +87,11 @@ class MNNEngine(EnginePlugin):
         return ", ".join(parts) if parts else ""
 
     def supports_model(self, model_name: str) -> bool:
+        from ..models.catalog import _resolve_alias
+
+        canonical = _resolve_alias(model_name)
         return (
-            model_name in _MNN_CATALOG
+            canonical in _MNN_CATALOG
             or model_name.endswith(".gguf")
             or model_name.endswith(".mnn")
             or "/" in model_name

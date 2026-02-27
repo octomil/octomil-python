@@ -30,6 +30,7 @@ hidden_imports = [
     "octomil.engines.executorch_engine",
     "octomil.engines.ort_engine",
     "octomil.engines.whisper_engine",
+    "octomil.engines.ollama_engine",
     "octomil.engines.echo_engine",
     "octomil.engines.cactus_engine",
     "octomil.engines.samsung_one_engine",

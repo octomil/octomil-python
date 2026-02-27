@@ -150,12 +150,15 @@ class MLCEngine(EnginePlugin):
         """Check if this engine can serve the given model.
 
         Supports:
-        - Catalog names (gemma-2b, phi-mini, etc.)
+        - Catalog names with alias resolution (gemma-2b, phi-4-mini, etc.)
         - HuggingFace repo IDs (org/model-MLC)
         - Anything ending in -MLC or containing mlc-ai/
         """
+        from ..models.catalog import _resolve_alias
+
+        canonical = _resolve_alias(model_name)
         return (
-            model_name in _MLC_CATALOG
+            canonical in _MLC_CATALOG
             or model_name.endswith("-MLC")
             or "mlc-ai/" in model_name
             or "/" in model_name
