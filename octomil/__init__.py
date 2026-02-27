@@ -55,6 +55,11 @@ from .routing import (
     RoutingDecision,
     assign_tiers,
 )
+from .streaming import (
+    StreamToken,
+    stream_inference,
+    stream_inference_async,
+)
 
 # The inner SDK package has heavy optional deps (torch, cryptography, etc.)
 # that are not bundled in the standalone CLI binary (PyInstaller).
@@ -273,4 +278,7 @@ __all__ = [
     "SubTask",
     "SubTaskResult",
     "assign_tiers",
+    "StreamToken",
+    "stream_inference",
+    "stream_inference_async",
 ]
