@@ -20,8 +20,6 @@ setup(
         "pyarrow>=10.0.0",
         "qrcode[pil]>=7.0",
         "huggingface_hub>=0.20.0",
-        "mlx-lm>=0.10.0; sys_platform == 'darwin' and platform_machine == 'arm64'",
-        "llama-cpp-python>=0.2.0; sys_platform != 'darwin' or platform_machine != 'arm64'",
     ],
     extras_require={
         "serve": [
