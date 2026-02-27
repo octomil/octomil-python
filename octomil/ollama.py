@@ -157,6 +157,57 @@ def resolve_gguf_path(model: OllamaModel) -> Optional[str]:
     return None
 
 
+def pull_ollama_model(
+    tag: str,
+    base_url: str = OLLAMA_BASE_URL,
+    stream_progress: bool = True,
+) -> None:
+    """Pull (download) an Ollama model by tag.
+
+    Streams progress to stderr when ``stream_progress`` is True.
+    Raises ``RuntimeError`` on failure.
+    """
+    import json
+    import sys
+
+    try:
+        with httpx.stream(
+            "POST",
+            f"{base_url}/api/pull",
+            json={"name": tag, "stream": True},
+            timeout=httpx.Timeout(connect=10.0, read=600.0, write=10.0, pool=10.0),
+        ) as resp:
+            resp.raise_for_status()
+            last_status = ""
+            for line in resp.iter_lines():
+                if not line:
+                    continue
+                try:
+                    data = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                status = data.get("status", "")
+                if stream_progress and status != last_status:
+                    sys.stderr.write(f"\r  {status}")
+                    sys.stderr.flush()
+                    last_status = status
+                # Show download progress
+                total = data.get("total", 0)
+                completed = data.get("completed", 0)
+                if stream_progress and total > 0:
+                    pct = completed / total * 100
+                    sys.stderr.write(f"\r  {status} {pct:.0f}%")
+                    sys.stderr.flush()
+                if data.get("error"):
+                    raise RuntimeError(f"Ollama pull failed: {data['error']}")
+            if stream_progress:
+                sys.stderr.write("\n")
+    except httpx.ConnectError:
+        raise RuntimeError(
+            "Cannot connect to Ollama. Is it running? Start with: ollama serve"
+        )
+
+
 def map_quantization(ollama_quant: str) -> str:
     """Map an ollama quantization name to the Octomil equivalent."""
     return QUANT_MAP.get(ollama_quant, ollama_quant)
