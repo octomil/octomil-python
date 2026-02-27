@@ -4,6 +4,17 @@
 
 - Added `DeviceAuthClient` runtime auth helper for device token bootstrap, refresh, and revoke flows.
 - Added optional `auth` extra with `keyring` secure storage dependency.
+## 2.6.0 (2026-02-27)
+
+### Features
+
+- Ollama fallback engine + alias resolution fix (#165)
+
+### Fixes
+
+- auto-install mlx backend on Apple Silicon, suppress cold-start logs (#164)
+- sync test_cli.py and sonar-project.properties to 2.5.3 (#167)
+
 ## 2.4.0 (2026-02-26)
 
 ### Features
