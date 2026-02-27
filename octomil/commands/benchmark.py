@@ -7,7 +7,7 @@ from typing import Any
 
 import click
 
-from octomil.cli_helpers import _complete_model_name, _get_api_key
+from octomil.cli_helpers import _complete_model_name, _get_api_key, http_request
 
 
 # ---------------------------------------------------------------------------
@@ -361,8 +361,6 @@ def benchmark(
     if not local:
         click.echo("\nSharing anonymous benchmark data...")
         try:
-            import httpx
-
             gpu_cores = _get_gpu_core_count()
             thermal = _get_thermal_state()
             battery = _get_battery_level()
@@ -403,7 +401,8 @@ def benchmark(
             api_key = _get_api_key()
             if api_key:
                 headers["Authorization"] = f"Bearer {api_key}"
-            resp = httpx.post(
+            resp = http_request(
+                "POST",
                 f"{api_base}/benchmarks",
                 json=payload,
                 headers=headers,
