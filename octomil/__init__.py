@@ -19,7 +19,7 @@ from typing import Optional as _Optional
 
 from .telemetry import TelemetryReporter
 
-from .client import Client
+from .client import OctomilClient
 from .model import Model, ModelMetadata, Prediction
 from .enterprise import (
     COMPLIANCE_PRESETS,
@@ -226,7 +226,7 @@ def get_reporter() -> _Optional[TelemetryReporter]:
 
 __all__ = [
     "__version__",
-    "Client",
+    "OctomilClient",
     "Model",
     "ModelMetadata",
     "Prediction",
