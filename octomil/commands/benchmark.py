@@ -191,6 +191,45 @@ def _benchmark_all_engines(model: str, iterations: int, max_tokens: int) -> None
 
 
 # ---------------------------------------------------------------------------
+# Hardware profiling helper
+# ---------------------------------------------------------------------------
+
+
+def _run_profile(model: str, engine_override: str | None) -> None:
+    """Run hardware profiling and print accelerator stats."""
+    from octomil.engines import get_registry
+
+    registry = get_registry()
+    detections = registry.detect_all(model)
+    available = [d for d in detections if d.available and d.engine.name != "echo"]
+
+    if engine_override:
+        available = [d for d in available if d.engine.name == engine_override]
+
+    for d in available:
+        result = d.engine.profile(model)
+        if result is None:
+            continue
+
+        device = result.metadata.get("device", "")
+        device_str = f" ({device})" if device and device != "unknown" else ""
+        active_mem = result.metadata.get("active_memory_mb")
+
+        click.echo("\n  Hardware Profile:")
+        click.echo(
+            f"    Accelerator:   {result.accelerator_used}{device_str}"
+        )
+        click.echo(f"    Peak memory:   {result.memory_peak_mb:,.1f} MB")
+        if active_mem is not None:
+            click.echo(f"    Active memory: {active_mem:,.1f} MB")
+        click.echo(
+            f"    Ops on GPU:    {result.ops_on_accelerator}/{result.ops_total} "
+            f"({result.utilization_pct:.1f}%)"
+        )
+        return  # Only show profile for the first engine that supports it
+
+
+# ---------------------------------------------------------------------------
 # benchmark command
 # ---------------------------------------------------------------------------
 
@@ -215,6 +254,11 @@ def _benchmark_all_engines(model: str, iterations: int, max_tokens: int) -> None
     is_flag=True,
     help="Benchmark ALL available engines and compare (ignores --engine).",
 )
+@click.option(
+    "--profile/--no-profile",
+    default=False,
+    help="Run hardware utilization profiling after benchmark.",
+)
 def benchmark(
     model: str,
     local: bool,
@@ -222,6 +266,7 @@ def benchmark(
     max_tokens: int,
     engine: str | None,
     all_engines: bool,
+    profile: bool,
 ) -> None:
     """Run inference benchmarks on a model.
 
@@ -357,6 +402,9 @@ def benchmark(
     click.echo(
         f"  Peak memory:      {peak_mem / 1024 / 1024:.0f} MB (+{peak_mem_delta / 1024 / 1024:.0f} MB)"
     )
+
+    if profile:
+        _run_profile(model, engine)
 
     if not local:
         click.echo("\nSharing anonymous benchmark data...")

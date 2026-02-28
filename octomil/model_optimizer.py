@@ -65,7 +65,7 @@ class ModelRecommendation:
 # ---------------------------------------------------------------------------
 
 # Bytes per parameter for each quantization level
-_BYTES_PER_PARAM: dict[str, float] = {
+BYTES_PER_PARAM: dict[str, float] = {
     "Q2_K": 0.3125,
     "Q3_K_S": 0.375,
     "Q3_K_M": 0.4375,
@@ -162,7 +162,7 @@ def _kv_cache_gb(model_size_b: float, context_length: int) -> float:
 
 def _model_memory_gb(model_size_b: float, quant: str) -> float:
     """Raw model weight memory in GB (before KV cache)."""
-    return model_size_b * _BYTES_PER_PARAM[quant]
+    return model_size_b * BYTES_PER_PARAM[quant]
 
 
 def _total_memory_gb(model_size_b: float, quant: str, context_length: int) -> float:
@@ -170,6 +170,32 @@ def _total_memory_gb(model_size_b: float, quant: str, context_length: int) -> fl
     return _model_memory_gb(model_size_b, quant) + _kv_cache_gb(
         model_size_b, context_length
     )
+
+
+def estimate_memory_mb(
+    model_size_b: float,
+    quantization: str,
+    context_length: int = 4096,
+) -> float:
+    """Estimate total memory usage in MB for a model configuration.
+
+    Includes model weights and KV cache. Useful for checking whether a
+    model will fit on a given device before downloading.
+
+    Parameters
+    ----------
+    model_size_b:
+        Model size in billions of parameters.
+    quantization:
+        Quantization format (e.g. "Q4_K_M", "F16").
+    context_length:
+        Maximum context length in tokens.
+
+    Returns
+    -------
+    Estimated total memory in megabytes.
+    """
+    return _total_memory_gb(model_size_b, quantization, context_length) * 1024
 
 
 # ---------------------------------------------------------------------------
