@@ -1,6 +1,6 @@
 <p align="center">
   <strong>Octomil</strong><br>
-  On-device AI inference. Deploy, route, observe.
+  On-device AI inference in one command.
 </p>
 
 <p align="center">

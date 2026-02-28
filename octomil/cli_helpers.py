@@ -579,13 +579,13 @@ def _auto_optimize(model_tag: str, context_length: int = 4096) -> str | None:
 # ---------------------------------------------------------------------------
 
 WELCOME_MESSAGE = """\
-Octomil — on-device AI for consumer apps
+Octomil — on-device AI inference
 
   Get started:
-    1. octomil login                         authenticate
-    2. octomil serve phi-4-mini              local inference server
-    3. octomil benchmark phi-4-mini          measure device performance
-    4. octomil deploy phi-4-mini --phone     deploy to device fleet
+    1. octomil serve phi-4-mini              run a model locally
+    2. octomil benchmark phi-4-mini          measure performance
+    3. octomil deploy phi-4-mini --phone     ship to devices
+    4. octomil login                         unlock fleet features
 
   Useful commands:
     octomil models                           list available models
