@@ -851,7 +851,7 @@ class RoundManagementTests(unittest.TestCase):
         self.assertEqual(status["round_id"], "r1")
         self.assertEqual(status["participants"], 5)
 
-    def test_participate_in_round(self):
+    def test_join_round(self):
         try:
             import torch  # noqa: F401
         except ImportError:
@@ -878,7 +878,7 @@ class RoundManagementTests(unittest.TestCase):
             updated = {k: v + 0.1 for k, v in base_state.items()}
             return updated, 100, {"loss": 0.5}
 
-        result = client.participate_in_round("r1", local_train_fn)
+        result = client.join_round("r1", local_train_fn)
         self.assertEqual(result["status"], "accepted")
 
         # Verify round_id was included in the upload
@@ -891,7 +891,7 @@ class RoundManagementTests(unittest.TestCase):
         self.assertEqual(payload["update_format"], "delta")
         self.assertEqual(payload["sample_count"], 100)
 
-    def test_participate_in_round_with_clip_norm(self):
+    def test_join_round_with_clip_norm(self):
         try:
             import torch  # noqa: F401
         except ImportError:
@@ -919,10 +919,10 @@ class RoundManagementTests(unittest.TestCase):
             updated = {k: v + 100.0 for k, v in base_state.items()}
             return updated, 50, {}
 
-        result = client.participate_in_round("r1", local_train_fn)
+        result = client.join_round("r1", local_train_fn)
         self.assertEqual(result["status"], "accepted")
 
-    def test_participate_in_round_with_filters(self):
+    def test_join_round_with_filters(self):
         try:
             import torch  # noqa: F401
         except ImportError:
@@ -951,10 +951,10 @@ class RoundManagementTests(unittest.TestCase):
             updated = {k: v + 1.0 for k, v in base_state.items()}
             return updated, 10, {"loss": 0.2}
 
-        result = client.participate_in_round("r1", local_train_fn)
+        result = client.join_round("r1", local_train_fn)
         self.assertEqual(result["status"], "accepted")
 
-    def test_participate_in_round_no_version_raises(self):
+    def test_join_round_no_version_raises(self):
         try:
             import torch  # noqa: F401
         except ImportError:
@@ -975,7 +975,7 @@ class RoundManagementTests(unittest.TestCase):
         client.device_id = "device_123"
 
         with self.assertRaises(OctomilClientError) as ctx:
-            client.participate_in_round("r1", lambda s: (s, 0, {}))
+            client.join_round("r1", lambda s: (s, 0, {}))
         self.assertIn("Failed to resolve model version", str(ctx.exception))
 
 
@@ -1410,8 +1410,8 @@ class FedProxCorrectionTests(unittest.TestCase):
 
         torch.testing.assert_close(delta["w"], torch.tensor([6.0, 8.0]))
 
-    def test_participate_in_round_applies_fedprox(self):
-        """participate_in_round should apply FedProx when proximal_mu is in config."""
+    def test_join_round_applies_fedprox(self):
+        """join_round should apply FedProx when proximal_mu is in config."""
         try:
             import torch  # noqa: F401
         except ImportError:
@@ -1443,7 +1443,7 @@ class FedProxCorrectionTests(unittest.TestCase):
             updated = {k: v + 2.0 for k, v in base_state.items()}
             return updated, 100, {"loss": 0.5}
 
-        result = client.participate_in_round("r1", local_train_fn)
+        result = client.join_round("r1", local_train_fn)
         self.assertEqual(result["status"], "accepted")
 
         # The delta is (updated - base) = 2.0 for each tensor
@@ -1457,7 +1457,7 @@ class FedProxCorrectionTests(unittest.TestCase):
         payload = post_calls[0][2]
         self.assertEqual(payload["round_id"], "r1")
 
-    def test_participate_in_round_no_fedprox_without_mu(self):
+    def test_join_round_no_fedprox_without_mu(self):
         """Without proximal_mu, no FedProx correction is applied."""
         try:
             import torch  # noqa: F401
@@ -1485,10 +1485,10 @@ class FedProxCorrectionTests(unittest.TestCase):
             updated = {k: v + 2.0 for k, v in base_state.items()}
             return updated, 100, {"loss": 0.5}
 
-        result = client.participate_in_round("r1", local_train_fn)
+        result = client.join_round("r1", local_train_fn)
         self.assertEqual(result["status"], "accepted")
 
-    def test_participate_in_round_zero_mu_no_correction(self):
+    def test_join_round_zero_mu_no_correction(self):
         """proximal_mu=0 should not apply any correction."""
         try:
             import torch  # noqa: F401
@@ -1516,7 +1516,7 @@ class FedProxCorrectionTests(unittest.TestCase):
             updated = {k: v + 1.0 for k, v in base_state.items()}
             return updated, 50, {}
 
-        result = client.participate_in_round("r1", local_train_fn)
+        result = client.join_round("r1", local_train_fn)
         self.assertEqual(result["status"], "accepted")
 
 

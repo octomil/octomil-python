@@ -332,7 +332,7 @@ def _derive_mask_elements(
 class SecAggClient:
     """Client-side SecAgg state machine.
 
-    Typical usage inside ``FederatedClient.participate_in_round``::
+    Typical usage inside ``FederatedClient.join_round``::
 
         sac = SecAggClient(config)
         shares_for_peers = sac.generate_key_shares()

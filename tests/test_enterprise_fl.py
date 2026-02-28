@@ -115,12 +115,12 @@ def _make_client(stub=None, secure_aggregation=False):
 
 
 # ---------------------------------------------------------------------------
-# SecAgg integration in participate_in_round
+# SecAgg integration in join_round
 # ---------------------------------------------------------------------------
 
 
 class SecAggRoundIntegrationTests(unittest.TestCase):
-    """Test SecAgg activation paths in participate_in_round."""
+    """Test SecAgg activation paths in join_round."""
 
     def test_secagg_activated_by_constructor_flag(self):
         """SecAgg enabled via constructor should mask update and submit shares."""
@@ -143,7 +143,7 @@ class SecAggRoundIntegrationTests(unittest.TestCase):
         def local_train_fn(base_state):
             return {k: v + 0.1 for k, v in base_state.items()}, 100, {"loss": 0.5}
 
-        result = client.participate_in_round("r1", local_train_fn)
+        result = client.join_round("r1", local_train_fn)
         self.assertEqual(result["status"], "accepted")
 
         # Verify SecAgg calls were made
@@ -178,7 +178,7 @@ class SecAggRoundIntegrationTests(unittest.TestCase):
         def local_train_fn(base_state):
             return {k: v + 0.1 for k, v in base_state.items()}, 50, {}
 
-        result = client.participate_in_round("r1", local_train_fn)
+        result = client.join_round("r1", local_train_fn)
         self.assertEqual(result["status"], "accepted")
 
         secagg_session_calls = [c for c in stub.calls if c[0] == "secagg_get_session"]
@@ -205,7 +205,7 @@ class SecAggRoundIntegrationTests(unittest.TestCase):
         def local_train_fn(base_state):
             return {k: v + 0.1 for k, v in base_state.items()}, 50, {}
 
-        client.participate_in_round("r1", local_train_fn)
+        client.join_round("r1", local_train_fn)
 
         secagg_calls = [c for c in stub.calls if c[0].startswith("secagg_")]
         self.assertEqual(len(secagg_calls), 0)
@@ -232,7 +232,7 @@ class SecAggRoundIntegrationTests(unittest.TestCase):
         def local_train_fn(base_state):
             return {k: v + 1.0 for k, v in base_state.items()}, 100, {}
 
-        client_plain.participate_in_round("r1", local_train_fn)
+        client_plain.join_round("r1", local_train_fn)
         plain_post = [c for c in stub.calls if c[0] == "post" and "weights" in c[1]][-1]
         plain_weights = plain_post[2]["weights_data"]
 
@@ -247,7 +247,7 @@ class SecAggRoundIntegrationTests(unittest.TestCase):
         )
         client_secagg = _make_client(stub=stub2, secure_aggregation=True)
 
-        client_secagg.participate_in_round("r1", local_train_fn)
+        client_secagg.join_round("r1", local_train_fn)
         secagg_post = [c for c in stub2.calls if c[0] == "post" and "weights" in c[1]][
             -1
         ]
@@ -404,7 +404,7 @@ class FedProxFilterInteractionTests(unittest.TestCase):
             # Large update to trigger both FedProx and clipping
             return {k: v + 10.0 for k, v in base_state.items()}, 100, {}
 
-        result = client.participate_in_round("r1", local_train_fn)
+        result = client.join_round("r1", local_train_fn)
         self.assertEqual(result["status"], "accepted")
 
     def test_fedprox_then_sparsification(self):
@@ -433,7 +433,7 @@ class FedProxFilterInteractionTests(unittest.TestCase):
         def local_train_fn(base_state):
             return {k: v + 1.0 for k, v in base_state.items()}, 50, {}
 
-        result = client.participate_in_round("r1", local_train_fn)
+        result = client.join_round("r1", local_train_fn)
         self.assertEqual(result["status"], "accepted")
 
     def test_fedprox_then_noise_then_quantization(self):
@@ -465,7 +465,7 @@ class FedProxFilterInteractionTests(unittest.TestCase):
         def local_train_fn(base_state):
             return {k: v + 0.5 for k, v in base_state.items()}, 200, {}
 
-        result = client.participate_in_round("r1", local_train_fn)
+        result = client.join_round("r1", local_train_fn)
         self.assertEqual(result["status"], "accepted")
 
     def test_clip_norm_injected_before_filters(self):
@@ -494,7 +494,7 @@ class FedProxFilterInteractionTests(unittest.TestCase):
         def local_train_fn(base_state):
             return {k: v + 100.0 for k, v in base_state.items()}, 10, {}
 
-        result = client.participate_in_round("r1", local_train_fn)
+        result = client.join_round("r1", local_train_fn)
         self.assertEqual(result["status"], "accepted")
 
     def test_fedprox_with_secagg(self):
@@ -523,7 +523,7 @@ class FedProxFilterInteractionTests(unittest.TestCase):
         def local_train_fn(base_state):
             return {k: v + 2.0 for k, v in base_state.items()}, 100, {}
 
-        result = client.participate_in_round("r1", local_train_fn)
+        result = client.join_round("r1", local_train_fn)
         self.assertEqual(result["status"], "accepted")
 
         # Both FedProx (implicit) and SecAgg should have been applied
@@ -1046,7 +1046,7 @@ class FilterPipelineAdversarialTests(unittest.TestCase):
 
 
 class RoundParticipationEdgeCaseTests(unittest.TestCase):
-    """Edge cases for participate_in_round."""
+    """Edge cases for join_round."""
 
     def test_participate_with_empty_config(self):
         """Round with minimal config (only model_id) should work."""
@@ -1070,7 +1070,7 @@ class RoundParticipationEdgeCaseTests(unittest.TestCase):
         def local_train_fn(base_state):
             return {k: v + 0.1 for k, v in base_state.items()}, 10, {}
 
-        result = client.participate_in_round("r1", local_train_fn)
+        result = client.join_round("r1", local_train_fn)
         self.assertEqual(result["status"], "accepted")
 
     def test_participate_uploads_correct_round_id(self):
@@ -1094,7 +1094,7 @@ class RoundParticipationEdgeCaseTests(unittest.TestCase):
         def local_train_fn(base_state):
             return {k: v + 0.1 for k, v in base_state.items()}, 5, {"acc": 0.9}
 
-        client.participate_in_round("round_xyz", local_train_fn)
+        client.join_round("round_xyz", local_train_fn)
 
         post_calls = [c for c in stub.calls if c[0] == "post" and "weights" in c[1]]
         self.assertEqual(len(post_calls), 1)
@@ -1125,7 +1125,7 @@ class RoundParticipationEdgeCaseTests(unittest.TestCase):
         def local_train_fn(base_state):
             return {k: v + 0.1 for k, v in base_state.items()}, 10, {}
 
-        client.participate_in_round("r1", local_train_fn)
+        client.join_round("r1", local_train_fn)
 
         post_calls = [c for c in stub.calls if c[0] == "post" and "weights" in c[1]]
         payload = post_calls[0][2]
@@ -1153,7 +1153,7 @@ class RoundParticipationEdgeCaseTests(unittest.TestCase):
         def local_train_fn(base_state):
             return {k: v + 0.1 for k, v in base_state.items()}, 10, {}
 
-        client.participate_in_round("r1", local_train_fn)
+        client.join_round("r1", local_train_fn)
 
         post_calls = [c for c in stub.calls if c[0] == "post" and "weights" in c[1]]
         payload = post_calls[0][2]
@@ -1199,7 +1199,7 @@ class EndToEndEnterpriseTests(unittest.TestCase):
         def local_train_fn(base_state):
             return {k: v + 5.0 for k, v in base_state.items()}, 200, {"loss": 0.25}
 
-        result = client.participate_in_round("r1", local_train_fn)
+        result = client.join_round("r1", local_train_fn)
         self.assertEqual(result["status"], "accepted")
 
         # Verify the full pipeline ran
