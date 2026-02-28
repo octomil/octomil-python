@@ -1,6 +1,6 @@
 import unittest
 
-from octomil.control_plane import FederatedAnalyticsAPI
+from octomil.control_plane import FederatedAnalyticsClient
 
 
 class _StubApi:
@@ -22,7 +22,7 @@ FED_ID = "fed_abc"
 class FederatedAnalyticsApiTests(unittest.TestCase):
     def _make(self):
         api = _StubApi()
-        analytics = FederatedAnalyticsAPI(api, FED_ID)
+        analytics = FederatedAnalyticsClient(api, FED_ID)
         return api, analytics
 
     # -- descriptive --------------------------------------------------------

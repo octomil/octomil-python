@@ -8,7 +8,7 @@ import time
 import unittest
 from unittest.mock import MagicMock, patch
 
-from octomil.device_info import get_battery_level, is_charging
+from octomil.device_info import is_charging
 
 
 class TestBatteryEligibility(unittest.TestCase):

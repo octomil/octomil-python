@@ -88,8 +88,8 @@ class RolloutsAPI:
         return self.api.delete(f"/models/{model_id}/rollouts/{rollout_id}", params=params)
 
 
-class FederatedAnalyticsAPI:
-    """Federated analytics API for cross-site statistical analysis."""
+class FederatedAnalyticsClient:
+    """Federated analytics client for cross-site statistical analysis."""
 
     def __init__(self, api: _ApiClient, federation_id: str):
         self.api = api
@@ -179,6 +179,10 @@ class FederatedAnalyticsAPI:
 
     def get_query(self, query_id: str) -> dict[str, Any]:
         return self.api.get(f"{self._base}/queries/{query_id}")
+
+
+# Deprecated alias — kept for backward compatibility.
+FederatedAnalyticsAPI = FederatedAnalyticsClient
 
 
 class ExperimentsAPI:
