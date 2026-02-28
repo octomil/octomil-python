@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any, Iterable, Optional
 
 from .api_client import OctomilClientError, _ApiClient
-from .control_plane import ExperimentsAPI, FederatedAnalyticsAPI, RolloutsAPI
+from .control_plane import ExperimentsAPI, FederatedAnalyticsClient, RolloutsAPI
 
 
 class Federation:
@@ -25,7 +25,7 @@ class Federation:
         self.rollouts = RolloutsAPI(self.api)
         self.experiments = ExperimentsAPI(self.api, org_id=self.org_id)
         self.federation_id = self._resolve_or_create_federation()
-        self.analytics = FederatedAnalyticsAPI(self.api, self.federation_id)
+        self.analytics = FederatedAnalyticsClient(self.api, self.federation_id)
 
     def _resolve_or_create_federation(self) -> str:
         existing = self.api.get(

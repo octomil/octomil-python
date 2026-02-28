@@ -250,9 +250,9 @@ def resolve_and_download(name: str) -> str:
             result = _try_source("ollama", aliases["ollama"])
             if result:
                 if result.cached:
-                    click.echo(f"  Using Ollama cache")
+                    click.echo("  Using Ollama cache")
                 else:
-                    click.echo(f"  Downloaded from Ollama")
+                    click.echo("  Downloaded from Ollama")
                 return result.path
 
         if "hf" in aliases:
