@@ -144,6 +144,7 @@ def deploy(
         click.echo("Scanning for Octomil devices on local network...")
         discovered = scan_for_devices(timeout=5.0)
 
+        selected_device = None
         if discovered:
             if len(discovered) == 1:
                 dev = discovered[0]
@@ -154,17 +155,15 @@ def deploy(
                     )
                 )
                 if click.confirm(f"\nDeploy {name} to this device?", default=True):
-                    # Direct deployment — create pairing session targeting this device
-                    pass
+                    selected_device = dev
             else:
                 click.echo(f"  Found {len(discovered)} devices:")
                 for i, dev in enumerate(discovered, 1):
                     click.echo(f"    {i}. {dev.name} ({dev.platform}, {dev.ip})")
                 choice = click.prompt("Select device", type=int, default=1)
-                dev = discovered[choice - 1]
-                # Deploy to selected device (pairing session will target it)
+                selected_device = discovered[choice - 1]
         else:
-            click.echo("  No devices found. Falling back to QR code pairing.\n")
+            click.echo("  No Octomil devices found on local network.\n")
 
         api_key = _require_api_key()
         api_base: str = (
@@ -246,38 +245,156 @@ def deploy(
         session = resp.json()
         code = session["code"]
 
-        # Build the deep link URL for the Octomil mobile app.
-        # The octomil:// scheme is handled by DeepLinkHandler in the
-        # iOS and Android SDKs, opening the app directly to pairing.
-        pair_url = build_deep_link(token=code, host=api_base)
+        # Fast path: push pairing code directly to discovered device
+        if selected_device:
+            click.echo(f"Sending pairing code to {selected_device.name}...")
+            try:
+                push_resp = httpx.post(
+                    f"http://{selected_device.ip}:{selected_device.port}/pair",
+                    json={
+                        "code": code,
+                        "host": api_base,
+                        "model_name": name,
+                    },
+                    timeout=5.0,
+                )
+                if push_resp.status_code == 200:
+                    click.echo(
+                        click.style(
+                            f"  \u2713 Pairing code sent to {selected_device.name}",
+                            fg="green",
+                        )
+                    )
+                else:
+                    click.echo(
+                        f"  Device returned {push_resp.status_code}, falling back to QR"
+                    )
+                    selected_device = None
+            except (httpx.ConnectError, httpx.TimeoutException):
+                click.echo("  Could not reach device, falling back to QR")
+                selected_device = None
 
-        # Render QR code in a styled box
-        qr_art = render_qr_terminal(pair_url)
-        qr_lines = qr_art.split("\n")
-        # Determine box width: widest QR line or minimum for text
-        max_qr_width = max((len(line) for line in qr_lines), default=0)
-        box_inner = max(max_qr_width + 4, 45)
+        # If no device yet (first-time path), show appropriate QR code
+        if not selected_device:
+            pair_url = build_deep_link(token=code, host=api_base)
 
-        click.echo()
-        click.echo("\u256d" + "\u2500" * box_inner + "\u256e")
-        click.echo(
-            "\u2502"
-            + "  Scan this QR code with your phone camera:".ljust(box_inner)
-            + "\u2502"
-        )
-        click.echo("\u2502" + " " * box_inner + "\u2502")
-        for line in qr_lines:
-            padded = ("  " + line).ljust(box_inner)
-            click.echo("\u2502" + padded + "\u2502")
-        click.echo("\u2502" + " " * box_inner + "\u2502")
-        click.echo(
-            "\u2502" + f"  Or open manually: {pair_url}".ljust(box_inner) + "\u2502"
-        )
-        click.echo("\u2502" + "  Expires in 5 minutes".ljust(box_inner) + "\u2502")
-        click.echo("\u2570" + "\u2500" * box_inner + "\u256f")
-        click.echo()
+            # Detect platform to show the right store QR
+            from octomil.discovery import detect_platform_on_network
 
-        webbrowser.open(pair_url)
+            detected_platform = detect_platform_on_network(timeout=3.0)
+
+            qr_art = render_qr_terminal(pair_url)
+            qr_lines = qr_art.split("\n")
+            max_qr_width = max((len(line) for line in qr_lines), default=0)
+            box_inner = max(max_qr_width + 4, 45)
+
+            click.echo()
+            click.echo("\u256d" + "\u2500" * box_inner + "\u256e")
+            click.echo(
+                "\u2502"
+                + "  Scan this QR code with your phone camera:".ljust(box_inner)
+                + "\u2502"
+            )
+            click.echo("\u2502" + " " * box_inner + "\u2502")
+            for line in qr_lines:
+                padded = ("  " + line).ljust(box_inner)
+                click.echo("\u2502" + padded + "\u2502")
+            click.echo("\u2502" + " " * box_inner + "\u2502")
+
+            if detected_platform == "ios":
+                click.echo(
+                    "\u2502"
+                    + "  No app? Download from the App Store:".ljust(box_inner)
+                    + "\u2502"
+                )
+                click.echo(
+                    "\u2502"
+                    + "  https://apps.apple.com/app/octomil/id0000000000".ljust(
+                        box_inner
+                    )
+                    + "\u2502"
+                )
+            else:
+                click.echo(
+                    "\u2502"
+                    + "  No app? Get it from your app store:".ljust(box_inner)
+                    + "\u2502"
+                )
+                click.echo(
+                    "\u2502"
+                    + "  iOS:     https://apps.apple.com/app/octomil/id0000000000".ljust(
+                        box_inner
+                    )
+                    + "\u2502"
+                )
+                click.echo(
+                    "\u2502"
+                    + "  Android: https://play.google.com/store/apps/details?id=ai.octomil.app".ljust(
+                        box_inner
+                    )
+                    + "\u2502"
+                )
+
+            click.echo(
+                "\u2502"
+                + f"  Or open manually: {pair_url}".ljust(box_inner)
+                + "\u2502"
+            )
+            click.echo(
+                "\u2502" + "  Expires in 5 minutes".ljust(box_inner) + "\u2502"
+            )
+            click.echo("\u2570" + "\u2500" * box_inner + "\u256f")
+            click.echo()
+
+            webbrowser.open(pair_url)
+
+            # Start model preparation in background while waiting
+            import threading
+
+            push_thread = threading.Thread(
+                target=_ensure_model_in_registry,
+                args=(name, version, api_base, api_key),
+                daemon=True,
+            )
+            push_thread.start()
+
+            # Continuously scan for new devices (first-time install flow)
+            click.echo(
+                "Waiting for device to appear on network (or scan the QR code)..."
+            )
+            from octomil.discovery import wait_for_device
+
+            newly_found = wait_for_device(
+                timeout=30.0,
+                poll_interval=2.0,
+                on_found=lambda dev: click.echo(
+                    click.style(f"  \u2713 Found: {dev.name}!", fg="green")
+                ),
+            )
+
+            if newly_found:
+                # Push pairing code to newly discovered device
+                try:
+                    push_resp = httpx.post(
+                        f"http://{newly_found.ip}:{newly_found.port}/pair",
+                        json={
+                            "code": code,
+                            "host": api_base,
+                            "model_name": name,
+                        },
+                        timeout=5.0,
+                    )
+                    if push_resp.status_code == 200:
+                        click.echo(
+                            click.style(
+                                f"  \u2713 Pairing code sent to {newly_found.name}",
+                                fg="green",
+                            )
+                        )
+                except (httpx.ConnectError, httpx.TimeoutException):
+                    pass  # Fall through to polling — device might scan QR instead
+
+            push_thread.join(timeout=60.0)
 
         click.echo("Waiting for device to connect (Ctrl+C to cancel)...")
         last_status = ""
@@ -295,7 +412,9 @@ def deploy(
                     continue
                 last_status = status_val
                 if status_val == "connected":
-                    device = data.get("device_name") or data.get("device_id", "unknown")
+                    device = data.get("device_name") or data.get(
+                        "device_id", "unknown"
+                    )
                     platform = data.get("device_platform", "unknown")
                     click.echo(
                         click.style(
@@ -314,7 +433,9 @@ def deploy(
                         click.style("  \u2713 Deploying to device...", fg="yellow")
                     )
                 elif status_val == "done":
-                    device = data.get("device_name") or data.get("device_id", "device")
+                    device = data.get("device_name") or data.get(
+                        "device_id", "device"
+                    )
                     click.echo(
                         click.style(
                             f"  \u2713 Deployment complete! Model running on {device}",
@@ -334,7 +455,7 @@ def deploy(
                                 platform=data.get("device_platform"),
                             )
                     except Exception:
-                        pass  # Never break CLI
+                        pass
                     break
                 elif status_val in ("expired", "cancelled"):
                     click.echo(f"Session {status_val}.", err=True)
@@ -399,6 +520,41 @@ def deploy(
     )
     click.echo(f"Rollout created: {result.get('id', 'ok')}")
     click.echo(f"Status: {result.get('status', 'started')}")
+
+
+def _ensure_model_in_registry(
+    name: str,
+    version: str | None,
+    api_base: str,
+    api_key: str,
+) -> None:
+    """Background helper: ensure model exists in the registry.
+
+    Called from a background thread while the user downloads the app.
+    Silently returns on any error (main thread handles user feedback).
+    """
+    try:
+        import httpx as _httpx
+
+        headers = {"Authorization": f"Bearer {api_key}"}
+        check = _httpx.get(
+            f"{api_base}/models/{name}", headers=headers, timeout=10.0
+        )
+        if check.status_code != 404:
+            return  # Already exists
+
+        from octomil.sources.resolver import resolve_and_download
+
+        resolved_path = resolve_and_download(name)
+
+        from octomil.cli_helpers import _get_client
+
+        client = _get_client()
+        effective_version = version or "1.0.0"
+        resolved_name = name.split("/")[-1].split(":")[-1]
+        client.push(resolved_path, name=resolved_name, version=effective_version)
+    except Exception:
+        pass  # Non-fatal — main thread will handle if needed
 
 
 # ---------------------------------------------------------------------------

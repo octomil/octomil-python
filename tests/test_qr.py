@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
+import pytest
 from click.testing import CliRunner
 
 from octomil.cli import main
@@ -133,6 +134,17 @@ class TestPrintQrCode:
 
 
 class TestDeployPhoneQr:
+    @pytest.fixture(autouse=True)
+    def _mock_discovery(self):
+        """Mock discovery functions so deploy --phone tests skip mDNS scanning."""
+        with (
+            patch("octomil.discovery.scan_for_devices", return_value=[]),
+            patch("octomil.discovery.detect_platform_on_network", return_value=None),
+            patch("octomil.discovery.wait_for_device", return_value=None),
+            patch("octomil.ollama.get_ollama_model", return_value=None),
+        ):
+            yield
+
     @patch("octomil.commands.deploy.webbrowser.open")
     def test_deploy_phone_shows_qr_box(self, mock_open, monkeypatch):
         monkeypatch.setenv("OCTOMIL_API_KEY", "test-key")
@@ -408,3 +420,187 @@ class TestDeployPhoneQr:
         assert "FB0001" in result.output
         assert "octomil://pair?" in result.output
         assert "Scan this QR code with your phone camera:" in result.output
+
+
+# ---------------------------------------------------------------------------
+# deploy --phone fast-path (direct push) and first-time path
+# ---------------------------------------------------------------------------
+
+
+class TestDeployPhoneFastPath:
+    """Tests for the direct-push flow when a device is found via mDNS."""
+
+    @patch("octomil.commands.deploy.webbrowser.open")
+    @patch("octomil.ollama.get_ollama_model", return_value=None)
+    def test_fast_path_pushes_code_to_device(self, mock_ollama, mock_open, monkeypatch):
+        """When mDNS finds a device, CLI should POST the pairing code directly."""
+        from octomil.discovery import DiscoveredDevice
+
+        monkeypatch.setenv("OCTOMIL_API_KEY", "test-key")
+
+        device = DiscoveredDevice(
+            name="Sean's iPhone",
+            platform="ios",
+            ip="192.168.1.42",
+            port=8080,
+            device_id="abc-123",
+        )
+
+        mock_post_resp = MagicMock()
+        mock_post_resp.status_code = 200
+        mock_post_resp.json.return_value = {
+            "code": "FAST01",
+            "expires_at": "2026-02-18T12:00:00Z",
+        }
+
+        mock_poll_resp = MagicMock()
+        mock_poll_resp.status_code = 200
+        mock_poll_resp.json.return_value = {"status": "done", "device_name": "Sean's iPhone"}
+
+        with (
+            patch("octomil.discovery.scan_for_devices", return_value=[device]),
+            patch("httpx.post", return_value=mock_post_resp),
+            patch("httpx.get", return_value=mock_poll_resp),
+            patch("time.sleep"),
+        ):
+            runner = CliRunner()
+            result = runner.invoke(
+                main, ["deploy", "phi-4-mini", "--phone"], input="y\n"
+            )
+
+        assert result.exit_code == 0
+        assert "Sean's iPhone" in result.output
+        assert "Pairing code sent" in result.output
+        # Should NOT show QR box in fast path
+        mock_open.assert_not_called()
+
+    @patch("octomil.commands.deploy.webbrowser.open")
+    @patch("octomil.ollama.get_ollama_model", return_value=None)
+    def test_fast_path_falls_back_on_connection_error(
+        self, mock_ollama, mock_open, monkeypatch
+    ):
+        """If direct push fails, should fall back to QR code."""
+        import httpx
+
+        from octomil.discovery import DiscoveredDevice
+
+        monkeypatch.setenv("OCTOMIL_API_KEY", "test-key")
+
+        device = DiscoveredDevice(
+            name="Sean's iPhone",
+            platform="ios",
+            ip="192.168.1.42",
+            port=8080,
+            device_id="abc-123",
+        )
+
+        mock_session_resp = MagicMock()
+        mock_session_resp.status_code = 200
+        mock_session_resp.json.return_value = {
+            "code": "FALL01",
+            "expires_at": "2026-02-18T12:00:00Z",
+        }
+
+        # httpx.post should return session response first, then raise on device push
+        call_count = 0
+
+        def mock_post_side_effect(*args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                return mock_session_resp  # pairing session create
+            raise httpx.ConnectError("Connection refused")  # device push fails
+
+        mock_poll_resp = MagicMock()
+        mock_poll_resp.status_code = 200
+        mock_poll_resp.json.return_value = {"status": "done"}
+
+        with (
+            patch("octomil.discovery.scan_for_devices", return_value=[device]),
+            patch("octomil.discovery.detect_platform_on_network", return_value=None),
+            patch("octomil.discovery.wait_for_device", return_value=None),
+            patch("httpx.post", side_effect=mock_post_side_effect),
+            patch("httpx.get", return_value=mock_poll_resp),
+            patch("time.sleep"),
+        ):
+            runner = CliRunner()
+            result = runner.invoke(
+                main, ["deploy", "phi-4-mini", "--phone"], input="y\n"
+            )
+
+        assert result.exit_code == 0
+        assert "Could not reach device" in result.output
+        # Should fall back to QR
+        assert "Scan this QR code" in result.output
+
+
+class TestDeployPhonePlatformDetection:
+    """Tests for platform detection when showing app store links."""
+
+    @pytest.fixture(autouse=True)
+    def _mock_base(self):
+        with (
+            patch("octomil.discovery.scan_for_devices", return_value=[]),
+            patch("octomil.discovery.wait_for_device", return_value=None),
+            patch("octomil.ollama.get_ollama_model", return_value=None),
+        ):
+            yield
+
+    @patch("octomil.commands.deploy.webbrowser.open")
+    def test_shows_ios_store_link_when_apple_detected(self, mock_open, monkeypatch):
+        monkeypatch.setenv("OCTOMIL_API_KEY", "test-key")
+
+        mock_post_resp = MagicMock()
+        mock_post_resp.status_code = 200
+        mock_post_resp.json.return_value = {
+            "code": "IOS001",
+            "expires_at": "2026-02-18T12:00:00Z",
+        }
+
+        mock_poll_resp = MagicMock()
+        mock_poll_resp.status_code = 200
+        mock_poll_resp.json.return_value = {"status": "done"}
+
+        with (
+            patch("octomil.discovery.detect_platform_on_network", return_value="ios"),
+            patch("httpx.post", return_value=mock_post_resp),
+            patch("httpx.get", return_value=mock_poll_resp),
+            patch("time.sleep"),
+        ):
+            runner = CliRunner()
+            result = runner.invoke(main, ["deploy", "test-model", "--phone"])
+
+        assert result.exit_code == 0
+        assert "App Store" in result.output
+        # Should NOT show Android link when iOS detected
+        assert "play.google.com" not in result.output
+
+    @patch("octomil.commands.deploy.webbrowser.open")
+    def test_shows_both_store_links_when_no_platform_detected(
+        self, mock_open, monkeypatch
+    ):
+        monkeypatch.setenv("OCTOMIL_API_KEY", "test-key")
+
+        mock_post_resp = MagicMock()
+        mock_post_resp.status_code = 200
+        mock_post_resp.json.return_value = {
+            "code": "BOTH01",
+            "expires_at": "2026-02-18T12:00:00Z",
+        }
+
+        mock_poll_resp = MagicMock()
+        mock_poll_resp.status_code = 200
+        mock_poll_resp.json.return_value = {"status": "done"}
+
+        with (
+            patch("octomil.discovery.detect_platform_on_network", return_value=None),
+            patch("httpx.post", return_value=mock_post_resp),
+            patch("httpx.get", return_value=mock_poll_resp),
+            patch("time.sleep"),
+        ):
+            runner = CliRunner()
+            result = runner.invoke(main, ["deploy", "test-model", "--phone"])
+
+        assert result.exit_code == 0
+        assert "apps.apple.com" in result.output
+        assert "play.google.com" in result.output
