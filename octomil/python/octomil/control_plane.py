@@ -314,6 +314,53 @@ class ExperimentsAPI:
     def remove_target_group(self, experiment_id: str, group_id: str) -> dict[str, Any]:
         return self.api.delete(f"/experiments/{experiment_id}/target-groups/{group_id}")
 
+    def get_variant(self, experiment_id: str, device_id: str) -> Optional[dict[str, Any]]:
+        """Get the assigned variant for a device in an experiment.
+
+        Returns the variant dict or ``None`` when the device is not part of
+        the experiment's traffic allocation.
+        """
+        try:
+            return self.api.get(
+                f"/experiments/{experiment_id}/assign",
+                params={"device_id": device_id},
+            )
+        except Exception:
+            logger.debug(
+                "Failed to get variant for experiment %s device %s",
+                experiment_id,
+                device_id,
+            )
+            return None
+
+    def resolve_model_experiment(self, model_id: str, device_id: str) -> Optional[dict[str, Any]]:
+        """Find the running experiment for a model and return the assigned variant.
+
+        Queries active (running) experiments filtered by *model_id*.  For the
+        first matching experiment the device's variant assignment is resolved.
+
+        Returns ``{"experiment": <experiment_dict>, "variant": <variant_dict>}``
+        or ``None`` when no running experiment targets *model_id* or the device
+        is not enrolled.
+        """
+        experiments = self.list(model_id=model_id, status_filter="running")
+        if not experiments:
+            return None
+
+        for experiment in experiments:
+            experiment_id = experiment.get("id", "")
+            if not experiment_id:
+                continue
+            variant = self.get_variant(experiment_id, device_id)
+            if variant is not None:
+                return {"experiment": experiment, "variant": variant}
+
+        return None
+
+    def is_enrolled(self, experiment_id: str, device_id: str) -> bool:
+        """Check whether a device is enrolled in an experiment."""
+        return self.get_variant(experiment_id, device_id) is not None
+
     def get_analytics(self, experiment_id: str) -> dict[str, Any]:
         return self.api.get(f"/experiments/{experiment_id}/analytics")
 
