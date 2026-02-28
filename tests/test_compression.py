@@ -7,6 +7,13 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+try:
+    import pytest_asyncio  # noqa: F401
+
+    _has_async = True
+except ImportError:
+    _has_async = False
+
 from octomil.compression import (
     CompressionConfig,
     CompressionStats,
@@ -668,6 +675,7 @@ async def _make_echo_app_async(**create_kwargs):
     return app
 
 
+@pytest.mark.skipif(not _has_async, reason="pytest-asyncio not installed")
 class TestServeAppCompression:
     """Test that compression integrates with the serve app."""
 

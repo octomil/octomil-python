@@ -46,10 +46,14 @@ class EngineRegistry:
     Engines register themselves via ``register()``. On startup,
     ``detect_all()`` finds which are available, ``benchmark_all()``
     runs a quick test on each, and ``select_best()`` picks the winner.
+
+    ``auto_select()`` caches its result per model name so the benchmark
+    only runs once per process lifetime.
     """
 
     def __init__(self) -> None:
         self._engines: list[EnginePlugin] = []
+        self._auto_select_cache: dict[str, tuple[EnginePlugin, list[RankedEngine]]] = {}
 
     def register(self, engine: EnginePlugin) -> None:
         """Register an engine plugin."""
@@ -162,6 +166,8 @@ class EngineRegistry:
         """Detect, benchmark, and return the best engine + all results.
 
         If engine_override is specified, skip benchmark and use that engine.
+        Results are cached per model name — the benchmark only runs once
+        per process lifetime.
         Raises ValueError if no engine is available.
         """
         if engine_override:
@@ -179,6 +185,11 @@ class EngineRegistry:
                 )
             return engine, []
 
+        # Return cached result if available
+        cache_key = model_name
+        if cache_key in self._auto_select_cache:
+            return self._auto_select_cache[cache_key]
+
         ranked = self.benchmark_all(model_name, n_tokens=n_tokens)
         if not ranked:
             raise ValueError(
@@ -192,7 +203,9 @@ class EngineRegistry:
         if best is None:
             raise ValueError("All engine benchmarks failed.")
 
-        return best.engine, ranked
+        result = (best.engine, ranked)
+        self._auto_select_cache[cache_key] = result
+        return result
 
 
 # ---------------------------------------------------------------------------

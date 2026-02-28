@@ -9,6 +9,13 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+try:
+    import fastapi  # noqa: F401
+
+    _has_fastapi = True
+except ImportError:
+    _has_fastapi = False
+
 from octomil.engines.whisper_engine import (
     WhisperCppEngine,
     _WhisperBackend,
@@ -400,6 +407,7 @@ class TestTranscriptionEndpoint:
         # We need to use the TestClient which handles lifespan
         return app, whisper_backend
 
+    @pytest.mark.skipif(not _has_fastapi, reason="fastapi not installed")
     def test_transcription_no_backend(self) -> None:
         """Returns 503 when no whisper model is loaded."""
 
@@ -454,6 +462,7 @@ class TestTranscriptionEndpoint:
         assert result["segments"][0]["end"] == 2.5
         mock_model.transcribe.assert_called_once_with(wav_path)
 
+    @pytest.mark.skipif(not _has_fastapi, reason="fastapi not installed")
     def test_transcription_endpoint_integration(self) -> None:
         """Test that the endpoint is registered in the app created by create_app.
 

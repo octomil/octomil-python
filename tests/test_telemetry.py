@@ -9,6 +9,15 @@ import time
 from unittest.mock import MagicMock, patch
 
 import pytest
+
+try:
+    import fastapi  # noqa: F401
+    import pytest_asyncio  # noqa: F401
+
+    _has_serve_deps = True
+except ImportError:
+    _has_serve_deps = False
+
 from httpx import ASGITransport, AsyncClient
 
 from octomil.telemetry import TelemetryReporter, _generate_device_id, _v2_url
@@ -914,6 +923,8 @@ class TestGetReporter:
 @pytest.fixture
 def echo_app_with_telemetry():
     """Create a FastAPI app with EchoBackend and telemetry enabled."""
+    if not _has_serve_deps:
+        pytest.skip("fastapi and pytest-asyncio required")
     from octomil.serve import EchoBackend, create_app
 
     with patch("octomil.serve._detect_backend") as mock_detect:
@@ -936,6 +947,8 @@ def echo_app_with_telemetry():
 @pytest.fixture
 def echo_app_without_telemetry():
     """Create a FastAPI app with EchoBackend and no telemetry."""
+    if not _has_serve_deps:
+        pytest.skip("fastapi and pytest-asyncio required")
     from octomil.serve import EchoBackend, create_app
 
     with patch("octomil.serve._detect_backend") as mock_detect:

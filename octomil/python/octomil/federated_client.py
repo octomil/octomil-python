@@ -35,13 +35,24 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-try:
-    import pandas as pd
+# pandas is heavy (~190ms import) — defer to runtime to keep ``import octomil`` fast.
+HAS_PANDAS: bool | None = None
+pd: Any = None  # populated lazily by _ensure_pandas()
 
-    HAS_PANDAS = True
-except ImportError:
-    pd = None  # type: ignore[assignment]
-    HAS_PANDAS = False
+
+def _ensure_pandas() -> bool:
+    """Lazily import pandas on first use, caching the result."""
+    global HAS_PANDAS, pd  # noqa: PLW0603
+    if HAS_PANDAS is not None:
+        return HAS_PANDAS
+    try:
+        import pandas as _pd
+
+        pd = _pd
+        HAS_PANDAS = True
+    except ImportError:
+        HAS_PANDAS = False
+    return HAS_PANDAS
 
 def _get_sdk_version() -> str:
     """Return the SDK version, avoiding circular imports."""
@@ -73,6 +84,9 @@ def _apply_fedprox_correction(delta: Dict[str, Any], mu: float) -> Dict[str, Any
     Returns:
         A new delta dict with the correction applied.
     """
+    if not delta:
+        return {}
+
     try:
         import torch  # type: ignore
     except Exception as exc:
@@ -260,7 +274,7 @@ class FederatedClient:
         df = None
 
         is_data_source = isinstance(data, (str, Path)) or (
-            HAS_PANDAS and isinstance(data, pd.DataFrame)
+            _ensure_pandas() and isinstance(data, pd.DataFrame)
         )
 
         if is_data_source:
@@ -638,7 +652,9 @@ class FederatedClient:
         except Exception as exc:
             logger.warning("Training upload failed for round %s: %s", round_id, exc)
             if gradient_cache is not None:
-                weights_bytes = self._serialize_weights({"error_round": round_id})
+                import json as _json
+
+                weights_bytes = _json.dumps({"error_round": round_id}).encode()
                 gradient_cache.store(
                     round_id=round_id,
                     device_id=self.device_id or self.device_identifier,

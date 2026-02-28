@@ -3,10 +3,24 @@ from __future__ import annotations
 import contextlib
 from typing import Any, Callable, Optional
 
-import httpx
-
 from .api_client import OctomilClientError, _ApiClient
 from .control_plane import ExperimentsAPI, RolloutsAPI
+
+# Lazy httpx — defer ~55ms import cost. Exposed as module attribute for test mocking.
+def _get_httpx():
+    """Return httpx module, loading lazily. Uses globals so test mocks work."""
+    _h = globals().get("httpx")
+    if _h is not None:
+        return _h
+    import httpx as _httpx
+    globals()["httpx"] = _httpx
+    return _httpx
+
+
+def __getattr__(name: str) -> object:
+    if name == "httpx":
+        return _get_httpx()
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 _MODELS_PATH = "/models"
 
@@ -41,8 +55,19 @@ class ModelRegistry:
         self.org_id = org_id
         self.rollouts = RolloutsAPI(self.api)
         self.experiments = ExperimentsAPI(self.api, org_id=self.org_id)
+        # Cache API results — model IDs and versions rarely change mid-process
+        self._resolve_cache: dict[str, str] = {}
+        self._version_cache: dict[str, str] = {}
 
     def resolve_model_id(self, model: str) -> str:
+        if model in self._resolve_cache:
+            return self._resolve_cache[model]
+
+        result = self._resolve_model_id_uncached(model)
+        self._resolve_cache[model] = result
+        return result
+
+    def _resolve_model_id_uncached(self, model: str) -> str:
         # Strip variant suffix (e.g. "phi-4-mini:q8_0" → "phi-4-mini")
         base_name = model.split(":")[0] if ":" in model else model
 
@@ -99,11 +124,16 @@ class ModelRegistry:
         return self.api.delete(f"/models/{model_id}")
 
     def get_latest_version(self, model_id: str) -> str:
+        if model_id in self._version_cache:
+            return self._version_cache[model_id]
+
         info = self.get_latest_version_info(model_id)
         version = info.get("version")
         if not version:
             raise OctomilClientError("Latest version not found")
-        return str(version)
+        result = str(version)
+        self._version_cache[model_id] = result
+        return result
 
     def list_versions(
         self,
@@ -232,11 +262,13 @@ class ModelRegistry:
         destination: str,
     ) -> None:
         """Download a single model file by format."""
+        _httpx = _get_httpx()
         payload = self.get_download_url(model_id, version, fmt=fmt)
         url = payload.get("url")
         if not url:
             raise OctomilClientError("Download URL missing from response")
-        with httpx.Client(timeout=self.api.timeout) as client:
+
+        with _httpx.Client(timeout=self.api.timeout) as client:
             res = client.get(url)
         if res.status_code >= 400:
             raise OctomilClientError(res.text)
@@ -296,6 +328,7 @@ class ModelRegistry:
         hidden_dim: Optional[int] = None,
         output_dim: Optional[int] = None,
     ) -> dict[str, Any]:
+        _httpx = _get_httpx()
         import os
 
         if os.path.isdir(file_path):
@@ -324,7 +357,7 @@ class ModelRegistry:
             files: dict[str, Any] = {"file": stack.enter_context(open(file_path, "rb"))}
             if onnx_data_path:
                 files["onnx_data"] = stack.enter_context(open(onnx_data_path, "rb"))
-            with httpx.Client(timeout=self.api.timeout) as client:
+            with _httpx.Client(timeout=self.api.timeout) as client:
                 res = client.post(
                     f"{self.api.api_base}/models/{model_id}/versions/upload",
                     data=data,

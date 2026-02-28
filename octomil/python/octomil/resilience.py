@@ -6,9 +6,22 @@ import logging
 from dataclasses import dataclass
 from typing import Optional
 
-import httpx
-
 logger = logging.getLogger(__name__)
+
+# Lazy httpx — defer ~55ms import cost. Exposed as module attribute for test mocking.
+def _get_httpx():
+    _h = globals().get("httpx")
+    if _h is not None:
+        return _h
+    import httpx as _httpx
+    globals()["httpx"] = _httpx
+    return _httpx
+
+
+def __getattr__(name: str) -> object:
+    if name == "httpx":
+        return _get_httpx()
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 @dataclass
@@ -67,10 +80,12 @@ def check_network_quality(
     Returns:
         NetworkQuality with reachable=True if the server responds.
     """
+    _httpx = _get_httpx()
     try:
         import time
+
         start = time.monotonic()
-        response = httpx.get(f"{api_base.rstrip('/')}/health", timeout=timeout)
+        response = _httpx.get(f"{api_base.rstrip('/')}/health", timeout=timeout)
         latency = (time.monotonic() - start) * 1000
         return NetworkQuality(reachable=response.status_code < 500, latency_ms=latency)
     except Exception:

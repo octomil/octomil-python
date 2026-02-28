@@ -7,6 +7,15 @@ import json
 from unittest.mock import patch
 
 import pytest
+
+try:
+    import fastapi  # noqa: F401
+    import pytest_asyncio  # noqa: F401
+
+    _has_serve_deps = True
+except ImportError:
+    _has_serve_deps = False
+
 from httpx import ASGITransport, AsyncClient
 
 from octomil.serve import (
@@ -197,6 +206,8 @@ class TestPydanticModels:
 @pytest.fixture
 def echo_app():
     """Create a FastAPI app with EchoBackend for testing."""
+    if not _has_serve_deps:
+        pytest.skip("fastapi and pytest-asyncio required")
     with patch("octomil.serve._detect_backend") as mock_detect:
         echo = EchoBackend()
         echo.load_model("test-model")

@@ -6,6 +6,15 @@ import asyncio
 from unittest.mock import patch
 
 import pytest
+
+try:
+    import fastapi  # noqa: F401
+    import pytest_asyncio  # noqa: F401
+
+    _has_serve_deps = True
+except ImportError:
+    _has_serve_deps = False
+
 from httpx import ASGITransport, AsyncClient
 
 from octomil.serve import EchoBackend, create_app
@@ -126,6 +135,8 @@ class TestGetToolUseTools:
 
 def _make_echo_app(tool_use: bool):
     """Create a FastAPI app with EchoBackend and lifespan triggered."""
+    if not _has_serve_deps:
+        pytest.skip("fastapi and pytest-asyncio required")
     with patch("octomil.serve._detect_backend") as mock_detect:
         echo = EchoBackend()
         echo.load_model("test-model")

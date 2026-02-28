@@ -165,6 +165,8 @@ class KVCacheManager:
     def store_prefix(self, tokens: list[int], kv_state: Any) -> None:
         """Store a KV state for the given token prefix.
 
+        Stores the entry keyed by the full token sequence hash so that
+        future prompts sharing the same prefix can find and reuse it.
         If the key already exists it is replaced (and the entry promoted).
         After storing, the cache is evicted down to ``max_cache_size_mb``.
         """
@@ -190,6 +192,48 @@ class KVCacheManager:
             )
             self._entries[key] = entry
             self._current_bytes += size
+
+            self._evict_unlocked()
+
+    def store_prefix_checkpoints(
+        self, tokens: list[int], kv_state: Any, checkpoint_lengths: list[int]
+    ) -> None:
+        """Store KV state at multiple prefix lengths for cross-prompt reuse.
+
+        This enables prefix caching across different prompts that share a
+        common prefix (e.g. the chat template). Each checkpoint length
+        creates an entry so that ``get_cached_prefix`` can match the
+        longest shared prefix between different prompts.
+
+        Parameters
+        ----------
+        tokens:
+            The full token sequence.
+        kv_state:
+            The KV cache state (from mlx_lm's prompt_cache).
+        checkpoint_lengths:
+            Prefix lengths to store (e.g. [len(system_tokens)]).
+        """
+        size = _estimate_size_bytes(kv_state)
+        now = time.time()
+
+        with self._lock:
+            for length in checkpoint_lengths:
+                if length < 4 or length > len(tokens):
+                    continue
+                key = _hash_token_prefix(tokens, length)
+                if key in self._entries:
+                    self._entries.move_to_end(key)
+                    continue  # already stored, just promote
+
+                entry = _CacheEntry(
+                    kv_state=kv_state,
+                    prefix_length=length,
+                    created_at=now,
+                    size_bytes=size,
+                )
+                self._entries[key] = entry
+                self._current_bytes += size
 
             self._evict_unlocked()
 

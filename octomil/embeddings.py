@@ -10,9 +10,22 @@ import logging
 from dataclasses import dataclass
 from typing import Any, Union
 
-import httpx
-
 logger = logging.getLogger(__name__)
+
+# Lazy httpx — defer ~55ms import cost. Exposed as module attribute for test mocking.
+def _get_httpx():
+    _h = globals().get("httpx")
+    if _h is not None:
+        return _h
+    import httpx as _httpx
+    globals()["httpx"] = _httpx
+    return _httpx
+
+
+def __getattr__(name: str) -> object:
+    if name == "httpx":
+        return _get_httpx()
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 @dataclass
@@ -55,6 +68,7 @@ def embed(
         httpx.HTTPStatusError: On non-2xx responses.
         ValueError: If *server_url* or *api_key* is empty.
     """
+    _httpx = _get_httpx()
     if not server_url:
         raise ValueError("server_url is required for embed()")
     if not api_key:
@@ -70,7 +84,7 @@ def embed(
         "input": input,
     }
 
-    with httpx.Client(timeout=timeout) as client:
+    with _httpx.Client(timeout=timeout) as client:
         response = client.post(url, json=payload, headers=headers)
         response.raise_for_status()
         data = response.json()

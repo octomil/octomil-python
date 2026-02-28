@@ -8,6 +8,13 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+try:
+    import pytest_asyncio  # noqa: F401
+
+    _has_async = True
+except ImportError:
+    _has_async = False
+
 from octomil.engines.base import BenchmarkResult
 from octomil.engines.ort_engine import (
     ONNXRuntimeEngine,
@@ -526,6 +533,7 @@ class TestORTBackend:
             text, metrics = backend.generate(request)
             mock_load.assert_called_once_with("test-model")
 
+    @pytest.mark.skipif(not _has_async, reason="pytest-asyncio not installed")
     @pytest.mark.asyncio
     async def test_generate_stream_genai(self) -> None:
         mock_og = MagicMock()
@@ -562,6 +570,7 @@ class TestORTBackend:
         assert len(chunks) >= 1
         assert any(c.finish_reason == "stop" for c in chunks)
 
+    @pytest.mark.skipif(not _has_async, reason="pytest-asyncio not installed")
     @pytest.mark.asyncio
     async def test_generate_stream_session_fallback(self) -> None:
         import numpy as np

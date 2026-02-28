@@ -86,10 +86,11 @@ class MLXEngine(EnginePlugin):
         try:
             import mlx_lm  # type: ignore[import-untyped]
 
-            from ..serve import resolve_model_name
+            from ..serve import _suppress_hf_noise, resolve_model_name
 
             repo_id = resolve_model_name(model_name, "mlx")
-            model, tokenizer = mlx_lm.load(repo_id)
+            with _suppress_hf_noise():
+                model, tokenizer = mlx_lm.load(repo_id)
 
             # Build a simple prompt
             prompt = "Hello, how are you?"
@@ -160,6 +161,8 @@ class MLXEngine(EnginePlugin):
         backend = MLXBackend(
             cache_size_mb=kwargs.get("cache_size_mb", 2048),
             cache_enabled=kwargs.get("cache_enabled", True),
+            kv_bits=kwargs.get("kv_bits"),
+            kv_group_size=kwargs.get("kv_group_size", 32),
         )
         backend.load_model(model_name)
         return backend

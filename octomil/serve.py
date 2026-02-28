@@ -45,6 +45,77 @@ logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
+# Internal helpers
+# ---------------------------------------------------------------------------
+
+import contextlib
+import warnings
+
+
+@contextlib.contextmanager
+def _suppress_hf_noise():
+    """Suppress HuggingFace Hub progress bars and noisy transformer warnings.
+
+    Restores the original state on exit so user code is unaffected.
+    """
+    prev = os.environ.get("HF_HUB_DISABLE_PROGRESS_BARS")
+    os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] = "1"
+
+    # Try to disable at the library level too (huggingface_hub >= 0.19)
+    hf_hub_disable = None
+    try:
+        from huggingface_hub.utils import disable_progress_bars, enable_progress_bars
+
+        disable_progress_bars()
+        hf_hub_disable = enable_progress_bars
+    except ImportError:
+        pass
+
+    # Suppress the transformers rope_parameters warning (emitted via logging)
+    transformers_logger = logging.getLogger("transformers.modeling_rope_utils")
+    prev_level = transformers_logger.level
+    transformers_logger.setLevel(logging.ERROR)
+
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", message=".*rope_parameters.*")
+        try:
+            yield
+        finally:
+            transformers_logger.setLevel(prev_level)
+            if prev is None:
+                os.environ.pop("HF_HUB_DISABLE_PROGRESS_BARS", None)
+            else:
+                os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] = prev
+            if hf_hub_disable is not None:
+                hf_hub_disable()
+
+
+# Draft model mappings for speculative decoding.
+# Key: canonical model name, Value: MLX HuggingFace repo for the draft model.
+# Draft models must share the same tokenizer (same model family, smaller size).
+_DRAFT_MODEL_MAP: dict[str, str] = {
+    # Llama family
+    "llama-3b": "mlx-community/Llama-3.2-1B-Instruct-4bit",
+    "llama-8b": "mlx-community/Llama-3.2-1B-Instruct-4bit",
+    # Qwen family
+    "qwen-3b": "mlx-community/Qwen2.5-1.5B-Instruct-4bit",
+    "qwen-7b": "mlx-community/Qwen2.5-1.5B-Instruct-4bit",
+    # Gemma family
+    "gemma-4b": "mlx-community/gemma-3-1b-it-4bit",
+    "gemma-12b": "mlx-community/gemma-3-1b-it-4bit",
+    "gemma-27b": "mlx-community/gemma-3-1b-it-4bit",
+}
+
+
+def _get_draft_model_repo(model_name: str) -> Optional[str]:
+    """Return the MLX repo ID for a draft model, or None if unavailable."""
+    from .models.catalog import _resolve_alias
+
+    canonical = _resolve_alias(model_name)
+    return _DRAFT_MODEL_MAP.get(canonical)
+
+
+# ---------------------------------------------------------------------------
 # Pydantic models for OpenAI-compatible API
 # ---------------------------------------------------------------------------
 
@@ -218,6 +289,8 @@ class MLXBackend(InferenceBackend):
         self,
         cache_size_mb: int = 2048,
         cache_enabled: bool = True,
+        kv_bits: Optional[int] = None,
+        kv_group_size: int = 32,
     ) -> None:
         from .cache import KVCacheManager
 
@@ -226,7 +299,15 @@ class MLXBackend(InferenceBackend):
         self._model_name: str = ""
         self._repo_id: str = ""
         self._cache_enabled = cache_enabled
+        self._kv_bits = kv_bits
+        self._kv_group_size = kv_group_size
         self._kv_cache: KVCacheManager = KVCacheManager(max_cache_size_mb=cache_size_mb)
+        # MLX prompt_cache — created once, reused across calls.
+        # mlx_lm updates it in-place during generation.
+        self._prompt_cache: Any = None
+        # Token IDs currently stored in the prompt_cache, for prefix-skip.
+        # After generation, this contains all processed tokens (prompt + generated).
+        self._cached_token_ids: list[int] = []
 
     def load_model(self, model_name: str) -> None:
         import mlx_lm  # type: ignore[import-untyped]
@@ -235,8 +316,8 @@ class MLXBackend(InferenceBackend):
         self._repo_id = resolve_model_name(model_name, "mlx")
 
         logger.info("Loading %s (%s) with mlx-lm...", model_name, self._repo_id)
-        self._model, self._tokenizer = mlx_lm.load(self._repo_id)
-        logger.info("Model loaded: %s", self._repo_id)
+        with _suppress_hf_noise():
+            self._model, self._tokenizer = mlx_lm.load(self._repo_id)
 
         # Collect special token strings for output filtering
         self._stop_strings: set[str] = set()
@@ -245,6 +326,48 @@ class MLXBackend(InferenceBackend):
         # Common chat model turn markers
         for marker in ("<end_of_turn>", "<|eot_id|>", "<|im_end|>", "</s>"):
             self._stop_strings.add(marker)
+
+        # Load draft model for speculative decoding if available
+        self._draft_model: Any = None
+        draft_repo = _get_draft_model_repo(model_name)
+        if draft_repo:
+            try:
+                logger.info("Loading draft model for speculative decoding: %s", draft_repo)
+                with _suppress_hf_noise():
+                    self._draft_model, _ = mlx_lm.load(draft_repo)
+                logger.info("Draft model loaded: %s", draft_repo)
+            except Exception:
+                logger.debug("Draft model load failed, skipping speculative decoding", exc_info=True)
+
+        # Warm-up: run a minimal generation to JIT-compile Metal shaders
+        # on the exact code path (stream_generate) we use for real requests.
+        # This moves the ~200ms compilation cost from the first real request
+        # to model load time where users expect latency.
+        logger.info("Warming up model...")
+        t0 = time.monotonic()
+        try:
+            for resp in mlx_lm.stream_generate(
+                self._model,
+                self._tokenizer,
+                prompt="hi",
+                max_tokens=1,
+            ):
+                break
+        except Exception:
+            logger.debug("Warm-up failed (non-fatal)", exc_info=True)
+        warmup_ms = (time.monotonic() - t0) * 1000
+
+        # Create a reusable prompt_cache for KV state persistence across calls.
+        # mlx_lm updates this in-place during generation, so subsequent calls
+        # with shared prompt prefixes skip recomputation.
+        try:
+            from mlx_lm.models.cache import make_prompt_cache  # type: ignore[import-untyped]
+
+            self._prompt_cache = make_prompt_cache(self._model)
+        except Exception:
+            logger.debug("Failed to create prompt_cache (non-fatal)", exc_info=True)
+
+        logger.info("Model ready: %s (warm-up: %.0fms)", self._repo_id, warmup_ms)
 
     def _apply_chat_template(self, messages: list[dict[str, str]]) -> str:
         """Format messages using the model's chat template."""
@@ -273,6 +396,134 @@ class MLXBackend(InferenceBackend):
         stripped = text.strip()
         return stripped in self._stop_strings
 
+    def _template_prefix_length(self, messages: list[dict[str, str]]) -> int:
+        """Compute the token length of the chat template prefix before user content.
+
+        This is the number of tokens that are identical across all calls
+        with the same system prompt (or no system prompt).  Used to store
+        KV cache checkpoints that can be reused across different user messages.
+        """
+        # Build a minimal template with a placeholder to find where user content starts
+        prefix_messages = []
+        for msg in messages:
+            if msg.get("role") == "system":
+                prefix_messages.append(msg)
+            else:
+                break
+        # Encode template up to (but not including) user content
+        if prefix_messages:
+            prefix_text = self._apply_chat_template(prefix_messages + [{"role": "user", "content": ""}])
+        else:
+            prefix_text = self._apply_chat_template([{"role": "user", "content": ""}])
+        return len(self._tokenizer.encode(prefix_text))
+
+    def _prepare_prefix_skip(
+        self, prompt_token_ids: list[int]
+    ) -> tuple[list[int], bool]:
+        """Compare new prompt tokens against the cached prefix and return only new tokens.
+
+        If the new prompt shares a prefix with the cached tokens, returns only
+        the suffix that needs processing.  If there's no match or no cache,
+        resets the prompt_cache and returns the full token list.
+
+        Returns:
+            (tokens_to_process, cache_hit)
+        """
+        if self._prompt_cache is None or not self._cached_token_ids:
+            return prompt_token_ids, False
+
+        try:
+            cached_offset = self._prompt_cache[0].offset
+        except (AttributeError, IndexError):
+            return prompt_token_ids, False
+
+        if cached_offset == 0:
+            return prompt_token_ids, False
+
+        # Find the longest matching prefix between new tokens and cached tokens
+        cached = self._cached_token_ids
+        match_len = 0
+        max_check = min(len(prompt_token_ids), len(cached), cached_offset)
+        for i in range(max_check):
+            if prompt_token_ids[i] == cached[i]:
+                match_len += 1
+            else:
+                break
+
+        if match_len < 4:
+            # No meaningful prefix overlap — reset cache and process full prompt
+            self._reset_prompt_cache()
+            return prompt_token_ids, False
+
+        # We have a matching prefix of match_len tokens.
+        # Trim the cache to match_len if it has more tokens (from previous generation).
+        if cached_offset > match_len:
+            try:
+                from mlx_lm.models.cache import (  # type: ignore[import-untyped]
+                    can_trim_prompt_cache,
+                    trim_prompt_cache,
+                )
+
+                if can_trim_prompt_cache(self._prompt_cache):
+                    num_to_trim = cached_offset - match_len
+                    trim_prompt_cache(self._prompt_cache, num_to_trim)
+                    self._cached_token_ids = self._cached_token_ids[:match_len]
+                    logger.debug(
+                        "Prefix-skip: trimmed cache by %d tokens (cached=%d, match=%d)",
+                        num_to_trim, cached_offset, match_len,
+                    )
+                else:
+                    # Can't trim — reset and process full prompt
+                    self._reset_prompt_cache()
+                    return prompt_token_ids, False
+            except Exception:
+                self._reset_prompt_cache()
+                return prompt_token_ids, False
+
+        # Return only the tokens after the cached prefix.
+        # generate_step needs at least 1 token, so when the entire prompt is
+        # cached we trim one extra token and re-feed it.
+        suffix = prompt_token_ids[match_len:]
+        if not suffix:
+            # Entire prompt is cached.  Trim the last cached token so
+            # generate_step can "re-process" it to obtain initial logits.
+            try:
+                from mlx_lm.models.cache import (  # type: ignore[import-untyped]
+                    can_trim_prompt_cache,
+                    trim_prompt_cache,
+                )
+
+                if can_trim_prompt_cache(self._prompt_cache):
+                    trim_prompt_cache(self._prompt_cache, 1)
+                    self._cached_token_ids = self._cached_token_ids[:match_len - 1]
+                    logger.debug(
+                        "Prefix-skip: exact match (%d tokens), re-feeding last token",
+                        match_len,
+                    )
+                    return [prompt_token_ids[-1]], True
+            except Exception:
+                pass
+            # Fallback: reset and process full prompt
+            self._reset_prompt_cache()
+            return prompt_token_ids, False
+
+        logger.debug(
+            "Prefix-skip: reusing %d cached tokens, processing %d new tokens",
+            match_len, len(suffix),
+        )
+        return suffix, True
+
+    def _reset_prompt_cache(self) -> None:
+        """Reset the prompt_cache to a fresh state."""
+        try:
+            from mlx_lm.models.cache import make_prompt_cache  # type: ignore[import-untyped]
+
+            self._prompt_cache = make_prompt_cache(self._model)
+            self._cached_token_ids = []
+        except Exception:
+            self._prompt_cache = None
+            self._cached_token_ids = []
+
     def generate(self, request: GenerationRequest) -> tuple[str, InferenceMetrics]:
         import mlx_lm  # type: ignore[import-untyped]
 
@@ -286,23 +537,29 @@ class MLXBackend(InferenceBackend):
         final_tps: float = 0.0
         cache_hit = False
 
-        # Check KV cache for a matching prefix
         extra_kwargs: dict[str, Any] = {}
-        if self._cache_enabled:
-            cached = self._kv_cache.get_cached_prefix(prompt_token_ids)
-            if cached is not None:
-                extra_kwargs["prompt_cache"] = cached.kv_state
-                cache_hit = True
-                logger.debug(
-                    "MLX cache hit: reusing %d/%d prompt tokens",
-                    cached.prefix_length,
-                    prompt_tokens,
-                )
 
+        # True prefix-skip: compare new prompt tokens against cached KV state
+        # and only pass the new suffix to the model.
+        tokens_to_process = prompt_token_ids
+        if self._prompt_cache is not None:
+            tokens_to_process, cache_hit = self._prepare_prefix_skip(prompt_token_ids)
+            extra_kwargs["prompt_cache"] = self._prompt_cache
+
+        # Speculative decoding: use draft model when available
+        if self._draft_model is not None:
+            extra_kwargs["draft_model"] = self._draft_model
+
+        # Quantized KV cache: 4-bit KV reduces memory bandwidth → faster attention
+        if self._kv_bits is not None:
+            extra_kwargs["kv_bits"] = self._kv_bits
+            extra_kwargs["kv_group_size"] = self._kv_group_size
+
+        generated_token_ids: list[int] = []
         for response in mlx_lm.stream_generate(
             self._model,
             self._tokenizer,
-            prompt=prompt,
+            prompt=tokens_to_process,
             max_tokens=request.max_tokens,
             sampler=sampler,
             **extra_kwargs,
@@ -310,19 +567,20 @@ class MLXBackend(InferenceBackend):
             if first_token_time is None:
                 first_token_time = time.monotonic()
             final_tps = response.generation_tps
+            # Collect the actual token ID from the response
+            if hasattr(response, "token"):
+                generated_token_ids.append(int(response.token))
             if response.finish_reason or self._is_stop_token(response.text):
-                # Capture prompt_cache from the final response for storage
-                if (
-                    self._cache_enabled
-                    and hasattr(response, "prompt_cache")
-                    and response.prompt_cache is not None
-                ):
-                    self._kv_cache.store_prefix(prompt_token_ids, response.prompt_cache)
                 break
             tokens.append(response.text)
 
         elapsed = time.monotonic() - start
         ttfc = ((first_token_time or start) - start) * 1000
+
+        # Update cached token tracking with actual token IDs (not re-encoded).
+        # The prompt_cache now contains KV for: prompt + generated tokens.
+        self._cached_token_ids = prompt_token_ids + generated_token_ids
+
         text = "".join(tokens)
 
         return (
@@ -334,7 +592,7 @@ class MLXBackend(InferenceBackend):
                 tokens_per_second=final_tps,
                 total_duration_ms=elapsed * 1000,
                 cache_hit=cache_hit,
-                attention_backend="metal_fused",  # MLX uses Metal fused attention automatically
+                attention_backend="metal_fused",
             ),
         )
 
@@ -350,12 +608,22 @@ class MLXBackend(InferenceBackend):
         prompt_token_ids = self._tokenizer.encode(prompt)
         sampler = self._make_sampler(request.temperature, request.top_p)
 
-        # Check KV cache for a matching prefix
         extra_kwargs: dict[str, Any] = {}
-        if self._cache_enabled:
-            cached = self._kv_cache.get_cached_prefix(prompt_token_ids)
-            if cached is not None:
-                extra_kwargs["prompt_cache"] = cached.kv_state
+
+        # True prefix-skip: only pass new tokens after cached prefix
+        tokens_to_process = prompt_token_ids
+        if self._prompt_cache is not None:
+            tokens_to_process, _hit = self._prepare_prefix_skip(prompt_token_ids)
+            extra_kwargs["prompt_cache"] = self._prompt_cache
+
+        # Speculative decoding: use draft model when available
+        if self._draft_model is not None:
+            extra_kwargs["draft_model"] = self._draft_model
+
+        # Quantized KV cache
+        if self._kv_bits is not None:
+            extra_kwargs["kv_bits"] = self._kv_bits
+            extra_kwargs["kv_group_size"] = self._kv_group_size
 
         # mlx_lm.stream_generate is a sync generator that yields
         # GenerationResponse objects as tokens are produced.
@@ -363,13 +631,14 @@ class MLXBackend(InferenceBackend):
         gen = mlx_lm.stream_generate(
             self._model,
             self._tokenizer,
-            prompt=prompt,
+            prompt=tokens_to_process,
             max_tokens=request.max_tokens,
             sampler=sampler,
             **extra_kwargs,
         )
 
         loop = asyncio.get_event_loop()
+        generated_token_ids: list[int] = []
 
         def _next_token() -> Any:
             try:
@@ -381,14 +650,10 @@ class MLXBackend(InferenceBackend):
             response = await loop.run_in_executor(None, _next_token)
             if response is None:
                 break
+            # Collect actual token IDs
+            if hasattr(response, "token"):
+                generated_token_ids.append(int(response.token))
             if response.finish_reason or self._is_stop_token(response.text):
-                # Store prompt cache from the final response
-                if (
-                    self._cache_enabled
-                    and hasattr(response, "prompt_cache")
-                    and response.prompt_cache is not None
-                ):
-                    self._kv_cache.store_prefix(prompt_token_ids, response.prompt_cache)
                 yield GenerationChunk(
                     text="",
                     finish_reason="stop",
@@ -399,6 +664,9 @@ class MLXBackend(InferenceBackend):
                 token_count=response.generation_tokens,
                 tokens_per_second=response.generation_tps,
             )
+
+        # Update cached token tracking with actual token IDs
+        self._cached_token_ids = prompt_token_ids + generated_token_ids
 
     @property
     def kv_cache(self) -> Any:
@@ -463,6 +731,7 @@ class LlamaCppBackend(InferenceBackend):
                 verbose=False,
             )
             self._attach_cache()
+            self._warmup()
             return
 
         # Full HuggingFace repo ID (user/repo)
@@ -477,6 +746,7 @@ class LlamaCppBackend(InferenceBackend):
                 verbose=False,
             )
             self._attach_cache()
+            self._warmup()
             return
 
         # Try the new resolver for model:variant syntax and catalog lookup
@@ -500,6 +770,7 @@ class LlamaCppBackend(InferenceBackend):
                     verbose=False,
                 )
                 self._attach_cache()
+                self._warmup()
                 return
         except _NewResolutionError:
             pass
@@ -523,7 +794,24 @@ class LlamaCppBackend(InferenceBackend):
             verbose=False,
         )
         self._attach_cache()
+        self._warmup()
         logger.info("Model loaded: %s", model_name)
+
+    def _warmup(self) -> None:
+        """Run a minimal generation to force Metal/CUDA kernel compilation."""
+        if self._llm is None:
+            return
+        logger.info("Warming up llama.cpp model...")
+        t0 = time.monotonic()
+        try:
+            self._llm.create_chat_completion(
+                messages=[{"role": "user", "content": "hi"}],
+                max_tokens=1,
+                temperature=0.0,
+            )
+        except Exception:
+            logger.debug("llama.cpp warm-up failed (non-fatal)", exc_info=True)
+        logger.info("llama.cpp warm-up: %.0fms", (time.monotonic() - t0) * 1000)
 
     def _grammar_arg(self, request: GenerationRequest) -> dict[str, Any]:
         """Build the grammar kwarg for create_chat_completion, if any."""
@@ -568,30 +856,41 @@ class LlamaCppBackend(InferenceBackend):
         import asyncio
 
         loop = asyncio.get_event_loop()
+        queue: asyncio.Queue[Any] = asyncio.Queue()
 
         grammar_kw = self._grammar_arg(request)
-        # create_chat_completion with stream=True returns a sync iterator
-        stream = self._llm.create_chat_completion(
-            messages=request.messages,
-            max_tokens=request.max_tokens,
-            temperature=request.temperature,
-            stream=True,
-            **grammar_kw,
-        )
 
-        def _next_chunk() -> Any:
+        _SENTINEL = object()
+
+        def _produce() -> None:
+            """Run the sync llama.cpp iterator in a thread, pushing to queue."""
             try:
-                return next(stream)
-            except StopIteration:
-                return None
+                stream = self._llm.create_chat_completion(
+                    messages=request.messages,
+                    max_tokens=request.max_tokens,
+                    temperature=request.temperature,
+                    top_p=request.top_p,
+                    stream=True,
+                    **grammar_kw,
+                )
+                for chunk in stream:
+                    loop.call_soon_threadsafe(queue.put_nowait, chunk)
+            except Exception as exc:
+                loop.call_soon_threadsafe(queue.put_nowait, exc)
+            finally:
+                loop.call_soon_threadsafe(queue.put_nowait, _SENTINEL)
+
+        loop.run_in_executor(None, _produce)
 
         while True:
-            chunk = await loop.run_in_executor(None, _next_chunk)
-            if chunk is None:
+            item = await queue.get()
+            if item is _SENTINEL:
                 break
-            delta = chunk["choices"][0].get("delta", {})
+            if isinstance(item, Exception):
+                raise item
+            delta = item["choices"][0].get("delta", {})
             content = delta.get("content", "")
-            finish = chunk["choices"][0].get("finish_reason")
+            finish = item["choices"][0].get("finish_reason")
             if content or finish:
                 yield GenerationChunk(text=content, finish_reason=finish)
 

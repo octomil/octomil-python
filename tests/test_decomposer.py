@@ -6,6 +6,15 @@ import asyncio
 from unittest.mock import patch
 
 import pytest
+
+try:
+    import fastapi  # noqa: F401
+    import pytest_asyncio  # noqa: F401
+
+    _has_serve_deps = True
+except ImportError:
+    _has_serve_deps = False
+
 from httpx import ASGITransport, AsyncClient
 
 from octomil.decomposer import (
@@ -636,6 +645,8 @@ class TestMultiModelServeDecomposition:
     @pytest.fixture
     def multi_model_app(self):
         """Create a multi-model FastAPI app with EchoBackends."""
+        if not _has_serve_deps:
+            pytest.skip("fastapi and pytest-asyncio required")
         from octomil.serve import EchoBackend, create_multi_model_app
 
         def mock_detect(name, **kwargs):

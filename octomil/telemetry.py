@@ -22,8 +22,6 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any, Optional
 
-import httpx
-
 logger = logging.getLogger(__name__)
 
 _DEFAULT_API_BASE = "https://api.octomil.com/api/v1"
@@ -491,6 +489,8 @@ class TelemetryReporter:
 
     def _dispatch_loop(self) -> None:
         """Background thread: pull events from the queue and POST them as OTLP envelopes."""
+        import httpx
+
         client = httpx.Client(timeout=5.0)
         url = _v2_url(self.api_base)
         headers = {"Authorization": f"Bearer {self.api_key}"}
@@ -516,7 +516,7 @@ class TelemetryReporter:
 
     @staticmethod
     def _send(
-        client: httpx.Client,
+        client: Any,
         url: str,
         headers: dict[str, str],
         payload: dict[str, Any],
