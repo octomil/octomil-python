@@ -145,7 +145,7 @@ class TestDataClasses:
 
 
 # ===================================================================
-# Client.deploy() with device targeting
+# OctomilClient.deploy() with device targeting
 # ===================================================================
 
 
@@ -154,7 +154,7 @@ class TestDeployWithDeviceTargeting:
     @patch("octomil.client.ModelRegistry")
     @patch("octomil.client._ApiClient")
     def test_deploy_with_devices(self, mock_api_cls, mock_reg_cls, mock_rollouts_cls):
-        from octomil.client import Client
+        from octomil.client import OctomilClient
 
         mock_api = mock_api_cls.return_value
         mock_reg = mock_reg_cls.return_value
@@ -170,7 +170,7 @@ class TestDeployWithDeviceTargeting:
             ],
         }
 
-        client = Client(api_key="key")
+        client = OctomilClient(api_key="key")
         result = client.deploy(
             "my-model",
             devices=["dev-1", "dev-2"],
@@ -195,7 +195,7 @@ class TestDeployWithDeviceTargeting:
     @patch("octomil.client.ModelRegistry")
     @patch("octomil.client._ApiClient")
     def test_deploy_with_group(self, mock_api_cls, mock_reg_cls, mock_rollouts_cls):
-        from octomil.client import Client
+        from octomil.client import OctomilClient
 
         mock_api = mock_api_cls.return_value
         mock_reg = mock_reg_cls.return_value
@@ -210,7 +210,7 @@ class TestDeployWithDeviceTargeting:
             ],
         }
 
-        client = Client(api_key="key")
+        client = OctomilClient(api_key="key")
         result = client.deploy("my-model", group="production")
 
         assert isinstance(result, DeploymentResult)
@@ -228,7 +228,7 @@ class TestDeployWithDeviceTargeting:
     def test_deploy_with_explicit_version_and_devices(
         self, mock_api_cls, mock_reg_cls, mock_rollouts_cls
     ):
-        from octomil.client import Client
+        from octomil.client import OctomilClient
 
         mock_api = mock_api_cls.return_value
         mock_reg = mock_reg_cls.return_value
@@ -240,7 +240,7 @@ class TestDeployWithDeviceTargeting:
             "device_statuses": [],
         }
 
-        client = Client(api_key="key")
+        client = OctomilClient(api_key="key")
         result = client.deploy(
             "my-model",
             version="1.5.0",
@@ -258,7 +258,7 @@ class TestDeployWithDeviceTargeting:
     def test_deploy_with_device_error_status(
         self, mock_api_cls, mock_reg_cls, mock_rollouts_cls
     ):
-        from octomil.client import Client
+        from octomil.client import OctomilClient
 
         mock_api = mock_api_cls.return_value
         mock_reg = mock_reg_cls.return_value
@@ -278,7 +278,7 @@ class TestDeployWithDeviceTargeting:
             ],
         }
 
-        client = Client(api_key="key")
+        client = OctomilClient(api_key="key")
         result = client.deploy("my-model", devices=["dev-1", "dev-2"])
 
         assert result.status == "partial_failure"
@@ -286,7 +286,7 @@ class TestDeployWithDeviceTargeting:
 
 
 # ===================================================================
-# Client.deploy() fallback (no devices/group)
+# OctomilClient.deploy() fallback (no devices/group)
 # ===================================================================
 
 
@@ -298,7 +298,7 @@ class TestDeployFallbackToRollout:
         self, mock_api_cls, mock_reg_cls, mock_rollouts_cls
     ):
         """When no devices/group is specified, deploy falls back to rollout."""
-        from octomil.client import Client
+        from octomil.client import OctomilClient
 
         mock_reg = mock_reg_cls.return_value
         mock_reg.resolve_model_id.return_value = "model-abc"
@@ -308,7 +308,7 @@ class TestDeployFallbackToRollout:
             "status": "created",
         }
 
-        client = Client(api_key="key")
+        client = OctomilClient(api_key="key")
         result = client.deploy("my-model", rollout=10, strategy="canary")
 
         # Should be a plain dict, not DeploymentResult
@@ -330,14 +330,14 @@ class TestDeployFallbackToRollout:
     def test_deploy_immediate_strategy_fallback(
         self, mock_api_cls, mock_reg_cls, mock_rollouts_cls
     ):
-        from octomil.client import Client
+        from octomil.client import OctomilClient
 
         mock_reg = mock_reg_cls.return_value
         mock_reg.resolve_model_id.return_value = "model-abc"
         mock_reg.get_latest_version.return_value = "1.0.0"
         mock_reg.deploy_version.return_value = {"status": "started"}
 
-        client = Client(api_key="key")
+        client = OctomilClient(api_key="key")
         client.deploy("my-model", strategy="immediate")
 
         mock_reg.deploy_version.assert_called_once_with(
@@ -351,7 +351,7 @@ class TestDeployFallbackToRollout:
 
 
 # ===================================================================
-# Client.deploy_prepare() — dry-run
+# OctomilClient.deploy_prepare() — dry-run
 # ===================================================================
 
 
@@ -362,7 +362,7 @@ class TestDeployPrepare:
     def test_deploy_prepare_with_devices(
         self, mock_api_cls, mock_reg_cls, mock_rollouts_cls
     ):
-        from octomil.client import Client
+        from octomil.client import OctomilClient
 
         mock_api = mock_api_cls.return_value
         mock_reg = mock_reg_cls.return_value
@@ -392,7 +392,7 @@ class TestDeployPrepare:
             ]
         }
 
-        client = Client(api_key="key")
+        client = OctomilClient(api_key="key")
         plan = client.deploy_prepare("my-model", devices=["iphone-1", "pixel-1"])
 
         assert isinstance(plan, DeploymentPlan)
@@ -410,7 +410,7 @@ class TestDeployPrepare:
     def test_deploy_prepare_with_group(
         self, mock_api_cls, mock_reg_cls, mock_rollouts_cls
     ):
-        from octomil.client import Client
+        from octomil.client import OctomilClient
 
         mock_api = mock_api_cls.return_value
         mock_reg = mock_reg_cls.return_value
@@ -428,7 +428,7 @@ class TestDeployPrepare:
             ]
         }
 
-        client = Client(api_key="key")
+        client = OctomilClient(api_key="key")
         plan = client.deploy_prepare("my-model", group="production")
 
         assert isinstance(plan, DeploymentPlan)
@@ -446,7 +446,7 @@ class TestDeployPrepare:
     def test_deploy_prepare_explicit_version(
         self, mock_api_cls, mock_reg_cls, mock_rollouts_cls
     ):
-        from octomil.client import Client
+        from octomil.client import OctomilClient
 
         mock_api = mock_api_cls.return_value
         mock_reg = mock_reg_cls.return_value
@@ -454,7 +454,7 @@ class TestDeployPrepare:
 
         mock_api.post.return_value = {"deployments": []}
 
-        client = Client(api_key="key")
+        client = OctomilClient(api_key="key")
         plan = client.deploy_prepare("my-model", version="5.0.0")
 
         assert plan.model_version == "5.0.0"
@@ -466,7 +466,7 @@ class TestDeployPrepare:
     def test_deploy_prepare_empty_result(
         self, mock_api_cls, mock_reg_cls, mock_rollouts_cls
     ):
-        from octomil.client import Client
+        from octomil.client import OctomilClient
 
         mock_api = mock_api_cls.return_value
         mock_reg = mock_reg_cls.return_value
@@ -475,14 +475,14 @@ class TestDeployPrepare:
 
         mock_api.post.return_value = {}
 
-        client = Client(api_key="key")
+        client = OctomilClient(api_key="key")
         plan = client.deploy_prepare("my-model")
 
         assert plan.deployments == []
 
 
 # ===================================================================
-# Client.train()
+# OctomilClient.train()
 # ===================================================================
 
 
@@ -491,7 +491,7 @@ class TestTrain:
     @patch("octomil.client.ModelRegistry")
     @patch("octomil.client._ApiClient")
     def test_train_creates_session(self, mock_api_cls, mock_reg_cls, mock_rollouts_cls):
-        from octomil.client import Client
+        from octomil.client import OctomilClient
 
         mock_api = mock_api_cls.return_value
         mock_reg = mock_reg_cls.return_value
@@ -502,7 +502,7 @@ class TestTrain:
             "status": "created",
         }
 
-        client = Client(api_key="key")
+        client = OctomilClient(api_key="key")
         result = client.train("my-model", rounds=5, strategy="fedavg")
 
         assert isinstance(result, TrainingSession)
@@ -518,7 +518,7 @@ class TestTrain:
     def test_train_with_group_and_kwargs(
         self, mock_api_cls, mock_reg_cls, mock_rollouts_cls
     ):
-        from octomil.client import Client
+        from octomil.client import OctomilClient
 
         mock_api = mock_api_cls.return_value
         mock_reg = mock_reg_cls.return_value
@@ -529,7 +529,7 @@ class TestTrain:
             "status": "started",
         }
 
-        client = Client(api_key="key")
+        client = OctomilClient(api_key="key")
         result = client.train(
             "my-model",
             group="edge-devices",
@@ -559,7 +559,7 @@ class TestTrain:
     @patch("octomil.client.ModelRegistry")
     @patch("octomil.client._ApiClient")
     def test_train_defaults(self, mock_api_cls, mock_reg_cls, mock_rollouts_cls):
-        from octomil.client import Client
+        from octomil.client import OctomilClient
 
         mock_api = mock_api_cls.return_value
         mock_reg = mock_reg_cls.return_value
@@ -567,7 +567,7 @@ class TestTrain:
 
         mock_api.post.return_value = {"session_id": "s-3", "status": "created"}
 
-        client = Client(api_key="key")
+        client = OctomilClient(api_key="key")
         result = client.train("my-model")
 
         assert result.group == "default"
@@ -579,7 +579,7 @@ class TestTrain:
 
 
 # ===================================================================
-# Client.rollback()
+# OctomilClient.rollback()
 # ===================================================================
 
 
@@ -590,7 +590,7 @@ class TestRollback:
     def test_rollback_to_previous_version(
         self, mock_api_cls, mock_reg_cls, mock_rollouts_cls
     ):
-        from octomil.client import Client
+        from octomil.client import OctomilClient
 
         mock_reg = mock_reg_cls.return_value
         mock_reg.resolve_model_id.return_value = "model-abc"
@@ -607,7 +607,7 @@ class TestRollback:
             "status": "started",
         }
 
-        client = Client(api_key="key")
+        client = OctomilClient(api_key="key")
         result = client.rollback("my-model")
 
         assert isinstance(result, RollbackResult)
@@ -631,7 +631,7 @@ class TestRollback:
     def test_rollback_to_specific_version(
         self, mock_api_cls, mock_reg_cls, mock_rollouts_cls
     ):
-        from octomil.client import Client
+        from octomil.client import OctomilClient
 
         mock_reg = mock_reg_cls.return_value
         mock_reg.resolve_model_id.return_value = "model-abc"
@@ -641,7 +641,7 @@ class TestRollback:
             "status": "started",
         }
 
-        client = Client(api_key="key")
+        client = OctomilClient(api_key="key")
         result = client.rollback("my-model", to_version="1.0.0")
 
         assert isinstance(result, RollbackResult)
@@ -658,7 +658,7 @@ class TestRollback:
     def test_rollback_fails_with_single_version(
         self, mock_api_cls, mock_reg_cls, mock_rollouts_cls
     ):
-        from octomil.client import Client
+        from octomil.client import OctomilClient
         from octomil import OctomilClientError
 
         mock_reg = mock_reg_cls.return_value
@@ -666,7 +666,7 @@ class TestRollback:
         mock_reg.get_latest_version.return_value = "1.0.0"
         mock_reg.list_versions.return_value = {"versions": [{"version": "1.0.0"}]}
 
-        client = Client(api_key="key")
+        client = OctomilClient(api_key="key")
         with pytest.raises(OctomilClientError, match="only one version exists"):
             client.rollback("my-model")
 

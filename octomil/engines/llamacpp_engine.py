@@ -141,6 +141,9 @@ class LlamaCppEngine(EnginePlugin):
             if tps == 0 and metrics.total_tokens > 0 and elapsed > 0:
                 tps = metrics.total_tokens / elapsed
 
+            # Free GPU/Metal memory before next benchmark
+            del backend
+
             return BenchmarkResult(
                 engine_name=self.name,
                 tokens_per_second=tps,
