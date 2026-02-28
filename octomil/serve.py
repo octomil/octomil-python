@@ -388,6 +388,7 @@ class MLXBackend(InferenceBackend):
         # a background thread into an asyncio.Queue for non-blocking consumption.
         # asyncio.Queue is NOT thread-safe, so use call_soon_threadsafe for puts.
         queue: asyncio.Queue[Optional[Any]] = asyncio.Queue()
+        cancelled = threading.Event()
         loop = asyncio.get_event_loop()
 
         def _produce() -> None:
@@ -400,34 +401,41 @@ class MLXBackend(InferenceBackend):
                     sampler=sampler,
                     **extra_kwargs,
                 ):
+                    if cancelled.is_set():
+                        break
                     loop.call_soon_threadsafe(queue.put_nowait, response)
             finally:
                 loop.call_soon_threadsafe(queue.put_nowait, None)  # sentinel
 
         threading.Thread(target=_produce, daemon=True).start()
 
-        while True:
-            response = await queue.get()
-            if response is None:
-                break
-            if response.finish_reason or self._is_stop_token(response.text):
-                # Store prompt cache from the final response
-                if (
-                    self._cache_enabled
-                    and hasattr(response, "prompt_cache")
-                    and response.prompt_cache is not None
-                ):
-                    self._kv_cache.store_prefix(prompt_token_ids, response.prompt_cache)
+        try:
+            while True:
+                response = await queue.get()
+                if response is None:
+                    break
+                if response.finish_reason or self._is_stop_token(response.text):
+                    # Store prompt cache from the final response
+                    if (
+                        self._cache_enabled
+                        and hasattr(response, "prompt_cache")
+                        and response.prompt_cache is not None
+                    ):
+                        self._kv_cache.store_prefix(
+                            prompt_token_ids, response.prompt_cache
+                        )
+                    yield GenerationChunk(
+                        text="",
+                        finish_reason="stop",
+                    )
+                    break
                 yield GenerationChunk(
-                    text="",
-                    finish_reason="stop",
+                    text=response.text,
+                    token_count=response.generation_tokens,
+                    tokens_per_second=response.generation_tps,
                 )
-                break
-            yield GenerationChunk(
-                text=response.text,
-                token_count=response.generation_tokens,
-                tokens_per_second=response.generation_tps,
-            )
+        finally:
+            cancelled.set()
 
     @property
     def kv_cache(self) -> Any:
