@@ -731,6 +731,7 @@ class LlamaCppBackend(InferenceBackend):
                 verbose=False,
             )
             self._attach_cache()
+            self._warmup()
             return
 
         # Full HuggingFace repo ID (user/repo)
@@ -745,6 +746,7 @@ class LlamaCppBackend(InferenceBackend):
                 verbose=False,
             )
             self._attach_cache()
+            self._warmup()
             return
 
         # Try the new resolver for model:variant syntax and catalog lookup
@@ -768,6 +770,7 @@ class LlamaCppBackend(InferenceBackend):
                     verbose=False,
                 )
                 self._attach_cache()
+                self._warmup()
                 return
         except _NewResolutionError:
             pass
@@ -791,7 +794,24 @@ class LlamaCppBackend(InferenceBackend):
             verbose=False,
         )
         self._attach_cache()
+        self._warmup()
         logger.info("Model loaded: %s", model_name)
+
+    def _warmup(self) -> None:
+        """Run a minimal generation to force Metal/CUDA kernel compilation."""
+        if self._llm is None:
+            return
+        logger.info("Warming up llama.cpp model...")
+        t0 = time.monotonic()
+        try:
+            self._llm.create_chat_completion(
+                messages=[{"role": "user", "content": "hi"}],
+                max_tokens=1,
+                temperature=0.0,
+            )
+        except Exception:
+            logger.debug("llama.cpp warm-up failed (non-fatal)", exc_info=True)
+        logger.info("llama.cpp warm-up: %.0fms", (time.monotonic() - t0) * 1000)
 
     def _grammar_arg(self, request: GenerationRequest) -> dict[str, Any]:
         """Build the grammar kwarg for create_chat_completion, if any."""
@@ -836,30 +856,41 @@ class LlamaCppBackend(InferenceBackend):
         import asyncio
 
         loop = asyncio.get_event_loop()
+        queue: asyncio.Queue[Any] = asyncio.Queue()
 
         grammar_kw = self._grammar_arg(request)
-        # create_chat_completion with stream=True returns a sync iterator
-        stream = self._llm.create_chat_completion(
-            messages=request.messages,
-            max_tokens=request.max_tokens,
-            temperature=request.temperature,
-            stream=True,
-            **grammar_kw,
-        )
 
-        def _next_chunk() -> Any:
+        _SENTINEL = object()
+
+        def _produce() -> None:
+            """Run the sync llama.cpp iterator in a thread, pushing to queue."""
             try:
-                return next(stream)
-            except StopIteration:
-                return None
+                stream = self._llm.create_chat_completion(
+                    messages=request.messages,
+                    max_tokens=request.max_tokens,
+                    temperature=request.temperature,
+                    top_p=request.top_p,
+                    stream=True,
+                    **grammar_kw,
+                )
+                for chunk in stream:
+                    loop.call_soon_threadsafe(queue.put_nowait, chunk)
+            except Exception as exc:
+                loop.call_soon_threadsafe(queue.put_nowait, exc)
+            finally:
+                loop.call_soon_threadsafe(queue.put_nowait, _SENTINEL)
+
+        loop.run_in_executor(None, _produce)
 
         while True:
-            chunk = await loop.run_in_executor(None, _next_chunk)
-            if chunk is None:
+            item = await queue.get()
+            if item is _SENTINEL:
                 break
-            delta = chunk["choices"][0].get("delta", {})
+            if isinstance(item, Exception):
+                raise item
+            delta = item["choices"][0].get("delta", {})
             content = delta.get("content", "")
-            finish = chunk["choices"][0].get("finish_reason")
+            finish = item["choices"][0].get("finish_reason")
             if content or finish:
                 yield GenerationChunk(text=content, finish_reason=finish)
 
