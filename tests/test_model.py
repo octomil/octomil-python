@@ -467,5 +467,5 @@ class TestClientPredict:
             c.predict("my-model", [{"role": "user", "content": "a"}])
             assert len(c._models) == 1
 
-            c.dispose()
+            c.close()
             assert len(c._models) == 0

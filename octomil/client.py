@@ -496,6 +496,116 @@ class OctomilClient:
             yield token
 
     # ------------------------------------------------------------------
+    # Chat — OpenAI-compatible chat completion interface
+    # ------------------------------------------------------------------
+
+    def chat(
+        self,
+        model_id: str,
+        messages: list[dict[str, str]],
+        *,
+        temperature: float | None = None,
+        max_tokens: int | None = None,
+        top_p: float | None = None,
+        timeout: float = 120.0,
+        **parameters: Any,
+    ) -> dict[str, Any]:
+        """OpenAI-compatible chat completion (non-streaming).
+
+        Collects the full response from :meth:`stream_predict` and returns
+        a dict with the assistant message and latency.
+
+        Args:
+            model_id: Model identifier (e.g. ``"phi-4-mini"``).
+            messages: Chat messages (``[{"role": "user", "content": "..."}]``).
+            temperature: Sampling temperature.
+            max_tokens: Maximum tokens to generate.
+            top_p: Nucleus sampling threshold.
+            timeout: HTTP timeout in seconds.
+            **parameters: Additional generation parameters.
+
+        Returns:
+            Dict with ``message`` (role + content), ``latency_ms``, and
+            optional ``usage`` fields.
+        """
+        import time as _time
+
+        params: dict[str, Any] = {**parameters}
+        if temperature is not None:
+            params["temperature"] = temperature
+        if max_tokens is not None:
+            params["max_tokens"] = max_tokens
+        if top_p is not None:
+            params["top_p"] = top_p
+
+        start = _time.monotonic()
+        content = ""
+        for token in self.stream_predict(
+            model_id,
+            messages,
+            parameters=params or None,
+            timeout=timeout,
+        ):
+            content += token.token
+
+        latency_ms = (_time.monotonic() - start) * 1000
+        return {
+            "message": {"role": "assistant", "content": content},
+            "latency_ms": latency_ms,
+        }
+
+    async def chat_stream(
+        self,
+        model_id: str,
+        messages: list[dict[str, str]],
+        *,
+        temperature: float | None = None,
+        max_tokens: int | None = None,
+        top_p: float | None = None,
+        timeout: float = 120.0,
+        **parameters: Any,
+    ) -> "AsyncIterator[dict[str, Any]]":
+        """Streaming chat — yields chunks as they arrive (async generator).
+
+        Each yielded dict contains ``index``, ``content``, ``done``, and
+        ``role`` keys, matching the browser SDK's ``ChatChunk`` shape.
+
+        Args:
+            model_id: Model identifier (e.g. ``"phi-4-mini"``).
+            messages: Chat messages (``[{"role": "user", "content": "..."}]``).
+            temperature: Sampling temperature.
+            max_tokens: Maximum tokens to generate.
+            top_p: Nucleus sampling threshold.
+            timeout: HTTP timeout in seconds.
+            **parameters: Additional generation parameters.
+
+        Yields:
+            Dict with ``index``, ``content``, ``done``, and ``role``.
+        """
+        params: dict[str, Any] = {**parameters}
+        if temperature is not None:
+            params["temperature"] = temperature
+        if max_tokens is not None:
+            params["max_tokens"] = max_tokens
+        if top_p is not None:
+            params["top_p"] = top_p
+
+        idx = 0
+        async for token in self.stream_predict_async(
+            model_id,
+            messages,
+            parameters=params or None,
+            timeout=timeout,
+        ):
+            yield {
+                "index": idx,
+                "content": token.token,
+                "done": token.done,
+                "role": "assistant",
+            }
+            idx += 1
+
+    # ------------------------------------------------------------------
     # Embeddings
     # ------------------------------------------------------------------
 
@@ -527,10 +637,6 @@ class OctomilClient:
             input=input,
             timeout=timeout,
         )
-
-    def dispose(self) -> None:
-        """Dispose all cached models."""
-        self._models.clear()
 
     # ------------------------------------------------------------------
     # Deploy — create a rollout with optional device targeting
@@ -956,10 +1062,10 @@ class OctomilClient:
         return model
 
     # ------------------------------------------------------------------
-    # Dispose — clean up models and telemetry
+    # Close — clean up models and telemetry
     # ------------------------------------------------------------------
 
-    def dispose(self) -> None:
+    def close(self) -> None:
         """Release all cached models and shut down the telemetry reporter."""
         self._models.clear()
         if self._reporter:
@@ -968,6 +1074,17 @@ class OctomilClient:
             except Exception:
                 logger.debug("Failed to close telemetry reporter", exc_info=True)
             self._reporter = None
+
+    def dispose(self) -> None:
+        """Deprecated: use :meth:`close` instead."""
+        import warnings
+
+        warnings.warn(
+            "dispose() is deprecated, use close() instead",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        self.close()
 
 
 # ------------------------------------------------------------------

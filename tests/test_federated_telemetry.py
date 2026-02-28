@@ -158,7 +158,7 @@ class TestTrainFromRemoteTelemetry:
 
 
 # ---------------------------------------------------------------------------
-# participate_in_round() telemetry
+# join_round() telemetry
 # ---------------------------------------------------------------------------
 
 
@@ -192,7 +192,7 @@ class TestParticipateInRoundTelemetry:
                 return_value={"w": 0},
             ),
         ):
-            result = fc.participate_in_round(
+            result = fc.join_round(
                 round_id="round-1",
                 local_train_fn=fake_train_fn,
             )
@@ -291,7 +291,7 @@ class TestTrainIfEligibleTelemetry:
         _drain(reporter, sent, patcher)
 
         funnel_events = _extract_funnel_events(sent)
-        # Should have weight_upload failure from participate_in_round AND
+        # Should have weight_upload failure from join_round AND
         # the cached fallback event from train_if_eligible
         cached_events = [
             e for e in funnel_events
