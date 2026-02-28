@@ -200,6 +200,18 @@ class InferenceBackend:
         raise NotImplementedError
 
 
+_DRAFT_MODEL_MAP: dict[str, str] = {
+    "phi-4": "mlx-community/Phi-3.5-mini-instruct-4bit",
+    "llama-8b": "mlx-community/Llama-3.2-1B-Instruct-4bit",
+    "llama-3b": "mlx-community/Llama-3.2-1B-Instruct-4bit",
+    "qwen-7b": "mlx-community/Qwen2.5-1.5B-Instruct-4bit",
+    "qwen-3b": "mlx-community/Qwen2.5-1.5B-Instruct-4bit",
+    "gemma-4b": "mlx-community/gemma-3-1b-it-4bit",
+    "gemma-12b": "mlx-community/gemma-3-1b-it-4bit",
+    "gemma-27b": "mlx-community/gemma-3-1b-it-4bit",
+}
+
+
 class MLXBackend(InferenceBackend):
     """Apple Silicon backend using mlx-lm.
 
@@ -223,6 +235,7 @@ class MLXBackend(InferenceBackend):
 
         self._model: Any = None
         self._tokenizer: Any = None
+        self._draft_model: Any = None
         self._model_name: str = ""
         self._repo_id: str = ""
         self._cache_enabled = cache_enabled
@@ -237,6 +250,15 @@ class MLXBackend(InferenceBackend):
         logger.info("Loading %s (%s) with mlx-lm...", model_name, self._repo_id)
         self._model, self._tokenizer = mlx_lm.load(self._repo_id)
         logger.info("Model loaded: %s", self._repo_id)
+
+        # Load draft model for speculative decoding (if available)
+        draft_repo = _DRAFT_MODEL_MAP.get(model_name)
+        if draft_repo:
+            logger.info("Loading draft model for speculative decoding: %s", draft_repo)
+            try:
+                self._draft_model, _ = mlx_lm.load(draft_repo)
+            except Exception:
+                logger.debug("Draft model load failed (non-fatal)", exc_info=True)
 
         # Collect special token strings for output filtering
         self._stop_strings: set[str] = set()
@@ -299,6 +321,9 @@ class MLXBackend(InferenceBackend):
                     prompt_tokens,
                 )
 
+        if self._draft_model is not None:
+            extra_kwargs["draft_model"] = self._draft_model
+
         for response in mlx_lm.stream_generate(
             self._model,
             self._tokenizer,
@@ -357,28 +382,32 @@ class MLXBackend(InferenceBackend):
             if cached is not None:
                 extra_kwargs["prompt_cache"] = cached.kv_state
 
-        # mlx_lm.stream_generate is a sync generator that yields
-        # GenerationResponse objects as tokens are produced.
-        # We run it in a thread to avoid blocking the event loop.
-        gen = mlx_lm.stream_generate(
-            self._model,
-            self._tokenizer,
-            prompt=prompt,
-            max_tokens=request.max_tokens,
-            sampler=sampler,
-            **extra_kwargs,
-        )
+        if self._draft_model is not None:
+            extra_kwargs["draft_model"] = self._draft_model
+
+        # mlx_lm.stream_generate is a sync generator — push chunks from
+        # a background thread into an asyncio.Queue for non-blocking consumption.
+        queue: asyncio.Queue[Optional[Any]] = asyncio.Queue()
+
+        def _produce() -> None:
+            try:
+                for response in mlx_lm.stream_generate(
+                    self._model,
+                    self._tokenizer,
+                    prompt=prompt,
+                    max_tokens=request.max_tokens,
+                    sampler=sampler,
+                    **extra_kwargs,
+                ):
+                    queue.put_nowait(response)
+            finally:
+                queue.put_nowait(None)  # sentinel
 
         loop = asyncio.get_event_loop()
-
-        def _next_token() -> Any:
-            try:
-                return next(gen)
-            except StopIteration:
-                return None
+        loop.run_in_executor(None, _produce)
 
         while True:
-            response = await loop.run_in_executor(None, _next_token)
+            response = await queue.get()
             if response is None:
                 break
             if response.finish_reason or self._is_stop_token(response.text):
@@ -458,6 +487,7 @@ class LlamaCppBackend(InferenceBackend):
             self._llm = Llama(
                 model_path=model_name,
                 n_ctx=4096,
+                n_batch=256,
                 n_gpu_layers=-1,  # offload all layers to GPU
                 flash_attn=True,  # fused attention kernels for better perf on long sequences
                 verbose=False,
@@ -472,6 +502,7 @@ class LlamaCppBackend(InferenceBackend):
                 repo_id=model_name,
                 filename="*Q4_K_M.gguf",
                 n_ctx=4096,
+                n_batch=256,
                 n_gpu_layers=-1,
                 flash_attn=True,
                 verbose=False,
@@ -495,6 +526,7 @@ class LlamaCppBackend(InferenceBackend):
                     repo_id=repo_id,
                     filename=filename,
                     n_ctx=4096,
+                    n_batch=256,
                     n_gpu_layers=-1,
                     flash_attn=True,
                     verbose=False,
@@ -518,6 +550,7 @@ class LlamaCppBackend(InferenceBackend):
             repo_id=repo_id,
             filename=filename,
             n_ctx=4096,
+            n_batch=256,
             n_gpu_layers=-1,
             flash_attn=True,
             verbose=False,

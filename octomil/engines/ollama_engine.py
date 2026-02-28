@@ -145,11 +145,9 @@ class OllamaEngine(EnginePlugin):
 
             data = resp.json()
             eval_count = data.get("eval_count", 0)
-            eval_duration_ns = data.get("eval_duration", 0)
 
-            if eval_duration_ns > 0:
-                tps = eval_count / (eval_duration_ns / 1e9)
-            elif elapsed > 0 and eval_count > 0:
+            # Use wall-clock elapsed for fair comparison with other engines
+            if eval_count > 0 and elapsed > 0:
                 tps = eval_count / elapsed
             else:
                 tps = 0.0

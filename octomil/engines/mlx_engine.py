@@ -106,7 +106,12 @@ class MLXEngine(EnginePlugin):
 
             sampler = make_sampler(temp=0.7)
 
-            # Warm up
+            # Warmup: JIT-compile Metal shaders before timing
+            for _ in mlx_lm.stream_generate(
+                model, tokenizer, prompt=formatted, max_tokens=1, sampler=sampler
+            ):
+                break
+
             start = time.monotonic()
             tokens_generated = 0
             first_token_time = None
