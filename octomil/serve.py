@@ -254,6 +254,15 @@ class MLXBackend(InferenceBackend):
         self._model, self._tokenizer = mlx_lm.load(self._repo_id)
         logger.info("Model loaded: %s", self._repo_id)
 
+        # Set Metal buffer cache limit to prevent unbounded growth
+        # during long inference sessions.  2GB is enough for ~14B models.
+        try:
+            import mlx.core as mx  # type: ignore[import-untyped]
+
+            mx.set_cache_limit(2 * 1024 * 1024 * 1024)  # 2 GB
+        except Exception:
+            pass
+
         # Load draft model for speculative decoding (if available)
         draft_repo = _DRAFT_MODEL_MAP.get(model_name)
         if draft_repo:
@@ -389,7 +398,10 @@ class MLXBackend(InferenceBackend):
             prompt_token_ids
         )
 
-        extra_kwargs: dict[str, Any] = {"prompt_cache": cache}
+        extra_kwargs: dict[str, Any] = {
+            "prompt_cache": cache,
+            "prefill_step_size": 4096,
+        }
         if self._draft_model is not None:
             extra_kwargs["draft_model"] = self._draft_model
 
@@ -446,7 +458,10 @@ class MLXBackend(InferenceBackend):
             prompt_token_ids
         )
 
-        extra_kwargs: dict[str, Any] = {"prompt_cache": cache}
+        extra_kwargs: dict[str, Any] = {
+            "prompt_cache": cache,
+            "prefill_step_size": 4096,
+        }
         if self._draft_model is not None:
             extra_kwargs["draft_model"] = self._draft_model
 

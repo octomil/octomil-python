@@ -126,6 +126,7 @@ class MLXEngine(EnginePlugin):
                 prompt=formatted,
                 max_tokens=n_tokens,
                 sampler=sampler,
+                prefill_step_size=4096,
             ):
                 if first_token_time is None:
                     first_token_time = time.monotonic()
