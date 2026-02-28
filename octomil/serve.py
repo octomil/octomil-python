@@ -237,10 +237,10 @@ class MLXBackend(InferenceBackend):
         self._model_name: str = ""
         self._repo_id: str = ""
         self._cache_enabled = cache_enabled
-        # MLX prompt cache — stored directly as mlx_lm KVCache objects.
-        # Single-entry: stores the most recent request's cache for prefix reuse.
-        self._last_prompt_tokens: Optional[tuple[int, ...]] = None
-        self._last_prompt_cache: Optional[list[Any]] = None
+        # Multi-entry KV cache pool — LRU eviction by both entry count and size.
+        from .cache import KVCacheManager
+
+        self._cache_mgr = KVCacheManager(max_cache_size_mb=cache_size_mb, max_entries=4)
         self._cache_hits: int = 0
         self._cache_misses: int = 0
 
@@ -312,10 +312,10 @@ class MLXBackend(InferenceBackend):
     ) -> tuple[list[Any], list[int], bool]:
         """Fetch a reusable prompt cache or create a fresh one.
 
-        Returns (cache, remaining_tokens, cache_hit).  When a prefix of the
-        previous request matches, the cache is moved out of storage (no copy),
-        trimmed to the common prefix, and the remaining (un-cached) tokens are
-        returned so ``stream_generate`` only processes the delta.
+        Returns (cache, remaining_tokens, cache_hit).  Looks up the longest
+        matching prefix in the ``KVCacheManager`` pool, trims the MLX KV
+        tensors to the common prefix, and returns only the remaining tokens
+        so ``stream_generate`` only processes the delta.
         """
         from mlx_lm.models.cache import (  # type: ignore[import-untyped]
             can_trim_prompt_cache,
@@ -323,22 +323,11 @@ class MLXBackend(InferenceBackend):
             trim_prompt_cache,
         )
 
-        if (
-            self._cache_enabled
-            and self._last_prompt_cache is not None
-            and self._last_prompt_tokens is not None
-        ):
-            # Find longest common prefix between stored and current prompt
-            stored = self._last_prompt_tokens
-            common_len = 0
-            for i in range(min(len(stored), len(prompt_token_ids))):
-                if stored[i] != prompt_token_ids[i]:
-                    break
-                common_len = i + 1
-
-            if common_len >= 4:
-                cache = self._last_prompt_cache  # Move, not copy
-                self._last_prompt_cache = None
+        if self._cache_enabled:
+            hit = self._cache_mgr.get_cached_prefix(prompt_token_ids)
+            if hit is not None:
+                cache = hit.kv_state
+                common_len = hit.prefix_length
 
                 # Trim cache to the reusable prefix.
                 # For exact match (common_len == len(prompt)), trim to
@@ -369,17 +358,13 @@ class MLXBackend(InferenceBackend):
                 return cache, remaining, True
 
         # No usable cache — create fresh
-        self._last_prompt_cache = None  # Discard old cache
         self._cache_misses += 1
         return make_prompt_cache(self._model), prompt_token_ids, False
 
-    def _store_cache(
-        self, prompt_token_ids: list[int], cache: list[Any]
-    ) -> None:
-        """Store the prompt cache for potential reuse on the next request."""
+    def _store_cache(self, prompt_token_ids: list[int], cache: list[Any]) -> None:
+        """Store the prompt cache in the pool for potential reuse."""
         if self._cache_enabled:
-            self._last_prompt_tokens = tuple(prompt_token_ids)
-            self._last_prompt_cache = cache
+            self._cache_mgr.store_prefix(prompt_token_ids, cache)
 
     def generate(self, request: GenerationRequest) -> tuple[str, InferenceMetrics]:
         import mlx_lm  # type: ignore[import-untyped]
@@ -521,30 +506,8 @@ class MLXBackend(InferenceBackend):
 
     @property
     def kv_cache(self) -> Any:
-        """Expose cache stats for stats endpoint.
-
-        Returns a duck-typed object with a ``.stats()`` method matching
-        the ``KVCacheManager`` interface used by the API endpoints.
-        """
-        return self._MLXCacheStatsProxy(self)
-
-    class _MLXCacheStatsProxy:
-        """Adapter so ``_get_cache_manager(backend).stats()`` works."""
-
-        def __init__(self, backend: "MLXBackend") -> None:
-            self._b = backend
-
-        def stats(self):  # noqa: ANN201
-            from .cache import CacheStats
-
-            total = self._b._cache_hits + self._b._cache_misses
-            return CacheStats(
-                hits=self._b._cache_hits,
-                misses=self._b._cache_misses,
-                hit_rate=self._b._cache_hits / total if total > 0 else 0.0,
-                entries=1 if self._b._last_prompt_cache is not None else 0,
-                memory_mb=0.0,
-            )
+        """Expose the KVCacheManager for the stats endpoint."""
+        return self._cache_mgr
 
     def list_models(self) -> list[str]:
         return [self._model_name] if self._model_name else []

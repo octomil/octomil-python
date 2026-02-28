@@ -118,10 +118,17 @@ class KVCacheManager:
         Maximum total size of cached KV states in megabytes.  When the
         cache exceeds this limit, the least-recently-used entries are
         evicted.
+    max_entries:
+        Maximum number of entries in the cache.  ``None`` means unlimited
+        (eviction is based on size only).  When set, entry-count eviction
+        fires *before* size-based eviction.
     """
 
-    def __init__(self, max_cache_size_mb: int = 2048) -> None:
+    def __init__(
+        self, max_cache_size_mb: int = 2048, max_entries: int | None = None
+    ) -> None:
         self._max_bytes = max_cache_size_mb * 1024 * 1024
+        self._max_entries = max_entries
         self._entries: OrderedDict[int, _CacheEntry] = OrderedDict()
         self._current_bytes: int = 0
         self._hits: int = 0
@@ -147,7 +154,7 @@ class KVCacheManager:
             # Only try lengths that actually exist in cache, longest first
             n = len(tokens)
             for length in sorted(
-                (l for l in self._cached_lengths if 4 <= l <= n), reverse=True
+                (cl for cl in self._cached_lengths if 4 <= cl <= n), reverse=True
             ):
                 key = _hash_token_prefix(tokens, length)
                 entry = self._entries.get(key)
@@ -225,15 +232,31 @@ class KVCacheManager:
     # ------------------------------------------------------------------
 
     def _evict_unlocked(self) -> None:
-        """Evict LRU entries until cache fits within the size budget.
+        """Evict LRU entries until cache fits within the size and entry budgets.
 
+        Entry-count eviction fires before size-based eviction.
         Caller **must** hold ``self._lock``.
         """
         evicted = False
+
+        # Entry count eviction (fires first)
+        if self._max_entries is not None:
+            while len(self._entries) > self._max_entries and self._entries:
+                _key, entry = self._entries.popitem(last=False)
+                self._current_bytes -= entry.size_bytes
+                evicted = True
+                logger.debug(
+                    "Cache EVICT (max_entries): key=%s, freed=%d bytes",
+                    _key,
+                    entry.size_bytes,
+                )
+
+        # Size-based eviction
         while self._current_bytes > self._max_bytes and self._entries:
             _key, entry = self._entries.popitem(last=False)
             self._current_bytes -= entry.size_bytes
             evicted = True
             logger.debug("Cache EVICT: key=%s, freed=%d bytes", _key, entry.size_bytes)
+
         if evicted:
             self._cached_lengths = {e.prefix_length for e in self._entries.values()}

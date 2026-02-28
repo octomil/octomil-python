@@ -306,3 +306,66 @@ class TestKVCacheManagerReplace:
         assert result is not None
         assert result.kv_state == "new_state"
         assert cache.stats().entries == 1
+
+
+# ---------------------------------------------------------------------------
+# KVCacheManager — pool capacity (max_entries)
+# ---------------------------------------------------------------------------
+
+
+class TestCachePoolCapacity:
+    """Tests for max_entries pool capacity."""
+
+    def test_max_entries_enforced(self):
+        cache = KVCacheManager(max_cache_size_mb=1024, max_entries=2)
+
+        # Store 3 entries — first should be evicted
+        cache.store_prefix(list(range(10)), "kv_state_1")
+        cache.store_prefix(list(range(20)), "kv_state_2")
+        cache.store_prefix(list(range(30)), "kv_state_3")
+
+        stats = cache.stats()
+        assert stats.entries <= 2
+
+    def test_lru_eviction_order_with_max_entries(self):
+        cache = KVCacheManager(max_cache_size_mb=1024, max_entries=2)
+
+        # Use non-overlapping token ranges to avoid prefix matching
+        tokens_a = list(range(1000, 1010))
+        tokens_b = list(range(2000, 2010))
+        tokens_c = list(range(3000, 3010))
+
+        cache.store_prefix(tokens_a, "state_a")
+        cache.store_prefix(tokens_b, "state_b")
+
+        # Access A to make it most recently used
+        cache.get_cached_prefix(tokens_a)
+
+        # Adding C should evict B (LRU), not A
+        cache.store_prefix(tokens_c, "state_c")
+
+        assert cache.get_cached_prefix(tokens_a) is not None
+        assert cache.get_cached_prefix(tokens_b) is None
+
+    def test_none_max_entries_means_unlimited(self):
+        cache = KVCacheManager(max_cache_size_mb=1024, max_entries=None)
+
+        for i in range(10):
+            cache.store_prefix(list(range(i * 10, i * 10 + 10)), f"state_{i}")
+
+        stats = cache.stats()
+        assert stats.entries == 10
+
+    def test_max_entries_one(self):
+        cache = KVCacheManager(max_cache_size_mb=1024, max_entries=1)
+
+        tokens_a = list(range(10))
+        tokens_b = list(range(20))
+
+        cache.store_prefix(tokens_a, "state_a")
+        cache.store_prefix(tokens_b, "state_b")
+
+        stats = cache.stats()
+        assert stats.entries == 1
+        assert cache.get_cached_prefix(tokens_b) is not None
+        assert cache.get_cached_prefix(tokens_a) is None
