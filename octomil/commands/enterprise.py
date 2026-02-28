@@ -17,9 +17,6 @@ from octomil.cli_helpers import (
     _get_api_key,
     _get_client,
     _get_enterprise_client,
-    _get_org_id,
-    _get_telemetry_reporter,
-    _require_api_key,
     _require_org_id,
     _save_credentials,
 )

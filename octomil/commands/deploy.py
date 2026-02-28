@@ -11,9 +11,7 @@ import click
 
 from octomil.cli_helpers import (
     _complete_model_name,
-    _get_api_key,
     _get_client,
-    _get_org_id,
     _get_telemetry_reporter,
     _require_api_key,
     http_request,

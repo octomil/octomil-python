@@ -11,7 +11,7 @@ from typing import Optional
 
 import click
 
-from octomil.cli_helpers import _complete_model_name, _get_api_key
+from octomil.cli_helpers import _complete_model_name
 
 
 # ---------------------------------------------------------------------------
@@ -274,7 +274,7 @@ def completions(shell: Optional[str]) -> None:
 
     click.echo(f"Add this to {rc_file}:\n")
     click.secho(f"  {snippet}", bold=True)
-    click.echo(f"\nOr run it now to enable for this session:\n")
+    click.echo("\nOr run it now to enable for this session:\n")
     click.echo(f"  {snippet}")
 
 

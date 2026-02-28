@@ -421,7 +421,7 @@ def benchmark(
                     click.echo(f" — top {100 - rank:.0f}% worldwide")
                 else:
                     click.echo()
-                click.echo(f"\n  Leaderboard: https://octomil.com/benchmarks")
+                click.echo("\n  Leaderboard: https://octomil.com/benchmarks")
                 if share_url:
                     click.echo(f"  Share: {share_url}")
             else:
