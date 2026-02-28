@@ -1873,6 +1873,22 @@ def benchmark(
         try:
             import httpx
 
+            # Look up model metadata from catalog
+            _quant_tag = None
+            _params_tag = None
+            try:
+                from .models.catalog import CATALOG, _resolve_alias
+                from .models.parser import parse_model_tag
+
+                _parsed = parse_model_tag(model)
+                _catalog_key = _resolve_alias(_parsed.family)
+                _entry = CATALOG.get(_catalog_key)
+                if _entry:
+                    _params_tag = _entry.params
+                    _quant_tag = _parsed.variant or _entry.default_quant
+            except Exception:
+                pass
+
             payload = {
                 "model": model,
                 "backend": backend.name,
@@ -1881,6 +1897,7 @@ def benchmark(
                 "os_version": _platform.platform(),
                 "accelerator": "Metal" if _platform.system() == "Darwin" else "CPU",
                 "ram_total_bytes": psutil.virtual_memory().total,
+                "quantization": _quant_tag,
                 "iterations": iterations,
                 "prompt_tokens": avg_prompt,
                 "completion_tokens": avg_completion,
