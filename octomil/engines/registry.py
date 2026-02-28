@@ -13,6 +13,7 @@ Usage::
 
 from __future__ import annotations
 
+import gc
 import logging
 import time
 from dataclasses import dataclass
@@ -127,6 +128,7 @@ class EngineRegistry:
             elapsed = time.monotonic() - start
             result.metadata["benchmark_duration_s"] = round(elapsed, 2)
             ranked.append(RankedEngine(engine=engine, result=result))
+            gc.collect()  # Free GPU memory from benchmark models
 
         # Sort: successful benchmarks first (by tok/s desc), then by priority
         ranked.sort(

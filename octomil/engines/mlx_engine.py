@@ -133,8 +133,11 @@ class MLXEngine(EnginePlugin):
             ttft = ((first_token_time or start) - start) * 1000
             tps = tokens_generated / elapsed if elapsed > 0 else 0
 
-            # Clean up to free memory
-            del model, tokenizer
+            # Clean up to free GPU memory
+            del model, tokenizer, sampler
+            import gc
+
+            gc.collect()
 
             return BenchmarkResult(
                 engine_name=self.name,
