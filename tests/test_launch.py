@@ -9,6 +9,9 @@ import pytest
 from click.testing import CliRunner
 
 from octomil.agents.launcher import (
+    RecommendedModel,
+    _auto_select_model,
+    _select_model_fallback,
     is_serve_running,
     launch_agent,
     start_serve_background,
@@ -74,6 +77,12 @@ class TestLaunchCLI:
         result = runner.invoke(main, ["launch", "--help"])
         assert result.exit_code == 0
         assert "Launch a coding agent" in result.output
+
+    def test_launch_help_shows_select_flag(self):
+        runner = CliRunner()
+        result = runner.invoke(main, ["launch", "--help"])
+        assert "--select" in result.output
+        assert "-s" in result.output
 
     def test_launch_invalid_agent(self):
         runner = CliRunner()
@@ -216,3 +225,105 @@ class TestLaunchAgent:
         env = call_kwargs[1]["env"]
         assert env["OPENAI_API_KEY"] == "octomil-local"
         assert "OPENAI_BASE_URL" in env
+
+    @patch("octomil.agents.launcher.subprocess.run")
+    @patch("octomil.agents.launcher.start_serve_background")
+    @patch("octomil.agents.launcher.is_serve_running", return_value=False)
+    @patch("octomil.agents.registry.is_agent_installed", return_value=True)
+    @patch("octomil.agents.launcher._auto_select_model", return_value="qwen-coder-7b")
+    def test_launch_auto_selects_when_no_model(
+        self, mock_auto, mock_installed, mock_running, mock_serve, mock_run
+    ):
+        """Without --model or --select, auto-selects the best model."""
+        mock_serve.return_value = MagicMock()
+        mock_run.return_value = MagicMock(returncode=0)
+
+        with pytest.raises(SystemExit):
+            launch_agent("codex")
+
+        mock_auto.assert_called_once()
+        mock_serve.assert_called_once_with("qwen-coder-7b", port=8080)
+
+    @patch("octomil.agents.launcher.subprocess.run")
+    @patch("octomil.agents.launcher.start_serve_background")
+    @patch("octomil.agents.launcher.is_serve_running", return_value=False)
+    @patch("octomil.agents.registry.is_agent_installed", return_value=True)
+    @patch("octomil.agents.launcher._select_model_tui", return_value="llama-8b")
+    def test_launch_shows_tui_with_select_flag(
+        self, mock_tui, mock_installed, mock_running, mock_serve, mock_run
+    ):
+        """With --select, shows the TUI picker."""
+        mock_serve.return_value = MagicMock()
+        mock_run.return_value = MagicMock(returncode=0)
+
+        with pytest.raises(SystemExit):
+            launch_agent("codex", select=True)
+
+        mock_tui.assert_called_once()
+        mock_serve.assert_called_once_with("llama-8b", port=8080)
+
+    @patch("octomil.agents.launcher.subprocess.run")
+    @patch("octomil.agents.launcher.start_serve_background")
+    @patch("octomil.agents.launcher.is_serve_running", return_value=False)
+    @patch("octomil.agents.registry.is_agent_installed", return_value=True)
+    def test_launch_skips_auto_select_when_model_given(
+        self, mock_installed, mock_running, mock_serve, mock_run
+    ):
+        """--model bypasses both auto-select and TUI."""
+        mock_serve.return_value = MagicMock()
+        mock_run.return_value = MagicMock(returncode=0)
+
+        with pytest.raises(SystemExit):
+            launch_agent("codex", model="deepseek-v3.2")
+
+        mock_serve.assert_called_once_with("deepseek-v3.2", port=8080)
+
+
+# ---------------------------------------------------------------------------
+# Auto-select and fallback picker
+# ---------------------------------------------------------------------------
+
+
+class TestAutoSelectModel:
+    @patch("octomil.agents.launcher._get_memory_budget_gb", return_value=16.0)
+    @patch("octomil.agents.launcher._model_fits", side_effect=lambda p, b: p <= 30)
+    def test_auto_select_returns_best_fitting(self, mock_fits, mock_budget):
+        result = _auto_select_model()
+        # glm-flash (30B) is the largest that fits <= 30B params
+        assert result == "glm-flash"
+
+    @patch("octomil.agents.launcher._get_memory_budget_gb", return_value=4.0)
+    @patch("octomil.agents.launcher._model_fits", side_effect=lambda p, b: p <= 3)
+    def test_auto_select_small_budget(self, mock_fits, mock_budget):
+        result = _auto_select_model()
+        assert result == "qwen-coder-3b"
+
+
+class TestSelectModelFallback:
+    def test_fallback_numbered_selection(self):
+        recs = [
+            RecommendedModel(
+                key="model-a", label="model-a",
+                description="Test A", size="~1 GB", recommended=True,
+            ),
+            RecommendedModel(
+                key="model-b", label="model-b",
+                description="Test B", size="~2 GB",
+            ),
+        ]
+        with patch("octomil.agents.launcher._is_model_downloaded", return_value=False):
+            with patch("octomil.agents.launcher.click.prompt", return_value="2"):
+                result = _select_model_fallback(recs, 8.0)
+        assert result == "model-b"
+
+    def test_fallback_custom_name(self):
+        recs = [
+            RecommendedModel(
+                key="model-a", label="model-a",
+                description="Test A", size="~1 GB", recommended=True,
+            ),
+        ]
+        with patch("octomil.agents.launcher._is_model_downloaded", return_value=False):
+            with patch("octomil.agents.launcher.click.prompt", return_value="custom-model"):
+                result = _select_model_fallback(recs, 8.0)
+        assert result == "custom-model"

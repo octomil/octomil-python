@@ -156,20 +156,170 @@ def _build_recommendations() -> list[RecommendedModel]:
     return models
 
 
-def _select_model() -> str:
-    """Show an interactive model picker and return the chosen model key."""
+def _auto_select_model() -> str:
+    """Auto-select the best model for the device. No user prompt."""
+    recommendations = _build_recommendations()
+    budget = _get_memory_budget_gb()
+    best = recommendations[0]
+    click.echo(
+        f"Using {best.key} (best for {budget:.0f} GB available). "
+        "Use --select to choose."
+    )
+    return best.key
+
+
+def _select_model_tui() -> str:
+    """Show a TUI model picker with arrow keys. Falls back to plain list."""
     recommendations = _build_recommendations()
     budget = _get_memory_budget_gb()
 
-    click.echo(f"\nModel Configuration (detected {budget:.0f} GB available)\n")
-    click.echo("  Recommended")
+    # Check for prompt_toolkit + TTY
+    is_tty = sys.stdin.isatty() and sys.stdout.isatty()
+    try:
+        if not is_tty:
+            raise ImportError("not a TTY")
+
+        from prompt_toolkit import Application
+        from prompt_toolkit.key_binding import KeyBindings
+        from prompt_toolkit.layout import Layout, Window
+        from prompt_toolkit.layout.controls import FormattedTextControl
+
+        return _run_model_tui(
+            Application, KeyBindings, Layout, Window, FormattedTextControl,
+            recommendations, budget,
+        )
+    except ImportError:
+        return _select_model_fallback(recommendations, budget)
+
+
+def _run_model_tui(
+    Application,  # noqa: N803 — prompt_toolkit classes
+    KeyBindings,  # noqa: N803
+    Layout,  # noqa: N803
+    Window,  # noqa: N803
+    FormattedTextControl,  # noqa: N803
+    recommendations: list[RecommendedModel],
+    budget: float,
+) -> str:
+    """Full prompt_toolkit TUI for model selection."""
+    # Pre-compute download status
+    statuses = {m.key: _is_model_downloaded(m.key) for m in recommendations}
+
+    selected = [0]
+    search_mode = [False]
+    search_query = [""]
+    filtered: list[list[RecommendedModel]] = [list(recommendations)]
+    result: list[str | None] = [None]
+
+    def _fuzzy_filter(query: str) -> list[RecommendedModel]:
+        if not query:
+            return list(recommendations)
+        q = query.lower()
+        out: list[RecommendedModel] = []
+        for m in recommendations:
+            target = f"{m.key} {m.description}".lower()
+            qi = 0
+            for ch in target:
+                if qi < len(q) and ch == q[qi]:
+                    qi += 1
+            if qi == len(q):
+                out.append(m)
+        return out
+
+    def get_display_text():  # type: ignore[no-untyped-def]
+        lines: list[tuple[str, str]] = []
+        lines.append(("bold", f"  Model Selection ({budget:.0f} GB available)\n"))
+        lines.append(
+            ("", "  Use \u2191\u2193 to navigate, Enter to select, / to search, Esc to cancel\n\n")
+        )
+
+        for i, m in enumerate(filtered[0]):
+            dl = "downloaded" if statuses.get(m.key) else "not downloaded"
+            tag = " \u2605 recommended" if m.recommended else ""
+            prefix = " \u25b8 " if i == selected[0] else "   "
+            style = "reverse" if i == selected[0] else ""
+            lines.append((style, f"{prefix}{m.key}{tag}\n"))
+            lines.append(("", f"     {m.description}  |  {m.size}  |  {dl}\n"))
+
+        if search_mode[0]:
+            lines.append(("bold", f"\n  Search: {search_query[0]}\u2588\n"))
+
+        return lines
+
+    control = FormattedTextControl(get_display_text)
+    bindings = KeyBindings()
+
+    @bindings.add("up")
+    def _up(event):  # type: ignore[no-untyped-def]
+        selected[0] = max(0, selected[0] - 1)
+
+    @bindings.add("down")
+    def _down(event):  # type: ignore[no-untyped-def]
+        selected[0] = min(len(filtered[0]) - 1, selected[0] + 1)
+
+    @bindings.add("enter")
+    def _enter(event):  # type: ignore[no-untyped-def]
+        if filtered[0]:
+            result[0] = filtered[0][selected[0]].key
+        event.app.exit()
+
+    @bindings.add("/")
+    def _search(event):  # type: ignore[no-untyped-def]
+        if not search_mode[0]:
+            search_mode[0] = True
+            search_query[0] = ""
+
+    @bindings.add("escape")
+    def _escape(event):  # type: ignore[no-untyped-def]
+        if search_mode[0]:
+            search_mode[0] = False
+            search_query[0] = ""
+            filtered[0] = list(recommendations)
+            selected[0] = 0
+        else:
+            event.app.exit()
+
+    @bindings.add("c-c")
+    def _ctrl_c(event):  # type: ignore[no-untyped-def]
+        event.app.exit()
+
+    @bindings.add("backspace")
+    def _backspace(event):  # type: ignore[no-untyped-def]
+        if search_mode[0] and search_query[0]:
+            search_query[0] = search_query[0][:-1]
+            filtered[0] = _fuzzy_filter(search_query[0])
+            selected[0] = 0
+
+    @bindings.add("<any>")
+    def _any_key(event):  # type: ignore[no-untyped-def]
+        if search_mode[0]:
+            search_query[0] += event.data
+            filtered[0] = _fuzzy_filter(search_query[0])
+            selected[0] = 0
+
+    layout = Layout(Window(content=control))
+    app: Application[None] = Application(
+        layout=layout, key_bindings=bindings, full_screen=True,
+    )
+    app.run()
+
+    if result[0] is None:
+        raise SystemExit(0)
+    return result[0]
+
+
+def _select_model_fallback(
+    recommendations: list[RecommendedModel], budget: float,
+) -> str:
+    """Plain numbered list fallback when TUI is unavailable."""
+    click.echo(f"\nModel Selection ({budget:.0f} GB available)\n")
 
     for i, m in enumerate(recommendations):
         downloaded = _is_model_downloaded(m.key)
         status = "downloaded" if downloaded else "not downloaded"
         marker = " (Recommended)" if m.recommended else ""
         prefix = "  > " if i == 0 else "    "
-        click.echo(f"{prefix}{m.label}{marker}")
+        click.echo(f"{prefix}{i + 1}. {m.label}{marker}")
         click.echo(f"      {m.description}, {m.size}, ({status})")
 
     click.echo()
@@ -228,11 +378,12 @@ def launch_agent(
     agent_name: str,
     model: Optional[str] = None,
     port: int = 8080,
+    select: bool = False,
 ) -> None:
     """Launch a coding agent with a local model backend.
 
     1. Ensures the agent binary is installed (offers to install if not).
-    2. If no model specified, shows a device-aware interactive picker.
+    2. If ``--select``, shows a TUI picker. Otherwise auto-selects best model.
     3. Starts ``octomil serve`` in the background if no server is running.
     4. Sets the appropriate env var so the agent talks to the local server.
     5. Execs the agent and tears down the server on exit.
@@ -269,7 +420,7 @@ def launch_agent(
         base_url = f"http://localhost:{port}/v1"
         if not is_serve_running(port=port):
             if model is None:
-                model = _select_model()
+                model = _select_model_tui() if select else _auto_select_model()
             click.echo(f"Starting octomil serve {model}...")
             serve_proc = start_serve_background(model, port=port)
             click.echo(f"Model ready at {base_url}")
