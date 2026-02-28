@@ -106,15 +106,19 @@ class MLXEngine(EnginePlugin):
 
             sampler = make_sampler(temp=0.7)
 
-            # Warmup: JIT-compile Metal shaders before timing
-            for _ in mlx_lm.stream_generate(
-                model, tokenizer, prompt=formatted, max_tokens=1, sampler=sampler
+            # Warmup: JIT-compile Metal shaders and warm GPU caches.
+            # A 1-token warmup compiles kernels but doesn't warm the decode
+            # loop, so generate a few tokens to match Ollama's always-warm state.
+            for response in mlx_lm.stream_generate(
+                model, tokenizer, prompt=formatted, max_tokens=8, sampler=sampler
             ):
-                break
+                if response.finish_reason:
+                    break
 
             start = time.monotonic()
             tokens_generated = 0
             first_token_time = None
+            generation_tps: float = 0.0
 
             for response in mlx_lm.stream_generate(
                 model,
@@ -126,12 +130,16 @@ class MLXEngine(EnginePlugin):
                 if first_token_time is None:
                     first_token_time = time.monotonic()
                 tokens_generated += 1
+                generation_tps = response.generation_tps
                 if response.finish_reason:
                     break
 
-            elapsed = time.monotonic() - start
             ttft = ((first_token_time or start) - start) * 1000
-            tps = tokens_generated / elapsed if elapsed > 0 else 0
+            # Use MLX's generation_tps (decode-only, excludes prompt processing)
+            # to match Ollama's eval_duration measurement for fair comparison.
+            tps = generation_tps if generation_tps > 0 else (
+                tokens_generated / (time.monotonic() - start)
+            )
 
             # Clean up to free GPU memory
             del model, tokenizer, sampler
