@@ -27,6 +27,19 @@ class BenchmarkResult:
         return self.error is None and self.tokens_per_second > 0
 
 
+@dataclass
+class ProfileResult:
+    """Result from hardware utilization profiling."""
+
+    engine_name: str
+    accelerator_used: str  # "metal", "cuda", "cpu", "ane", "nnapi"
+    utilization_pct: float  # 0-100
+    memory_peak_mb: float
+    ops_on_accelerator: int
+    ops_total: int
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
 class EnginePlugin(abc.ABC):
     """Base class for inference engine plugins.
 
@@ -92,3 +105,23 @@ class EnginePlugin(abc.ABC):
         The returned object must implement the InferenceBackend interface
         from octomil.serve (load_model, generate, generate_stream, list_models).
         """
+
+    def profile(self, model_name: str, n_tokens: int = 8) -> ProfileResult | None:
+        """Profile hardware utilization during inference.
+
+        Returns accelerator usage stats, or None if profiling is not
+        supported by this engine.
+        """
+        return None
+
+    def estimate_memory_mb(
+        self, model_size_b: float, quantization: str, context_length: int = 4096
+    ) -> float:
+        """Estimate memory usage in MB for a model configuration.
+
+        Default implementation delegates to model_optimizer.estimate_memory_mb.
+        Engines can override for more precise, engine-specific estimates.
+        """
+        from octomil.model_optimizer import estimate_memory_mb
+
+        return estimate_memory_mb(model_size_b, quantization, context_length)

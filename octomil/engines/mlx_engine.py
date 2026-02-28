@@ -20,7 +20,7 @@ import platform
 import time
 from typing import Any
 
-from .base import BenchmarkResult, EnginePlugin
+from .base import BenchmarkResult, EnginePlugin, ProfileResult
 
 logger = logging.getLogger(__name__)
 
@@ -155,6 +155,43 @@ class MLXEngine(EnginePlugin):
             )
         except Exception as exc:
             return BenchmarkResult(engine_name=self.name, error=str(exc))
+
+    def profile(self, model_name: str, n_tokens: int = 8) -> ProfileResult | None:
+        try:
+            import mlx.core as mx
+        except ImportError:
+            return None
+
+        if not hasattr(mx, "metal") or not mx.metal.is_available():
+            return None
+
+        try:
+            # Reset peak memory tracking
+            mx.metal.reset_peak_memory()
+
+            # Run short benchmark to exercise the engine
+            bench = self.benchmark(model_name, n_tokens=n_tokens)
+
+            device_info = mx.metal.device_info()
+            peak_mem = mx.metal.get_peak_memory() / (1024 * 1024)  # bytes -> MB
+            active_mem = mx.metal.get_active_memory() / (1024 * 1024)
+
+            return ProfileResult(
+                engine_name=self.name,
+                accelerator_used="metal",
+                utilization_pct=100.0 if bench.ok else 0.0,
+                memory_peak_mb=round(peak_mem, 1),
+                ops_on_accelerator=n_tokens if bench.ok else 0,
+                ops_total=n_tokens,
+                metadata={
+                    "device": device_info.get("device_name", "unknown"),
+                    "architecture": device_info.get("architecture", "unknown"),
+                    "active_memory_mb": round(active_mem, 1),
+                    "tokens_per_second": bench.tokens_per_second,
+                },
+            )
+        except Exception:
+            return None
 
     def is_moe_model(self, model_name: str) -> bool:
         """Check if the model is a known MoE model.
