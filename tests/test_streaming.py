@@ -1,4 +1,4 @@
-"""Tests for cloud streaming inference (SSE parsing + Client integration)."""
+"""Tests for cloud streaming inference (SSE parsing + OctomilClient integration)."""
 
 from __future__ import annotations
 
@@ -297,13 +297,13 @@ class StreamInferenceAsyncTests(unittest.IsolatedAsyncioTestCase):
 
 
 # ------------------------------------------------------------------
-# Client.stream_predict integration (mocked)
+# OctomilClient.stream_predict integration (mocked)
 # ------------------------------------------------------------------
 
 
 class ClientStreamPredictTests(unittest.TestCase):
     def test_stream_predict_delegates_to_stream_inference(self):
-        from octomil.client import Client
+        from octomil.client import OctomilClient
 
         expected_tokens = [
             StreamToken(token="Hi", done=False),
@@ -313,7 +313,9 @@ class ClientStreamPredictTests(unittest.TestCase):
         with patch(
             "octomil.streaming.stream_inference", return_value=iter(expected_tokens)
         ) as mock_fn:
-            client = Client(api_key="test-key", api_base="https://api.test.com/api/v1")
+            client = OctomilClient(
+                api_key="test-key", api_base="https://api.test.com/api/v1"
+            )
             tokens = list(
                 client.stream_predict(
                     "phi-4-mini",
@@ -336,7 +338,7 @@ class ClientStreamPredictTests(unittest.TestCase):
 
 class ClientStreamPredictAsyncTests(unittest.IsolatedAsyncioTestCase):
     async def test_stream_predict_async_delegates(self):
-        from octomil.client import Client
+        from octomil.client import OctomilClient
 
         expected_tokens = [
             StreamToken(token="Async", done=False),
@@ -351,7 +353,9 @@ class ClientStreamPredictAsyncTests(unittest.IsolatedAsyncioTestCase):
             "octomil.streaming.stream_inference_async",
             side_effect=lambda **kwargs: fake_stream_async(**kwargs),
         ):
-            client = Client(api_key="test-key", api_base="https://api.test.com/api/v1")
+            client = OctomilClient(
+                api_key="test-key", api_base="https://api.test.com/api/v1"
+            )
             tokens = []
             async for tok in client.stream_predict_async("phi-4-mini", "Hello"):
                 tokens.append(tok)

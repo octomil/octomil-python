@@ -16,7 +16,6 @@ Usage::
 
 from __future__ import annotations
 
-import hashlib
 import logging
 import sys
 import threading
@@ -58,15 +57,13 @@ class CacheStats:
 # ---------------------------------------------------------------------------
 
 
-def _hash_token_prefix(tokens: list[int], length: int) -> str:
+def _hash_token_prefix(tokens: list[int], length: int) -> int:
     """Hash the first *length* tokens into a compact cache key.
 
-    Uses SHA-256 truncated to 16 hex chars for fast lookup with
-    negligible collision probability in practice.
+    Uses Python's built-in tuple hash (C-level, ~100x faster than SHA-256)
+    which is sufficient for an in-process LRU cache.
     """
-    # Encode token ids as little-endian int32 bytes for speed
-    raw = b"".join(t.to_bytes(4, "little", signed=True) for t in tokens[:length])
-    return hashlib.sha256(raw).hexdigest()[:16]
+    return hash(tuple(tokens[:length]))
 
 
 def _estimate_size_bytes(obj: Any) -> int:
@@ -125,11 +122,12 @@ class KVCacheManager:
 
     def __init__(self, max_cache_size_mb: int = 2048) -> None:
         self._max_bytes = max_cache_size_mb * 1024 * 1024
-        self._entries: OrderedDict[str, _CacheEntry] = OrderedDict()
+        self._entries: OrderedDict[int, _CacheEntry] = OrderedDict()
         self._current_bytes: int = 0
         self._hits: int = 0
         self._misses: int = 0
         self._lock = threading.Lock()
+        self._cached_lengths: set[int] = set()  # prefix lengths with entries
 
     # ------------------------------------------------------------------
     # Public API
@@ -142,17 +140,21 @@ class KVCacheManager:
         LRU), or ``None`` on miss.
         """
         with self._lock:
-            # Walk from the full token list down to length-1, checking
-            # progressively shorter prefixes.  We keep a minimum prefix
-            # length of 4 tokens to avoid degenerate matches.
-            for length in range(len(tokens), 3, -1):
+            if not self._cached_lengths:
+                self._misses += 1
+                return None
+
+            # Only try lengths that actually exist in cache, longest first
+            n = len(tokens)
+            for length in sorted(
+                (l for l in self._cached_lengths if 4 <= l <= n), reverse=True
+            ):
                 key = _hash_token_prefix(tokens, length)
                 entry = self._entries.get(key)
                 if entry is not None:
-                    # Promote to most-recently-used
                     self._entries.move_to_end(key)
                     self._hits += 1
-                    logger.debug("Cache HIT: prefix_length=%d, key=%s", length, key)
+                    logger.debug("Cache HIT: prefix_length=%d", length)
                     return CachedPrefix(
                         prefix_length=entry.prefix_length,
                         kv_state=entry.kv_state,
@@ -190,6 +192,7 @@ class KVCacheManager:
             )
             self._entries[key] = entry
             self._current_bytes += size
+            self._cached_lengths.add(length)
 
             self._evict_unlocked()
 
@@ -203,6 +206,7 @@ class KVCacheManager:
         with self._lock:
             self._entries.clear()
             self._current_bytes = 0
+            self._cached_lengths.clear()
 
     def stats(self) -> CacheStats:
         """Return current cache statistics."""
@@ -225,7 +229,11 @@ class KVCacheManager:
 
         Caller **must** hold ``self._lock``.
         """
+        evicted = False
         while self._current_bytes > self._max_bytes and self._entries:
             _key, entry = self._entries.popitem(last=False)
             self._current_bytes -= entry.size_bytes
+            evicted = True
             logger.debug("Cache EVICT: key=%s, freed=%d bytes", _key, entry.size_bytes)
+        if evicted:
+            self._cached_lengths = {e.prefix_length for e in self._entries.values()}

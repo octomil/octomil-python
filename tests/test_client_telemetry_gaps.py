@@ -1,4 +1,4 @@
-"""Tests for Client telemetry instrumentation (push, import_from_hf, rollback)."""
+"""Tests for OctomilClient telemetry instrumentation (push, import_from_hf, rollback)."""
 
 from __future__ import annotations
 
@@ -7,12 +7,12 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from octomil.client import Client
+from octomil.client import OctomilClient
 from octomil.telemetry import TelemetryReporter
 
 
 def _make_client_with_reporter():
-    """Create a Client with mocked internals and a captured reporter."""
+    """Create an OctomilClient with mocked internals and a captured reporter."""
     sent_events = []
 
     def mock_send(client, url, headers, payload):
@@ -28,9 +28,9 @@ def _make_client_with_reporter():
         device_id="dev-1",
     )
 
-    # Create Client without api_key to suppress internal reporter creation,
+    # Create OctomilClient without api_key to suppress internal reporter creation,
     # then assign the test's controlled reporter to avoid duplicate events.
-    client = Client(api_key="", org_id="test-org")
+    client = OctomilClient(api_key="", org_id="test-org")
     client._api_key = "test-key"
     client._reporter = reporter
 
@@ -119,7 +119,7 @@ class TestPushTelemetry:
 
     def test_push_works_without_reporter(self):
         """push() should work fine when no reporter is configured."""
-        client = Client(api_key="test-key")
+        client = OctomilClient(api_key="test-key")
 
         mock_registry = MagicMock()
         mock_registry.ensure_model.return_value = {"id": "model-123"}
@@ -137,7 +137,7 @@ class TestPushTelemetry:
 
     def test_push_reporter_failure_silently_swallowed(self):
         """If the reporter itself throws, push should still succeed."""
-        client = Client(api_key="test-key")
+        client = OctomilClient(api_key="test-key")
 
         mock_registry = MagicMock()
         mock_registry.ensure_model.return_value = {"id": "model-123"}

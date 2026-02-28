@@ -183,7 +183,7 @@ def _print_sdk_snippet(model_name: str, version: str) -> None:
         f"    # pip install octomil-sdk\n"
         f"    import octomil\n"
         f"\n"
-        f'    client = octomil.Client(api_key="{api_key}", org_id="{org_id}")\n'
+        f'    client = octomil.OctomilClient(api_key="{api_key}", org_id="{org_id}")\n'
         f'    text = client.predict("{model_name}", [{{"role": "user", "content": "Hello"}}])\n'
     )
     click.secho("  Node.js", bold=True)

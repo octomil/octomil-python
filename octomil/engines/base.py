@@ -56,7 +56,7 @@ class EnginePlugin(abc.ABC):
         """Whether create_backend() handles model downloading internally.
 
         Engines that load directly from HuggingFace (mlx-lm) or manage their
-        own model cache (ollama) should return True so that Client.load_model()
+        own model cache (ollama) should return True so that OctomilClient.load_model()
         skips the redundant registry pull step.
         """
         return False

@@ -15,7 +15,7 @@ from octomil.cli import main
 
 
 def _mock_client(api_responses: dict | None = None):
-    """Build a mock Client with a mock _api that returns preconfigured data.
+    """Build a mock OctomilClient with a mock _api that returns preconfigured data.
 
     ``api_responses`` maps ``(method, path_prefix)`` tuples to return values.
     For simple cases you can also just set return values on the mock directly.
