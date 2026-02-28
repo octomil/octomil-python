@@ -337,6 +337,131 @@ class ExperimentsApiTests(unittest.TestCase):
         self.assertEqual(path, "/experiments/exp_123/analytics/timeseries")
 
 
+class _ExperimentStubApi:
+    """Stub API that returns canned experiment/variant data for GET requests."""
+
+    def __init__(self, experiments=None, variant=None, assign_raises=False):
+        self.calls = []
+        self._experiments = experiments if experiments is not None else []
+        self._variant = variant
+        self._assign_raises = assign_raises
+
+    def get(self, path, params=None):
+        self.calls.append(("get", path, params))
+        if path == "/experiments":
+            return self._experiments
+        if "/assign" in path:
+            if self._assign_raises:
+                raise RuntimeError("assignment failed")
+            return self._variant
+        return {"path": path, "params": params}
+
+    def post(self, path, payload=None):
+        self.calls.append(("post", path, payload))
+        return {"path": path, "payload": payload, "id": "exp_123"}
+
+    def patch(self, path, payload=None):
+        self.calls.append(("patch", path, payload))
+        return {"path": path, "payload": payload}
+
+    def put(self, path, payload=None):
+        self.calls.append(("put", path, payload))
+        return {"path": path, "payload": payload}
+
+    def delete(self, path, params=None):
+        self.calls.append(("delete", path, params))
+        return {"path": path, "params": params}
+
+
+class ExperimentsResolveAndEnrollTests(unittest.TestCase):
+    """Tests for get_variant, resolve_model_experiment, and is_enrolled."""
+
+    def test_get_variant_calls_assign_endpoint(self):
+        variant_data = {"name": "control", "model_version": "1.0.0", "is_control": True}
+        api = _ExperimentStubApi(variant=variant_data)
+        experiments = ExperimentsAPI(api, org_id="org_1")
+        result = experiments.get_variant("exp_1", "device_abc")
+        self.assertEqual(result, variant_data)
+        method, path, params = api.calls[-1]
+        self.assertEqual(method, "get")
+        self.assertEqual(path, "/experiments/exp_1/assign")
+        self.assertEqual(params["device_id"], "device_abc")
+
+    def test_get_variant_returns_none_on_error(self):
+        api = _ExperimentStubApi(assign_raises=True)
+        experiments = ExperimentsAPI(api, org_id="org_1")
+        result = experiments.get_variant("exp_1", "device_abc")
+        self.assertIsNone(result)
+
+    def test_resolve_model_experiment_finds_matching(self):
+        exp = {
+            "id": "exp_42",
+            "name": "accuracy_test",
+            "model_id": "model_1",
+            "status": "running",
+        }
+        variant_data = {
+            "name": "treatment",
+            "model_version": "1.1.0",
+            "is_control": False,
+        }
+        api = _ExperimentStubApi(experiments=[exp], variant=variant_data)
+        experiments = ExperimentsAPI(api, org_id="org_1")
+
+        result = experiments.resolve_model_experiment("model_1", "device_abc")
+        self.assertIsNotNone(result)
+        self.assertEqual(result["experiment"], exp)
+        self.assertEqual(result["variant"], variant_data)
+
+    def test_resolve_model_experiment_returns_none_no_experiments(self):
+        api = _ExperimentStubApi(experiments=[])
+        experiments = ExperimentsAPI(api, org_id="org_1")
+
+        result = experiments.resolve_model_experiment("model_1", "device_abc")
+        self.assertIsNone(result)
+
+    def test_resolve_model_experiment_returns_none_unrelated_model(self):
+        # Experiments exist but variant assignment returns None (device not enrolled)
+        exp = {"id": "exp_99", "name": "other_test", "model_id": "model_other"}
+        api = _ExperimentStubApi(experiments=[exp], variant=None)
+        experiments = ExperimentsAPI(api, org_id="org_1")
+
+        result = experiments.resolve_model_experiment("model_unrelated", "device_abc")
+        self.assertIsNone(result)
+
+    def test_resolve_model_experiment_skips_experiment_without_id(self):
+        exp_no_id = {"name": "broken", "model_id": "model_1"}
+        exp_good = {"id": "exp_good", "name": "good_test", "model_id": "model_1"}
+        variant_data = {"name": "control", "model_version": "1.0.0"}
+        api = _ExperimentStubApi(
+            experiments=[exp_no_id, exp_good], variant=variant_data
+        )
+        experiments = ExperimentsAPI(api, org_id="org_1")
+
+        result = experiments.resolve_model_experiment("model_1", "device_abc")
+        self.assertIsNotNone(result)
+        self.assertEqual(result["experiment"], exp_good)
+
+    def test_is_enrolled_true_when_variant_assigned(self):
+        variant_data = {"name": "treatment", "model_version": "1.1.0"}
+        api = _ExperimentStubApi(variant=variant_data)
+        experiments = ExperimentsAPI(api, org_id="org_1")
+
+        self.assertTrue(experiments.is_enrolled("exp_1", "device_abc"))
+
+    def test_is_enrolled_false_when_no_variant(self):
+        api = _ExperimentStubApi(variant=None)
+        experiments = ExperimentsAPI(api, org_id="org_1")
+
+        self.assertFalse(experiments.is_enrolled("exp_1", "device_abc"))
+
+    def test_is_enrolled_false_when_assign_fails(self):
+        api = _ExperimentStubApi(assign_raises=True)
+        experiments = ExperimentsAPI(api, org_id="org_1")
+
+        self.assertFalse(experiments.is_enrolled("exp_1", "device_abc"))
+
+
 class ModelRegistryControlPlaneTests(unittest.TestCase):
     def test_deploy_version_delegates_to_rollout(self):
         registry = ModelRegistry(auth_token_provider=lambda: "token")
