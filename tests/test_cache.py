@@ -43,14 +43,14 @@ class TestHashTokenPrefix:
         tokens_b = [10, 20, 30, 40, 99]
         assert _hash_token_prefix(tokens_a, 4) == _hash_token_prefix(tokens_b, 4)
 
-    def test_hash_length(self):
+    def test_hash_type(self):
         h = _hash_token_prefix([1, 2, 3, 4], 4)
-        assert len(h) == 16  # SHA-256 truncated to 16 hex chars
+        assert isinstance(h, int)
 
     def test_negative_tokens(self):
         """Negative token IDs should be handled without error."""
         h = _hash_token_prefix([-1, -2, 3, 4], 4)
-        assert isinstance(h, str) and len(h) == 16
+        assert isinstance(h, int)
 
 
 # ---------------------------------------------------------------------------
