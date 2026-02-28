@@ -266,13 +266,13 @@ class TestClientLoadModelTelemetry:
             assert c._models["my-model"] is mock_model_instance
 
 
-class TestClientDisposeTelemetry:
-    """Verify dispose() cleans up reporter."""
+class TestClientCloseTelemetry:
+    """Verify close() cleans up reporter."""
 
     @_PATCH_ROLLOUTS
     @_PATCH_REGISTRY
     @_PATCH_API
-    def test_dispose_closes_reporter(self, mock_api, mock_registry, mock_rollouts):
+    def test_close_closes_reporter(self, mock_api, mock_registry, mock_rollouts):
         from octomil.client import OctomilClient
 
         mock_reporter = MagicMock()
@@ -280,7 +280,7 @@ class TestClientDisposeTelemetry:
         c = OctomilClient(api_key="key")
         c._reporter = mock_reporter
 
-        c.dispose()
+        c.close()
 
         mock_reporter.close.assert_called_once()
         assert c._reporter is None
@@ -289,20 +289,20 @@ class TestClientDisposeTelemetry:
     @_PATCH_ROLLOUTS
     @_PATCH_REGISTRY
     @_PATCH_API
-    def test_dispose_without_reporter(self, mock_api, mock_registry, mock_rollouts):
+    def test_close_without_reporter(self, mock_api, mock_registry, mock_rollouts):
         from octomil.client import OctomilClient
 
         c = OctomilClient(api_key="key")
         c._reporter = None
 
         # Should not raise
-        c.dispose()
+        c.close()
         assert c._models == {}
 
     @_PATCH_ROLLOUTS
     @_PATCH_REGISTRY
     @_PATCH_API
-    def test_dispose_reporter_close_failure_silently_ignored(
+    def test_close_reporter_close_failure_silently_ignored(
         self, mock_api, mock_registry, mock_rollouts
     ):
         from octomil.client import OctomilClient
@@ -314,5 +314,25 @@ class TestClientDisposeTelemetry:
         c._reporter = mock_reporter
 
         # Should not raise
-        c.dispose()
+        c.close()
         assert c._reporter is None
+
+    @_PATCH_ROLLOUTS
+    @_PATCH_REGISTRY
+    @_PATCH_API
+    def test_dispose_alias_calls_close(self, mock_api, mock_registry, mock_rollouts):
+        """dispose() should still work as a deprecated alias for close()."""
+        import warnings
+
+        from octomil.client import OctomilClient
+
+        c = OctomilClient(api_key="key")
+        c._reporter = None
+
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            c.dispose()
+            assert len(w) == 1
+            assert issubclass(w[0].category, DeprecationWarning)
+            assert "close()" in str(w[0].message)
+        assert c._models == {}
