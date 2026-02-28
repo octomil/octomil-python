@@ -215,8 +215,8 @@ class TestTrainIfEligible(unittest.TestCase):
 
         client = self._make_client()
 
-        # Make participate_in_round raise to simulate upload failure
-        client.participate_in_round = MagicMock(
+        # Make join_round raise to simulate upload failure
+        client.join_round = MagicMock(
             side_effect=Exception("upload failed")
         )
 

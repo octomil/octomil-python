@@ -79,8 +79,8 @@ client.register()
 
 assignment = client.get_round_assignment()
 if assignment:
-    client.participate_in_round(round_id=assignment["round_id"],
-                                local_train_fn=my_train_fn)
+    client.join_round(round_id=assignment["round_id"],
+                      local_train_fn=my_train_fn)
 ```
 
 ## Documentation

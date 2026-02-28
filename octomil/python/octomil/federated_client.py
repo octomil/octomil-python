@@ -491,7 +491,7 @@ class FederatedClient:
         """Get the status of a training round (progress, participant count, etc.)."""
         return self.api.get(f"/training/rounds/{round_id}/status")
 
-    def participate_in_round(
+    def join_round(
         self,
         round_id: str,
         local_train_fn: LocalTrainFn,
@@ -597,6 +597,22 @@ class FederatedClient:
             )
             raise
 
+    def participate_in_round(
+        self,
+        round_id: str,
+        local_train_fn: LocalTrainFn,
+        format: str = "pytorch",
+    ) -> Dict[str, Any]:
+        """Deprecated: use :meth:`join_round` instead."""
+        import warnings
+
+        warnings.warn(
+            "participate_in_round() is deprecated, use join_round() instead",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return self.join_round(round_id, local_train_fn, format=format)
+
     def train_if_eligible(
         self,
         round_id: str,
@@ -629,7 +645,7 @@ class FederatedClient:
             return {"skipped": True, "reason": eligibility.reason}
 
         try:
-            result = self.participate_in_round(
+            result = self.join_round(
                 round_id=round_id,
                 local_train_fn=local_train_fn,
                 format=format,
