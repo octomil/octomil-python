@@ -305,6 +305,7 @@ class MLXBackend(InferenceBackend):
         start = time.monotonic()
         first_token_time: Optional[float] = None
         tokens: list[str] = []
+        final_tps: float = 0.0
         cache_hit = False
 
         # Check KV cache for a matching prefix
@@ -333,6 +334,7 @@ class MLXBackend(InferenceBackend):
         ):
             if first_token_time is None:
                 first_token_time = time.monotonic()
+            final_tps = response.generation_tps
             if response.finish_reason or self._is_stop_token(response.text):
                 # Capture prompt_cache from the final response for storage
                 if (
@@ -354,7 +356,7 @@ class MLXBackend(InferenceBackend):
                 ttfc_ms=ttfc,
                 prompt_tokens=prompt_tokens,
                 total_tokens=len(tokens),
-                tokens_per_second=len(tokens) / elapsed if elapsed > 0 else 0.0,
+                tokens_per_second=final_tps,
                 total_duration_ms=elapsed * 1000,
                 cache_hit=cache_hit,
                 attention_backend="metal_fused",  # MLX uses Metal fused attention automatically
