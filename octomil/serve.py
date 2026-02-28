@@ -200,6 +200,18 @@ class InferenceBackend:
         raise NotImplementedError
 
 
+_DRAFT_MODEL_MAP: dict[str, str] = {
+    "phi-4": "mlx-community/Phi-3.5-mini-instruct-4bit",
+    "llama-8b": "mlx-community/Llama-3.2-1B-Instruct-4bit",
+    "llama-3b": "mlx-community/Llama-3.2-1B-Instruct-4bit",
+    "qwen-7b": "mlx-community/Qwen2.5-1.5B-Instruct-4bit",
+    "qwen-3b": "mlx-community/Qwen2.5-1.5B-Instruct-4bit",
+    "gemma-4b": "mlx-community/gemma-3-1b-it-4bit",
+    "gemma-12b": "mlx-community/gemma-3-1b-it-4bit",
+    "gemma-27b": "mlx-community/gemma-3-1b-it-4bit",
+}
+
+
 class MLXBackend(InferenceBackend):
     """Apple Silicon backend using mlx-lm.
 
@@ -219,14 +231,18 @@ class MLXBackend(InferenceBackend):
         cache_size_mb: int = 2048,
         cache_enabled: bool = True,
     ) -> None:
-        from .cache import KVCacheManager
-
         self._model: Any = None
         self._tokenizer: Any = None
+        self._draft_model: Any = None
         self._model_name: str = ""
         self._repo_id: str = ""
         self._cache_enabled = cache_enabled
-        self._kv_cache: KVCacheManager = KVCacheManager(max_cache_size_mb=cache_size_mb)
+        # MLX prompt cache — stored directly as mlx_lm KVCache objects.
+        # Single-entry: stores the most recent request's cache for prefix reuse.
+        self._last_prompt_tokens: Optional[tuple[int, ...]] = None
+        self._last_prompt_cache: Optional[list[Any]] = None
+        self._cache_hits: int = 0
+        self._cache_misses: int = 0
 
     def load_model(self, model_name: str) -> None:
         import mlx_lm  # type: ignore[import-untyped]
@@ -237,6 +253,24 @@ class MLXBackend(InferenceBackend):
         logger.info("Loading %s (%s) with mlx-lm...", model_name, self._repo_id)
         self._model, self._tokenizer = mlx_lm.load(self._repo_id)
         logger.info("Model loaded: %s", self._repo_id)
+
+        # Set Metal buffer cache limit to prevent unbounded growth
+        # during long inference sessions.  2GB is enough for ~14B models.
+        try:
+            import mlx.core as mx  # type: ignore[import-untyped]
+
+            mx.set_cache_limit(2 * 1024 * 1024 * 1024)  # 2 GB
+        except Exception:
+            pass
+
+        # Load draft model for speculative decoding (if available)
+        draft_repo = _DRAFT_MODEL_MAP.get(model_name)
+        if draft_repo:
+            logger.info("Loading draft model for speculative decoding: %s", draft_repo)
+            try:
+                self._draft_model, _ = mlx_lm.load(draft_repo)
+            except Exception:
+                logger.debug("Draft model load failed (non-fatal)", exc_info=True)
 
         # Collect special token strings for output filtering
         self._stop_strings: set[str] = set()
@@ -273,6 +307,80 @@ class MLXBackend(InferenceBackend):
         stripped = text.strip()
         return stripped in self._stop_strings
 
+    def _fetch_or_create_cache(
+        self, prompt_token_ids: list[int]
+    ) -> tuple[list[Any], list[int], bool]:
+        """Fetch a reusable prompt cache or create a fresh one.
+
+        Returns (cache, remaining_tokens, cache_hit).  When a prefix of the
+        previous request matches, the cache is moved out of storage (no copy),
+        trimmed to the common prefix, and the remaining (un-cached) tokens are
+        returned so ``stream_generate`` only processes the delta.
+        """
+        from mlx_lm.models.cache import (  # type: ignore[import-untyped]
+            can_trim_prompt_cache,
+            make_prompt_cache,
+            trim_prompt_cache,
+        )
+
+        if (
+            self._cache_enabled
+            and self._last_prompt_cache is not None
+            and self._last_prompt_tokens is not None
+        ):
+            # Find longest common prefix between stored and current prompt
+            stored = self._last_prompt_tokens
+            common_len = 0
+            for i in range(min(len(stored), len(prompt_token_ids))):
+                if stored[i] != prompt_token_ids[i]:
+                    break
+                common_len = i + 1
+
+            if common_len >= 4:
+                cache = self._last_prompt_cache  # Move, not copy
+                self._last_prompt_cache = None
+
+                # Trim cache to the reusable prefix.
+                # For exact match (common_len == len(prompt)), trim to
+                # common_len - 1 and re-feed the last token, because
+                # stream_generate requires a non-empty prompt.
+                trim_target = common_len
+                if common_len == len(prompt_token_ids):
+                    trim_target = common_len - 1
+
+                total_cached = cache[0].offset
+                num_to_trim = total_cached - trim_target
+                if num_to_trim > 0:
+                    if can_trim_prompt_cache(cache):
+                        trim_prompt_cache(cache, num_to_trim)
+                    else:
+                        cache = make_prompt_cache(self._model)
+                        self._cache_misses += 1
+                        return cache, prompt_token_ids, False
+
+                remaining = prompt_token_ids[trim_target:]
+                logger.debug(
+                    "MLX cache hit: reusing %d/%d prompt tokens (%d to process)",
+                    trim_target,
+                    len(prompt_token_ids),
+                    len(remaining),
+                )
+                self._cache_hits += 1
+                return cache, remaining, True
+
+        # No usable cache — create fresh
+        self._last_prompt_cache = None  # Discard old cache
+        self._cache_misses += 1
+        return make_prompt_cache(self._model), prompt_token_ids, False
+
+    def _store_cache(
+        self, prompt_token_ids: list[int], cache: list[Any]
+    ) -> None:
+        """Store the prompt cache for potential reuse on the next request."""
+        if self._cache_enabled:
+            self._last_prompt_tokens = tuple(prompt_token_ids)
+            self._last_prompt_cache = cache
+
     def generate(self, request: GenerationRequest) -> tuple[str, InferenceMetrics]:
         import mlx_lm  # type: ignore[import-untyped]
 
@@ -284,25 +392,23 @@ class MLXBackend(InferenceBackend):
         first_token_time: Optional[float] = None
         tokens: list[str] = []
         final_tps: float = 0.0
-        cache_hit = False
 
-        # Check KV cache for a matching prefix
-        extra_kwargs: dict[str, Any] = {}
-        if self._cache_enabled:
-            cached = self._kv_cache.get_cached_prefix(prompt_token_ids)
-            if cached is not None:
-                extra_kwargs["prompt_cache"] = cached.kv_state
-                cache_hit = True
-                logger.debug(
-                    "MLX cache hit: reusing %d/%d prompt tokens",
-                    cached.prefix_length,
-                    prompt_tokens,
-                )
+        # Fetch reusable prompt cache or create fresh
+        cache, remaining_tokens, cache_hit = self._fetch_or_create_cache(
+            prompt_token_ids
+        )
+
+        extra_kwargs: dict[str, Any] = {
+            "prompt_cache": cache,
+            "prefill_step_size": 4096,
+        }
+        if self._draft_model is not None:
+            extra_kwargs["draft_model"] = self._draft_model
 
         for response in mlx_lm.stream_generate(
             self._model,
             self._tokenizer,
-            prompt=prompt,
+            prompt=remaining_tokens,
             max_tokens=request.max_tokens,
             sampler=sampler,
             **extra_kwargs,
@@ -311,15 +417,11 @@ class MLXBackend(InferenceBackend):
                 first_token_time = time.monotonic()
             final_tps = response.generation_tps
             if response.finish_reason or self._is_stop_token(response.text):
-                # Capture prompt_cache from the final response for storage
-                if (
-                    self._cache_enabled
-                    and hasattr(response, "prompt_cache")
-                    and response.prompt_cache is not None
-                ):
-                    self._kv_cache.store_prefix(prompt_token_ids, response.prompt_cache)
                 break
             tokens.append(response.text)
+
+        # Store cache for next request (cache was updated in-place)
+        self._store_cache(prompt_token_ids, cache)
 
         elapsed = time.monotonic() - start
         ttfc = ((first_token_time or start) - start) * 1000
@@ -343,6 +445,7 @@ class MLXBackend(InferenceBackend):
         request: GenerationRequest,
     ) -> AsyncIterator[GenerationChunk]:
         import asyncio
+        import threading
 
         import mlx_lm  # type: ignore[import-untyped]
 
@@ -350,60 +453,98 @@ class MLXBackend(InferenceBackend):
         prompt_token_ids = self._tokenizer.encode(prompt)
         sampler = self._make_sampler(request.temperature, request.top_p)
 
-        # Check KV cache for a matching prefix
-        extra_kwargs: dict[str, Any] = {}
-        if self._cache_enabled:
-            cached = self._kv_cache.get_cached_prefix(prompt_token_ids)
-            if cached is not None:
-                extra_kwargs["prompt_cache"] = cached.kv_state
-
-        # mlx_lm.stream_generate is a sync generator that yields
-        # GenerationResponse objects as tokens are produced.
-        # We run it in a thread to avoid blocking the event loop.
-        gen = mlx_lm.stream_generate(
-            self._model,
-            self._tokenizer,
-            prompt=prompt,
-            max_tokens=request.max_tokens,
-            sampler=sampler,
-            **extra_kwargs,
+        # Fetch reusable prompt cache or create fresh
+        cache, remaining_tokens, _cache_hit = self._fetch_or_create_cache(
+            prompt_token_ids
         )
 
+        extra_kwargs: dict[str, Any] = {
+            "prompt_cache": cache,
+            "prefill_step_size": 4096,
+        }
+        if self._draft_model is not None:
+            extra_kwargs["draft_model"] = self._draft_model
+
+        # mlx_lm.stream_generate is a sync generator — push chunks from
+        # a background thread into an asyncio.Queue for non-blocking consumption.
+        # asyncio.Queue is NOT thread-safe, so use call_soon_threadsafe for puts.
+        queue: asyncio.Queue[Optional[Any]] = asyncio.Queue()
+        cancelled = threading.Event()
+        done = threading.Event()
         loop = asyncio.get_event_loop()
 
-        def _next_token() -> Any:
+        def _produce() -> None:
             try:
-                return next(gen)
-            except StopIteration:
-                return None
-
-        while True:
-            response = await loop.run_in_executor(None, _next_token)
-            if response is None:
-                break
-            if response.finish_reason or self._is_stop_token(response.text):
-                # Store prompt cache from the final response
-                if (
-                    self._cache_enabled
-                    and hasattr(response, "prompt_cache")
-                    and response.prompt_cache is not None
+                for response in mlx_lm.stream_generate(
+                    self._model,
+                    self._tokenizer,
+                    prompt=remaining_tokens,
+                    max_tokens=request.max_tokens,
+                    sampler=sampler,
+                    **extra_kwargs,
                 ):
-                    self._kv_cache.store_prefix(prompt_token_ids, response.prompt_cache)
+                    if cancelled.is_set():
+                        break
+                    loop.call_soon_threadsafe(queue.put_nowait, response)
+            finally:
+                loop.call_soon_threadsafe(queue.put_nowait, None)  # sentinel
+                done.set()
+
+        threading.Thread(target=_produce, daemon=True).start()
+
+        try:
+            while True:
+                response = await queue.get()
+                if response is None:
+                    break
+                if response.finish_reason or self._is_stop_token(response.text):
+                    yield GenerationChunk(
+                        text="",
+                        finish_reason="stop",
+                    )
+                    break
                 yield GenerationChunk(
-                    text="",
-                    finish_reason="stop",
+                    text=response.text,
+                    token_count=response.generation_tokens,
+                    tokens_per_second=response.generation_tps,
                 )
-                break
-            yield GenerationChunk(
-                text=response.text,
-                token_count=response.generation_tokens,
-                tokens_per_second=response.generation_tps,
-            )
+        finally:
+            cancelled.set()
+            # Wait for producer to fully exit before reusing the model/cache.
+            # Without this, Metal command buffers from the dying producer
+            # collide with the next request's Metal operations → SIGABRT.
+            done.wait(timeout=5.0)
+            # Store cache for next request. The done.wait() above guarantees
+            # the producer has fully stopped and all Metal ops are complete,
+            # so the cache is in a consistent (if partially filled) state.
+            self._store_cache(prompt_token_ids, cache)
 
     @property
     def kv_cache(self) -> Any:
-        """Expose cache manager for stats endpoint."""
-        return self._kv_cache
+        """Expose cache stats for stats endpoint.
+
+        Returns a duck-typed object with a ``.stats()`` method matching
+        the ``KVCacheManager`` interface used by the API endpoints.
+        """
+        return self._MLXCacheStatsProxy(self)
+
+    class _MLXCacheStatsProxy:
+        """Adapter so ``_get_cache_manager(backend).stats()`` works."""
+
+        def __init__(self, backend: "MLXBackend") -> None:
+            self._b = backend
+
+        def stats(self):  # noqa: ANN201
+            from .cache import CacheStats
+
+            total = self._b._cache_hits + self._b._cache_misses
+            return CacheStats(
+                hits=self._b._cache_hits,
+                misses=self._b._cache_misses,
+                hit_rate=self._b._cache_hits / total if total > 0 else 0.0,
+                entries=1 if self._b._last_prompt_cache is not None else 0,
+                memory_mb=0.0,
+            )
 
     def list_models(self) -> list[str]:
         return [self._model_name] if self._model_name else []
@@ -458,6 +599,7 @@ class LlamaCppBackend(InferenceBackend):
             self._llm = Llama(
                 model_path=model_name,
                 n_ctx=4096,
+                n_batch=256,
                 n_gpu_layers=-1,  # offload all layers to GPU
                 flash_attn=True,  # fused attention kernels for better perf on long sequences
                 verbose=False,
@@ -472,6 +614,7 @@ class LlamaCppBackend(InferenceBackend):
                 repo_id=model_name,
                 filename="*Q4_K_M.gguf",
                 n_ctx=4096,
+                n_batch=256,
                 n_gpu_layers=-1,
                 flash_attn=True,
                 verbose=False,
@@ -495,6 +638,7 @@ class LlamaCppBackend(InferenceBackend):
                     repo_id=repo_id,
                     filename=filename,
                     n_ctx=4096,
+                    n_batch=256,
                     n_gpu_layers=-1,
                     flash_attn=True,
                     verbose=False,
@@ -518,6 +662,7 @@ class LlamaCppBackend(InferenceBackend):
             repo_id=repo_id,
             filename=filename,
             n_ctx=4096,
+            n_batch=256,
             n_gpu_layers=-1,
             flash_attn=True,
             verbose=False,

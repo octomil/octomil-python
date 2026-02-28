@@ -1,4 +1,4 @@
-"""Tests for octomil.model — Model class and Client.load_model()."""
+"""Tests for octomil.model — Model class and OctomilClient.load_model()."""
 
 from __future__ import annotations
 
@@ -6,7 +6,6 @@ import asyncio
 from typing import Any
 from unittest.mock import MagicMock, patch
 
-import pytest
 
 from octomil.model import Model, ModelMetadata, Prediction
 from octomil.serve import GenerationChunk, GenerationRequest, InferenceMetrics
@@ -255,7 +254,7 @@ class TestPredictStream:
 
 
 # ---------------------------------------------------------------------------
-# Client.load_model() integration
+# OctomilClient.load_model() integration
 # ---------------------------------------------------------------------------
 
 
@@ -264,7 +263,7 @@ class TestClientLoadModel:
     @patch("octomil.client.ModelRegistry")
     @patch("octomil.client._ApiClient")
     def test_load_model_basic(self, mock_api, mock_registry_cls, mock_rollouts):
-        from octomil.client import Client
+        from octomil.client import OctomilClient
 
         mock_registry = mock_registry_cls.return_value
         mock_registry.resolve_model_id.return_value = "model-123"
@@ -279,7 +278,7 @@ class TestClientLoadModel:
             mock_reg_instance.auto_select.return_value = (fake_engine, [])
             mock_get_reg.return_value = mock_reg_instance
 
-            c = Client(api_key="key")
+            c = OctomilClient(api_key="key")
             model = c.load_model("my-model")
 
         assert isinstance(model, Model)
@@ -291,7 +290,7 @@ class TestClientLoadModel:
     @patch("octomil.client.ModelRegistry")
     @patch("octomil.client._ApiClient")
     def test_load_model_with_version(self, mock_api, mock_registry_cls, mock_rollouts):
-        from octomil.client import Client
+        from octomil.client import OctomilClient
 
         mock_registry = mock_registry_cls.return_value
         mock_registry.resolve_model_id.return_value = "model-456"
@@ -305,7 +304,7 @@ class TestClientLoadModel:
             mock_reg_instance.auto_select.return_value = (fake_engine, [])
             mock_get_reg.return_value = mock_reg_instance
 
-            c = Client(api_key="key")
+            c = OctomilClient(api_key="key")
             model = c.load_model(
                 "my-model",
                 version="3.0.0",
@@ -322,7 +321,7 @@ class TestClientLoadModel:
     @patch("octomil.client.ModelRegistry")
     @patch("octomil.client._ApiClient")
     def test_load_model_calls_pull(self, mock_api, mock_registry_cls, mock_rollouts):
-        from octomil.client import Client
+        from octomil.client import OctomilClient
 
         mock_registry = mock_registry_cls.return_value
         mock_registry.resolve_model_id.return_value = "model-789"
@@ -336,7 +335,7 @@ class TestClientLoadModel:
             mock_reg_instance.auto_select.return_value = (fake_engine, [])
             mock_get_reg.return_value = mock_reg_instance
 
-            c = Client(api_key="key")
+            c = OctomilClient(api_key="key")
             c.load_model("my-model", destination="/opt/models")
 
         mock_registry.download.assert_called_once_with(
@@ -348,7 +347,7 @@ class TestClientLoadModel:
 
 
 # ---------------------------------------------------------------------------
-# Client.predict() — one-call DX
+# OctomilClient.predict() — one-call DX
 # ---------------------------------------------------------------------------
 
 
@@ -357,7 +356,7 @@ class TestClientPredict:
     @patch("octomil.client.ModelRegistry")
     @patch("octomil.client._ApiClient")
     def test_predict_one_call(self, mock_api, mock_registry_cls, mock_rollouts):
-        from octomil.client import Client
+        from octomil.client import OctomilClient
 
         mock_registry = mock_registry_cls.return_value
         mock_registry.resolve_model_id.return_value = "model-1"
@@ -374,7 +373,7 @@ class TestClientPredict:
             mock_reg_instance.auto_select.return_value = (fake_engine, [])
             mock_get_reg.return_value = mock_reg_instance
 
-            c = Client(api_key="key")
+            c = OctomilClient(api_key="key")
             result = c.predict(
                 "my-model",
                 [{"role": "user", "content": "What is 2+2?"}],
@@ -388,7 +387,7 @@ class TestClientPredict:
     @patch("octomil.client.ModelRegistry")
     @patch("octomil.client._ApiClient")
     def test_predict_caches_model(self, mock_api, mock_registry_cls, mock_rollouts):
-        from octomil.client import Client
+        from octomil.client import OctomilClient
 
         mock_registry = mock_registry_cls.return_value
         mock_registry.resolve_model_id.return_value = "model-1"
@@ -404,7 +403,7 @@ class TestClientPredict:
             mock_reg_instance.auto_select.return_value = (fake_engine, [])
             mock_get_reg.return_value = mock_reg_instance
 
-            c = Client(api_key="key")
+            c = OctomilClient(api_key="key")
             c.predict("my-model", [{"role": "user", "content": "a"}])
             c.predict("my-model", [{"role": "user", "content": "b"}])
 
@@ -416,7 +415,7 @@ class TestClientPredict:
     @patch("octomil.client.ModelRegistry")
     @patch("octomil.client._ApiClient")
     def test_predict_passes_params(self, mock_api, mock_registry_cls, mock_rollouts):
-        from octomil.client import Client
+        from octomil.client import OctomilClient
 
         mock_registry = mock_registry_cls.return_value
         mock_registry.resolve_model_id.return_value = "model-1"
@@ -432,7 +431,7 @@ class TestClientPredict:
             mock_reg_instance.auto_select.return_value = (fake_engine, [])
             mock_get_reg.return_value = mock_reg_instance
 
-            c = Client(api_key="key")
+            c = OctomilClient(api_key="key")
             c.predict(
                 "my-model",
                 [{"role": "user", "content": "test"}],
@@ -448,7 +447,7 @@ class TestClientPredict:
     @patch("octomil.client.ModelRegistry")
     @patch("octomil.client._ApiClient")
     def test_dispose_clears_models(self, mock_api, mock_registry_cls, mock_rollouts):
-        from octomil.client import Client
+        from octomil.client import OctomilClient
 
         mock_registry = mock_registry_cls.return_value
         mock_registry.resolve_model_id.return_value = "model-1"
@@ -464,7 +463,7 @@ class TestClientPredict:
             mock_reg_instance.auto_select.return_value = (fake_engine, [])
             mock_get_reg.return_value = mock_reg_instance
 
-            c = Client(api_key="key")
+            c = OctomilClient(api_key="key")
             c.predict("my-model", [{"role": "user", "content": "a"}])
             assert len(c._models) == 1
 

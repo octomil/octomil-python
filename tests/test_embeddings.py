@@ -1,4 +1,4 @@
-"""Tests for cloud embeddings (embed function + Client integration)."""
+"""Tests for cloud embeddings (embed function + OctomilClient integration)."""
 
 from __future__ import annotations
 
@@ -174,13 +174,13 @@ class EmbedTests(unittest.TestCase):
 
 
 # ------------------------------------------------------------------
-# Client.embed integration (mocked)
+# OctomilClient.embed integration (mocked)
 # ------------------------------------------------------------------
 
 
 class ClientEmbedTests(unittest.TestCase):
     def test_client_embed_delegates_to_embed_function(self):
-        from octomil.client import Client
+        from octomil.client import OctomilClient
 
         expected = EmbeddingResult(
             embeddings=[[0.1, 0.2]],
@@ -189,7 +189,9 @@ class ClientEmbedTests(unittest.TestCase):
         )
 
         with patch("octomil.embeddings.embed", return_value=expected) as mock_fn:
-            client = Client(api_key="test-key", api_base="https://api.test.com/api/v1")
+            client = OctomilClient(
+                api_key="test-key", api_base="https://api.test.com/api/v1"
+            )
             result = client.embed("nomic-embed-text", "hello world")
 
         self.assertEqual(result.embeddings, [[0.1, 0.2]])
@@ -202,7 +204,7 @@ class ClientEmbedTests(unittest.TestCase):
         )
 
     def test_client_embed_with_list_input(self):
-        from octomil.client import Client
+        from octomil.client import OctomilClient
 
         expected = EmbeddingResult(
             embeddings=[[0.1], [0.2]],
@@ -211,7 +213,9 @@ class ClientEmbedTests(unittest.TestCase):
         )
 
         with patch("octomil.embeddings.embed", return_value=expected) as mock_fn:
-            client = Client(api_key="test-key", api_base="https://api.test.com/api/v1")
+            client = OctomilClient(
+                api_key="test-key", api_base="https://api.test.com/api/v1"
+            )
             result = client.embed("nomic-embed-text", ["hello", "world"], timeout=60.0)
 
         self.assertEqual(len(result.embeddings), 2)

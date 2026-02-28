@@ -6,7 +6,7 @@ simpler interface designed for CLI and script usage::
 
     import octomil
 
-    client = octomil.Client()  # reads OCTOMIL_API_KEY from env
+    client = octomil.OctomilClient()  # reads OCTOMIL_API_KEY from env
     client.push("model.pt", name="sentiment-v1", version="1.0.0")
     client.deploy("sentiment-v1", version="1.0.0", rollout=10)
 """
@@ -64,8 +64,8 @@ def _find_model_file(directory: str) -> str | None:
     return None
 
 
-class Client:
-    """High-level Octomil client for push/pull/deploy workflows.
+class OctomilClient:
+    """High-level OctomilClient for push/pull/deploy workflows.
 
     Args:
         api_key: API key. Falls back to ``OCTOMIL_API_KEY`` env var.

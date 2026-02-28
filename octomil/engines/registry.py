@@ -13,6 +13,7 @@ Usage::
 
 from __future__ import annotations
 
+import gc
 import logging
 import time
 from dataclasses import dataclass
@@ -127,12 +128,20 @@ class EngineRegistry:
             elapsed = time.monotonic() - start
             result.metadata["benchmark_duration_s"] = round(elapsed, 2)
             ranked.append(RankedEngine(engine=engine, result=result))
+            gc.collect()  # Free GPU memory from benchmark models
 
-        # Sort: successful benchmarks first (by tok/s desc), then by priority
+        # Sort: successful benchmarks first, then by priority-adjusted tok/s.
+        # In-process engines (lower priority number) get a 20% bonus to account
+        # for the latency and cache benefits that benchmarks can't capture.
+        # E.g., MLX (priority 10) gets a 1.2x bonus vs Ollama (priority 50).
+        def _adjusted_tps(r: RankedEngine) -> float:
+            bonus = 1.0 + max(0, (50 - r.engine.priority)) * 0.005
+            return r.result.tokens_per_second * bonus
+
         ranked.sort(
             key=lambda r: (
                 0 if r.result.ok else 1,
-                -r.result.tokens_per_second,
+                -_adjusted_tps(r),
                 r.engine.priority,
             )
         )
