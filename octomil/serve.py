@@ -387,7 +387,9 @@ class MLXBackend(InferenceBackend):
 
         # mlx_lm.stream_generate is a sync generator — push chunks from
         # a background thread into an asyncio.Queue for non-blocking consumption.
+        # asyncio.Queue is NOT thread-safe, so use call_soon_threadsafe for puts.
         queue: asyncio.Queue[Optional[Any]] = asyncio.Queue()
+        loop = asyncio.get_event_loop()
 
         def _produce() -> None:
             try:
@@ -399,11 +401,10 @@ class MLXBackend(InferenceBackend):
                     sampler=sampler,
                     **extra_kwargs,
                 ):
-                    queue.put_nowait(response)
+                    loop.call_soon_threadsafe(queue.put_nowait, response)
             finally:
-                queue.put_nowait(None)  # sentinel
+                loop.call_soon_threadsafe(queue.put_nowait, None)  # sentinel
 
-        loop = asyncio.get_event_loop()
         loop.run_in_executor(None, _produce)
 
         while True:
