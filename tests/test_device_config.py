@@ -27,7 +27,7 @@ class TestDeviceConfigFromDict:
     def test_full_server_response(self) -> None:
         """Parse a complete server response into DeviceConfig."""
         data: dict[str, Any] = {
-            "quant_speed_factors": {"Q4_K_M": 1.0, "Q8_0": REDACTED},
+            "quant_speed_factors": {"Q4_K_M": 1.0, "Q8_0": 0.7},
             "quant_preference_order": ["Q8_0", "Q4_K_M"],
             "early_exit_presets": {
                 "quality": {"threshold": 0.1, "min_layers_fraction": 0.75},
@@ -47,7 +47,7 @@ class TestDeviceConfigFromDict:
         }
         cfg = DeviceConfig.from_dict(data)
 
-        assert cfg.quant_speed_factors == {"Q4_K_M": 1.0, "Q8_0": REDACTED}
+        assert cfg.quant_speed_factors == {"Q4_K_M": 1.0, "Q8_0": 0.7}
         assert cfg.quant_preference_order == ["Q8_0", "Q4_K_M"]
         assert cfg.early_exit_presets["quality"].threshold == 0.1
         assert cfg.early_exit_presets["fast"].min_layers_fraction == 0.25
@@ -75,12 +75,12 @@ class TestDeviceConfigFromDict:
     def test_partial_data_fills_defaults(self) -> None:
         """Missing sections should fall back to safe defaults."""
         data = {
-            "quant_speed_factors": {"Q4_0": REDACTED},
+            "quant_speed_factors": {"Q4_0": 1.1},
             # other sections missing
         }
         cfg = DeviceConfig.from_dict(data)
 
-        assert cfg.quant_speed_factors == {"Q4_0": REDACTED}
+        assert cfg.quant_speed_factors == {"Q4_0": 1.1}
         assert cfg.quant_preference_order == ["Q4_K_M"]  # default
         assert cfg.smart_router.prefer_latency_engine == "auto"
 
