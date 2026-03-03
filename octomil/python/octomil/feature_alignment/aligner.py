@@ -12,11 +12,16 @@ Strategies:
 
 from __future__ import annotations
 
-from hashlib import md5
+import logging
+import os
 from typing import Any, Dict, List, Literal, Optional, Tuple, Union
 
 import numpy as np
 import pandas as pd
+
+logger = logging.getLogger(__name__)
+
+_DEFAULT_API_BASE = "https://api.octomil.com/api/v1"
 
 try:
     from sklearn.impute import SimpleImputer
@@ -128,23 +133,84 @@ class FeatureAligner:
         self.feature_schema = all_features
 
     def _build_projection_matrix(self, all_features: List[str]) -> None:
-        """Build projection matrix using feature name hashing."""
+        """Build projection matrix by fetching from the server.
+
+        The projection algorithm is proprietary and runs server-side.
+        If the server is unreachable, falls back to a deterministic
+        random projection (standard, non-proprietary technique).
+        """
         n_features = len(all_features)
-        self._projection_matrix = np.zeros((n_features, self.input_dim))
+        matrix = self._fetch_projection_matrix(all_features, n_features, self.input_dim)
+        if matrix is not None:
+            self._projection_matrix = matrix
+        else:
+            self._projection_matrix = self._fallback_random_projection(
+                all_features, n_features, self.input_dim
+            )
 
-        for i, feature in enumerate(all_features):
-            hash_val = int(md5(feature.encode(), usedforsecurity=False).hexdigest(), 16)
-            primary_idx = hash_val % self.input_dim
-            self._projection_matrix[i, primary_idx] = 1.0
+    def _fetch_projection_matrix(
+        self,
+        features: List[str],
+        n_features: int,
+        input_dim: int,
+    ) -> Optional[np.ndarray]:
+        """Fetch the projection matrix from the server."""
+        try:
+            import httpx
+        except ImportError:
+            logger.debug("httpx not available — cannot fetch projection matrix")
+            return None
 
-            if self.input_dim > 10:
-                secondary_idx = (hash_val >> 8) % self.input_dim
-                if secondary_idx != primary_idx:
-                    self._projection_matrix[i, secondary_idx] = 0.5
+        api_base = os.environ.get("OCTOMIL_API_BASE", _DEFAULT_API_BASE).rstrip("/")
+        api_key = os.environ.get("OCTOMIL_API_KEY", "")
+        headers: Dict[str, str] = {}
+        if api_key:
+            headers["Authorization"] = f"Bearer {api_key}"
 
-        col_norms = np.linalg.norm(self._projection_matrix, axis=0, keepdims=True)
+        try:
+            with httpx.Client(timeout=10.0) as client:
+                resp = client.post(
+                    f"{api_base}/feature-alignment/projection-matrix",
+                    json={
+                        "features": features,
+                        "n_features": n_features,
+                        "input_dim": input_dim,
+                    },
+                    headers=headers,
+                )
+            if resp.status_code == 200:
+                data = resp.json()
+                return np.array(data["matrix"], dtype=np.float64)
+            logger.debug(
+                "Projection matrix fetch returned HTTP %d",
+                resp.status_code,
+            )
+        except Exception:
+            logger.debug(
+                "Failed to fetch projection matrix from server",
+                exc_info=True,
+            )
+        return None
+
+    @staticmethod
+    def _fallback_random_projection(
+        features: List[str],
+        n_features: int,
+        input_dim: int,
+    ) -> np.ndarray:
+        """Deterministic random projection fallback (non-proprietary).
+
+        Uses a seed derived from sorted feature names so the same
+        feature set always produces the same projection matrix.
+        """
+        seed_str = "|".join(sorted(features))
+        seed = hash(seed_str) % (2**31)
+        rng = np.random.RandomState(seed)
+        matrix = rng.randn(n_features, input_dim) / np.sqrt(input_dim)
+        # Column-normalise for numerical stability
+        col_norms = np.linalg.norm(matrix, axis=0, keepdims=True)
         col_norms[col_norms == 0] = 1
-        self._projection_matrix = self._projection_matrix / col_norms
+        return matrix / col_norms
 
     def _compute_feature_stats(
         self,
