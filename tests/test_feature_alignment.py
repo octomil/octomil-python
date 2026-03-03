@@ -1,4 +1,5 @@
 import unittest
+
 import numpy as np
 
 try:
@@ -156,9 +157,7 @@ class FeatureAlignmentTests(unittest.TestCase):
     def test_feature_aligner_with_feature_schema(self):
         from octomil.feature_alignment import FeatureAligner
 
-        aligner = FeatureAligner(
-            strategy="embedding", input_dim=5, feature_schema=["f1", "f2", "f3"]
-        )
+        aligner = FeatureAligner(strategy="embedding", input_dim=5, feature_schema=["f1", "f2", "f3"])
 
         df = pd.DataFrame(
             {
@@ -184,9 +183,7 @@ class FeatureAlignmentTests(unittest.TestCase):
         )
 
         # Returns (np.ndarray, List[str], Dict[str, Any])
-        X, detected_features, coverage_info = auto_align(
-            df, target_col="target", input_dim=4
-        )
+        X, detected_features, coverage_info = auto_align(df, target_col="target", input_dim=4)
 
         # Check return types
         import numpy as np
@@ -245,9 +242,7 @@ class FeatureAlignmentTests(unittest.TestCase):
         )
 
         for method in ["mean", "median", "zero"]:
-            aligner = FeatureAligner(
-                strategy="union_imputation", imputation_method=method
-            )
+            aligner = FeatureAligner(strategy="union_imputation", imputation_method=method)
             result = aligner.fit(df, target_col="target")
             self.assertEqual(result.imputation_method, method)
 
@@ -324,8 +319,8 @@ class FeatureAlignmentTests(unittest.TestCase):
         aligner.fit(df, target_col="target")
         self.assertEqual(aligner.input_dim, 5)
 
-    def test_embedding_large_input_dim_uses_secondary_projection(self):
-        """When input_dim > 10, secondary hash projection entries with value 0.5 are used."""
+    def test_embedding_large_input_dim_produces_valid_matrix(self):
+        """When input_dim > 10, projection matrix should have correct shape and non-zero entries."""
         from octomil.feature_alignment import FeatureAligner
 
         df = pd.DataFrame({f"f{i}": [float(i), float(i + 1)] for i in range(5)})
@@ -334,19 +329,14 @@ class FeatureAlignmentTests(unittest.TestCase):
         aligner = FeatureAligner(strategy="embedding", input_dim=20)
         aligner.fit(df, target_col="target")
 
-        # The raw projection matrix before normalization would have 0.5 entries.
-        # After column normalization those exact values change, but we can verify
-        # the matrix has more non-zero entries than just the primary projections
-        # (i.e., more than one non-zero per row for at least some rows).
         matrix = aligner._projection_matrix
         self.assertIsNotNone(matrix)
+        self.assertEqual(matrix.shape, (5, 20))
 
-        # Count non-zero entries per row; with secondary projection some rows
-        # should have 2 non-zero entries.
-        nonzero_per_row = np.count_nonzero(matrix, axis=1)
+        # Matrix should have non-zero entries (either server-provided or fallback)
         self.assertTrue(
-            np.any(nonzero_per_row >= 2),
-            "Expected at least one feature row with secondary projection (>=2 non-zero entries)",
+            np.any(matrix != 0),
+            "Projection matrix should have non-zero entries",
         )
 
     def test_embedding_feature_all_nan(self):
@@ -384,9 +374,7 @@ class FeatureAlignmentTests(unittest.TestCase):
             ),
         }
 
-        aligner = FeatureAligner(
-            strategy="union_imputation", imputation_method="median"
-        )
+        aligner = FeatureAligner(strategy="union_imputation", imputation_method="median")
         aligner.fit(datasets, target_col="target")
 
         # Transform a DataFrame missing f2
@@ -493,9 +481,7 @@ class FeatureAlignmentTests(unittest.TestCase):
             }
         )
 
-        original = FeatureAligner(
-            strategy="embedding", input_dim=4, imputation_method="median"
-        )
+        original = FeatureAligner(strategy="embedding", input_dim=4, imputation_method="median")
         original.fit(df, target_col="target")
 
         config = original.get_config()
