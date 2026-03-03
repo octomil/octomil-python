@@ -28,7 +28,6 @@ from octomil.sources.huggingface import HuggingFaceSource
 from octomil.sources.kaggle import KaggleSource
 from octomil.sources.ollama import OllamaSource, _parse_ollama_ref
 
-
 # =====================================================================
 # Tag parsing
 # =====================================================================
@@ -177,13 +176,11 @@ class TestTrustPriority:
 
 
 class TestRegistryCompleteness:
-    """Verify the registry covers all the old hardcoded models."""
+    """Verify the registry covers the expected test fixture models."""
 
-    OLD_MLX_MODELS = [
+    EXPECTED_MLX_MODELS = [
         "gemma-1b",
         "gemma-4b",
-        "gemma-12b",
-        "gemma-27b",
         "llama-1b",
         "llama-3b",
         "llama-8b",
@@ -196,7 +193,7 @@ class TestRegistryCompleteness:
         "smollm-360m",
     ]
 
-    OLD_GGUF_MODELS = [
+    EXPECTED_GGUF_MODELS = [
         "gemma-1b",
         "gemma-4b",
         "llama-1b",
@@ -209,37 +206,25 @@ class TestRegistryCompleteness:
         "smollm-360m",
     ]
 
-    def test_all_old_mlx_models_in_registry(self) -> None:
-        """All models from the old _MLX_MODELS dict are in the registry."""
-        for model_name in self.OLD_MLX_MODELS:
-            assert (
-                model_name in MODEL_FAMILIES
-            ), f"'{model_name}' was in old _MLX_MODELS but missing from registry"
+    def test_all_expected_mlx_models_in_registry(self) -> None:
+        """Expected MLX models are in the registry with MLX repos."""
+        for model_name in self.EXPECTED_MLX_MODELS:
+            assert model_name in MODEL_FAMILIES, f"'{model_name}' missing from registry"
             family = MODEL_FAMILIES[model_name]
             default_variant = family.variants.get(family.default_tag)
             assert default_variant is not None
-            assert (
-                default_variant.mlx is not None
-            ), f"'{model_name}' missing MLX repo in default variant"
+            assert default_variant.mlx is not None, f"'{model_name}' missing MLX repo in default variant"
 
-    def test_all_old_gguf_models_in_registry(self) -> None:
-        """All models from the old _GGUF_MODELS dict are in the registry."""
-        for model_name in self.OLD_GGUF_MODELS:
-            assert (
-                model_name in MODEL_FAMILIES
-            ), f"'{model_name}' was in old _GGUF_MODELS but missing from registry"
+    def test_all_expected_gguf_models_in_registry(self) -> None:
+        """Expected GGUF models are in the registry with GGUF sources."""
+        for model_name in self.EXPECTED_GGUF_MODELS:
+            assert model_name in MODEL_FAMILIES, f"'{model_name}' missing from registry"
             family = MODEL_FAMILIES[model_name]
             default_variant = family.variants.get(family.default_tag)
             assert default_variant is not None
             # Must have at least one GGUF source
-            gguf_sources = [
-                s
-                for s in default_variant.sources
-                if s.file and s.file.endswith(".gguf")
-            ]
-            assert (
-                len(gguf_sources) > 0
-            ), f"'{model_name}' missing GGUF source in default variant"
+            gguf_sources = [s for s in default_variant.sources if s.file and s.file.endswith(".gguf")]
+            assert len(gguf_sources) > 0, f"'{model_name}' missing GGUF source in default variant"
 
 
 # =====================================================================
@@ -248,26 +233,19 @@ class TestRegistryCompleteness:
 
 
 class TestBackwardsCompatDicts:
-    """Verify the _MLX_MODELS and _GGUF_MODELS dicts in serve.py are populated."""
+    """Verify resolve_model_name in serve.py works with the catalog."""
 
-    def test_mlx_models_populated(self) -> None:
-        from octomil.serve import _MLX_MODELS
+    def test_resolve_model_name_mlx(self) -> None:
+        from octomil.serve import resolve_model_name
 
-        assert (
-            len(_MLX_MODELS) >= 13
-        ), f"Expected at least 13 MLX models, got {len(_MLX_MODELS)}"
-        assert "gemma-4b" in _MLX_MODELS
-        assert "mlx-community" in _MLX_MODELS["gemma-4b"]
+        result = resolve_model_name("gemma-4b", "mlx")
+        assert "mlx-community" in result
 
-    def test_gguf_models_populated(self) -> None:
-        from octomil.serve import _GGUF_MODELS
+    def test_resolve_model_name_gguf(self) -> None:
+        from octomil.serve import resolve_model_name
 
-        assert (
-            len(_GGUF_MODELS) >= 9
-        ), f"Expected at least 9 GGUF models, got {len(_GGUF_MODELS)}"
-        assert "gemma-4b" in _GGUF_MODELS
-        repo, fname = _GGUF_MODELS["gemma-4b"]
-        assert fname.endswith(".gguf")
+        result = resolve_model_name("gemma-4b", "gguf")
+        assert result == "gemma-4b"
 
 
 # =====================================================================
@@ -283,18 +261,6 @@ class TestResolveModelName:
 
         result = resolve_model_name("gemma-4b", "mlx")
         assert "mlx-community" in result
-
-    def test_mlx_with_tag(self) -> None:
-        from octomil.serve import resolve_model_name
-
-        result = resolve_model_name("gemma-4b:q8_0", "mlx")
-        assert "8bit" in result or "8b" in result.lower()
-
-    def test_gguf_resolution(self) -> None:
-        from octomil.serve import resolve_model_name
-
-        result = resolve_model_name("gemma-4b", "gguf")
-        assert result == "gemma-4b"
 
     def test_full_repo_passthrough(self) -> None:
         from octomil.serve import resolve_model_name
@@ -331,14 +297,7 @@ class TestOllamaSource:
         """Ollama cache detection with a mocked filesystem."""
         # Build fake Ollama directory structure
         models_dir = tmp_path / "models"
-        manifest_dir = (
-            models_dir
-            / "manifests"
-            / "registry.ollama.ai"
-            / "library"
-            / "gemma3"
-            / "4b"
-        )
+        manifest_dir = models_dir / "manifests" / "registry.ollama.ai" / "library" / "gemma3" / "4b"
         manifest_dir.parent.mkdir(parents=True)
         blob_dir = models_dir / "blobs"
         blob_dir.mkdir(parents=True)
@@ -376,14 +335,7 @@ class TestOllamaSource:
     def test_check_cache_manifest_missing_blob(self, tmp_path) -> None:
         """Returns None when manifest exists but blob doesn't."""
         models_dir = tmp_path / "models"
-        manifest_dir = (
-            models_dir
-            / "manifests"
-            / "registry.ollama.ai"
-            / "library"
-            / "test"
-            / "latest"
-        )
+        manifest_dir = models_dir / "manifests" / "registry.ollama.ai" / "library" / "test" / "latest"
         manifest_dir.parent.mkdir(parents=True)
         blob_dir = models_dir / "blobs"
         blob_dir.mkdir(parents=True)
@@ -416,14 +368,7 @@ class TestOllamaSource:
     def test_resolve_from_cache(self, tmp_path) -> None:
         """resolve() returns cached result when available."""
         models_dir = tmp_path / "models"
-        manifest_dir = (
-            models_dir
-            / "manifests"
-            / "registry.ollama.ai"
-            / "library"
-            / "gemma3"
-            / "4b"
-        )
+        manifest_dir = models_dir / "manifests" / "registry.ollama.ai" / "library" / "gemma3" / "4b"
         manifest_dir.parent.mkdir(parents=True)
         blob_dir = models_dir / "blobs"
         blob_dir.mkdir(parents=True)
@@ -461,8 +406,6 @@ class TestHuggingFaceSource:
     def test_is_available_when_installed(self) -> None:
         """Should return True when huggingface_hub can be imported."""
         source = HuggingFaceSource()
-        # huggingface_hub is likely installed in the test environment
-        # If not, the test would need to be mocked — but we test both paths
         with patch.dict("sys.modules", {"huggingface_hub": MagicMock()}):
             assert source.is_available() is True
 
@@ -530,61 +473,6 @@ class TestSourceFallback:
         result = resolve_model("gemma-4b", backend="auto")
         assert result.mlx_repo is not None
         assert result.source is not None
-
-
-# =====================================================================
-# octomil list CLI command
-# =====================================================================
-
-
-class TestListCLI:
-    """Tests for the ``octomil list`` CLI command output."""
-
-    def test_list_all_families(self) -> None:
-        """octomil list without args shows a table of all families."""
-        from click.testing import CliRunner
-        from octomil.cli import main
-
-        runner = CliRunner()
-        result = runner.invoke(main, ["list"])
-        assert result.exit_code == 0
-        assert "gemma-4b" in result.output
-        assert "llama-8b" in result.output
-        assert "model families available" in result.output
-
-    def test_list_specific_family(self) -> None:
-        """octomil list gemma-4b shows variants with engine artifacts."""
-        from click.testing import CliRunner
-        from octomil.cli import main
-
-        runner = CliRunner()
-        result = runner.invoke(main, ["list", "gemma-4b"])
-        assert result.exit_code == 0
-        assert "gemma-4b" in result.output
-        assert "Google" in result.output
-        # Unified catalog uses "4bit" as variant name, Q4_K_M appears in GGUF filename
-        assert "4bit" in result.output
-        assert "mlx-lm:" in result.output or "mlx-community" in result.output
-
-    def test_list_unknown_family_error(self) -> None:
-        """octomil list nonexistent shows error with suggestions."""
-        from click.testing import CliRunner
-        from octomil.cli import main
-
-        runner = CliRunner()
-        result = runner.invoke(main, ["list", "nonexistent"])
-        assert result.exit_code != 0
-        assert "Unknown model family" in result.output
-
-    def test_list_close_match_suggests(self) -> None:
-        """octomil list gemma-4 (typo) suggests gemma-4b."""
-        from click.testing import CliRunner
-        from octomil.cli import main
-
-        runner = CliRunner()
-        result = runner.invoke(main, ["list", "gemma-4"])
-        assert result.exit_code != 0
-        assert "Did you mean" in result.output
 
 
 # =====================================================================

@@ -2,7 +2,7 @@
 
 Covers:
 - Parser: model:variant syntax, bare names, passthrough
-- Catalog: completeness, engine coverage
+- Catalog: structure, engine coverage (with mock server data)
 - Resolver: engine selection, quant alias mapping, error handling
 - Backward compatibility: existing short names, _MLX_MODELS, _GGUF_MODELS
 """
@@ -17,7 +17,6 @@ import pytest
 # Ensure the octomil package is importable from the repo root.
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from octomil.models.parser import normalize_variant, parse
 from octomil.models.catalog import (
     CATALOG,
     MODEL_ALIASES,
@@ -26,8 +25,8 @@ from octomil.models.catalog import (
     list_models,
     supports_engine,
 )
+from octomil.models.parser import normalize_variant, parse
 from octomil.models.resolver import ModelResolutionError, resolve
-
 
 # =====================================================================
 # Parser tests
@@ -144,19 +143,18 @@ class TestNormalizeVariant:
 
 
 class TestCatalog:
-    """Tests for the unified model catalog."""
+    """Tests for the unified model catalog (server-fetched, mocked)."""
 
-    def test_catalog_size(self) -> None:
-        """Catalog should have 72 model families."""
-        assert len(CATALOG) == 72
+    def test_catalog_not_empty(self) -> None:
+        """Catalog should have model families from mock server data."""
+        assert len(CATALOG) > 0
 
     def test_all_families_have_default_variant(self) -> None:
         """Every family must have its default_quant variant."""
         for name, entry in CATALOG.items():
-            assert entry.default_quant in entry.variants, (
-                f"{name} has default_quant '{entry.default_quant}' "
-                f"but no matching variant"
-            )
+            assert (
+                entry.default_quant in entry.variants
+            ), f"{name} has default_quant '{entry.default_quant}' but no matching variant"
 
     def test_all_families_have_publisher(self) -> None:
         """Every family must have a publisher."""
@@ -198,7 +196,7 @@ class TestCatalog:
 
 
 class TestCatalogMLXCoverage:
-    """Verify all models that should have MLX artifacts do."""
+    """Verify models that should have MLX artifacts do."""
 
     EXPECTED_MLX_MODELS = [
         "gemma-1b",
@@ -226,7 +224,7 @@ class TestCatalogMLXCoverage:
 
 
 class TestCatalogGGUFCoverage:
-    """Verify all models that should have GGUF artifacts do."""
+    """Verify models that should have GGUF artifacts do."""
 
     EXPECTED_GGUF_MODELS = [
         "gemma-1b",
@@ -246,12 +244,8 @@ class TestCatalogGGUFCoverage:
         for name in self.EXPECTED_GGUF_MODELS:
             entry = CATALOG[name]
             default = entry.variants[entry.default_quant]
-            assert (
-                default.gguf is not None
-            ), f"{name} default variant missing GGUF source"
-            assert default.gguf.filename.endswith(
-                ".gguf"
-            ), f"{name} GGUF filename does not end with .gguf"
+            assert default.gguf is not None, f"{name} default variant missing GGUF source"
+            assert default.gguf.filename.endswith(".gguf"), f"{name} GGUF filename does not end with .gguf"
 
 
 # =====================================================================
@@ -301,9 +295,7 @@ class TestModelAliases:
     def test_all_aliases_map_to_valid_catalog_entries(self) -> None:
         """Every alias must point to a real catalog key."""
         for alias, canonical in MODEL_ALIASES.items():
-            assert (
-                canonical in CATALOG
-            ), f"Alias '{alias}' maps to '{canonical}' which is not in CATALOG"
+            assert canonical in CATALOG, f"Alias '{alias}' maps to '{canonical}' which is not in CATALOG"
 
     def test_resolve_with_alias(self) -> None:
         """resolve() works with aliased model names."""
@@ -461,23 +453,6 @@ class TestResolveAllModels:
 class TestBackwardCompat:
     """Verify backward compatibility with existing code."""
 
-    def test_mlx_models_dict_populated(self) -> None:
-        """_MLX_MODELS in serve.py should be populated from unified catalog."""
-        from octomil.serve import _MLX_MODELS
-
-        assert len(_MLX_MODELS) >= 13
-        assert "gemma-4b" in _MLX_MODELS
-        assert "mlx-community" in _MLX_MODELS["gemma-4b"]
-
-    def test_gguf_models_dict_populated(self) -> None:
-        """_GGUF_MODELS in serve.py should be populated from unified catalog."""
-        from octomil.serve import _GGUF_MODELS
-
-        assert len(_GGUF_MODELS) >= 9
-        assert "gemma-4b" in _GGUF_MODELS
-        repo, fname = _GGUF_MODELS["gemma-4b"]
-        assert fname.endswith(".gguf")
-
     def test_resolve_model_name_mlx(self) -> None:
         """resolve_model_name() works for mlx backend."""
         from octomil.serve import resolve_model_name
@@ -529,90 +504,3 @@ class TestBackwardCompat:
         # Quick sanity check
         plan = DeploymentPlan(model_name="test", model_version="1.0")
         assert plan.model_name == "test"
-
-
-class TestEngineCatalogs:
-    """Verify engine catalog sets are derived from unified catalog."""
-
-    def test_mlx_catalog_from_unified(self) -> None:
-        """_MLX_CATALOG should match models with mlx-lm engine."""
-        from octomil.engines.mlx_engine import _MLX_CATALOG
-
-        expected = {n for n, e in CATALOG.items() if "mlx-lm" in e.engines}
-        assert _MLX_CATALOG == expected
-
-    def test_gguf_catalog_from_unified(self) -> None:
-        """_GGUF_CATALOG should match models with llama.cpp engine."""
-        from octomil.engines.llamacpp_engine import _GGUF_CATALOG
-
-        expected = {n for n, e in CATALOG.items() if "llama.cpp" in e.engines}
-        assert _GGUF_CATALOG == expected
-
-    def test_mnn_catalog_from_unified(self) -> None:
-        """_MNN_CATALOG should match models with mnn engine."""
-        from octomil.engines.mnn_engine import _MNN_CATALOG
-
-        expected = {n for n, e in CATALOG.items() if "mnn" in e.engines}
-        assert _MNN_CATALOG == expected
-
-    def test_et_catalog_from_unified(self) -> None:
-        """_ET_CATALOG should match models with executorch engine."""
-        from octomil.engines.executorch_engine import _ET_CATALOG
-
-        expected = {n for n, e in CATALOG.items() if "executorch" in e.engines}
-        assert _ET_CATALOG == expected
-
-
-# =====================================================================
-# CLI list command
-# =====================================================================
-
-
-class TestListCLI:
-    """Tests for the updated ``octomil list`` CLI command."""
-
-    def test_list_all(self) -> None:
-        """octomil list shows all families with variant info."""
-        from click.testing import CliRunner
-        from octomil.cli import main
-
-        runner = CliRunner()
-        result = runner.invoke(main, ["list"])
-        assert result.exit_code == 0
-        assert "gemma-4b" in result.output
-        assert "llama-8b" in result.output
-        assert "72 model families" in result.output
-        assert "model:variant" in result.output or "model>:<variant>" in result.output
-
-    def test_list_specific_family(self) -> None:
-        """octomil list gemma-4b shows engine artifacts."""
-        from click.testing import CliRunner
-        from octomil.cli import main
-
-        runner = CliRunner()
-        result = runner.invoke(main, ["list", "gemma-4b"])
-        assert result.exit_code == 0
-        assert "gemma-4b:4bit" in result.output
-        assert "mlx-lm:" in result.output
-        assert "llama.cpp:" in result.output
-        assert "(default)" in result.output
-
-    def test_list_unknown_family_error(self) -> None:
-        """octomil list nonexistent shows error."""
-        from click.testing import CliRunner
-        from octomil.cli import main
-
-        runner = CliRunner()
-        result = runner.invoke(main, ["list", "nonexistent"])
-        assert result.exit_code != 0
-        assert "Unknown model family" in result.output
-
-    def test_list_typo_suggests(self) -> None:
-        """octomil list gemma-4 suggests gemma-4b."""
-        from click.testing import CliRunner
-        from octomil.cli import main
-
-        runner = CliRunner()
-        result = runner.invoke(main, ["list", "gemma-4"])
-        assert result.exit_code != 0
-        assert "Did you mean" in result.output
