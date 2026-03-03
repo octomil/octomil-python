@@ -45,9 +45,8 @@ class SmartRouterDefaults:
 
     long_gen_threshold: int = 256
     concurrency_threshold: int = 2
-    prefer_single_engine: str = "auto"
-    prefer_concurrent_engine: str = "auto"
-    prefer_long_gen_engine: str = "auto"
+    prefer_throughput_engine: str = "auto"
+    prefer_latency_engine: str = "auto"
 
 
 @dataclass(frozen=True)
@@ -109,9 +108,8 @@ class DeviceConfig:
         smart_router = SmartRouterDefaults(
             long_gen_threshold=int(sr_raw.get("long_gen_threshold", 256)),
             concurrency_threshold=int(sr_raw.get("concurrency_threshold", 2)),
-            prefer_single_engine=str(sr_raw.get("prefer_single_engine", "auto")),
-            prefer_concurrent_engine=str(sr_raw.get("prefer_concurrent_engine", "auto")),
-            prefer_long_gen_engine=str(sr_raw.get("prefer_long_gen_engine", "auto")),
+            prefer_throughput_engine=str(sr_raw.get("prefer_throughput_engine", "auto")),
+            prefer_latency_engine=str(sr_raw.get("prefer_latency_engine", "auto")),
         )
 
         return cls(
@@ -142,9 +140,8 @@ _FALLBACK_DATA: dict[str, Any] = {
     "smart_router": {
         "long_gen_threshold": 256,
         "concurrency_threshold": 2,
-        "prefer_single_engine": "auto",
-        "prefer_concurrent_engine": "auto",
-        "prefer_long_gen_engine": "auto",
+        "prefer_throughput_engine": "auto",
+        "prefer_latency_engine": "auto",
     },
 }
 

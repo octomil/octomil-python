@@ -128,10 +128,25 @@ class RoutingPolicy:
     ttl_seconds: int
     fetched_at: float = 0.0
     etag: str = ""
+    quality_score_offset: float = 0.0
+    balanced_score_offset: float = 0.0
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> RoutingPolicy:
         thresholds = d.get("thresholds", {})
+
+        # Score offsets: try policy-level first, then fall back to device config
+        quality_offset = d.get("quality_score_offset")
+        balanced_offset = d.get("balanced_score_offset")
+        if quality_offset is None or balanced_offset is None:
+            from octomil.device_config import get_device_config
+
+            dc = get_device_config()
+            if quality_offset is None:
+                quality_offset = dc.routing_offsets.quality_score_offset
+            if balanced_offset is None:
+                balanced_offset = dc.routing_offsets.balanced_score_offset
+
         return cls(
             version=d.get("version", 1),
             fast_max_words=thresholds.get("fast_max_words", 10),
@@ -141,6 +156,8 @@ class RoutingPolicy:
             ttl_seconds=d.get("ttl_seconds", 3600),
             fetched_at=d.get("fetched_at", 0.0),
             etag=d.get("etag", ""),
+            quality_score_offset=float(quality_offset),
+            balanced_score_offset=float(balanced_offset),
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -155,6 +172,8 @@ class RoutingPolicy:
             "ttl_seconds": self.ttl_seconds,
             "fetched_at": self.fetched_at,
             "etag": self.etag,
+            "quality_score_offset": self.quality_score_offset,
+            "balanced_score_offset": self.balanced_score_offset,
         }
 
     @property
@@ -510,7 +529,7 @@ class QueryRouter:
         if not models:
             raise ValueError("At least one model must be provided")
         if strategy != "complexity":
-            raise ValueError(f"Unknown routing strategy '{strategy}'. " "Supported strategies: complexity")
+            raise ValueError(f"Unknown routing strategy '{strategy}'. Supported strategies: complexity")
 
         self.models = models
         self.strategy = strategy
@@ -612,9 +631,9 @@ class QueryRouter:
         if word_count < policy.fast_max_words and not has_complex:
             return "fast", round(word_count / 100.0, 4)
         elif word_count > policy.quality_min_words or has_complex:
-            return "quality", round(min(word_count / 100.0 + 0.5, 1.0), 4)
+            return "quality", round(min(word_count / 100.0 + policy.quality_score_offset, 1.0), 4)
         else:
-            return "balanced", round(word_count / 100.0 + 0.25, 4)
+            return "balanced", round(word_count / 100.0 + policy.balanced_score_offset, 4)
 
     def _resolve_model(self, target_tier: str) -> str:
         """Find the best available model for a tier, falling back upward."""
