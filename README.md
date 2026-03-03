@@ -13,7 +13,7 @@ Octomil is a CLI + Python SDK that serves open-weight LLMs locally with an OpenA
 ## Quick start
 
 ```bash
-pip install octomil-sdk
+curl -fsSL https://get.octomil.com | sh
 octomil serve gemma-1b
 ```
 
