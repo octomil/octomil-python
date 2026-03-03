@@ -743,27 +743,21 @@ def _mock_model_routing_clients(monkeypatch):
     deterministic, known-good test data.
     """
 
-    # Patch CatalogClient
-    class _MockCatalogClient:
+    # Consolidated mock matching SdkConfigClient API
+    class _MockSdkConfigClient:
         def get_catalog(self):
             return _MOCK_CATALOG
 
         def get_aliases(self):
             return _MOCK_CATALOG_ALIASES
 
-    # Patch EnginePriorityClient
-    class _MockEnginePriorityClient:
         def get_priority(self):
             return _MOCK_ENGINE_PRIORITY
 
-    # Patch ModelFamiliesClient
-    class _MockModelFamiliesClient:
         def get_families(self):
             return _MOCK_MODEL_FAMILIES
 
-    # Patch SourceAliasesClient
-    class _MockSourceAliasesClient:
-        def get_aliases(self):
+        def get_source_aliases(self):
             return _MOCK_SOURCE_ALIASES
 
     # Patch DeviceConfigClient — inject the original hardcoded values
@@ -805,8 +799,8 @@ def _mock_model_routing_clients(monkeypatch):
             "fast": EarlyExitPresetConfig(threshold=0.5, min_layers_fraction=0.25),
         },
         routing_offsets=RoutingOffsets(
-            REDACTED_FIELD=0.5,
-            REDACTED_FIELD=0.25,
+            quality_score_offset=0.5,
+            balanced_score_offset=0.25,
         ),
         smart_router=SmartRouterDefaults(
             long_gen_threshold=512,
@@ -836,15 +830,11 @@ def _mock_model_routing_clients(monkeypatch):
     # Reset the singletons in all modules that cache them
     import octomil.model_registry as reg_mod
     import octomil.models.catalog as cat_mod
-    import octomil.models.resolver as res_mod
-    import octomil.sources.resolver as src_mod
 
-    # Directly inject mock client instances into the module-level singletons.
-    # This bypasses the CatalogClient() constructor which was already imported.
-    monkeypatch.setattr(cat_mod, "_client", _MockCatalogClient())
-    monkeypatch.setattr(res_mod, "_priority_client", _MockEnginePriorityClient())
-    monkeypatch.setattr(reg_mod, "_families_client", _MockModelFamiliesClient())
-    monkeypatch.setattr(src_mod, "_aliases_client", _MockSourceAliasesClient())
+    # Inject the consolidated mock client into catalog._client.
+    # resolver, model_registry, and sources/resolver all delegate to it.
+    _mock_sdk_client = _MockSdkConfigClient()
+    monkeypatch.setattr(cat_mod, "_client", _mock_sdk_client)
 
     # Reset the existing lazy dicts so they re-load from the mocked clients.
     # We must mutate the existing objects rather than replacing them, because

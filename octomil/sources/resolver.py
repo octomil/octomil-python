@@ -20,7 +20,7 @@ from typing import Dict, Optional
 
 import click
 
-from ..models.catalog_client import SourceAliasesClient
+from ..models.catalog import _get_client
 from .base import SourceResult
 from .huggingface import HuggingFaceSource
 from .kaggle import KaggleSource
@@ -32,20 +32,10 @@ logger = logging.getLogger(__name__)
 # Server-fetched model aliases (singleton)
 # ---------------------------------------------------------------------------
 
-_aliases_client: Optional[SourceAliasesClient] = None
-
-
-def _get_aliases_client() -> SourceAliasesClient:
-    """Return the module-level SourceAliasesClient singleton."""
-    global _aliases_client
-    if _aliases_client is None:
-        _aliases_client = SourceAliasesClient()
-    return _aliases_client
-
 
 def _get_model_aliases() -> Dict[str, Dict[str, str]]:
-    """Fetch source-level model aliases from the server (cached) or fallback."""
-    return _get_aliases_client().get_aliases()
+    """Fetch source-level model aliases from the consolidated SDK config."""
+    return _get_client().get_source_aliases()
 
 
 # Backward-compatible module-level name — always empty at import time.

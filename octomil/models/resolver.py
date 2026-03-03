@@ -21,8 +21,7 @@ import difflib
 from dataclasses import dataclass
 from typing import Optional
 
-from .catalog import CATALOG, ModelEntry, MoEMetadata, _resolve_alias
-from .catalog_client import EnginePriorityClient
+from .catalog import CATALOG, ModelEntry, MoEMetadata, _get_client, _resolve_alias
 from .parser import normalize_variant, parse
 
 
@@ -84,20 +83,10 @@ _ENGINE_ALIASES: dict[str, str] = {
 # Server-fetched engine priority (singleton)
 # ---------------------------------------------------------------------------
 
-_priority_client: Optional[EnginePriorityClient] = None
-
-
-def _get_priority_client() -> EnginePriorityClient:
-    """Return the module-level EnginePriorityClient singleton."""
-    global _priority_client
-    if _priority_client is None:
-        _priority_client = EnginePriorityClient()
-    return _priority_client
-
 
 def _get_engine_priority() -> list[str]:
-    """Return the engine priority list from server (cached) or fallback."""
-    return _get_priority_client().get_priority()
+    """Return the engine priority list from the consolidated SDK config."""
+    return _get_client().get_priority()
 
 
 # Backward-compatible module-level name for direct imports.

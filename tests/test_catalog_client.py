@@ -22,6 +22,7 @@ from octomil.models.catalog_client import (
     CatalogClient,
     EnginePriorityClient,
     ModelFamiliesClient,
+    SdkConfigClient,
     SourceAliasesClient,
     _ServerFetcher,
 )
@@ -181,3 +182,46 @@ class TestSourceAliasesClient:
     def test_fallback_aliases_empty(self) -> None:
         """Fallback source aliases should be empty."""
         assert SourceAliasesClient._FALLBACK_ALIASES == {}
+
+
+class TestSdkConfigClient:
+    """Tests for the consolidated SdkConfigClient."""
+
+    def test_fallback_config_has_all_sections(self) -> None:
+        """Fallback config should include all 5 sections."""
+        fb = SdkConfigClient._FALLBACK_CONFIG
+        assert "catalog" in fb
+        assert "aliases" in fb
+        assert "engine_priority" in fb
+        assert "families" in fb
+        assert "source_aliases" in fb
+
+    def test_get_catalog_returns_catalog_section(self) -> None:
+        """get_catalog() should return the catalog portion."""
+        client = SdkConfigClient()
+        # Will use fallback (no server)
+        with patch.dict("sys.modules", {"httpx": None}):
+            catalog = client.get_catalog()
+        assert isinstance(catalog, dict)
+        assert "gemma-1b" in catalog
+
+    def test_get_priority_returns_list(self) -> None:
+        """get_priority() should return a list."""
+        client = SdkConfigClient()
+        with patch.dict("sys.modules", {"httpx": None}):
+            priority = client.get_priority()
+        assert isinstance(priority, list)
+
+    def test_get_families_returns_dict(self) -> None:
+        """get_families() should return a dict."""
+        client = SdkConfigClient()
+        with patch.dict("sys.modules", {"httpx": None}):
+            families = client.get_families()
+        assert isinstance(families, dict)
+
+    def test_get_source_aliases_returns_dict(self) -> None:
+        """get_source_aliases() should return a dict."""
+        client = SdkConfigClient()
+        with patch.dict("sys.modules", {"httpx": None}):
+            aliases = client.get_source_aliases()
+        assert isinstance(aliases, dict)

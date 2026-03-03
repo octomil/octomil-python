@@ -363,3 +363,58 @@ class SourceAliasesClient:
     def get_aliases(self) -> dict[str, dict[str, str]]:
         """Return source-level alias mapping (server-fetched or fallback)."""
         return self._fetcher.get()
+
+
+class SdkConfigClient:
+    """Consolidated client — fetches all model routing data in a single call.
+
+    Calls ``GET /api/v1/models/sdk-config`` which returns catalog, aliases,
+    engine priority, families, and source aliases in one response.  This
+    replaces 5 separate HTTP round-trips during SDK startup.
+
+    The public API mirrors the individual clients for backward compat.
+    """
+
+    _FALLBACK_CONFIG: dict[str, Any] = {
+        "catalog": CatalogClient._FALLBACK_CATALOG,
+        "aliases": CatalogClient._FALLBACK_ALIASES,
+        "engine_priority": EnginePriorityClient._FALLBACK_PRIORITY,
+        "families": ModelFamiliesClient._FALLBACK_FAMILIES,
+        "source_aliases": SourceAliasesClient._FALLBACK_ALIASES,
+    }
+
+    def __init__(
+        self,
+        api_base: str = "",
+        api_key: str = "",
+    ) -> None:
+        self._fetcher = _ServerFetcher(
+            endpoint="models/sdk-config",
+            cache_filename="sdk_config.json",
+            default_data=self._FALLBACK_CONFIG,
+            api_base=api_base,
+            api_key=api_key,
+        )
+
+    def _data(self) -> dict[str, Any]:
+        return self._fetcher.get()
+
+    def get_catalog(self) -> dict[str, Any]:
+        """Return the model catalog dict."""
+        return self._data().get("catalog", {})
+
+    def get_aliases(self) -> dict[str, str]:
+        """Return the model alias mapping."""
+        return self._data().get("aliases", {})
+
+    def get_priority(self) -> list[str]:
+        """Return engine priority list."""
+        return self._data().get("engine_priority", ["auto"])
+
+    def get_families(self) -> dict[str, Any]:
+        """Return model families dict."""
+        return self._data().get("families", {})
+
+    def get_source_aliases(self) -> dict[str, dict[str, str]]:
+        """Return source-level alias mapping."""
+        return self._data().get("source_aliases", {})

@@ -21,7 +21,7 @@ import difflib
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
-from .models.catalog_client import ModelFamiliesClient
+from .models.catalog import _get_client
 
 # ---------------------------------------------------------------------------
 # Data structures
@@ -119,15 +119,10 @@ def _sort_sources_by_trust(sources: list[ModelSource]) -> list[ModelSource]:
 # Server-fetched model families (singleton + hydration)
 # ---------------------------------------------------------------------------
 
-_families_client: Optional[ModelFamiliesClient] = None
 
-
-def _get_families_client() -> ModelFamiliesClient:
-    """Return the module-level ModelFamiliesClient singleton."""
-    global _families_client
-    if _families_client is None:
-        _families_client = ModelFamiliesClient()
-    return _families_client
+def _get_families_client():
+    """Return the shared SdkConfigClient from catalog module."""
+    return _get_client()
 
 
 def _source_from_dict(d: dict[str, Any]) -> ModelSource:

@@ -17,7 +17,7 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
-from .catalog_client import CatalogClient
+from .catalog_client import SdkConfigClient
 
 logger = logging.getLogger(__name__)
 
@@ -153,14 +153,14 @@ def _hydrate_catalog(raw: dict[str, Any]) -> dict[str, ModelEntry]:
 # Singleton client — lazily initialized
 # ---------------------------------------------------------------------------
 
-_client: Optional[CatalogClient] = None
+_client: Optional[SdkConfigClient] = None
 
 
-def _get_client() -> CatalogClient:
-    """Return the module-level CatalogClient singleton."""
+def _get_client() -> SdkConfigClient:
+    """Return the module-level SdkConfigClient singleton."""
     global _client
     if _client is None:
-        _client = CatalogClient()
+        _client = SdkConfigClient()
     return _client
 
 
