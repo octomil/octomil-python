@@ -81,7 +81,6 @@ BYTES_PER_PARAM: dict[str, float] = {
     "F32": 4.0,
 }
 
-***REMOVED***
 REDACTED_DICT: dict[str, float] = {
     "Q2_K": REDACTED,
     "Q3_K_S": REDACTED,
@@ -98,8 +97,6 @@ REDACTED_DICT: dict[str, float] = {
     "F32": REDACTED,
 }
 
-***REMOVED***
-***REMOVED***
 _KV_CACHE_PER_1K_TOKENS: dict[int, float] = {
     1: 0.05,
     3: 0.08,
@@ -167,9 +164,7 @@ def _model_memory_gb(model_size_b: float, quant: str) -> float:
 
 def _total_memory_gb(model_size_b: float, quant: str, context_length: int) -> float:
     """Total memory: model weights + KV cache."""
-    return _model_memory_gb(model_size_b, quant) + _kv_cache_gb(
-        model_size_b, context_length
-    )
+    return _model_memory_gb(model_size_b, quant) + _kv_cache_gb(model_size_b, context_length)
 
 
 def estimate_memory_mb(
@@ -239,23 +234,18 @@ class ModelOptimizer:
         is_metal = gpu is not None and gpu.backend == "metal"
 
         if is_metal:
-***REMOVED***
-***REMOVED***
             self.usable_vram = max(hardware.total_ram_gb - 4.0, 0.0)
         elif gpu is not None and gpu.total_vram_gb > 0:
-***REMOVED***
             self.usable_vram = gpu.total_vram_gb * 0.9
         else:
             self.usable_vram = 0.0
 
-***REMOVED***
         self.usable_ram = hardware.available_ram_gb * 0.85
 
         # --- Speed coefficient (tok/s per billion params at Q4_K_M) ---
         if gpu is not None and gpu.speed_coefficient > 0:
             self._speed_coeff = float(gpu.speed_coefficient)
         else:
-***REMOVED***
             self._speed_coeff = max(hardware.cpu.estimated_gflops / 50.0, 1.0)
 
         # --- Backend label ---
@@ -312,8 +302,7 @@ class ModelOptimizer:
                 vram_gb=round(vram_used, 2),
                 ram_gb=round(ram_used, 2),
                 total_gb=round(model_gb, 2),
-                warning="Model requires aggressive quantization (Q2_K). "
-                "Expect noticeable quality degradation.",
+                warning="Model requires aggressive quantization (Q2_K). " "Expect noticeable quality degradation.",
             )
 
         # Truly does not fit — report AGGRESSIVE_QUANT with a warning
@@ -417,7 +406,6 @@ class ModelOptimizer:
         quant_factor = _QUANT_SPEED_FACTORS.get(config.quantization, 1.0)
         tps = base_tps * quant_factor
 
-***REMOVED***
         if config.strategy == MemoryStrategy.PARTIAL_OFFLOAD:
             tps *= 0.6
         elif config.strategy == MemoryStrategy.CPU_ONLY:
@@ -511,16 +499,8 @@ class ModelOptimizer:
             return sorted(
                 recs,
                 key=lambda r: (
-                    -(
-                        size_order.index(r.model_size)
-                        if r.model_size in size_order
-                        else 0
-                    ),
-                    -(
-                        quant_order.index(r.quantization)
-                        if r.quantization in quant_order
-                        else 0
-                    ),
+                    -(size_order.index(r.model_size) if r.model_size in size_order else 0),
+                    -(quant_order.index(r.quantization) if r.quantization in quant_order else 0),
                     -r.speed.tokens_per_second,
                 ),
             )
@@ -535,11 +515,7 @@ class ModelOptimizer:
         fast_enough.sort(
             key=lambda r: (
                 -(size_order.index(r.model_size) if r.model_size in size_order else 0),
-                -(
-                    quant_order.index(r.quantization)
-                    if r.quantization in quant_order
-                    else 0
-                ),
+                -(quant_order.index(r.quantization) if r.quantization in quant_order else 0),
             ),
         )
         too_slow.sort(key=lambda r: -r.speed.tokens_per_second)

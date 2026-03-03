@@ -92,14 +92,10 @@ class EngineRegistry:
                 if available and canonical_name:
                     available = engine.supports_model(canonical_name)
                 info = engine.detect_info() if available else ""
-                results.append(
-                    DetectionResult(engine=engine, available=available, info=info)
-                )
+                results.append(DetectionResult(engine=engine, available=available, info=info))
             except Exception as exc:
                 logger.debug("Engine %s detection failed: %s", engine.name, exc)
-                results.append(
-                    DetectionResult(engine=engine, available=False, info=str(exc))
-                )
+                results.append(DetectionResult(engine=engine, available=False, info=str(exc)))
         return results
 
     def benchmark_all(
@@ -112,9 +108,7 @@ class EngineRegistry:
 
         Returns engines ranked by tokens_per_second (highest first).
         """
-        targets = engines or [
-            d.engine for d in self.detect_all(model_name) if d.available
-        ]
+        targets = engines or [d.engine for d in self.detect_all(model_name) if d.available]
 
         ranked: list[RankedEngine] = []
         for engine in targets:
@@ -130,10 +124,6 @@ class EngineRegistry:
             ranked.append(RankedEngine(engine=engine, result=result))
             gc.collect()  # Free GPU memory from benchmark models
 
-***REMOVED***
-***REMOVED***
-***REMOVED***
-***REMOVED***
         def _adjusted_tps(r: RankedEngine) -> float:
             bonus = 1.0 + max(0, (50 - r.engine.priority)) * 0.005
             return r.result.tokens_per_second * bonus
@@ -177,10 +167,7 @@ class EngineRegistry:
             engine = self.get_engine(engine_override)
             if engine is None:
                 available = [e.name for e in self._engines]
-                raise ValueError(
-                    f"Unknown engine '{engine_override}'. "
-                    f"Available: {', '.join(available)}"
-                )
+                raise ValueError(f"Unknown engine '{engine_override}'. " f"Available: {', '.join(available)}")
             if not engine.detect():
                 raise ValueError(
                     f"Engine '{engine_override}' is not available on this system. "

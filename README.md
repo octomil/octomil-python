@@ -181,10 +181,6 @@ octomil serve gemma-1b
 | 60+ models in catalog            | yes                  | yes (different catalog) | yes (manual download)  | varies     |
 | Python SDK                       | yes                  | yes                     | community              | yes        |
 
-
-
-
-
 ## Python SDK
 
 For fleet management, model registry, and A/B testing:

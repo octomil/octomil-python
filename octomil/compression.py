@@ -156,9 +156,7 @@ _STOPWORDS: frozenset[str] = frozenset(
 
 # Filler phrases that can be stripped without information loss
 _FILLER_PATTERNS: list[re.Pattern[str]] = [
-    re.compile(
-        r"\b(um|uh|ah|hmm|well|okay|ok|so|like|you know|I mean)\b", re.IGNORECASE
-    ),
+    re.compile(r"\b(um|uh|ah|hmm|well|okay|ok|so|like|you know|I mean)\b", re.IGNORECASE),
     re.compile(r"\s{2,}"),  # collapse multiple whitespace
 ]
 
@@ -230,11 +228,7 @@ class CompressionConfig:
 
 
 def estimate_tokens(text: str) -> int:
-    """Estimate token count using a word-based heuristic.
-
-***REMOVED***
-***REMOVED***
-    """
+    """Estimate token count using a word-based heuristic."""
     if not text:
         return 0
     words = text.split()
@@ -405,9 +399,7 @@ class PromptCompressor:
     def __init__(self, config: Optional[CompressionConfig] = None) -> None:
         self.config = config or CompressionConfig()
 
-    def compress(
-        self, messages: list[dict[str, str]]
-    ) -> tuple[list[dict[str, str]], CompressionStats]:
+    def compress(self, messages: list[dict[str, str]]) -> tuple[list[dict[str, str]], CompressionStats]:
         """Compress a list of chat messages.
 
         Returns the (possibly modified) message list and compression
@@ -470,9 +462,7 @@ class PromptCompressor:
 
         return compressed, stats
 
-    def _compress_token_pruning(
-        self, messages: list[dict[str, str]]
-    ) -> list[dict[str, str]]:
+    def _compress_token_pruning(self, messages: list[dict[str, str]]) -> list[dict[str, str]]:
         """Apply token pruning to each message's content."""
         result: list[dict[str, str]] = []
         for msg in messages:
@@ -489,9 +479,7 @@ class PromptCompressor:
 
         return result
 
-    def _compress_sliding_window(
-        self, messages: list[dict[str, str]]
-    ) -> list[dict[str, str]]:
+    def _compress_sliding_window(self, messages: list[dict[str, str]]) -> list[dict[str, str]]:
         """Apply sliding window with summary compression."""
         return _apply_sliding_window(
             messages,
