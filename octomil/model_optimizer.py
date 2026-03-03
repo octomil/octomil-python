@@ -81,21 +81,13 @@ BYTES_PER_PARAM: dict[str, float] = {
     "F32": 4.0,
 }
 
-REDACTED_DICT: dict[str, float] = {
-    "Q2_K": REDACTED,
-    "Q3_K_S": REDACTED,
-    "Q3_K_M": REDACTED,
-    "Q4_0": REDACTED,
-    "Q4_K_S": REDACTED,
-    "Q4_K_M": 1.0,
-    "Q5_0": REDACTED,
-    "Q5_K_S": REDACTED,
-    "Q5_K_M": REDACTED,
-    "Q6_K": REDACTED,
-    "Q8_0": REDACTED,
-    "F16": REDACTED,
-    "F32": REDACTED,
-}
+
+def _get_quant_speed_factors() -> dict[str, float]:
+    """Return quant speed factors from server config, with fallback."""
+    from octomil.device_config import get_device_config
+
+    return get_device_config().quant_speed_factors
+
 
 _KV_CACHE_PER_1K_TOKENS: dict[int, float] = {
     1: 0.05,
@@ -125,21 +117,12 @@ _MODEL_SIZES: dict[str, float] = {
     "405B": 405.0,
 }
 
-# Quantizations ordered from highest quality to lowest — the optimizer tries
-# each in order and picks the best quality that fits in memory.
-REDACTED_LIST: list[str] = [
-    "Q8_0",
-    "Q6_K",
-    "Q5_K_M",
-    "Q5_K_S",
-    "Q5_0",
-    "Q4_K_M",
-    "Q4_K_S",
-    "Q4_0",
-    "Q3_K_M",
-    "Q3_K_S",
-    "Q2_K",
-]
+
+def _get_quant_preference_order() -> list[str]:
+    """Return quant preference order from server config, with fallback."""
+    from octomil.device_config import get_device_config
+
+    return get_device_config().quant_preference_order
 
 
 # ---------------------------------------------------------------------------
@@ -278,7 +261,7 @@ class ModelOptimizer:
         """
         kv_cache = _kv_cache_gb(model_size_b, context_length)
 
-        for quant in _QUANT_PREFERENCE_ORDER:
+        for quant in _get_quant_preference_order():
             model_gb = _model_memory_gb(model_size_b, quant) + kv_cache
 
             result = self._try_fit(model_size_b, quant, model_gb, kv_cache)
@@ -302,7 +285,7 @@ class ModelOptimizer:
                 vram_gb=round(vram_used, 2),
                 ram_gb=round(ram_used, 2),
                 total_gb=round(model_gb, 2),
-                warning="Model requires aggressive quantization (Q2_K). " "Expect noticeable quality degradation.",
+                warning="Model requires aggressive quantization (Q2_K). Expect noticeable quality degradation.",
             )
 
         # Truly does not fit — report AGGRESSIVE_QUANT with a warning
@@ -403,7 +386,7 @@ class ModelOptimizer:
             )
 
         base_tps = self._speed_coeff / model_size_b
-        quant_factor = _QUANT_SPEED_FACTORS.get(config.quantization, 1.0)
+        quant_factor = _get_quant_speed_factors().get(config.quantization, 1.0)
         tps = base_tps * quant_factor
 
         if config.strategy == MemoryStrategy.PARTIAL_OFFLOAD:
@@ -495,7 +478,7 @@ class ModelOptimizer:
         if priority == "quality":
             # Larger model + higher-quality quant first; break ties by speed
             size_order = list(_MODEL_SIZES.keys())
-            quant_order = list(reversed(_QUANT_PREFERENCE_ORDER))
+            quant_order = list(reversed(_get_quant_preference_order()))
             return sorted(
                 recs,
                 key=lambda r: (
@@ -510,7 +493,7 @@ class ModelOptimizer:
         too_slow = [r for r in recs if r.speed.tokens_per_second < 10.0]
 
         size_order = list(_MODEL_SIZES.keys())
-        quant_order = list(reversed(_QUANT_PREFERENCE_ORDER))
+        quant_order = list(reversed(_get_quant_preference_order()))
 
         fast_enough.sort(
             key=lambda r: (

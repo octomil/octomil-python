@@ -107,7 +107,7 @@ class ModelResolutionError(ValueError):
 # Trust priority ordering
 # ---------------------------------------------------------------------------
 
-REDACTED
+TRUST_PRIORITY: dict[str, int] = {"official": 0, "curated": 1, "community": 2}
 
 
 def _sort_sources_by_trust(sources: list[ModelSource]) -> list[ModelSource]:
@@ -291,7 +291,7 @@ def resolve_model(
         return ResolvedModel(
             family=None,
             tag=tag,
-            source=ModelSource(type="huggingface", ref=tag, REDACTED),
+            source=ModelSource(type="huggingface", ref=tag, trust="community"),
             mlx_repo=None,
             variant=None,
             raw_name=name,

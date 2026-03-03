@@ -153,9 +153,9 @@ class TestTrustPriority:
     def test_official_before_community(self) -> None:
         """Official sources should sort before community ones."""
         sources = [
-            ModelSource(type="huggingface", ref="community/repo", REDACTED),
-            ModelSource(type="huggingface", ref="official/repo", REDACTED),
-            ModelSource(type="ollama", ref="model", REDACTED),
+            ModelSource(type="huggingface", ref="community/repo", trust="community"),
+            ModelSource(type="huggingface", ref="official/repo", trust="official"),
+            ModelSource(type="ollama", ref="model", trust="curated"),
         ]
         sorted_sources = _sort_sources_by_trust(sources)
         assert sorted_sources[0].trust == "official"

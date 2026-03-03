@@ -47,17 +47,54 @@ class SpeedQualityPreset(str, Enum):
     FAST = "fast"
 
 
-PRESET_THRESHOLDS: dict[SpeedQualityPreset, float] = {
-    SpeedQualityPreset.QUALITY: REDACTED,
-    SpeedQualityPreset.BALANCED: 0.3,
-    SpeedQualityPreset.FAST: REDACTED,
-}
+def _load_early_exit_presets() -> tuple[dict[SpeedQualityPreset, float], dict[SpeedQualityPreset, float]]:
+    """Load early exit preset thresholds and min-layer fractions from server config.
 
-PRESET_MIN_LAYERS_FRACTION: dict[SpeedQualityPreset, float] = {
-    SpeedQualityPreset.QUALITY: REDACTED,
-    SpeedQualityPreset.BALANCED: 0.5,
-    SpeedQualityPreset.FAST: REDACTED,
-}
+    Returns ``(thresholds, min_layers_fractions)`` dicts keyed by preset.
+    Falls back to balanced-only defaults when the server is unreachable.
+    """
+    from octomil.device_config import get_device_config
+
+    cfg = get_device_config()
+    thresholds: dict[SpeedQualityPreset, float] = {}
+    min_layers: dict[SpeedQualityPreset, float] = {}
+
+    for preset in SpeedQualityPreset:
+        preset_cfg = cfg.early_exit_presets.get(preset.value)
+        if preset_cfg is not None:
+            thresholds[preset] = preset_cfg.threshold
+            min_layers[preset] = preset_cfg.min_layers_fraction
+        else:
+            thresholds[preset] = 0.3
+            min_layers[preset] = 0.5
+
+    return thresholds, min_layers
+
+
+def _get_preset_thresholds() -> dict[SpeedQualityPreset, float]:
+    """Return preset thresholds from server config."""
+    return _load_early_exit_presets()[0]
+
+
+def _get_preset_min_layers_fraction() -> dict[SpeedQualityPreset, float]:
+    """Return preset min-layer fractions from server config."""
+    return _load_early_exit_presets()[1]
+
+
+# Public aliases for backward compatibility — these are now functions
+# that lazily fetch from the server.  Code that reads them at module level
+# (e.g. ``PRESET_THRESHOLDS[SpeedQualityPreset.FAST]``) must be updated
+# to call the getter instead, or import the getter directly.
+PRESET_THRESHOLDS: dict[SpeedQualityPreset, float] = {}  # populated lazily
+PRESET_MIN_LAYERS_FRACTION: dict[SpeedQualityPreset, float] = {}  # populated lazily
+
+
+def _ensure_presets_loaded() -> None:
+    """Populate module-level dicts on first access if empty."""
+    if not PRESET_THRESHOLDS:
+        t, m = _load_early_exit_presets()
+        PRESET_THRESHOLDS.update(t)
+        PRESET_MIN_LAYERS_FRACTION.update(m)
 
 
 # ---------------------------------------------------------------------------
@@ -100,6 +137,7 @@ class EarlyExitConfig:
     def effective_threshold(self) -> float:
         """Return the threshold, considering preset overrides."""
         if self.preset is not None:
+            _ensure_presets_loaded()
             return PRESET_THRESHOLDS.get(self.preset, self.threshold)
         return self.threshold
 
@@ -107,6 +145,7 @@ class EarlyExitConfig:
     def effective_min_layers_fraction(self) -> float:
         """Return the minimum layers fraction, considering preset overrides."""
         if self.preset is not None:
+            _ensure_presets_loaded()
             return PRESET_MIN_LAYERS_FRACTION.get(self.preset, self.min_layers_fraction)
         return self.min_layers_fraction
 
@@ -144,12 +183,13 @@ def config_from_cli(
             preset = SpeedQualityPreset(speed_quality)
         except ValueError:
             logger.warning(
-                "Unknown speed-quality preset '%s', ignoring. " "Valid presets: quality, balanced, fast",
+                "Unknown speed-quality preset '%s', ignoring. Valid presets: quality, balanced, fast",
                 speed_quality,
             )
 
     threshold = early_exit_threshold if early_exit_threshold is not None else 0.3
     if preset is not None and early_exit_threshold is None:
+        _ensure_presets_loaded()
         threshold = PRESET_THRESHOLDS.get(preset, 0.3)
 
     return EarlyExitConfig(

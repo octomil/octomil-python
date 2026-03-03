@@ -39,6 +39,14 @@ class FakeBackend(InferenceBackend):
         return [self._model] if self._model else []
 
 
+_TEST_CONFIG = RouterConfig(
+    long_gen_threshold=512,
+    concurrency_threshold=2,
+    prefer_throughput_engine="mlx-lm",
+    prefer_latency_engine="llama.cpp",
+)
+
+
 def _make_router(
     *,
     mlx: bool = True,
@@ -46,7 +54,7 @@ def _make_router(
     config: RouterConfig | None = None,
 ) -> SmartRouter:
     """Build a SmartRouter with pre-injected fake backends (skip real loading)."""
-    cfg = config or RouterConfig()
+    cfg = config or _TEST_CONFIG
     router = SmartRouter(config=cfg)
     router._model_name = "test-model"
     if mlx:
@@ -107,6 +115,8 @@ class TestRouting:
         cfg = RouterConfig(
             long_gen_threshold=128,
             concurrency_threshold=1,
+            prefer_throughput_engine="mlx-lm",
+            prefer_latency_engine="llama.cpp",
         )
         router = _make_router(config=cfg)
 
@@ -120,7 +130,11 @@ class TestRouting:
         assert name == "mlx-lm"
 
     def test_concurrency_threshold_boundary(self):
-        cfg = RouterConfig(concurrency_threshold=2)
+        cfg = RouterConfig(
+            concurrency_threshold=2,
+            prefer_throughput_engine="mlx-lm",
+            prefer_latency_engine="llama.cpp",
+        )
         router = _make_router(config=cfg)
 
         router._inflight = 1  # below threshold

@@ -27,16 +27,33 @@ logger = logging.getLogger(__name__)
 class RouterConfig:
     """Tunable routing parameters.
 
-    Loaded from defaults; will be updatable via SDK version config in future.
+    Routing strategy:
+      1. Long generation (>= long_gen_threshold tokens) -> prefer_latency_engine
+      2. Concurrent (>= concurrency_threshold inflight) -> prefer_throughput_engine
+      3. Single short request -> prefer_latency_engine
+
+    Defaults are fetched from the server via ``DeviceConfigClient``.
+    When the server is unreachable, falls back to safe "auto" defaults
+    that pick the first available engine.
     """
 
-    long_gen_threshold: int = 512
+    long_gen_threshold: int = 256
     concurrency_threshold: int = 2
-    prefer_throughput_engine: str = "mlx-lm"
-    prefer_latency_engine: str = "llama.cpp"
+    prefer_throughput_engine: str = "auto"
+    prefer_latency_engine: str = "auto"
 
 
-_DEFAULT_CONFIG = RouterConfig()
+def _default_router_config() -> RouterConfig:
+    """Build a RouterConfig from server-fetched device config."""
+    from octomil.device_config import get_device_config
+
+    sr = get_device_config().smart_router
+    return RouterConfig(
+        long_gen_threshold=sr.long_gen_threshold,
+        concurrency_threshold=sr.concurrency_threshold,
+        prefer_throughput_engine=sr.prefer_throughput_engine,
+        prefer_latency_engine=sr.prefer_latency_engine,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -64,7 +81,7 @@ class SmartRouter(InferenceBackend):
         cache_size_mb: int = 2048,
         cache_enabled: bool = True,
     ) -> None:
-        self._config = config or _DEFAULT_CONFIG
+        self._config = config or _default_router_config()
         self._backends: dict[str, InferenceBackend] = {}
         self._model_name: str = ""
         self._cache_size_mb = cache_size_mb

@@ -9,19 +9,18 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from octomil.routing import (
+    _DEFAULT_POLICY,
     TIER_ORDER,
     DeterministicResult,
     ModelInfo,
     PolicyClient,
     QueryRouter,
     RoutingPolicy,
-    _DEFAULT_POLICY,
     _format_number,
     _safe_eval,
     assign_tiers,
     check_deterministic,
 )
-
 
 # ---------------------------------------------------------------------------
 # ModelInfo
@@ -195,10 +194,11 @@ class TestRoutingPolicy:
     def test_from_dict_defaults(self):
         policy = RoutingPolicy.from_dict(_DEFAULT_POLICY)
         assert policy.version == 1
-        assert policy.fast_max_words == 10
-        assert policy.quality_min_words == 50
+        # _DEFAULT_POLICY has explicit values 0 / 999999 (safe offline defaults)
+        assert policy.fast_max_words == 0
+        assert policy.quality_min_words == 999999
         assert policy.deterministic_enabled is True
-        assert len(policy.complex_indicators) > 0
+        assert policy.complex_indicators == []
 
     def test_round_trip(self):
         policy = RoutingPolicy.from_dict(_DEFAULT_POLICY)
@@ -214,12 +214,13 @@ class TestRoutingPolicy:
         assert policy.is_expired is True  # fetched_at = 0
 
     def test_is_expired_recent(self):
-        policy = RoutingPolicy.from_dict(_DEFAULT_POLICY)
+        # Use a policy with a positive TTL (the _DEFAULT_POLICY has ttl_seconds=0)
+        policy = RoutingPolicy.from_dict({**_DEFAULT_POLICY, "ttl_seconds": 3600})
         policy.fetched_at = time.time()
         assert policy.is_expired is False
 
     def test_is_expired_old(self):
-        policy = RoutingPolicy.from_dict(_DEFAULT_POLICY)
+        policy = RoutingPolicy.from_dict({**_DEFAULT_POLICY, "ttl_seconds": 3600})
         policy.fetched_at = time.time() - 7200  # 2 hours ago, TTL is 1 hour
         assert policy.is_expired is True
 
@@ -234,7 +235,7 @@ class TestPolicyClient:
         client = PolicyClient(api_base="http://localhost:9999", api_key="test")
         policy = client.get_policy()
         assert policy.version == 1
-        assert policy.fast_max_words == 10
+        assert policy.fast_max_words == 0  # _DEFAULT_POLICY safe offline value
 
     def test_caches_policy_to_disk(self, tmp_path: Path):
         with patch("octomil.routing._CACHE_DIR", tmp_path):
@@ -285,9 +286,7 @@ class TestPolicyClient:
 
         with patch("octomil.routing._CACHE_DIR", tmp_path):
             with patch("httpx.Client", return_value=mock_client):
-                client = PolicyClient(
-                    api_base="http://test.example.com/api/v1", api_key="key"
-                )
+                client = PolicyClient(api_base="http://test.example.com/api/v1", api_key="key")
                 policy = client.get_policy()
 
         assert policy.version == 2
@@ -309,9 +308,7 @@ class TestPolicyClient:
 
         with patch("octomil.routing._CACHE_DIR", tmp_path):
             with patch("httpx.Client", return_value=mock_client):
-                client = PolicyClient(
-                    api_base="http://test.example.com/api/v1", api_key="key"
-                )
+                client = PolicyClient(api_base="http://test.example.com/api/v1", api_key="key")
                 # Pre-populate with a policy that has an etag
                 old_policy = RoutingPolicy.from_dict(_DEFAULT_POLICY)
                 old_policy.etag = '"v1"'
@@ -336,10 +333,26 @@ _MODELS = {
     "llama-3b": ModelInfo(name="llama-3b", tier="quality", param_b=3.0),
 }
 
+# A functional test policy with real thresholds (mirrors a typical server
+# response, unlike the minimal _DEFAULT_POLICY which disables fast/quality).
+_TEST_POLICY = {
+    "version": 1,
+    "thresholds": {"fast_max_words": 10, "quality_min_words": 50},
+    "complex_indicators": ["implement", "analyze", "compare", "algorithm"],
+    "deterministic_enabled": True,
+    "ttl_seconds": 3600,
+    "REDACTED_FIELD": 0.5,
+    "REDACTED_FIELD": 0.25,
+}
+
 
 def _make_router(**kwargs) -> QueryRouter:
-    """Create a router that uses the default embedded policy (no server)."""
-    return QueryRouter(_MODELS, **kwargs)
+    """Create a router that uses a functional test policy (no server)."""
+    router = QueryRouter(_MODELS, **kwargs)
+    # Inject a usable policy instead of relying on the minimal _DEFAULT_POLICY
+    router._policy_client._policy = RoutingPolicy.from_dict(_TEST_POLICY)
+    router._policy_client._policy.fetched_at = time.time()
+    return router
 
 
 class TestQueryRouter:

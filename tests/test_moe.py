@@ -27,13 +27,12 @@ from octomil.models.catalog import (
     get_model,
     get_moe_metadata,
     is_moe_model,
-    list_moe_models,
     list_models,
+    list_moe_models,
     supports_engine,
 )
 from octomil.models.resolver import ResolvedModel, resolve
 from octomil.telemetry import TelemetryReporter, _compute_load_balance
-
 
 # =====================================================================
 # Catalog — MoE model entries
@@ -154,9 +153,7 @@ class TestMoECatalogHelpers:
     def test_list_moe_models(self) -> None:
         moe_models = list_moe_models()
         assert isinstance(moe_models, list)
-        assert (
-            len(moe_models) >= 5
-        )  # mixtral-8x7b, 8x22b, dbrx, deepseek-v3, v2-lite, qwen-moe
+        assert len(moe_models) >= 5  # mixtral-8x7b, 8x22b, dbrx, deepseek-v3, v2-lite, qwen-moe
         assert "mixtral-8x7b" in moe_models
         assert "dbrx" in moe_models
         assert "deepseek-v3" in moe_models
@@ -291,8 +288,8 @@ class TestMoEMetadata:
             num_experts=8,
             active_experts=2,
             expert_size="7B",
-            REDACTED,
-            REDACTED,
+            total_params="46.7B",
+            active_params="12.9B",
         )
         assert meta.num_experts == 8
         assert meta.active_experts == 2
@@ -303,8 +300,8 @@ class TestMoEMetadata:
             num_experts=8,
             active_experts=2,
             expert_size="7B",
-            REDACTED,
-            REDACTED,
+            total_params="46.7B",
+            active_params="12.9B",
         )
         with pytest.raises(AttributeError):
             meta.num_experts = 16  # type: ignore[misc]

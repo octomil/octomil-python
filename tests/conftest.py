@@ -766,6 +766,73 @@ def _mock_model_routing_clients(monkeypatch):
         def get_aliases(self):
             return _MOCK_SOURCE_ALIASES
 
+    # Patch DeviceConfigClient — inject the original hardcoded values
+    # so existing tests continue to pass without hitting the server.
+    from octomil.device_config import DeviceConfig, EarlyExitPresetConfig, RoutingOffsets, SmartRouterDefaults
+
+    _mock_device_config = DeviceConfig(
+        quant_speed_factors={
+            "Q2_K": REDACTED,
+            "Q3_K_S": REDACTED,
+            "Q3_K_M": REDACTED,
+            "Q4_0": REDACTED,
+            "Q4_K_S": REDACTED,
+            "Q4_K_M": 1.0,
+            "Q5_0": REDACTED,
+            "Q5_K_S": REDACTED,
+            "Q5_K_M": REDACTED,
+            "Q6_K": REDACTED,
+            "Q8_0": REDACTED,
+            "F16": REDACTED,
+            "F32": REDACTED,
+        },
+        quant_preference_order=[
+            "Q8_0",
+            "Q6_K",
+            "Q5_K_M",
+            "Q5_K_S",
+            "Q5_0",
+            "Q4_K_M",
+            "Q4_K_S",
+            "Q4_0",
+            "Q3_K_M",
+            "Q3_K_S",
+            "Q2_K",
+        ],
+        early_exit_presets={
+            "quality": EarlyExitPresetConfig(threshold=0.1, min_layers_fraction=0.75),
+            "balanced": EarlyExitPresetConfig(threshold=0.3, min_layers_fraction=0.5),
+            "fast": EarlyExitPresetConfig(threshold=0.5, min_layers_fraction=0.25),
+        },
+        routing_offsets=RoutingOffsets(
+            REDACTED_FIELD=0.5,
+            REDACTED_FIELD=0.25,
+        ),
+        smart_router=SmartRouterDefaults(
+            long_gen_threshold=512,
+            concurrency_threshold=2,
+            prefer_throughput_engine="mlx-lm",
+            prefer_latency_engine="llama.cpp",
+        ),
+    )
+
+    class _MockDeviceConfigClient:
+        def get_config(self):
+            return _mock_device_config
+
+    import octomil.device_config as dc_mod
+
+    monkeypatch.setattr(dc_mod, "_client", _MockDeviceConfigClient())
+
+    # Reset and immediately repopulate the lazy PRESET dicts in early_exit
+    # so tests that read them directly (e.g. PRESET_THRESHOLDS[...]) get
+    # the mocked values without needing to call _ensure_presets_loaded().
+    import octomil.early_exit as ee_mod
+
+    ee_mod.PRESET_THRESHOLDS.clear()
+    ee_mod.PRESET_MIN_LAYERS_FRACTION.clear()
+    ee_mod._ensure_presets_loaded()
+
     # Reset the singletons in all modules that cache them
     import octomil.model_registry as reg_mod
     import octomil.models.catalog as cat_mod
