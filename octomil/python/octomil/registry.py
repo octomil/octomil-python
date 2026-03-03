@@ -184,14 +184,14 @@ class ModelRegistry:
 
         os.makedirs(destination, exist_ok=True)
 
-        ios_devices = {"iphone_15_pro", "iphone_14"}
-
         # Auto-detect device type from environment when not specified
         if device_type is None and format is None:
             device_type = _detect_device_type()
 
         if device_type is not None and format is None:
-            fmt = "coreml" if device_type in ios_devices else "tflite"
+            # Ask the server for the right format via the device config endpoint
+            # rather than maintaining a hardcoded device-to-format mapping.
+            fmt = self._resolve_format_for_device(model_id, device_type)
         else:
             fmt = format or "onnx"
 
@@ -223,6 +223,21 @@ class ModelRegistry:
                 pass  # No MNN config — standard runtime
 
         return result
+
+    def _resolve_format_for_device(self, model_id: str, device_type: str) -> str:
+        """Ask the server for the correct model format for a device.
+
+        Falls back to ``onnx`` when the server is unreachable or the
+        response does not include a format field.
+        """
+        try:
+            config = self.get_device_config(model_id, device_type)
+            fmt = config.get("format")
+            if isinstance(fmt, str) and fmt:
+                return fmt
+        except Exception:
+            pass
+        return "onnx"
 
     def _download_file(
         self,

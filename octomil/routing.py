@@ -128,24 +128,16 @@ class RoutingPolicy:
     ttl_seconds: int
     fetched_at: float = 0.0
     etag: str = ""
-    quality_score_offset: float = 0.0
-    balanced_score_offset: float = 0.0
+    # --- iOS-aligned scoring weights (new) ---
+    length_weight: float = 0.5
+    indicator_weight: float = 0.5
+    fast_threshold: float = 0.3
+    quality_threshold: float = 0.7
+    indicator_normalizor: float = 3.0
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> RoutingPolicy:
         thresholds = d.get("thresholds", {})
-
-        # Score offsets: try policy-level first, then fall back to device config
-        quality_offset = d.get("quality_score_offset")
-        balanced_offset = d.get("balanced_score_offset")
-        if quality_offset is None or balanced_offset is None:
-            from octomil.device_config import get_device_config
-
-            dc = get_device_config()
-            if quality_offset is None:
-                quality_offset = dc.routing_offsets.quality_score_offset
-            if balanced_offset is None:
-                balanced_offset = dc.routing_offsets.balanced_score_offset
 
         return cls(
             version=d.get("version", 1),
@@ -156,8 +148,11 @@ class RoutingPolicy:
             ttl_seconds=d.get("ttl_seconds", 3600),
             fetched_at=d.get("fetched_at", 0.0),
             etag=d.get("etag", ""),
-            quality_score_offset=float(quality_offset),
-            balanced_score_offset=float(balanced_offset),
+            length_weight=float(d.get("length_weight", 0.5)),
+            indicator_weight=float(d.get("indicator_weight", 0.5)),
+            fast_threshold=float(d.get("fast_threshold", 0.3)),
+            quality_threshold=float(d.get("quality_threshold", 0.7)),
+            indicator_normalizor=float(d.get("indicator_normalizor", 3.0)),
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -172,8 +167,11 @@ class RoutingPolicy:
             "ttl_seconds": self.ttl_seconds,
             "fetched_at": self.fetched_at,
             "etag": self.etag,
-            "quality_score_offset": self.quality_score_offset,
-            "balanced_score_offset": self.balanced_score_offset,
+            "length_weight": self.length_weight,
+            "indicator_weight": self.indicator_weight,
+            "fast_threshold": self.fast_threshold,
+            "quality_threshold": self.quality_threshold,
+            "indicator_normalizor": self.indicator_normalizor,
         }
 
     @property
@@ -621,19 +619,44 @@ class QueryRouter:
     def _apply_policy(self, query: str, policy: RoutingPolicy) -> tuple[str, float]:
         """Apply cached policy to classify query into a tier.
 
-        Returns (tier, approximate_complexity_score).
+        Uses the iOS-aligned scoring formula: linear interpolation of word
+        count between thresholds combined with a complex-indicator fraction,
+        weighted by ``length_weight`` and ``indicator_weight``.
+
+        Returns (tier, complexity_score).
         """
         word_count = len(query.split())
         query_lower = query.lower()
 
-        has_complex = any(kw in query_lower for kw in policy.complex_indicators)
-
-        if word_count < policy.fast_max_words and not has_complex:
-            return "fast", round(word_count / 100.0, 4)
-        elif word_count > policy.quality_min_words or has_complex:
-            return "quality", round(min(word_count / 100.0 + policy.quality_score_offset, 1.0), 4)
+        # Word score: linear interpolation between thresholds (0.0-1.0)
+        if word_count <= policy.fast_max_words:
+            word_score = 0.0
+        elif word_count >= policy.quality_min_words:
+            word_score = 1.0
         else:
-            return "balanced", round(word_count / 100.0 + policy.balanced_score_offset, 4)
+            span = policy.quality_min_words - policy.fast_max_words
+            word_score = (word_count - policy.fast_max_words) / span if span > 0 else 0.5
+
+        # Indicator score: fraction of complex indicators found
+        indicator_count = sum(1 for kw in policy.complex_indicators if kw in query_lower)
+        normalizor = policy.indicator_normalizor if policy.indicator_normalizor > 0 else 1.0
+        indicator_score = min(indicator_count / normalizor, 1.0)
+
+        # Combined score
+        score = min(
+            word_score * policy.length_weight + indicator_score * policy.indicator_weight,
+            1.0,
+        )
+
+        # Tier assignment
+        if score < policy.fast_threshold:
+            tier = "fast"
+        elif score >= policy.quality_threshold:
+            tier = "quality"
+        else:
+            tier = "balanced"
+
+        return tier, round(score, 4)
 
     def _resolve_model(self, target_tier: str) -> str:
         """Find the best available model for a tier, falling back upward."""

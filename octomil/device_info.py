@@ -8,7 +8,7 @@ for device monitoring and training eligibility.
 import platform
 import socket
 import subprocess
-from typing import Dict, Any, Optional
+from typing import Any, Dict, Optional
 
 
 def get_stable_device_id() -> str:
@@ -86,11 +86,29 @@ def get_network_type() -> str:
     """
     Get current network connection type.
 
+    Uses psutil to inspect active network interfaces and classify as
+    wifi, ethernet, cellular, or unknown.
+
     Returns:
         Network type: 'wifi', 'cellular', 'ethernet', or 'unknown'.
     """
-    # Basic implementation - can be enhanced with platform-specific checks
-    return "wifi"  # Default assumption for desktop/laptop
+    try:
+        import psutil
+
+        stats = psutil.net_if_stats()
+        for iface, info in stats.items():
+            if not info.isup or iface in ("lo", "lo0"):
+                continue
+            iface_lower = iface.lower()
+            if "wlan" in iface_lower or iface_lower == "en0" or "wi-fi" in iface_lower:
+                return "wifi"
+            if "eth" in iface_lower or iface_lower.startswith("en"):
+                return "ethernet"
+            if "wwan" in iface_lower or "rmnet" in iface_lower:
+                return "cellular"
+        return "unknown"
+    except Exception:
+        return "unknown"
 
 
 def get_timezone() -> str:

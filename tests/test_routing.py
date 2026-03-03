@@ -335,14 +335,18 @@ _MODELS = {
 
 # A functional test policy with real thresholds (mirrors a typical server
 # response, unlike the minimal _DEFAULT_POLICY which disables fast/quality).
+# Uses the iOS-aligned scoring weights.
 _TEST_POLICY = {
     "version": 1,
     "thresholds": {"fast_max_words": 10, "quality_min_words": 50},
     "complex_indicators": ["implement", "analyze", "compare", "algorithm"],
     "deterministic_enabled": True,
     "ttl_seconds": 3600,
-    "quality_score_offset": 0.5,
-    "balanced_score_offset": 0.25,
+    "length_weight": 0.5,
+    "indicator_weight": 0.5,
+    "fast_threshold": 0.3,
+    "quality_threshold": 0.7,
+    "indicator_normalizor": 3.0,
 }
 
 
@@ -372,28 +376,37 @@ class TestQueryRouter:
 
     def test_complex_query_routes_to_quality(self):
         router = _make_router()
-        decision = router.route(
-            [
-                {
-                    "role": "user",
-                    "content": "implement a binary search tree with self-balancing",
-                }
-            ]
+        # 3 indicators (implement, algorithm, analyze) -> indicator_score = 3/3 = 1.0
+        # score = 0.0 * 0.5 + 1.0 * 0.5 = 0.5 ... not quite 0.7.
+        # With long text (>= quality_min_words) word_score = 1.0, plus indicators:
+        # score = 1.0 * 0.5 + 1.0 * 0.5 = 1.0 >= 0.7 -> quality
+        query = (
+            "implement a complete binary search tree with self-balancing "
+            "and then analyze the time complexity of each operation including "
+            "insert delete and search with the algorithm details for every "
+            "edge case that could arise in production systems plus compare "
+            "the performance characteristics against a red black tree and "
+            "a skip list data structure in terms of worst case and average "
+            "case scenarios"
         )
+        decision = router.route([{"role": "user", "content": query}])
         assert decision.tier == "quality"
         assert decision.model_name == "llama-3b"
 
     def test_medium_query_routes_to_balanced(self):
         router = _make_router()
-        # 15 words, no complex indicators
-        decision = router.route(
-            [
-                {
-                    "role": "user",
-                    "content": "tell me about the history of the Roman empire in brief summary please yes",
-                }
-            ]
+        # 30 words -> word_score = (30-10)/(50-10) = 0.5
+        # No complex indicators -> indicator_score = 0.0
+        # score = 0.5 * 0.5 + 0.0 * 0.5 = 0.25 ... that's < 0.3 (fast).
+        # Add 1 indicator to push into balanced range:
+        # indicator_score = 1/3 = 0.333, score = 0.5*0.5 + 0.333*0.5 = 0.417
+        # 0.3 <= 0.417 < 0.7 -> balanced
+        query = (
+            "tell me about the history of the Roman empire and analyze "
+            "the key events that led to its eventual decline across the "
+            "various provinces and territories it once controlled"
         )
+        decision = router.route([{"role": "user", "content": query}])
         assert decision.tier == "balanced"
         assert decision.model_name == "phi-mini"
 
@@ -429,14 +442,16 @@ class TestQueryRouter:
 
     def test_route_uses_last_user_message(self):
         router = _make_router()
+        # First message has complex indicators, but the router uses the
+        # *last* user message for scoring.
         decision = router.route(
             [
-                {"role": "user", "content": "implement a complex algorithm"},
+                {"role": "user", "content": "implement a complex algorithm and analyze it in detail"},
                 {"role": "assistant", "content": "Sure."},
                 {"role": "user", "content": "hi"},
             ]
         )
-        # Should route based on "hi" (last user message)
+        # Should route based on "hi" (last user message) -> fast
         assert decision.tier == "fast"
 
 

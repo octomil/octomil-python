@@ -222,29 +222,37 @@ class TestEarlyExitIntegration:
 
 
 class TestRoutingIntegration:
-    def test_policy_from_dict_loads_offsets(self) -> None:
-        """RoutingPolicy.from_dict should pull offsets from device config."""
+    def test_policy_from_dict_ios_scoring_defaults(self) -> None:
+        """RoutingPolicy.from_dict should use iOS-aligned scoring defaults."""
         from octomil.routing import RoutingPolicy
 
         policy = RoutingPolicy.from_dict({"version": 1, "thresholds": {}})
-        # conftest injects offset values 0.5 / 0.25
-        assert policy.quality_score_offset == 0.5
-        assert policy.balanced_score_offset == 0.25
+        assert policy.length_weight == 0.5
+        assert policy.indicator_weight == 0.5
+        assert policy.fast_threshold == 0.3
+        assert policy.quality_threshold == 0.7
+        assert policy.indicator_normalizor == 3.0
 
-    def test_policy_from_dict_explicit_offsets_override(self) -> None:
-        """Explicit offsets in policy dict should override device config."""
+    def test_policy_from_dict_explicit_weights_override(self) -> None:
+        """Explicit iOS-aligned weights in policy dict should be used."""
         from octomil.routing import RoutingPolicy
 
         policy = RoutingPolicy.from_dict(
             {
                 "version": 1,
                 "thresholds": {},
-                "quality_score_offset": 0.8,
-                "balanced_score_offset": 0.1,
+                "length_weight": 0.6,
+                "indicator_weight": 0.4,
+                "fast_threshold": 0.2,
+                "quality_threshold": 0.8,
+                "indicator_normalizor": 5.0,
             }
         )
-        assert policy.quality_score_offset == 0.8
-        assert policy.balanced_score_offset == 0.1
+        assert policy.length_weight == 0.6
+        assert policy.indicator_weight == 0.4
+        assert policy.fast_threshold == 0.2
+        assert policy.quality_threshold == 0.8
+        assert policy.indicator_normalizor == 5.0
 
 
 # ---------------------------------------------------------------------------
