@@ -109,28 +109,10 @@ _MATH_PATTERN = re.compile(
 
 _DEFAULT_POLICY: dict[str, Any] = {
     "version": 1,
-    "thresholds": {"fast_max_words": 10, "quality_min_words": 50},
-    "complex_indicators": [
-        "implement",
-        "refactor",
-        "debug",
-        "analyze",
-        "compare",
-        "step by step",
-        "prove",
-        "derive",
-        "calculate",
-        "write a story",
-        "write a essay",
-        "write a report",
-        "algorithm",
-        "kubernetes",
-        "docker",
-        "neural network",
-        "transformer",
-    ],
+    "thresholds": {"fast_max_words": 0, "quality_min_words": 999999},
+    "complex_indicators": [],
     "deterministic_enabled": True,
-    "ttl_seconds": 3600,
+    "ttl_seconds": 0,
 }
 
 
@@ -528,10 +510,7 @@ class QueryRouter:
         if not models:
             raise ValueError("At least one model must be provided")
         if strategy != "complexity":
-            raise ValueError(
-                f"Unknown routing strategy '{strategy}'. "
-                "Supported strategies: complexity"
-            )
+            raise ValueError(f"Unknown routing strategy '{strategy}'. " "Supported strategies: complexity")
 
         self.models = models
         self.strategy = strategy
@@ -548,9 +527,7 @@ class QueryRouter:
             key=lambda n: models[n].tier_index,
         )
 
-        _base = api_base or os.environ.get(
-            "OCTOMIL_API_BASE", "https://api.octomil.com/api/v1"
-        )
+        _base = api_base or os.environ.get("OCTOMIL_API_BASE", "https://api.octomil.com/api/v1")
         _key = api_key or os.environ.get("OCTOMIL_API_KEY", "")
         self._policy_client = PolicyClient(api_base=_base, api_key=_key)
 
@@ -662,21 +639,9 @@ class QueryRouter:
     def _build_fallback_chain(self, primary: str) -> list[str]:
         """Build ordered list of fallback models (excluding primary)."""
         primary_idx = self.models[primary].tier_index
-        higher = [
-            n
-            for n in self._ordered_models
-            if n != primary and self.models[n].tier_index > primary_idx
-        ]
-        lower = [
-            n
-            for n in self._ordered_models
-            if n != primary and self.models[n].tier_index < primary_idx
-        ]
-        same = [
-            n
-            for n in self._ordered_models
-            if n != primary and self.models[n].tier_index == primary_idx
-        ]
+        higher = [n for n in self._ordered_models if n != primary and self.models[n].tier_index > primary_idx]
+        lower = [n for n in self._ordered_models if n != primary and self.models[n].tier_index < primary_idx]
+        same = [n for n in self._ordered_models if n != primary and self.models[n].tier_index == primary_idx]
         return higher + same + lower
 
     def route_decomposed(
