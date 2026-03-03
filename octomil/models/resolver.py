@@ -3,6 +3,10 @@
 Takes a parsed model specifier and resolves it to a concrete HuggingFace
 repo ID (and optional filename) for a given engine.
 
+Engine priority and alias data are fetched from the Octomil server at
+runtime and cached locally. A minimal fallback (``["auto"]``) is embedded
+for offline bootstrap only.
+
 Usage::
 
     from octomil.models import resolve
@@ -17,7 +21,8 @@ import difflib
 from dataclasses import dataclass
 from typing import Optional
 
-from .catalog import CATALOG, MoEMetadata, ModelEntry, _resolve_alias
+from .catalog import CATALOG, ModelEntry, MoEMetadata, _resolve_alias
+from .catalog_client import EnginePriorityClient
 from .parser import normalize_variant, parse
 
 
@@ -50,7 +55,8 @@ class ModelResolutionError(ValueError):
     """Raised when a model specifier cannot be resolved."""
 
 
-# Engine name normalization for matching
+# Engine name normalization for matching — these are just string aliases,
+# not proprietary intelligence.  Kept client-side for fast normalization.
 _ENGINE_ALIASES: dict[str, str] = {
     "mlx": "mlx-lm",
     "mlx-lm": "mlx-lm",
@@ -74,19 +80,30 @@ _ENGINE_ALIASES: dict[str, str] = {
     "echo": "echo",
 }
 
-# Engine priority order — used when picking the best engine automatically.
-# Lower index = higher priority.
-_ENGINE_PRIORITY = [
-    "mlx-lm",
-    "mnn",
-    "mlc-llm",
-    "llama.cpp",
-    "executorch",
-    "onnxruntime",
-    "whisper.cpp",
-    "ollama",
-    "echo",
-]
+# ---------------------------------------------------------------------------
+# Server-fetched engine priority (singleton)
+# ---------------------------------------------------------------------------
+
+_priority_client: Optional[EnginePriorityClient] = None
+
+
+def _get_priority_client() -> EnginePriorityClient:
+    """Return the module-level EnginePriorityClient singleton."""
+    global _priority_client
+    if _priority_client is None:
+        _priority_client = EnginePriorityClient()
+    return _priority_client
+
+
+def _get_engine_priority() -> list[str]:
+    """Return the engine priority list from server (cached) or fallback."""
+    return _get_priority_client().get_priority()
+
+
+# Backward-compatible module-level name for direct imports.
+# Tests that do ``from octomil.models.resolver import _ENGINE_PRIORITY``
+# will get the fallback value.  Runtime code should call _get_engine_priority().
+_ENGINE_PRIORITY: list[str] = ["auto"]
 
 
 def _normalize_engine(engine: str) -> str:
@@ -116,8 +133,14 @@ def _pick_engine(
         return None
 
     normalized_available = [_normalize_engine(e) for e in available_engines]
+    engine_priority = _get_engine_priority()
 
-    for engine in _ENGINE_PRIORITY:
+    # If server returned the minimal fallback ["auto"], use available_engines
+    # order directly — let the caller's ordering decide.
+    if engine_priority == ["auto"]:
+        engine_priority = list(dict.fromkeys(normalized_available))
+
+    for engine in engine_priority:
         if engine not in normalized_available:
             continue
 
@@ -198,8 +221,7 @@ def resolve(
         suggestions = _suggest_models(parsed.family)
         hint = f" Did you mean: {', '.join(suggestions)}?" if suggestions else ""
         raise ModelResolutionError(
-            f"Unknown model '{parsed.family}'. "
-            f"Available: {', '.join(sorted(CATALOG.keys()))}.{hint}"
+            f"Unknown model '{parsed.family}'. Available: {', '.join(sorted(CATALOG.keys()))}.{hint}"
         )
 
     # Determine quant level
@@ -213,8 +235,7 @@ def resolve(
     if variant is None:
         available_quants = ", ".join(sorted(entry.variants.keys()))
         raise ModelResolutionError(
-            f"Unknown variant '{parsed.variant or quant}' for model "
-            f"'{parsed.family}'. Available: {available_quants}"
+            f"Unknown variant '{parsed.variant or quant}' for model '{parsed.family}'. Available: {available_quants}"
         )
 
     # Determine engine

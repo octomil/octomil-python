@@ -3,6 +3,10 @@
 Provides structured model metadata, tag-based resolution (``name:tag``),
 and multi-source download paths for HuggingFace, Ollama, and Kaggle.
 
+Model family data is fetched from the Octomil server at runtime and
+cached locally. An empty fallback is used when the server is
+unreachable — full repo paths still work as passthrough.
+
 Usage::
 
     from octomil.model_registry import parse_model_tag, resolve_model, MODEL_FAMILIES
@@ -15,8 +19,9 @@ from __future__ import annotations
 
 import difflib
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Any, Optional
 
+from .models.catalog_client import ModelFamiliesClient
 
 # ---------------------------------------------------------------------------
 # Data structures
@@ -111,596 +116,133 @@ def _sort_sources_by_trust(sources: list[ModelSource]) -> list[ModelSource]:
 
 
 # ---------------------------------------------------------------------------
-# Model registry — all known model families and their variants
+# Server-fetched model families (singleton + hydration)
 # ---------------------------------------------------------------------------
 
-MODEL_FAMILIES: dict[str, ModelFamily] = {
-    # -----------------------------------------------------------------------
-    # Google Gemma
-    # -----------------------------------------------------------------------
-    "gemma-1b": ModelFamily(
-        default_tag="q4_k_m",
-        publisher="Google",
-        params="1B",
-        variants={
-            "q4_k_m": ModelVariant(
-                quantization_family="4bit",
-                mlx="REDACTED",
-                sources=[
-                    ModelSource(
-                        type="huggingface",
-                        ref="REDACTED",
-                        REDACTED,
-                    ),
-                    ModelSource(
-                        type="ollama",
-                        ref="gemma3:1b",
-                        REDACTED,
-                    ),
-                    ModelSource(
-                        type="huggingface",
-                        ref="REDACTED",
-                        file="REDACTED",
-                        REDACTED,
-                    ),
-                ],
-            ),
-            "q8_0": ModelVariant(
-                quantization_family="8bit",
-                mlx="REDACTED",
-                sources=[
-                    ModelSource(
-                        type="huggingface",
-                        ref="REDACTED",
-                        REDACTED,
-                    ),
-                    ModelSource(
-                        type="huggingface",
-                        ref="REDACTED",
-                        file="REDACTED",
-                        REDACTED,
-                    ),
-                ],
-            ),
-            "fp16": ModelVariant(
-                quantization_family="16bit",
-                sources=[
-                    ModelSource(
-                        type="huggingface",
-                        ref="REDACTED",
-                        REDACTED,
-                    ),
-                ],
-            ),
-        },
-    ),
-    "gemma-4b": ModelFamily(
-        default_tag="q4_k_m",
-        publisher="Google",
-        params="4B",
-        variants={
-            "q4_k_m": ModelVariant(
-                quantization_family="4bit",
-                mlx="REDACTED",
-                sources=[
-                    ModelSource(
-                        type="huggingface",
-                        ref="REDACTED",
-                        REDACTED,
-                    ),
-                    ModelSource(
-                        type="ollama",
-                        ref="gemma3:4b",
-                        REDACTED,
-                    ),
-                    ModelSource(
-                        type="huggingface",
-                        ref="REDACTED",
-                        file="REDACTED",
-                        REDACTED,
-                    ),
-                ],
-            ),
-            "q8_0": ModelVariant(
-                quantization_family="8bit",
-                mlx="REDACTED",
-                sources=[
-                    ModelSource(
-                        type="huggingface",
-                        ref="REDACTED",
-                        REDACTED,
-                    ),
-                    ModelSource(
-                        type="huggingface",
-                        ref="REDACTED",
-                        file="REDACTED",
-                        REDACTED,
-                    ),
-                ],
-            ),
-            "fp16": ModelVariant(
-                quantization_family="16bit",
-                sources=[
-                    ModelSource(
-                        type="huggingface",
-                        ref="REDACTED",
-                        REDACTED,
-                    ),
-                ],
-            ),
-        },
-    ),
-    "gemma-12b": ModelFamily(
-        default_tag="q4_k_m",
-        publisher="Google",
-        params="12B",
-        variants={
-            "q4_k_m": ModelVariant(
-                quantization_family="4bit",
-                mlx="REDACTED",
-                sources=[
-                    ModelSource(
-                        type="huggingface",
-                        ref="REDACTED",
-                        REDACTED,
-                    ),
-                    ModelSource(
-                        type="ollama",
-                        ref="gemma3:12b",
-                        REDACTED,
-                    ),
-                ],
-            ),
-            "q8_0": ModelVariant(
-                quantization_family="8bit",
-                mlx="REDACTED",
-                sources=[
-                    ModelSource(
-                        type="huggingface",
-                        ref="REDACTED",
-                        REDACTED,
-                    ),
-                ],
-            ),
-        },
-    ),
-    "gemma-27b": ModelFamily(
-        default_tag="q4_k_m",
-        publisher="Google",
-        params="27B",
-        variants={
-            "q4_k_m": ModelVariant(
-                quantization_family="4bit",
-                mlx="REDACTED",
-                sources=[
-                    ModelSource(
-                        type="huggingface",
-                        ref="REDACTED",
-                        REDACTED,
-                    ),
-                    ModelSource(
-                        type="ollama",
-                        ref="gemma3:27b",
-                        REDACTED,
-                    ),
-                ],
-            ),
-        },
-    ),
-    # -----------------------------------------------------------------------
-    # Meta Llama
-    # -----------------------------------------------------------------------
-    "llama-1b": ModelFamily(
-        default_tag="q4_k_m",
-        publisher="Meta",
-        params="1B",
-        variants={
-            "q4_k_m": ModelVariant(
-                quantization_family="4bit",
-                mlx="REDACTED",
-                sources=[
-                    ModelSource(
-                        type="huggingface",
-                        ref="REDACTED",
-                        REDACTED,
-                    ),
-                    ModelSource(
-                        type="ollama",
-                        ref="llama3.2:1b",
-                        REDACTED,
-                    ),
-                    ModelSource(
-                        type="huggingface",
-                        ref="REDACTED",
-                        file="REDACTED",
-                        REDACTED,
-                    ),
-                ],
-            ),
-            "q8_0": ModelVariant(
-                quantization_family="8bit",
-                mlx="REDACTED",
-                sources=[
-                    ModelSource(
-                        type="huggingface",
-                        ref="REDACTED",
-                        REDACTED,
-                    ),
-                    ModelSource(
-                        type="huggingface",
-                        ref="REDACTED",
-                        file="REDACTED",
-                        REDACTED,
-                    ),
-                ],
-            ),
-            "fp16": ModelVariant(
-                quantization_family="16bit",
-                sources=[
-                    ModelSource(
-                        type="huggingface",
-                        ref="REDACTED",
-                        REDACTED,
-                    ),
-                ],
-            ),
-        },
-    ),
-    "llama-3b": ModelFamily(
-        default_tag="q4_k_m",
-        publisher="Meta",
-        params="3B",
-        variants={
-            "q4_k_m": ModelVariant(
-                quantization_family="4bit",
-                mlx="REDACTED",
-                sources=[
-                    ModelSource(
-                        type="huggingface",
-                        ref="REDACTED",
-                        REDACTED,
-                    ),
-                    ModelSource(
-                        type="ollama",
-                        ref="llama3.2:3b",
-                        REDACTED,
-                    ),
-                    ModelSource(
-                        type="huggingface",
-                        ref="REDACTED",
-                        file="REDACTED",
-                        REDACTED,
-                    ),
-                ],
-            ),
-            "q8_0": ModelVariant(
-                quantization_family="8bit",
-                mlx="REDACTED",
-                sources=[
-                    ModelSource(
-                        type="huggingface",
-                        ref="REDACTED",
-                        REDACTED,
-                    ),
-                    ModelSource(
-                        type="huggingface",
-                        ref="REDACTED",
-                        file="REDACTED",
-                        REDACTED,
-                    ),
-                ],
-            ),
-        },
-    ),
-    "llama-8b": ModelFamily(
-        default_tag="q4_k_m",
-        publisher="Meta",
-        params="8B",
-        variants={
-            "q4_k_m": ModelVariant(
-                quantization_family="4bit",
-                mlx="REDACTED",
-                sources=[
-                    ModelSource(
-                        type="huggingface",
-                        ref="REDACTED",
-                        REDACTED,
-                    ),
-                    ModelSource(
-                        type="ollama",
-                        ref="llama3.1:8b",
-                        REDACTED,
-                    ),
-                    ModelSource(
-                        type="huggingface",
-                        ref="REDACTED",
-                        file="REDACTED",
-                        REDACTED,
-                    ),
-                ],
-            ),
-            "q8_0": ModelVariant(
-                quantization_family="8bit",
-                mlx="REDACTED",
-                sources=[
-                    ModelSource(
-                        type="huggingface",
-                        ref="REDACTED",
-                        REDACTED,
-                    ),
-                    ModelSource(
-                        type="huggingface",
-                        ref="REDACTED",
-                        file="REDACTED",
-                        REDACTED,
-                    ),
-                ],
-            ),
-        },
-    ),
-    # -----------------------------------------------------------------------
-    # Microsoft Phi
-    # -----------------------------------------------------------------------
-    "phi-4": ModelFamily(
-        default_tag="q4_k_m",
-        publisher="Microsoft",
-        params="14B",
-        variants={
-            "q4_k_m": ModelVariant(
-                quantization_family="4bit",
-                mlx="REDACTED",
-                sources=[
-                    ModelSource(
-                        type="huggingface",
-                        ref="REDACTED",
-                        REDACTED,
-                    ),
-                    ModelSource(
-                        type="ollama",
-                        ref="phi4",
-                        REDACTED,
-                    ),
-                ],
-            ),
-        },
-    ),
-    "phi-mini": ModelFamily(
-        default_tag="q4_k_m",
-        publisher="Microsoft",
-        params="3.8B",
-        variants={
-            "q4_k_m": ModelVariant(
-                quantization_family="4bit",
-                mlx="REDACTED",
-                sources=[
-                    ModelSource(
-                        type="huggingface",
-                        ref="REDACTED",
-                        REDACTED,
-                    ),
-                    ModelSource(
-                        type="ollama",
-                        ref="phi3.5",
-                        REDACTED,
-                    ),
-                    ModelSource(
-                        type="huggingface",
-                        ref="REDACTED",
-                        file="REDACTED",
-                        REDACTED,
-                    ),
-                ],
-            ),
-            "q8_0": ModelVariant(
-                quantization_family="8bit",
-                mlx="REDACTED",
-                sources=[
-                    ModelSource(
-                        type="huggingface",
-                        ref="REDACTED",
-                        REDACTED,
-                    ),
-                    ModelSource(
-                        type="huggingface",
-                        ref="REDACTED",
-                        file="REDACTED",
-                        REDACTED,
-                    ),
-                ],
-            ),
-        },
-    ),
-    # -----------------------------------------------------------------------
-    # Alibaba Qwen
-    # -----------------------------------------------------------------------
-    "qwen-1.5b": ModelFamily(
-        default_tag="q4_k_m",
-        publisher="Qwen",
-        params="1.5B",
-        variants={
-            "q4_k_m": ModelVariant(
-                quantization_family="4bit",
-                mlx="REDACTED",
-                sources=[
-                    ModelSource(
-                        type="huggingface",
-                        ref="REDACTED",
-                        file="REDACTED",
-                        REDACTED,
-                    ),
-                    ModelSource(
-                        type="ollama",
-                        ref="qwen2.5:1.5b",
-                        REDACTED,
-                    ),
-                ],
-            ),
-            "q8_0": ModelVariant(
-                quantization_family="8bit",
-                mlx="REDACTED",
-                sources=[
-                    ModelSource(
-                        type="huggingface",
-                        ref="REDACTED",
-                        file="REDACTED",
-                        REDACTED,
-                    ),
-                ],
-            ),
-        },
-    ),
-    "qwen-3b": ModelFamily(
-        default_tag="q4_k_m",
-        publisher="Qwen",
-        params="3B",
-        variants={
-            "q4_k_m": ModelVariant(
-                quantization_family="4bit",
-                mlx="REDACTED",
-                sources=[
-                    ModelSource(
-                        type="huggingface",
-                        ref="REDACTED",
-                        file="REDACTED",
-                        REDACTED,
-                    ),
-                    ModelSource(
-                        type="ollama",
-                        ref="qwen2.5:3b",
-                        REDACTED,
-                    ),
-                ],
-            ),
-            "q8_0": ModelVariant(
-                quantization_family="8bit",
-                mlx="REDACTED",
-                sources=[
-                    ModelSource(
-                        type="huggingface",
-                        ref="REDACTED",
-                        file="REDACTED",
-                        REDACTED,
-                    ),
-                ],
-            ),
-        },
-    ),
-    "qwen-7b": ModelFamily(
-        default_tag="q4_k_m",
-        publisher="Qwen",
-        params="7B",
-        variants={
-            "q4_k_m": ModelVariant(
-                quantization_family="4bit",
-                mlx="REDACTED",
-                sources=[
-                    ModelSource(
-                        type="huggingface",
-                        ref="REDACTED",
-                        REDACTED,
-                    ),
-                    ModelSource(
-                        type="ollama",
-                        ref="qwen2.5:7b",
-                        REDACTED,
-                    ),
-                ],
-            ),
-        },
-    ),
-    # -----------------------------------------------------------------------
-    # Mistral AI
-    # -----------------------------------------------------------------------
-    "mistral-7b": ModelFamily(
-        default_tag="q4_k_m",
-        publisher="Mistral AI",
-        params="7B",
-        variants={
-            "q4_k_m": ModelVariant(
-                quantization_family="4bit",
-                mlx="REDACTED",
-                sources=[
-                    ModelSource(
-                        type="huggingface",
-                        ref="REDACTED",
-                        REDACTED,
-                    ),
-                    ModelSource(
-                        type="ollama",
-                        ref="mistral:7b",
-                        REDACTED,
-                    ),
-                    ModelSource(
-                        type="huggingface",
-                        ref="REDACTED",
-                        file="REDACTED",
-                        REDACTED,
-                    ),
-                ],
-            ),
-            "q8_0": ModelVariant(
-                quantization_family="8bit",
-                mlx="REDACTED",
-                sources=[
-                    ModelSource(
-                        type="huggingface",
-                        ref="REDACTED",
-                        REDACTED,
-                    ),
-                    ModelSource(
-                        type="huggingface",
-                        ref="REDACTED",
-                        file="REDACTED",
-                        REDACTED,
-                    ),
-                ],
-            ),
-        },
-    ),
-    # -----------------------------------------------------------------------
-    # HuggingFace SmolLM
-    # -----------------------------------------------------------------------
-    "smollm-360m": ModelFamily(
-        default_tag="q4_k_m",
-        publisher="HuggingFace",
-        params="360M",
-        variants={
-            "q4_k_m": ModelVariant(
-                quantization_family="4bit",
-                mlx="REDACTED",
-                sources=[
-                    ModelSource(
-                        type="huggingface",
-                        ref="REDACTED",
-                        REDACTED,
-                    ),
-                    ModelSource(
-                        type="huggingface",
-                        ref="REDACTED",
-                        file="REDACTED",
-                        REDACTED,
-                    ),
-                ],
-            ),
-            "q8_0": ModelVariant(
-                quantization_family="8bit",
-                sources=[
-                    ModelSource(
-                        type="huggingface",
-                        ref="REDACTED",
-                        REDACTED,
-                    ),
-                    ModelSource(
-                        type="huggingface",
-                        ref="REDACTED",
-                        file="REDACTED",
-                        REDACTED,
-                    ),
-                ],
-            ),
-        },
-    ),
-}
+_families_client: Optional[ModelFamiliesClient] = None
+
+
+def _get_families_client() -> ModelFamiliesClient:
+    """Return the module-level ModelFamiliesClient singleton."""
+    global _families_client
+    if _families_client is None:
+        _families_client = ModelFamiliesClient()
+    return _families_client
+
+
+def _source_from_dict(d: dict[str, Any]) -> ModelSource:
+    """Hydrate a ModelSource from a server dict."""
+    return ModelSource(
+        type=d.get("type", "huggingface"),
+        ref=d.get("ref", ""),
+        file=d.get("file"),
+        trust=d.get("trust", "community"),
+    )
+
+
+def _variant_from_dict(d: dict[str, Any]) -> ModelVariant:
+    """Hydrate a ModelVariant from a server dict."""
+    sources_raw = d.get("sources", [])
+    sources = [_source_from_dict(s) for s in sources_raw if isinstance(s, dict)]
+    return ModelVariant(
+        quantization_family=d.get("quantization_family", "4bit"),
+        sources=sources,
+        mlx=d.get("mlx"),
+    )
+
+
+def _family_from_dict(d: dict[str, Any]) -> ModelFamily:
+    """Hydrate a ModelFamily from a server dict."""
+    variants_raw = d.get("variants", {})
+    variants = {k: _variant_from_dict(v) for k, v in variants_raw.items() if isinstance(v, dict)}
+    return ModelFamily(
+        default_tag=d.get("default_tag", DEFAULT_TAG),
+        publisher=d.get("publisher", ""),
+        params=d.get("params", ""),
+        variants=variants,
+    )
+
+
+def _hydrate_families(raw: dict[str, Any]) -> dict[str, ModelFamily]:
+    """Convert a server-returned families dict to typed ModelFamily dict."""
+    result: dict[str, ModelFamily] = {}
+    for name, family_data in raw.items():
+        if isinstance(family_data, ModelFamily):
+            result[name] = family_data
+        elif isinstance(family_data, dict):
+            try:
+                result[name] = _family_from_dict(family_data)
+            except Exception:
+                pass
+    return result
+
+
+def _get_model_families() -> dict[str, ModelFamily]:
+    """Fetch and hydrate model families from the server (cached)."""
+    raw = _get_families_client().get_families()
+    return _hydrate_families(raw)
+
+
+# ---------------------------------------------------------------------------
+# Lazy-loading MODEL_FAMILIES for backward compatibility
+# ---------------------------------------------------------------------------
+
+
+class _LazyFamiliesDict(dict):  # type: ignore[type-arg]
+    """Dict that populates itself on first access from the server."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._loaded = False
+
+    def _ensure_loaded(self) -> None:
+        if not self._loaded:
+            self._loaded = True
+            data = _get_model_families()
+            super().update(data)
+
+    def __getitem__(self, key: Any) -> Any:
+        self._ensure_loaded()
+        return super().__getitem__(key)
+
+    def __contains__(self, key: Any) -> bool:
+        self._ensure_loaded()
+        return super().__contains__(key)
+
+    def __iter__(self) -> Any:
+        self._ensure_loaded()
+        return super().__iter__()
+
+    def __len__(self) -> int:
+        self._ensure_loaded()
+        return super().__len__()
+
+    def get(self, key: Any, default: Any = None) -> Any:
+        self._ensure_loaded()
+        return super().get(key, default)
+
+    def keys(self) -> Any:
+        self._ensure_loaded()
+        return super().keys()
+
+    def values(self) -> Any:
+        self._ensure_loaded()
+        return super().values()
+
+    def items(self) -> Any:
+        self._ensure_loaded()
+        return super().items()
+
+    def __repr__(self) -> str:
+        self._ensure_loaded()
+        return super().__repr__()
+
+    def __bool__(self) -> bool:
+        self._ensure_loaded()
+        return super().__bool__()
+
+
+MODEL_FAMILIES: dict[str, ModelFamily] = _LazyFamiliesDict()  # type: ignore[assignment]
 
 
 # ---------------------------------------------------------------------------
@@ -763,8 +305,7 @@ def resolve_model(
         if suggestions:
             suggestion_str = f" Did you mean: {', '.join(suggestions)}?"
         raise ModelResolutionError(
-            f"Unknown model '{family_key}'. "
-            f"Available: {', '.join(sorted(MODEL_FAMILIES))}.{suggestion_str}"
+            f"Unknown model '{family_key}'. Available: {', '.join(sorted(MODEL_FAMILIES))}.{suggestion_str}"
         )
 
     # Use family default tag if the parsed tag matches the default sentinel
@@ -775,8 +316,7 @@ def resolve_model(
     if variant is None:
         available_tags = ", ".join(sorted(family.variants.keys()))
         raise ModelResolutionError(
-            f"Unknown tag '{effective_tag}' for model '{family_key}'. "
-            f"Available tags: {available_tags}"
+            f"Unknown tag '{effective_tag}' for model '{family_key}'. Available tags: {available_tags}"
         )
 
     # Select best source by trust priority
