@@ -17,10 +17,19 @@ import os as _os
 import sys as _sys
 from typing import Optional as _Optional
 
-from .telemetry import TelemetryReporter
-
 from .client import OctomilClient
-from .model import Model, ModelMetadata, Prediction
+from .decomposer import (
+    DecompositionResult,
+    QueryDecomposer,
+    ResultMerger,
+    SubTask,
+    SubTaskResult,
+)
+from .embeddings import (
+    EmbeddingResult,
+    EmbeddingUsage,
+    embed,
+)
 from .enterprise import (
     COMPLIANCE_PRESETS,
     EnterpriseClient,
@@ -29,6 +38,7 @@ from .enterprise import (
     load_config,
     save_config,
 )
+from .model import Model, ModelMetadata, Prediction
 from .models import (
     DeploymentPlan,
     DeploymentResult,
@@ -41,13 +51,6 @@ from .models import (
     is_moe_model,
     list_moe_models,
 )
-from .decomposer import (
-    DecompositionResult,
-    QueryDecomposer,
-    ResultMerger,
-    SubTask,
-    SubTaskResult,
-)
 from .routing import (
     DecomposedRoutingDecision,
     ModelInfo,
@@ -55,16 +58,13 @@ from .routing import (
     RoutingDecision,
     assign_tiers,
 )
-from .embeddings import (
-    EmbeddingResult,
-    EmbeddingUsage,
-    embed,
-)
+from .smart_router import RouterConfig, SmartRouter
 from .streaming import (
     StreamToken,
     stream_inference,
     stream_inference_async,
 )
+from .telemetry import TelemetryReporter
 
 # The inner SDK package has heavy optional deps (torch, cryptography, etc.)
 # that are not bundled in the standalone CLI binary (PyInstaller).
@@ -73,31 +73,31 @@ _FROZEN = getattr(_sys, "frozen", False)
 
 try:
     from .python.octomil import (
-        Octomil,
-        OctomilClientError,
-        ExperimentsAPI,
-        FederatedAnalyticsClient,
-        FederatedAnalyticsAPI,
-        Federation,
-        FederatedClient,
-        ModelRegistry,
-        RolloutsAPI,
-        DeviceAuthClient,
-        compute_state_dict_delta,
-        apply_filters,
+        HKDF_INFO_PAIRWISE_MASK,
+        HKDF_INFO_SELF_MASK,
+        HKDF_INFO_SHARE_ENCRYPTION,
+        SECAGG_PLUS_MOD_RANGE,
         DataKind,
         DeltaFilter,
+        DeviceAuthClient,
+        ECKeyPair,
+        ExperimentsAPI,
+        FederatedAnalyticsAPI,
+        FederatedAnalyticsClient,
+        FederatedClient,
+        Federation,
         FilterRegistry,
         FilterResult,
-        ECKeyPair,
+        ModelRegistry,
+        Octomil,
+        OctomilClientError,
+        RolloutsAPI,
         SecAggClient,
         SecAggConfig,
         SecAggPlusClient,
         SecAggPlusConfig,
-        SECAGG_PLUS_MOD_RANGE,
-        HKDF_INFO_PAIRWISE_MASK,
-        HKDF_INFO_SHARE_ENCRYPTION,
-        HKDF_INFO_SELF_MASK,
+        apply_filters,
+        compute_state_dict_delta,
     )
 except ImportError:
     if not _FROZEN:
@@ -170,16 +170,10 @@ def init(
 
     resolved_key = api_key if api_key else _os.environ.get("OCTOMIL_API_KEY", "")
     resolved_org = org_id if org_id else _os.environ.get("OCTOMIL_ORG_ID", "default")
-    resolved_base = (
-        api_base
-        if api_base
-        else _os.environ.get("OCTOMIL_API_BASE", "https://api.octomil.com/api/v1")
-    )
+    resolved_base = api_base if api_base else _os.environ.get("OCTOMIL_API_BASE", "https://api.octomil.com/api/v1")
 
     if not resolved_key:
-        raise ValueError(
-            "Octomil API key required. Pass api_key= or set OCTOMIL_API_KEY."
-        )
+        raise ValueError("Octomil API key required. Pass api_key= or set OCTOMIL_API_KEY.")
 
     _config = {
         "api_key": resolved_key,
@@ -207,10 +201,7 @@ def init(
         )
     else:
         if resp.status_code in (401, 403):
-            raise ValueError(
-                f"Invalid Octomil API key (HTTP {resp.status_code}). "
-                "Check your OCTOMIL_API_KEY."
-            )
+            raise ValueError(f"Invalid Octomil API key (HTTP {resp.status_code}). " "Check your OCTOMIL_API_KEY.")
 
     _reporter = TelemetryReporter(
         api_key=resolved_key,
@@ -291,4 +282,6 @@ __all__ = [
     "EmbeddingResult",
     "EmbeddingUsage",
     "embed",
+    "RouterConfig",
+    "SmartRouter",
 ]
