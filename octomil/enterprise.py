@@ -127,12 +127,7 @@ class EnterpriseClient:
         api_key: str,
         api_base: str | None = None,
     ) -> None:
-        base = (
-            api_base
-            or os.environ.get("OCTOMIL_API_URL")
-            or os.environ.get("OCTOMIL_API_BASE")
-            or _DEFAULT_API_BASE
-        )
+        base = api_base or os.environ.get("OCTOMIL_API_URL") or os.environ.get("OCTOMIL_API_BASE") or _DEFAULT_API_BASE
         self._http = httpx.Client(
             base_url=base.rstrip("/"),
             headers={"Authorization": f"Bearer {api_key}"},
@@ -215,8 +210,7 @@ class EnterpriseClient:
         """
         if preset not in COMPLIANCE_PRESETS:
             raise EnterpriseClientError(
-                f"Unknown compliance preset '{preset}'. "
-                f"Valid options: {', '.join(sorted(COMPLIANCE_PRESETS))}"
+                f"Unknown compliance preset '{preset}'. " f"Valid options: {', '.join(sorted(COMPLIANCE_PRESETS))}"
             )
 
         settings = dict(COMPLIANCE_PRESETS[preset])
