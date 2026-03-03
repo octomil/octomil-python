@@ -26,41 +26,14 @@ logger = logging.getLogger(__name__)
 _DEFAULT_API_BASE = "https://api.octomil.com/api/v1"
 
 # ---------------------------------------------------------------------------
-# Compliance presets — map names to OrgSettings fields
+# Compliance presets — names only (actual values fetched from server)
 # ---------------------------------------------------------------------------
 
 COMPLIANCE_PRESETS: dict[str, dict[str, Any]] = {
-    "hipaa": {
-        "hipaa_mode": True,
-        "audit_retention_days": 2190,
-        "require_mfa_for_admin": True,
-        "mfa_required": True,
-        "require_admin_approval": True,
-        "session_duration_hours": 8,
-        "reauth_interval_minutes": 30,
-        "policy_profile": "regulated",
-    },
-    "gdpr": {
-        "audit_retention_days": 1825,
-        "require_mfa_for_admin": True,
-        "policy_profile": "balanced",
-    },
-    "pci": {
-        "require_mfa_for_admin": True,
-        "mfa_required": True,
-        "session_duration_hours": 8,
-        "reauth_interval_minutes": 30,
-        "require_admin_approval": True,
-        "policy_profile": "regulated",
-    },
-    "soc2": {
-        "audit_retention_days": 365,
-        "require_mfa_for_admin": True,
-        "require_admin_approval": True,
-        "require_model_approval": True,
-        "auto_rollback_enabled": True,
-        "policy_profile": "balanced",
-    },
+    "hipaa": {"name": "hipaa"},
+    "gdpr": {"name": "gdpr"},
+    "pci": {"name": "pci"},
+    "soc2": {"name": "soc2"},
 }
 
 
@@ -197,13 +170,40 @@ class EnterpriseClient:
 
     # -- Compliance presets -----------------------------------------------
 
+    def _fetch_compliance_preset(self, preset: str) -> dict[str, Any]:
+        """Fetch compliance preset configuration from the server.
+
+        Falls back to the local stub (name-only) if the server is
+        unreachable or returns an error.
+
+        Returns:
+            Compliance settings dict from the server.
+        """
+        try:
+            resp = self._http.get(f"/settings/compliance/{preset}")
+            if resp.status_code == 200:
+                return resp.json()
+            logger.warning(
+                "Server returned HTTP %d for compliance preset '%s'",
+                resp.status_code,
+                preset,
+            )
+        except Exception:
+            logger.warning(
+                "Failed to fetch compliance preset '%s' from server — using stub fallback",
+                preset,
+                exc_info=True,
+            )
+        return dict(COMPLIANCE_PRESETS.get(preset, {"name": preset}))
+
     def set_compliance(self, org_id: str, preset: str) -> dict[str, Any]:
         """Apply a named compliance preset to org settings.
 
         Valid presets: hipaa, gdpr, pci, soc2.
 
-        This first applies the underlying policy profile, then
-        pushes the detailed settings via the settings endpoint.
+        Fetches the full preset configuration from the server, then
+        applies the underlying policy profile and pushes the detailed
+        settings via the settings endpoint.
 
         Returns:
             Updated settings response dict.
@@ -213,15 +213,22 @@ class EnterpriseClient:
                 f"Unknown compliance preset '{preset}'. " f"Valid options: {', '.join(sorted(COMPLIANCE_PRESETS))}"
             )
 
-        settings = dict(COMPLIANCE_PRESETS[preset])
+        settings = self._fetch_compliance_preset(preset)
+        # Remove metadata keys that are not org settings
+        settings.pop("name", None)
         policy_profile = settings.pop("policy_profile", None)
 
         # Apply the policy profile first
         if policy_profile:
             self.set_policy_profile(org_id, policy_profile)
 
-        # Push the detailed settings overrides
-        return self.update_settings(org_id, **settings)
+        # Push the detailed settings overrides (may be empty if server
+        # was unreachable and only the stub was available)
+        if settings:
+            return self.update_settings(org_id, **settings)
+
+        # If no settings available (stub-only fallback), return current settings
+        return self.get_settings(org_id)
 
     # -- Team / members ---------------------------------------------------
 
