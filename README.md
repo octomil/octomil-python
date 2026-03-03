@@ -181,9 +181,9 @@ octomil serve gemma-1b
 | 60+ models in catalog            | yes                  | yes (different catalog) | yes (manual download)  | varies     |
 | Python SDK                       | yes                  | yes                     | community              | yes        |
 
- You need to deploy models to phones, manage a fleet of edge devices, do canary rollouts, or want auto-engine-selection that benchmarks MLX vs llama.cpp vs ONNX and picks the fastest for your hardware.
 
- You just want to chat with a model locally and don't need deployment tooling.
+
+
 
 ## Python SDK
 
