@@ -48,9 +48,6 @@ def _compute_load_balance(
 
     Returns a value between 0.0 (all tokens routed to one expert)
     and 1.0 (perfectly uniform distribution across experts).
-
-***REMOVED***
-***REMOVED***
     """
     if not activation_counts or num_experts <= 1:
         return 1.0
@@ -72,8 +69,6 @@ def _compute_load_balance(
         return 1.0
     cv = std_dev / expected
 
-***REMOVED***
-***REMOVED***
     max_cv = (num_experts - 1) ** 0.5
     if max_cv == 0:
         return 1.0
@@ -296,17 +291,11 @@ class TelemetryReporter:
             "inference.moe.total_tokens_routed": total_tokens_routed,
         }
         if expert_activation_counts is not None:
-            attributes["inference.moe.expert_activation_counts"] = (
-                expert_activation_counts
-            )
+            attributes["inference.moe.expert_activation_counts"] = expert_activation_counts
             if load_balance_score is None:
-                load_balance_score = _compute_load_balance(
-                    expert_activation_counts, num_experts
-                )
+                load_balance_score = _compute_load_balance(expert_activation_counts, num_experts)
         if load_balance_score is not None:
-            attributes["inference.moe.load_balance_score"] = round(
-                load_balance_score, 4
-            )
+            attributes["inference.moe.load_balance_score"] = round(load_balance_score, 4)
         if expert_memory_mb is not None:
             attributes["inference.moe.expert_memory_mb"] = round(expert_memory_mb, 2)
 
@@ -479,9 +468,7 @@ class TelemetryReporter:
         """Build a v2 event and place it on the queue (non-blocking)."""
         event: dict[str, Any] = {
             "name": name,
-            "timestamp": datetime.now(timezone.utc)
-            .isoformat(timespec="milliseconds")
-            .replace("+00:00", "Z"),
+            "timestamp": datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z"),
             "attributes": attributes,
         }
         try:
