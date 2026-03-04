@@ -35,9 +35,7 @@ class _Candidate:
 
 _ALL_CANDIDATES: list[_Candidate] = [
     _Candidate("deepseek-v3.2", 685, "DeepSeek V3.2, top open model", "~405 GB"),
-    _Candidate(
-        "minimax-m2.1", 229, "MiniMax M2.1, strong multi-lang coding", "~138 GB"
-    ),
+    _Candidate("minimax-m2.1", 229, "MiniMax M2.1, strong multi-lang coding", "~138 GB"),
     _Candidate("devstral-123b", 123, "Devstral 2, Mistral's agentic coder", "~75 GB"),
     _Candidate("glm-flash", 30, "GLM-4.7 Flash, fast reasoning & code", "~18.5 GB"),
     _Candidate("qwen-coder-7b", 7, "Best small coding model, purpose-built", "~4.5 GB"),
@@ -177,16 +175,11 @@ def _auto_select_model() -> str:
         # Pick the largest downloaded model (first in the list — sorted
         # largest-to-smallest from _ALL_CANDIDATES order).
         best = downloaded[0]
-        click.echo(
-            f"Using {best.key} (already downloaded, best for {budget:.0f} GB). "
-            "Use --select to choose."
-        )
+        click.echo(f"Using {best.key} (already downloaded, best for {budget:.0f} GB). " "Use --select to choose.")
     else:
         best = recommendations[0]
         click.echo(
-            f"Using {best.key} (best for {budget:.0f} GB, "
-            f"will download {best.size}). "
-            "Use --select to choose."
+            f"Using {best.key} (best for {budget:.0f} GB, " f"will download {best.size}). " "Use --select to choose."
         )
     return best.key
 
@@ -387,19 +380,44 @@ def is_serve_running(host: str = "localhost", port: int = 8080) -> bool:
         return False
 
 
-def start_serve_background(model: str, port: int = 8080) -> subprocess.Popen:
-    """Start ``octomil serve`` in the background and wait until ready."""
+def start_serve_background(model: str, port: int = 8080, timeout: int = 600) -> subprocess.Popen:
+    """Start ``octomil serve`` in the background and wait until ready.
+
+    The default 600s timeout accommodates first-run model downloads (~4.5 GB).
+    Server stderr is streamed so users can see download progress and errors.
+    """
+    log_path = os.path.join(os.path.expanduser("~"), ".cache", "octomil", "serve.log")
+    os.makedirs(os.path.dirname(log_path), exist_ok=True)
+    log_file = open(log_path, "w")  # noqa: SIM115
+
     proc = subprocess.Popen(
         [sys.executable, "-m", "octomil", "serve", model, "--port", str(port)],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
+        stdout=log_file,
+        stderr=subprocess.STDOUT,
     )
-    for _ in range(60):
+    click.echo(f"Waiting for model to load (log: {log_path})...")
+    for i in range(timeout):
+        if proc.poll() is not None:
+            # Process exited — read last few lines of log for error context
+            log_file.close()
+            try:
+                with open(log_path) as f:
+                    tail = f.readlines()[-20:]
+                click.echo("Server exited unexpectedly. Last log lines:", err=True)
+                for line in tail:
+                    click.echo(f"  {line.rstrip()}", err=True)
+            except Exception:
+                pass
+            raise RuntimeError(f"octomil serve exited with code {proc.returncode}")
         if is_serve_running(port=port):
+            log_file.close()
             return proc
+        if i > 0 and i % 15 == 0:
+            click.echo(f"  Still loading... ({i}s elapsed)")
         time.sleep(1)
     proc.terminate()
-    raise RuntimeError("octomil serve failed to start within 60s")
+    log_file.close()
+    raise RuntimeError(f"octomil serve failed to start within {timeout}s")
 
 
 # ---------------------------------------------------------------------------
@@ -428,9 +446,7 @@ def launch_agent(
         from .registry import list_agents
 
         available = ", ".join(a.name for a in list_agents())
-        raise click.ClickException(
-            f"Unknown agent '{agent_name}'. Available: {available}"
-        )
+        raise click.ClickException(f"Unknown agent '{agent_name}'. Available: {available}")
 
     # Check if agent is installed
     if not is_agent_installed(agent):
