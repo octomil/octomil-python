@@ -53,6 +53,8 @@ class SmartRouterDefaults:
 class RoutingOffsets:
     """Server-provided score offsets for policy-based routing."""
 
+    quality_score_offset: float = 0.0
+    balanced_score_offset: float = 0.0
     latency_offset: float = 0.0
     throughput_offset: float = 0.0
 
@@ -99,6 +101,8 @@ class DeviceConfig:
         # routing_offsets
         ro_raw = data.get("routing_offsets", {})
         routing_offsets = RoutingOffsets(
+            quality_score_offset=float(ro_raw.get("quality_score_offset", 0.0)),
+            balanced_score_offset=float(ro_raw.get("balanced_score_offset", 0.0)),
             latency_offset=float(ro_raw.get("latency_offset", 0.0)),
             throughput_offset=float(ro_raw.get("throughput_offset", 0.0)),
         )
@@ -134,6 +138,8 @@ _FALLBACK_DATA: dict[str, Any] = {
         "fast": {"threshold": 0.3, "min_layers_fraction": 0.5},
     },
     "routing_offsets": {
+        "quality_score_offset": 0.0,
+        "balanced_score_offset": 0.0,
         "latency_offset": 0.0,
         "throughput_offset": 0.0,
     },
