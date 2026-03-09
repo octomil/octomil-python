@@ -3,11 +3,20 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import TYPE_CHECKING
 
-import numpy as np
-import onnx
-import onnxruntime as ort
-from onnx import TensorProto, helper
+import pytest
+
+if TYPE_CHECKING:
+    import numpy as np
+    import onnx
+    import onnxruntime as ort
+    from onnx import TensorProto, helper
+else:
+    onnx = pytest.importorskip("onnx")
+    np = pytest.importorskip("numpy")
+    ort = pytest.importorskip("onnxruntime")
+    from onnx import TensorProto, helper
 
 from octomil.utils.onnx_sampling import append_argmax
 

@@ -3,11 +3,18 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import TYPE_CHECKING
 
-import numpy as np
-import onnx
 import pytest
-from onnx import TensorProto, helper, numpy_helper
+
+if TYPE_CHECKING:
+    import numpy as np
+    import onnx
+    from onnx import TensorProto, helper, numpy_helper
+else:
+    onnx = pytest.importorskip("onnx")
+    np = pytest.importorskip("numpy")
+    from onnx import TensorProto, helper, numpy_helper
 
 from octomil.utils.fp16_scaling import apply_fp16_scaling
 
@@ -24,9 +31,7 @@ def _make_model_with_weights(
     norm_init = numpy_helper.from_array(norm_values, name="model.layernorm.weight")
 
     # Simple matmul + add to use both initializers
-    matmul = helper.make_node(
-        "MatMul", ["input", "model.embed_tokens.weight"], ["hidden"]
-    )
+    matmul = helper.make_node("MatMul", ["input", "model.embed_tokens.weight"], ["hidden"])
     add = helper.make_node("Add", ["hidden", "model.layernorm.weight"], ["output"])
 
     Y = helper.make_tensor_value_info("output", TensorProto.FLOAT, None)
