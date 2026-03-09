@@ -103,13 +103,13 @@ async def settle_batch(
     facilitator_url: str,
     config: Any,
 ) -> None:
-    """Submit a batch of authorizations for on-chain settlement.
+    """Submit a batch of authorizations to settle402 for on-chain settlement.
 
     If ``facilitator_url`` is set, POSTs the batch to ``{facilitator_url}/settle``.
     Otherwise logs the batch for manual settlement (the signed authorizations
     remain valid on-chain until their ``validBefore`` timestamp).
 
-    On facilitator failure the entire batch is re-queued into the store.
+    Handles partial failures: only re-queues authorizations that failed.
     """
     batch = store.pop_batch()
     if not batch:
@@ -143,13 +143,36 @@ async def settle_batch(
         ],
     }
 
+    headers: dict[str, str] = {}
+    settler_token = getattr(config, "settler_token", "")
+    if settler_token:
+        headers["x-settler-token"] = settler_token
+
     try:
         import httpx
 
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            resp = await client.post(f"{facilitator_url}/settle", json=payload)
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            resp = await client.post(f"{facilitator_url}/settle", json=payload, headers=headers)
             resp.raise_for_status()
-            logger.info("x402: facilitator accepted batch (%d auths)", len(batch))
+            result = resp.json()
+
+        status = result.get("status", "")
+        succeeded = result.get("total_succeeded", 0)
+        failed = result.get("total_failed", 0)
+
+        if status == "settled":
+            logger.info("x402: batch settled — %d/%d succeeded", succeeded, len(batch))
+        elif status == "partial":
+            logger.warning("x402: partial settlement — %d succeeded, %d failed", succeeded, failed)
+            # Re-queue only the failed authorizations
+            failed_indices = {r["index"] for r in result.get("results", []) if not r.get("success")}
+            failed_auths = [batch[i] for i in failed_indices if i < len(batch)]
+            if failed_auths:
+                store.requeue(failed_auths)
+        else:
+            logger.error("x402: batch settlement failed — re-queuing %d auths", len(batch))
+            store.requeue(batch)
+
     except Exception as exc:
-        logger.error("x402: facilitator settlement failed: %s — re-queuing %d auths", exc, len(batch))
+        logger.error("x402: settle402 request failed: %s — re-queuing %d auths", exc, len(batch))
         store.requeue(batch)
