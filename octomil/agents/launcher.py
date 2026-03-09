@@ -384,8 +384,18 @@ def _build_serve_cmd(model: str, port: int) -> list[str]:
     When running from a PyInstaller frozen binary, ``sys.executable`` is
     the binary itself — not a Python interpreter — so ``-m octomil`` is
     invalid.  In that case we invoke the binary directly as a subcommand.
+
+    If a managed venv with a native engine exists (set up by
+    ``octomil setup``), we use the venv's Python instead — this gives
+    direct access to mlx-lm / llama.cpp without Ollama.
     """
     if getattr(sys, "frozen", False):
+        from octomil.setup import get_venv_python, is_engine_ready
+
+        venv_py = get_venv_python()
+        if venv_py and is_engine_ready():
+            return [venv_py, "-m", "octomil", "serve", model, "--port", str(port)]
+        # Fallback: frozen binary (Ollama engine)
         return [sys.executable, "serve", model, "--port", str(port)]
     return [sys.executable, "-m", "octomil", "serve", model, "--port", str(port)]
 
