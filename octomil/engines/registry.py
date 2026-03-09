@@ -77,19 +77,26 @@ class EngineRegistry:
 
         If model_name is provided, also checks model support.
         Resolves model name aliases before checking engine support.
+
+        When the catalog has no engine metadata (e.g. after a history scrub),
+        ``supports_model`` is skipped — if an engine is installed, trust it.
         """
         # Resolve alias once, pass canonical name to all engines
         canonical_name = model_name
+        catalog_has_engines = False
         if model_name:
-            from ..models.catalog import _resolve_alias
+            from ..models.catalog import CATALOG, _resolve_alias
 
             canonical_name = _resolve_alias(model_name)
+            # Check if the catalog has engine metadata at all
+            entry = CATALOG.get(canonical_name)
+            catalog_has_engines = entry is not None and bool(entry.engines)
 
         results: list[DetectionResult] = []
         for engine in self._engines:
             try:
                 available = engine.detect()
-                if available and canonical_name:
+                if available and canonical_name and catalog_has_engines:
                     available = engine.supports_model(canonical_name)
                 info = engine.detect_info() if available else ""
                 results.append(DetectionResult(engine=engine, available=available, info=info))
@@ -167,7 +174,7 @@ class EngineRegistry:
             engine = self.get_engine(engine_override)
             if engine is None:
                 available = [e.name for e in self._engines]
-                raise ValueError(f"Unknown engine '{engine_override}'. " f"Available: {', '.join(available)}")
+                raise ValueError(f"Unknown engine '{engine_override}'. Available: {', '.join(available)}")
             if not engine.detect():
                 raise ValueError(
                     f"Engine '{engine_override}' is not available on this system. "
