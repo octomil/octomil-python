@@ -5,12 +5,23 @@ from __future__ import annotations
 # Platform tool prompts are not used for inference (they wrap SDK calls),
 # but are defined here for consistency and potential future use.
 PLATFORM_TOOL_DESCRIPTIONS: dict[str, str] = {
+    # Phase 1: core operations
     "resolve_model": "Resolve a model name to engine-specific artifacts (repo, filename, engine, quant).",
     "list_models": "List all models in the Octomil catalog with metadata.",
     "detect_engines": "Detect which inference engines are available on this machine.",
     "run_inference": "Run raw inference through the local on-device model.",
     "get_metrics": "Get current model/engine status and readiness.",
     "deploy_model": "Deploy a model to edge devices via the Octomil platform.",
+    # Phase 2: conversion, optimization, intelligence
+    "convert_model": "Convert PyTorch model to ONNX, CoreML, or TFLite for edge deployment.",
+    "optimize_model": "Server-side model optimization: pruning, quantization, format conversion.",
+    "hardware_profile": "Detect full hardware capabilities (CPU, GPU, RAM, instruction sets).",
+    "benchmark_model": "Benchmark inference engines with actual measured performance.",
+    "recommend_model": "Recommend optimal model + quantization + engine for this hardware.",
+    "scan_codebase": "Scan codebase for ML inference points across iOS, Android, Python.",
+    "compress_prompt": "Compress prompts to reduce token count before inference.",
+    "plan_deployment": "Dry-run deployment plan showing per-device format and conversion needs.",
+    "embed": "Generate text embeddings via the Octomil platform.",
 }
 
 SYSTEM_PROMPTS: dict[str, str] = {

@@ -69,13 +69,23 @@ class TestDiscovery:
         resp = await client.get("/.well-known/agent-card.json")
         card = resp.json()
         skill_names = {s["id"] for s in card["skills"]}
-        # Platform tools
+        # Phase 1 platform tools
         assert "resolve_model" in skill_names
         assert "list_models" in skill_names
         assert "detect_engines" in skill_names
         assert "run_inference" in skill_names
         assert "get_metrics" in skill_names
         assert "deploy_model" in skill_names
+        # Phase 2 platform tools
+        assert "convert_model" in skill_names
+        assert "optimize_model" in skill_names
+        assert "hardware_profile" in skill_names
+        assert "benchmark_model" in skill_names
+        assert "recommend_model" in skill_names
+        assert "scan_codebase" in skill_names
+        assert "compress_prompt" in skill_names
+        assert "plan_deployment" in skill_names
+        assert "embed" in skill_names
         # Code tools
         assert "generate_code" in skill_names
         assert "review_file" in skill_names
@@ -227,6 +237,148 @@ class TestRESTEndpoints:
 
         assert resp.status_code == 403
         assert resp.json()["error"] == "auth_required"
+
+
+# ---------------------------------------------------------------------------
+# Phase 2 REST API endpoints
+# ---------------------------------------------------------------------------
+
+
+class TestPhase2Endpoints:
+    @pytest.mark.asyncio
+    async def test_convert_model(self, client: Any) -> None:
+        """Convert endpoint accepts request and returns structured response."""
+        resp = await client.post(
+            "/api/v1/convert_model",
+            json={"model_path": "/tmp/model.pt", "target": "onnx"},
+        )
+        # Will fail (no real model file) but should return structured response, not 422
+        assert resp.status_code in (200, 500)
+        data = resp.json()
+        assert "model" in data or "error" in data
+
+    @pytest.mark.asyncio
+    async def test_optimize_no_api_key(self, client: Any) -> None:
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("OCTOMIL_API_KEY", None)
+            resp = await client.post("/api/v1/optimize_model", json={"name": "test"})
+        assert resp.status_code == 403
+        assert resp.json()["error"] == "auth_required"
+
+    @pytest.mark.asyncio
+    async def test_hardware_profile(self, client: Any) -> None:
+        from tests.test_mcp_platform import FakeHardware
+
+        with patch("octomil.hardware._unified.detect_hardware", return_value=FakeHardware()):
+            resp = await client.get("/api/v1/hardware_profile")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["platform"] == "darwin"
+        assert data["cpu"]["brand"] == "Apple M2"
+
+    @pytest.mark.asyncio
+    async def test_benchmark_model(self, client: Any) -> None:
+        from tests.test_mcp_platform import FakeEnginePlugin, FakeRankedBenchmark
+
+        ranked = [FakeRankedBenchmark(engine=FakeEnginePlugin("mlx-lm"))]
+        mock_registry = MagicMock()
+        mock_registry.benchmark_all.return_value = ranked
+        with patch("octomil.engines.registry.get_registry", return_value=mock_registry):
+            resp = await client.post("/api/v1/benchmark_model", json={"model_name": "gemma-3b"})
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["best_engine"] == "mlx-lm"
+
+    @pytest.mark.asyncio
+    async def test_recommend_model(self, client: Any) -> None:
+        from tests.test_mcp_platform import FakeHardware, FakeRecommendation
+
+        with (
+            patch("octomil.hardware._unified.detect_hardware", return_value=FakeHardware()),
+            patch("octomil.model_optimizer.ModelOptimizer") as MockOpt,
+        ):
+            MockOpt.return_value.recommend.return_value = [FakeRecommendation()]
+            resp = await client.post("/api/v1/recommend_model", json={"priority": "speed"})
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["priority"] == "speed"
+        assert len(data["recommendations"]) == 1
+
+    @pytest.mark.asyncio
+    async def test_scan_codebase(self, client: Any) -> None:
+        from tests.test_mcp_platform import FakeInferencePoint
+
+        with patch("octomil.scanner.scan_directory", return_value=[FakeInferencePoint()]):
+            resp = await client.post("/api/v1/scan_codebase", json={"path": "/tmp/proj"})
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["total_points"] == 1
+
+    @pytest.mark.asyncio
+    async def test_scan_codebase_not_found(self, client: Any) -> None:
+        with patch("octomil.scanner.scan_directory", side_effect=FileNotFoundError("/bad")):
+            resp = await client.post("/api/v1/scan_codebase", json={"path": "/bad"})
+        assert resp.status_code == 404
+        assert resp.json()["error"] == "not_found"
+
+    @pytest.mark.asyncio
+    async def test_compress_prompt(self, client: Any) -> None:
+        from tests.test_mcp_platform import FakeCompressionStats
+
+        compressed = [{"role": "user", "content": "hello"}]
+        with patch("octomil.compression.PromptCompressor") as MockComp:
+            MockComp.return_value.compress.return_value = (compressed, FakeCompressionStats())
+            msgs = '[{"role":"user","content":"hello world hello world"}]'
+            resp = await client.post(
+                "/api/v1/compress_prompt",
+                json={"messages": msgs},
+            )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["compressed_messages"] == compressed
+        assert data["stats"]["tokens_saved"] == 250
+
+    @pytest.mark.asyncio
+    async def test_plan_deployment_no_api_key(self, client: Any) -> None:
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("OCTOMIL_API_KEY", None)
+            resp = await client.post("/api/v1/plan_deployment", json={"name": "test"})
+        assert resp.status_code == 403
+        assert resp.json()["error"] == "auth_required"
+
+    @pytest.mark.asyncio
+    async def test_plan_deployment_success(self, client: Any) -> None:
+        mock_client = MagicMock()
+        mock_client.deploy_prepare.return_value = {"stages": []}
+        with patch.dict(os.environ, {"OCTOMIL_API_KEY": "key"}):
+            with patch("octomil.client.OctomilClient", return_value=mock_client):
+                resp = await client.post("/api/v1/plan_deployment", json={"name": "m"})
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "planned"
+
+    @pytest.mark.asyncio
+    async def test_embed_no_api_key(self, client: Any) -> None:
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("OCTOMIL_API_KEY", None)
+            resp = await client.post("/api/v1/embed", json={"text": "hello", "model": "m"})
+        assert resp.status_code == 403
+
+    @pytest.mark.asyncio
+    async def test_embed_no_model(self, client: Any) -> None:
+        with patch.dict(os.environ, {"OCTOMIL_API_KEY": "key"}):
+            resp = await client.post("/api/v1/embed", json={"text": "hello"})
+        assert resp.status_code == 400
+        assert resp.json()["error"] == "model_required"
+
+    @pytest.mark.asyncio
+    async def test_embed_success(self, client: Any) -> None:
+        mock_client = MagicMock()
+        mock_client.embed.return_value = {"embeddings": [[0.1, 0.2]]}
+        with patch.dict(os.environ, {"OCTOMIL_API_KEY": "key"}):
+            with patch("octomil.client.OctomilClient", return_value=mock_client):
+                resp = await client.post("/api/v1/embed", json={"text": "hello", "model": "m"})
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "ok"
 
 
 # ---------------------------------------------------------------------------

@@ -1,10 +1,10 @@
-"""Tests for platform MCP tools (resolve, list, detect, inference, metrics, deploy)."""
+"""Tests for platform MCP tools (Phase 1 + Phase 2)."""
 
 from __future__ import annotations
 
 import json
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Optional
 from unittest.mock import MagicMock, patch
 
@@ -371,10 +371,497 @@ class TestDeployModel:
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# Phase 2 fakes
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class FakeCPU:
+    brand: str = "Apple M2"
+    cores: int = 8
+    threads: int = 8
+    architecture: str = "arm64"
+    base_speed_ghz: float = 3.49
+    has_avx2: bool = False
+    has_avx512: bool = False
+    has_neon: bool = True
+    estimated_gflops: float = 111.7
+
+
+@dataclass
+class FakeGPUDevice:
+    name: str = "Apple M2"
+    memory: Any = None
+
+    def __post_init__(self) -> None:
+        if self.memory is None:
+            self.memory = MagicMock(total_gb=16.0)
+
+
+@dataclass
+class FakeGPU:
+    backend: str = "metal"
+    total_vram_gb: float = 16.0
+    is_multi_gpu: bool = False
+    speed_coefficient: float = 1.0
+    gpus: list[Any] = field(default_factory=lambda: [FakeGPUDevice()])
+    driver_version: str | None = None
+    cuda_version: str | None = None
+
+
+@dataclass
+class FakeHardware:
+    platform: str = "darwin"
+    best_backend: str = "mlx"
+    total_ram_gb: float = 16.0
+    available_ram_gb: float = 10.5
+    cpu: Any = None
+    gpu: Any = None
+    diagnostics: list[str] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        if self.cpu is None:
+            self.cpu = FakeCPU()
+        if self.gpu is None:
+            self.gpu = FakeGPU()
+
+
+@dataclass
+class FakeBenchmarkEntry:
+    tokens_per_second: float = 42.5
+    ok: bool = True
+    metadata: dict[str, Any] = field(default_factory=dict)
+    error: str | None = None
+
+
+@dataclass
+class FakeRankedBenchmark:
+    engine: Any = None
+    result: Any = None
+
+    def __post_init__(self) -> None:
+        if self.engine is None:
+            self.engine = FakeEnginePlugin("mlx-lm")
+        if self.result is None:
+            self.result = FakeBenchmarkEntry()
+
+
+@dataclass
+class FakeSpeedEstimate:
+    tokens_per_second: float = 35.0
+    backend: str = "mlx"
+    confidence: str = "measured"
+
+
+@dataclass
+class FakeInferenceConfig:
+    strategy: str = "gpu_only"
+    gpu_layers: int = -1
+    vram_gb: float = 4.0
+    ram_gb: float = 2.0
+
+
+@dataclass
+class FakeRecommendation:
+    model_size: str = "3B"
+    quantization: str = "4bit"
+    reason: str = "Fits in 16GB unified memory"
+    speed: Any = None
+    config: Any = None
+    serve_command: str = "octomil serve gemma-3b"
+
+    def __post_init__(self) -> None:
+        if self.speed is None:
+            self.speed = FakeSpeedEstimate()
+        if self.config is None:
+            self.config = FakeInferenceConfig()
+
+
+@dataclass
+class FakeInferencePoint:
+    file: str = "main.py"
+    line: int = 42
+    type: str = "pytorch"
+    platform: str = "python"
+    pattern: str = "torch.load"
+    suggestion: str = "Consider ONNX Runtime for faster inference"
+    context: str = "model = torch.load('model.pt')"
+
+
+@dataclass
+class FakeCompressionStats:
+    original_tokens: int = 500
+    compressed_tokens: int = 250
+    compression_ratio: float = 0.5
+    tokens_saved: int = 250
+    savings_pct: float = 50.0
+    strategy: str = "token_pruning"
+    duration_ms: float = 12.34
+
+
+# ---------------------------------------------------------------------------
+# convert_model
+# ---------------------------------------------------------------------------
+
+
+class TestConvertModel:
+    def test_convert_torch_not_installed(self) -> None:
+        tools = _get_tool_funcs()
+        with patch.dict("sys.modules", {"torch": None}):
+            result = json.loads(tools["convert_model"]("/tmp/model.pt"))
+
+        assert result["model"] == "model"
+        assert "output_dir" in result
+        assert "error" in result["conversions"].get("onnx", {})
+
+    def test_convert_error(self) -> None:
+        tools = _get_tool_funcs()
+        result = json.loads(tools["convert_model"]("/nonexistent/model.pt"))
+        # Should get an onnx error since the file doesn't exist
+        assert "conversions" in result or "error" in result
+
+
+# ---------------------------------------------------------------------------
+# optimize_model
+# ---------------------------------------------------------------------------
+
+
+class TestOptimizeModel:
+    def test_optimize_requires_api_key(self) -> None:
+        tools = _get_tool_funcs()
+        with patch.dict(os.environ, {}, clear=True):
+            os.environ.pop("OCTOMIL_API_KEY", None)
+            result = json.loads(tools["optimize_model"]("test-model"))
+        assert result["error"] == "auth_required"
+
+    def test_optimize_success(self) -> None:
+        mock_client = MagicMock()
+        mock_client._registry.resolve_model_id.return_value = "model-123"
+        mock_client._registry.optimize.return_value = {"status": "complete", "size_mb": 45.2}
+
+        tools = _get_tool_funcs()
+        with patch.dict(os.environ, {"OCTOMIL_API_KEY": "test-key"}):
+            with patch("octomil.client.OctomilClient", return_value=mock_client):
+                result = json.loads(tools["optimize_model"]("test-model", target_devices="ios,android"))
+
+        assert result["status"] == "optimized"
+        mock_client._registry.optimize.assert_called_once()
+
+    def test_optimize_error(self) -> None:
+        mock_client = MagicMock()
+        mock_client._registry.resolve_model_id.side_effect = RuntimeError("not found")
+
+        tools = _get_tool_funcs()
+        with patch.dict(os.environ, {"OCTOMIL_API_KEY": "key"}):
+            with patch("octomil.client.OctomilClient", return_value=mock_client):
+                result = json.loads(tools["optimize_model"]("bad"))
+
+        assert result["error"] == "optimize_error"
+
+
+# ---------------------------------------------------------------------------
+# hardware_profile
+# ---------------------------------------------------------------------------
+
+
+class TestHardwareProfile:
+    def test_detects_hardware(self) -> None:
+        tools = _get_tool_funcs()
+        with patch("octomil.hardware._unified.detect_hardware", return_value=FakeHardware()):
+            result = json.loads(tools["hardware_profile"]())
+
+        assert result["platform"] == "darwin"
+        assert result["best_backend"] == "mlx"
+        assert result["cpu"]["brand"] == "Apple M2"
+        assert result["cpu"]["cores"] == 8
+        assert result["gpu"]["backend"] == "metal"
+
+    def test_hardware_no_gpu(self) -> None:
+        hw = FakeHardware()
+        hw.gpu = None  # Override post_init
+        tools = _get_tool_funcs()
+        with patch("octomil.hardware._unified.detect_hardware", return_value=hw):
+            result = json.loads(tools["hardware_profile"]())
+
+        assert result["gpu"] is None
+
+    def test_hardware_error(self) -> None:
+        tools = _get_tool_funcs()
+        with patch("octomil.hardware._unified.detect_hardware", side_effect=RuntimeError("detection failed")):
+            result = json.loads(tools["hardware_profile"]())
+
+        assert result["error"] == "hardware_error"
+
+
+# ---------------------------------------------------------------------------
+# benchmark_model
+# ---------------------------------------------------------------------------
+
+
+class TestBenchmarkModel:
+    def test_benchmark_success(self) -> None:
+        ranked = [
+            FakeRankedBenchmark(
+                engine=FakeEnginePlugin("mlx-lm"),
+                result=FakeBenchmarkEntry(tokens_per_second=42.5, ok=True),
+            ),
+            FakeRankedBenchmark(
+                engine=FakeEnginePlugin("llama.cpp"),
+                result=FakeBenchmarkEntry(tokens_per_second=30.0, ok=True),
+            ),
+        ]
+        mock_registry = MagicMock()
+        mock_registry.benchmark_all.return_value = ranked
+
+        tools = _get_tool_funcs()
+        with patch("octomil.engines.registry.get_registry", return_value=mock_registry):
+            result = json.loads(tools["benchmark_model"]("gemma-3b"))
+
+        assert result["best_engine"] == "mlx-lm"
+        assert len(result["results"]) == 2
+        assert result["results"][0]["tokens_per_second"] == 42.5
+
+    def test_benchmark_specific_engine(self) -> None:
+        mock_engine = FakeEnginePlugin("mlx-lm")
+        ranked = [FakeRankedBenchmark(engine=mock_engine)]
+        mock_registry = MagicMock()
+        mock_registry.get_engine.return_value = mock_engine
+        mock_registry.benchmark_all.return_value = ranked
+
+        tools = _get_tool_funcs()
+        with patch("octomil.engines.registry.get_registry", return_value=mock_registry):
+            result = json.loads(tools["benchmark_model"]("gemma-3b", engine="mlx-lm"))
+
+        assert result["best_engine"] == "mlx-lm"
+        mock_registry.get_engine.assert_called_once_with("mlx-lm")
+
+    def test_benchmark_unknown_engine(self) -> None:
+        mock_registry = MagicMock()
+        mock_registry.get_engine.return_value = None
+        mock_registry.engines = [FakeEnginePlugin("mlx-lm")]
+
+        tools = _get_tool_funcs()
+        with patch("octomil.engines.registry.get_registry", return_value=mock_registry):
+            result = json.loads(tools["benchmark_model"]("gemma-3b", engine="nope"))
+
+        assert result["error"] == "unknown_engine"
+        assert "mlx-lm" in result["available"]
+
+
+# ---------------------------------------------------------------------------
+# recommend_model
+# ---------------------------------------------------------------------------
+
+
+class TestRecommendModel:
+    def test_recommend_success(self) -> None:
+        tools = _get_tool_funcs()
+        with (
+            patch("octomil.hardware._unified.detect_hardware", return_value=FakeHardware()),
+            patch("octomil.model_optimizer.ModelOptimizer") as MockOptimizer,
+        ):
+            MockOptimizer.return_value.recommend.return_value = [FakeRecommendation()]
+            result = json.loads(tools["recommend_model"]("balanced"))
+
+        assert result["priority"] == "balanced"
+        assert result["hardware_summary"]["platform"] == "darwin"
+        assert len(result["recommendations"]) == 1
+        assert result["recommendations"][0]["model_size"] == "3B"
+
+    def test_recommend_error(self) -> None:
+        tools = _get_tool_funcs()
+        with patch("octomil.hardware._unified.detect_hardware", side_effect=RuntimeError("fail")):
+            result = json.loads(tools["recommend_model"]())
+
+        assert result["error"] == "recommend_error"
+
+
+# ---------------------------------------------------------------------------
+# scan_codebase
+# ---------------------------------------------------------------------------
+
+
+class TestScanCodebase:
+    def test_scan_success(self) -> None:
+        points = [FakeInferencePoint(), FakeInferencePoint(type="coreml", file="Model.swift", line=10)]
+        tools = _get_tool_funcs()
+        with patch("octomil.scanner.scan_directory", return_value=points):
+            result = json.loads(tools["scan_codebase"]("/tmp/myproject"))
+
+        assert result["total_points"] == 2
+        assert result["by_type"]["pytorch"] == 1
+        assert result["by_type"]["coreml"] == 1
+
+    def test_scan_with_platform(self) -> None:
+        tools = _get_tool_funcs()
+        with patch("octomil.scanner.scan_directory", return_value=[]) as mock_scan:
+            result = json.loads(tools["scan_codebase"]("/tmp/proj", platform="ios"))
+
+        assert result["platform_filter"] == "ios"
+        mock_scan.assert_called_once_with("/tmp/proj", platform="ios")
+
+    def test_scan_not_found(self) -> None:
+        tools = _get_tool_funcs()
+        with patch("octomil.scanner.scan_directory", side_effect=FileNotFoundError("/bad/path")):
+            result = json.loads(tools["scan_codebase"]("/bad/path"))
+
+        assert result["error"] == "not_found"
+
+
+# ---------------------------------------------------------------------------
+# compress_prompt
+# ---------------------------------------------------------------------------
+
+
+class TestCompressPrompt:
+    def test_compress_success(self) -> None:
+        compressed = [{"role": "user", "content": "hello"}]
+        stats = FakeCompressionStats()
+
+        tools = _get_tool_funcs()
+        with patch("octomil.compression.PromptCompressor") as MockCompressor:
+            MockCompressor.return_value.compress.return_value = (compressed, stats)
+            msgs = json.dumps([{"role": "user", "content": "hello world " * 50}])
+            result = json.loads(tools["compress_prompt"](msgs))
+
+        assert result["compressed_messages"] == compressed
+        assert result["stats"]["original_tokens"] == 500
+        assert result["stats"]["tokens_saved"] == 250
+
+    def test_compress_invalid_json(self) -> None:
+        tools = _get_tool_funcs()
+        result = json.loads(tools["compress_prompt"]("not json"))
+        assert result["error"] == "invalid_json"
+
+    def test_compress_not_array(self) -> None:
+        tools = _get_tool_funcs()
+        result = json.loads(tools["compress_prompt"](json.dumps({"role": "user"})))
+        assert result["error"] == "invalid_input"
+
+
+# ---------------------------------------------------------------------------
+# plan_deployment
+# ---------------------------------------------------------------------------
+
+
+class TestPlanDeployment:
+    def test_plan_requires_api_key(self) -> None:
+        tools = _get_tool_funcs()
+        with patch.dict(os.environ, {}, clear=True):
+            os.environ.pop("OCTOMIL_API_KEY", None)
+            result = json.loads(tools["plan_deployment"]("test-model"))
+        assert result["error"] == "auth_required"
+
+    def test_plan_success(self) -> None:
+        mock_client = MagicMock()
+        mock_client.deploy_prepare.return_value = {"stages": [{"device": "d1", "format": "coreml"}]}
+
+        tools = _get_tool_funcs()
+        with patch.dict(os.environ, {"OCTOMIL_API_KEY": "key"}):
+            with patch("octomil.client.OctomilClient", return_value=mock_client):
+                result = json.loads(tools["plan_deployment"]("test-model", devices="d1,d2"))
+
+        assert result["status"] == "planned"
+        mock_client.deploy_prepare.assert_called_once()
+        call_kwargs = mock_client.deploy_prepare.call_args[1]
+        assert call_kwargs["devices"] == ["d1", "d2"]
+
+    def test_plan_error(self) -> None:
+        mock_client = MagicMock()
+        mock_client.deploy_prepare.side_effect = RuntimeError("fail")
+
+        tools = _get_tool_funcs()
+        with patch.dict(os.environ, {"OCTOMIL_API_KEY": "key"}):
+            with patch("octomil.client.OctomilClient", return_value=mock_client):
+                result = json.loads(tools["plan_deployment"]("bad"))
+        assert result["error"] == "plan_error"
+
+
+# ---------------------------------------------------------------------------
+# embed
+# ---------------------------------------------------------------------------
+
+
+class TestEmbed:
+    def test_embed_requires_api_key(self) -> None:
+        tools = _get_tool_funcs()
+        with patch.dict(os.environ, {}, clear=True):
+            os.environ.pop("OCTOMIL_API_KEY", None)
+            result = json.loads(tools["embed"]("hello"))
+        assert result["error"] == "auth_required"
+
+    def test_embed_requires_model(self) -> None:
+        tools = _get_tool_funcs()
+        with patch.dict(os.environ, {"OCTOMIL_API_KEY": "key"}):
+            with patch("octomil.client.OctomilClient"):
+                result = json.loads(tools["embed"]("hello"))
+        assert result["error"] == "model_required"
+
+    def test_embed_success(self) -> None:
+        mock_client = MagicMock()
+        mock_client.embed.return_value = {"embeddings": [[0.1, 0.2, 0.3]], "model": "text-embed-v1"}
+
+        tools = _get_tool_funcs()
+        with patch.dict(os.environ, {"OCTOMIL_API_KEY": "key"}):
+            with patch("octomil.client.OctomilClient", return_value=mock_client):
+                result = json.loads(tools["embed"]("hello world", model="text-embed-v1"))
+
+        assert result["status"] == "ok"
+        mock_client.embed.assert_called_once_with("text-embed-v1", "hello world")
+
+    def test_embed_json_array_input(self) -> None:
+        mock_client = MagicMock()
+        mock_client.embed.return_value = {"embeddings": [[0.1], [0.2]]}
+
+        tools = _get_tool_funcs()
+        texts = json.dumps(["hello", "world"])
+        with patch.dict(os.environ, {"OCTOMIL_API_KEY": "key"}):
+            with patch("octomil.client.OctomilClient", return_value=mock_client):
+                result = json.loads(tools["embed"](texts, model="m"))
+
+        assert result["status"] == "ok"
+        mock_client.embed.assert_called_once_with("m", ["hello", "world"])
+
+    def test_embed_error(self) -> None:
+        mock_client = MagicMock()
+        mock_client.embed.side_effect = RuntimeError("API error")
+
+        tools = _get_tool_funcs()
+        with patch.dict(os.environ, {"OCTOMIL_API_KEY": "key"}):
+            with patch("octomil.client.OctomilClient", return_value=mock_client):
+                result = json.loads(tools["embed"]("x", model="m"))
+
+        assert result["error"] == "embed_error"
+
+
+# ---------------------------------------------------------------------------
+# Integration: tools register on FastMCP
+# ---------------------------------------------------------------------------
+
+
 class TestRegistration:
     def test_all_platform_tools_registered(self) -> None:
         tools = _get_tool_funcs()
-        expected = {"resolve_model", "list_models", "detect_engines", "run_inference", "get_metrics", "deploy_model"}
+        expected = {
+            # Phase 1
+            "resolve_model",
+            "list_models",
+            "detect_engines",
+            "run_inference",
+            "get_metrics",
+            "deploy_model",
+            # Phase 2
+            "convert_model",
+            "optimize_model",
+            "hardware_profile",
+            "benchmark_model",
+            "recommend_model",
+            "scan_codebase",
+            "compress_prompt",
+            "plan_deployment",
+            "embed",
+        }
         assert set(tools.keys()) == expected
 
     def test_platform_tools_on_real_fastmcp(self) -> None:

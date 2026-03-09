@@ -653,11 +653,35 @@ class TestLauncherIntegration:
 
 
 class TestServeReexec:
+    @patch("octomil.setup.load_state")
+    @patch("octomil.setup.run_setup")
     @patch("octomil.setup.is_setup_in_progress", return_value=False)
     @patch("octomil.setup.is_engine_ready", return_value=False)
     @patch("octomil.setup.get_venv_python", return_value=None)
-    def test_try_venv_reexec_no_venv(self, mock_venv, mock_ready, mock_progress):
+    def test_try_venv_reexec_no_venv_runs_setup(
+        self, mock_venv, mock_ready, mock_progress, mock_run_setup, mock_load_state
+    ):
+        """When no venv exists, _try_venv_reexec runs setup inline."""
         from octomil.commands.serve import _try_venv_reexec
+        from octomil.setup import SetupState
+
+        mock_load_state.return_value = SetupState()  # phase="pending"
+        mock_run_setup.return_value = SetupState(phase="failed", error="test")
+
+        result = _try_venv_reexec()
+        assert result is False
+        mock_run_setup.assert_called_once()
+
+    @patch("octomil.setup.load_state")
+    @patch("octomil.setup.is_setup_in_progress", return_value=False)
+    @patch("octomil.setup.is_engine_ready", return_value=False)
+    @patch("octomil.setup.get_venv_python", return_value=None)
+    def test_try_venv_reexec_skips_if_already_failed(self, mock_venv, mock_ready, mock_progress, mock_load_state):
+        """When previous setup failed, don't retry — fall through."""
+        from octomil.commands.serve import _try_venv_reexec
+        from octomil.setup import SetupState
+
+        mock_load_state.return_value = SetupState(phase="failed", error="no python")
 
         result = _try_venv_reexec()
         assert result is False
@@ -679,3 +703,64 @@ class TestServeReexec:
         assert "octomil" in call_args[1]
         assert "serve" in call_args[1]
         assert "qwen-coder-7b" in call_args[1]
+
+
+# ---------------------------------------------------------------------------
+# _ensure_engine_ready (launcher auto-setup)
+# ---------------------------------------------------------------------------
+
+
+class TestEnsureEngineReady:
+    @patch("octomil.setup.load_state")
+    @patch("octomil.setup.run_setup")
+    @patch("octomil.setup.is_engine_ready", return_value=False)
+    @patch("octomil.setup.get_venv_python", return_value=None)
+    @patch("octomil.setup.is_setup_in_progress", return_value=False)
+    def test_runs_setup_when_no_venv(self, mock_progress, mock_venv, mock_ready, mock_run_setup, mock_load_state):
+        from octomil.agents.launcher import _ensure_engine_ready
+        from octomil.setup import SetupState
+
+        mock_load_state.return_value = SetupState()
+        mock_run_setup.return_value = SetupState(phase="complete")
+
+        with patch.object(sys, "frozen", True, create=True):
+            _ensure_engine_ready()
+
+        mock_run_setup.assert_called_once()
+
+    @patch("octomil.setup.is_engine_ready", return_value=True)
+    @patch("octomil.setup.get_venv_python", return_value="/venv/bin/python")
+    @patch("octomil.setup.is_setup_in_progress", return_value=False)
+    def test_skips_when_already_ready(self, mock_progress, mock_venv, mock_ready):
+        from octomil.agents.launcher import _ensure_engine_ready
+
+        with patch.object(sys, "frozen", True, create=True):
+            _ensure_engine_ready()
+        # No setup call — already ready
+
+    def test_noop_when_not_frozen(self):
+        from octomil.agents.launcher import _ensure_engine_ready
+
+        _ensure_engine_ready()  # should not import octomil.setup at all
+
+
+# ---------------------------------------------------------------------------
+# OpenClaw configure_local
+# ---------------------------------------------------------------------------
+
+
+class TestOpenClawConfigureLocal:
+    @patch("subprocess.run")
+    def test_configure_openclaw_runs_config_commands(self, mock_run):
+        from octomil.agents.registry import _configure_openclaw
+
+        mock_run.return_value = MagicMock(returncode=0)
+
+        result = _configure_openclaw("http://localhost:8080/v1", "qwen-coder-7b")
+
+        assert result == {}
+        assert mock_run.call_count == 4
+        # Check that openclaw config set was called with correct provider
+        calls = [c[0][0] for c in mock_run.call_args_list]
+        assert any("models.providers.octomil.baseUrl" in cmd for cmd in calls)
+        assert any("octomil/qwen-coder-7b" in cmd for cmd in calls)
