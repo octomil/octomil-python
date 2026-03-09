@@ -22,6 +22,7 @@ from pydantic import BaseModel, Field
 from .a2a import AgentCardConfig, build_agent_card
 from .auth import require_auth
 from .backend import OctomilMCPBackend
+from .prompts import build_messages
 
 logger = logging.getLogger(__name__)
 
@@ -109,6 +110,39 @@ class EmbedRequest(BaseModel):
     model: str = Field("", description="Model ID for embeddings")
 
 
+# Code tool request models
+
+
+class GenerateCodeRequest(BaseModel):
+    description: str = Field(..., description="What the code should do")
+    language: str = Field("", description="Target programming language")
+    context: str = Field("", description="Additional context")
+
+
+class ReviewCodeRequest(BaseModel):
+    code: str = Field(..., description="Code to review")
+    language: str = Field("", description="Programming language")
+    focus: str = Field("", description="Focus area (security, performance, style)")
+
+
+class ExplainCodeRequest(BaseModel):
+    code: str = Field(..., description="Code to explain")
+    language: str = Field("", description="Programming language")
+    detail_level: str = Field("medium", description="Detail level: brief, medium, thorough")
+
+
+class WriteTestsRequest(BaseModel):
+    code: str = Field(..., description="Code to test")
+    language: str = Field("", description="Programming language")
+    framework: str = Field("", description="Test framework (pytest, jest, etc.)")
+    focus: str = Field("", description="Focus areas to test")
+
+
+class GeneralTaskRequest(BaseModel):
+    prompt: str = Field(..., description="The prompt or question")
+    context: str = Field("", description="Additional context")
+
+
 # ---------------------------------------------------------------------------
 # Server configuration
 # ---------------------------------------------------------------------------
@@ -143,11 +177,15 @@ def _get_tool_definitions() -> list[dict[str, Any]]:
 
     tools: list[dict[str, Any]] = []
 
-    # Platform tools
+    # Platform tools — run_inference requires a model, others don't
+    model_required_platform = {"run_inference"}
     for name, desc in PLATFORM_TOOL_DESCRIPTIONS.items():
-        tools.append({"name": name, "description": desc})
+        tool_def: dict[str, Any] = {"name": name, "description": desc}
+        if name in model_required_platform:
+            tool_def["requires_model"] = True
+        tools.append(tool_def)
 
-    # Code tools (existing 7)
+    # Code tools (existing 7) — require a loaded model
     code_tools = {
         "generate_code": "Generate code from natural language description using on-device inference",
         "review_code": "Review code for bugs, security issues, and improvements",
@@ -158,7 +196,7 @@ def _get_tool_definitions() -> list[dict[str, Any]]:
         "analyze_files": "Read multiple files and answer a question about them",
     }
     for name, desc in code_tools.items():
-        tools.append({"name": name, "description": desc})
+        tools.append({"name": name, "description": desc, "requires_model": True})
 
     return tools
 
@@ -206,9 +244,9 @@ def create_http_app(config: HTTPServerConfig | None = None) -> FastAPI:
         from .x402 import X402Config, X402Middleware
 
         x402_config = X402Config(
-            price_per_call=config.x402_price,
-            currency=config.x402_currency,
-            network=config.x402_network,
+            price_per_call=config.x402_price or os.environ.get("OCTOMIL_X402_PRICE", "0.001"),
+            currency=config.x402_currency or os.environ.get("OCTOMIL_X402_CURRENCY", "USDC"),
+            network=config.x402_network or os.environ.get("OCTOMIL_X402_NETWORK", "base"),
             payment_address=config.x402_address or os.environ.get("OCTOMIL_X402_ADDRESS", ""),
         )
         app.add_middleware(X402Middleware, config=x402_config)
@@ -217,24 +255,26 @@ def create_http_app(config: HTTPServerConfig | None = None) -> FastAPI:
     # Shared backend instance
     backend = OctomilMCPBackend(model=config.model)
 
-    # Agent card — built once at startup
+    # Agent card config — card is rebuilt per-request for live readiness
     base_url = config.base_url or f"http://{config.host}:{config.port}"
     card_config = AgentCardConfig(url=base_url)
     tool_defs = _get_tool_definitions()
-    agent_card = build_agent_card(tool_defs, card_config)
 
     # Store on app state for testing access
     app.state.backend = backend
-    app.state.agent_card = agent_card
 
     # ------------------------------------------------------------------
-    # Discovery & health endpoints (no auth)
+    # Discovery, readiness & health endpoints (no auth)
     # ------------------------------------------------------------------
 
     @app.get("/.well-known/agent-card.json", tags=["discovery"])
     async def get_agent_card() -> JSONResponse:
-        """A2A agent card for discovery by other agents."""
-        return JSONResponse(content=agent_card)
+        """A2A agent card for discovery by other agents.
+
+        Rebuilt per-request so skill readiness reflects current model state.
+        """
+        card = build_agent_card(tool_defs, card_config, model_ready=backend.is_loaded)
+        return JSONResponse(content=card)
 
     @app.get("/health", tags=["health"])
     async def health() -> dict[str, Any]:
@@ -244,6 +284,72 @@ def create_http_app(config: HTTPServerConfig | None = None) -> FastAPI:
             "model": backend.model_name,
             "loaded": backend.is_loaded,
         }
+
+    @app.get("/api/v1/ready", tags=["readiness"])
+    async def api_ready() -> JSONResponse:
+        """Lightweight readiness probe. Returns model load status."""
+        if backend.is_loaded:
+            return JSONResponse(
+                content={
+                    "ready": True,
+                    "model": backend.model_name,
+                    "engine": backend._engine_name,
+                },
+            )
+        content: dict[str, Any] = {
+            "ready": False,
+            "model": backend.model_name,
+            "engine": backend._engine_name,
+        }
+        if backend._loading:
+            content["status"] = "loading"
+            content["message"] = "Model is being downloaded and loaded."
+        else:
+            content["message"] = "Model not loaded. Call POST /api/v1/warmup to start."
+            content["actions"] = {
+                "warmup": f"{base_url}/api/v1/warmup",
+            }
+        return JSONResponse(status_code=503, content=content)
+
+    @app.post("/api/v1/warmup", tags=["readiness"])
+    async def api_warmup() -> JSONResponse:
+        """Trigger model loading (with auto-download if needed).
+
+        Call this before invoking code tools. If the model is already loaded,
+        returns immediately. Otherwise kicks off background loading and returns
+        202 with a loading status — poll GET /api/v1/ready to check progress.
+        No authentication required.
+        """
+        import asyncio
+
+        if backend.is_loaded:
+            return JSONResponse(content=backend.warmup())
+
+        if backend._loading:
+            return JSONResponse(
+                status_code=202,
+                content={
+                    "status": "loading",
+                    "model": backend.model_name,
+                    "message": "Model is loading. Poll GET /api/v1/ready to check.",
+                },
+            )
+
+        # Run model loading in background thread so we don't block the server
+        async def _load_in_background() -> None:
+            loop = asyncio.get_event_loop()
+            await loop.run_in_executor(None, backend.warmup)
+
+        asyncio.ensure_future(_load_in_background())
+
+        return JSONResponse(
+            status_code=202,
+            content={
+                "status": "loading",
+                "model": backend.model_name,
+                "message": "Model download and loading started. Poll GET /api/v1/ready to check.",
+            },
+        )
 
     # ------------------------------------------------------------------
     # REST API endpoints (auth required)
@@ -337,24 +443,48 @@ def create_http_app(config: HTTPServerConfig | None = None) -> FastAPI:
     @app.post("/api/v1/run_inference", tags=["inference"], dependencies=[Depends(require_auth)])
     async def api_run_inference(req: RunInferenceRequest) -> JSONResponse:
         """Run inference through the local on-device model."""
-        try:
-            messages = [{"role": "user", "content": req.prompt}]
-            text, metrics = backend.generate(messages, max_tokens=req.max_tokens, temperature=req.temperature)
-            return JSONResponse(content={"text": text, "metrics": metrics})
-        except Exception as exc:
-            logger.exception("run_inference failed")
-            return JSONResponse(status_code=500, content={"error": "inference_error", "message": str(exc)})
+        messages = [{"role": "user", "content": req.prompt}]
+        return _code_tool_response("run_inference", messages)
 
     @app.get("/api/v1/metrics", tags=["monitoring"], dependencies=[Depends(require_auth)])
     async def api_metrics() -> JSONResponse:
-        """Get model and engine status."""
-        return JSONResponse(
-            content={
-                "model": backend.model_name,
-                "engine": backend._engine_name,
-                "loaded": backend.is_loaded,
+        """Get model, engine, and device status."""
+        result: dict[str, Any] = {
+            "model": backend.model_name,
+            "engine": backend._engine_name,
+            "loaded": backend.is_loaded,
+        }
+
+        # Hardware
+        try:
+            from octomil.hardware._unified import detect_hardware
+
+            hw = detect_hardware()
+            result["hardware"] = {
+                "platform": hw.platform,
+                "best_backend": hw.best_backend,
+                "total_ram_gb": round(hw.total_ram_gb, 2),
+                "available_ram_gb": round(hw.available_ram_gb, 2),
+                "cpu": hw.cpu.brand,
+                "architecture": hw.cpu.architecture,
             }
-        )
+            if hw.gpu:
+                result["hardware"]["gpu"] = hw.gpu.backend
+                result["hardware"]["vram_gb"] = round(hw.gpu.total_vram_gb, 2)
+        except Exception:
+            pass
+
+        # Available engines
+        try:
+            from octomil.engines.registry import get_registry
+
+            registry = get_registry()
+            detections = registry.detect_all()
+            result["engines"] = [d.engine.name for d in detections if d.available and d.engine.name != "echo"]
+        except Exception:
+            pass
+
+        return JSONResponse(content=result)
 
     @app.post("/api/v1/deploy_model", tags=["deployment"], dependencies=[Depends(require_auth)])
     async def api_deploy_model(req: DeployModelRequest) -> JSONResponse:
@@ -652,5 +782,104 @@ def create_http_app(config: HTTPServerConfig | None = None) -> FastAPI:
         except Exception as exc:
             logger.exception("embed failed")
             return JSONResponse(status_code=500, content={"error": "embed_error", "message": str(exc)})
+
+    # ------------------------------------------------------------------
+    # Code tool endpoints — with cloud fallback and 503 next actions
+    # ------------------------------------------------------------------
+
+    def _code_tool_response(tool_name: str, messages: list[dict[str, str]]) -> JSONResponse:
+        """Run a code tool through local model with cloud fallback.
+
+        1. Try local model (backend.generate)
+        2. On failure, try cloud fallback via OctomilClient (if OCTOMIL_API_KEY set)
+        3. If both fail, return 503 with machine-readable next actions
+        """
+        # 1. Try local model
+        try:
+            text, metrics = backend.generate(messages)
+            return JSONResponse(content={"text": text, "metrics": metrics})
+        except Exception as local_exc:
+            logger.warning("%s: local model failed: %s", tool_name, local_exc)
+
+        # 2. Try cloud fallback
+        api_key = os.environ.get("OCTOMIL_API_KEY")
+        if api_key:
+            try:
+                from octomil.client import OctomilClient
+
+                client = OctomilClient(api_key=api_key)
+                result = client.chat(backend.model_name, messages)
+                text = result.get("message", {}).get("content", str(result))
+                return JSONResponse(
+                    content={
+                        "text": text,
+                        "metrics": {"engine": "cloud", "model": backend.model_name, "fallback": True},
+                    }
+                )
+            except Exception as cloud_exc:
+                logger.warning("%s: cloud fallback also failed: %s", tool_name, cloud_exc)
+
+        # 3. Return 503 with next actions
+        return JSONResponse(
+            status_code=503,
+            content={
+                "error": "model_not_ready",
+                "message": f"No local model loaded and no cloud fallback available for {tool_name}.",
+                "retryable": True,
+                "retryAfterSeconds": 30,
+                "actions": {
+                    "warmup": f"{base_url}/api/v1/warmup",
+                    "ready": f"{base_url}/api/v1/ready",
+                },
+            },
+        )
+
+    @app.post("/api/v1/generate_code", tags=["code"], dependencies=[Depends(require_auth)])
+    async def api_generate_code(req: GenerateCodeRequest) -> JSONResponse:
+        """Generate code from a natural language description."""
+        parts = [f"Generate {req.language + ' ' if req.language else ''}code: {req.description}"]
+        if req.context:
+            parts.append(f"\nContext:\n{req.context}")
+        messages = build_messages("generate_code", "\n".join(parts))
+        return _code_tool_response("generate_code", messages)
+
+    @app.post("/api/v1/review_code", tags=["code"], dependencies=[Depends(require_auth)])
+    async def api_review_code(req: ReviewCodeRequest) -> JSONResponse:
+        """Review code for bugs, security issues, and improvements."""
+        parts = [f"Review this {req.language + ' ' if req.language else ''}code:"]
+        if req.focus:
+            parts.append(f"Focus on: {req.focus}")
+        parts.append(f"\n```{req.language}\n{req.code}\n```")
+        messages = build_messages("review_code", "\n".join(parts))
+        return _code_tool_response("review_code", messages)
+
+    @app.post("/api/v1/explain_code", tags=["code"], dependencies=[Depends(require_auth)])
+    async def api_explain_code(req: ExplainCodeRequest) -> JSONResponse:
+        """Explain code in plain English."""
+        parts = [f"Explain this {req.language + ' ' if req.language else ''}code ({req.detail_level} detail):"]
+        parts.append(f"\n```{req.language}\n{req.code}\n```")
+        messages = build_messages("explain_code", "\n".join(parts))
+        return _code_tool_response("explain_code", messages)
+
+    @app.post("/api/v1/write_tests", tags=["code"], dependencies=[Depends(require_auth)])
+    async def api_write_tests(req: WriteTestsRequest) -> JSONResponse:
+        """Generate unit tests for code."""
+        parts = [
+            f"Write {req.framework + ' ' if req.framework else ''}tests for this {req.language + ' ' if req.language else ''}code:"
+        ]
+        if req.focus:
+            parts.append(f"Focus on: {req.focus}")
+        parts.append(f"\n```{req.language}\n{req.code}\n```")
+        messages = build_messages("write_tests", "\n".join(parts))
+        return _code_tool_response("write_tests", messages)
+
+    @app.post("/api/v1/general_task", tags=["code"], dependencies=[Depends(require_auth)])
+    async def api_general_task(req: GeneralTaskRequest) -> JSONResponse:
+        """Run a free-form prompt through the local model."""
+        content = req.prompt
+        if req.context:
+            content = f"{req.prompt}\n\nContext:\n{req.context}"
+        messages = build_messages("general_task", content)
+        return _code_tool_response("general_task", messages)
 
     return app

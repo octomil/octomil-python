@@ -267,7 +267,7 @@ class TestMoEResolver:
     def test_resolve_mixtral_mlx(self) -> None:
         r = resolve("mixtral-8x7b", engine="mlx-lm")
         assert r.is_moe is True
-        assert r.hf_repo == "REDACTED"
+        assert r.hf_repo == "mlx-community/REDACTED"
 
     def test_resolve_mixtral_8bit(self) -> None:
         r = resolve("mixtral-8x7b:8bit", engine="llama.cpp")

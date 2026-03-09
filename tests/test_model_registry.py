@@ -86,7 +86,7 @@ class TestResolveModel:
         result = resolve_model("gemma-4b")
         assert result.family == "gemma-4b"
         assert result.tag == "q4_k_m"
-        assert result.mlx_repo == "REDACTED"
+        assert result.mlx_repo == "mlx-community/REDACTED"
         assert result.variant is not None
         assert result.source is not None
 
@@ -95,7 +95,7 @@ class TestResolveModel:
         result = resolve_model("gemma-4b:q8_0")
         assert result.family == "gemma-4b"
         assert result.tag == "q8_0"
-        assert result.mlx_repo == "REDACTED"
+        assert result.mlx_repo == "mlx-community/REDACTED"
 
     def test_resolve_gguf_backend(self) -> None:
         """gemma-4b with gguf backend picks a GGUF source."""

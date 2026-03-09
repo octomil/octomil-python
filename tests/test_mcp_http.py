@@ -226,8 +226,8 @@ class TestRESTEndpoints:
         # Since backend is captured in closure, we test via the app's actual backend
         # For this test, just verify the endpoint accepts the request format
         resp = await client.post("/api/v1/run_inference", json={"prompt": "hello"})
-        # Will fail with inference error since no real model loaded — that's expected
-        assert resp.status_code in (200, 500)
+        # Will return 503 since no model loaded and no cloud fallback — that's expected
+        assert resp.status_code in (200, 503)
 
     @pytest.mark.asyncio
     async def test_deploy_no_api_key(self, client: Any) -> None:
@@ -379,6 +379,196 @@ class TestPhase2Endpoints:
                 resp = await client.post("/api/v1/embed", json={"text": "hello", "model": "m"})
         assert resp.status_code == 200
         assert resp.json()["status"] == "ok"
+
+
+# ---------------------------------------------------------------------------
+# Code tool endpoints
+# ---------------------------------------------------------------------------
+
+
+class TestCodeToolEndpoints:
+    def _no_model_ctx(self, client: Any):
+        """Context manager that makes the backend raise (simulating no model) and removes cloud key."""
+        backend = client._transport.app.state.backend
+        return (
+            patch.object(backend, "generate", side_effect=RuntimeError("no model loaded")),
+            patch.dict(os.environ, {}, clear=False),
+        )
+
+    @pytest.mark.asyncio
+    async def test_generate_code_no_model(self, client: Any) -> None:
+        """Without a loaded model or cloud key, code tools return 503."""
+        mock_gen, env_ctx = self._no_model_ctx(client)
+        with mock_gen, env_ctx:
+            os.environ.pop("OCTOMIL_API_KEY", None)
+            resp = await client.post("/api/v1/generate_code", json={"description": "fibonacci function"})
+        assert resp.status_code == 503
+        data = resp.json()
+        assert data["error"] == "model_not_ready"
+        assert data["retryable"] is True
+        assert "warmup" in data["actions"]
+
+    @pytest.mark.asyncio
+    async def test_generate_code_with_language(self, client: Any) -> None:
+        resp = await client.post(
+            "/api/v1/generate_code",
+            json={"description": "hello world", "language": "python", "context": "use print()"},
+        )
+        assert resp.status_code in (200, 503)
+
+    @pytest.mark.asyncio
+    async def test_review_code_no_model(self, client: Any) -> None:
+        mock_gen, env_ctx = self._no_model_ctx(client)
+        with mock_gen, env_ctx:
+            os.environ.pop("OCTOMIL_API_KEY", None)
+            resp = await client.post("/api/v1/review_code", json={"code": "def f(): pass"})
+        assert resp.status_code == 503
+        data = resp.json()
+        assert data["error"] == "model_not_ready"
+
+    @pytest.mark.asyncio
+    async def test_explain_code_no_model(self, client: Any) -> None:
+        mock_gen, env_ctx = self._no_model_ctx(client)
+        with mock_gen, env_ctx:
+            os.environ.pop("OCTOMIL_API_KEY", None)
+            resp = await client.post("/api/v1/explain_code", json={"code": "x = [i**2 for i in range(10)]"})
+        assert resp.status_code == 503
+
+    @pytest.mark.asyncio
+    async def test_write_tests_no_model(self, client: Any) -> None:
+        mock_gen, env_ctx = self._no_model_ctx(client)
+        with mock_gen, env_ctx:
+            os.environ.pop("OCTOMIL_API_KEY", None)
+            resp = await client.post("/api/v1/write_tests", json={"code": "def add(a, b): return a + b"})
+        assert resp.status_code == 503
+
+    @pytest.mark.asyncio
+    async def test_general_task_no_model(self, client: Any) -> None:
+        mock_gen, env_ctx = self._no_model_ctx(client)
+        with mock_gen, env_ctx:
+            os.environ.pop("OCTOMIL_API_KEY", None)
+            resp = await client.post("/api/v1/general_task", json={"prompt": "What is 2+2?"})
+        assert resp.status_code == 503
+
+    @pytest.mark.asyncio
+    async def test_general_task_with_context(self, client: Any) -> None:
+        resp = await client.post(
+            "/api/v1/general_task",
+            json={"prompt": "summarize", "context": "The quick brown fox."},
+        )
+        assert resp.status_code in (200, 503)
+
+    @pytest.mark.asyncio
+    async def test_code_endpoints_in_openapi(self, client: Any) -> None:
+        resp = await client.get("/openapi.json")
+        assert resp.status_code == 200
+        paths = resp.json()["paths"]
+        assert "/api/v1/generate_code" in paths
+        assert "/api/v1/review_code" in paths
+        assert "/api/v1/explain_code" in paths
+        assert "/api/v1/write_tests" in paths
+        assert "/api/v1/general_task" in paths
+
+
+# ---------------------------------------------------------------------------
+# Readiness endpoints
+# ---------------------------------------------------------------------------
+
+
+class TestReadinessEndpoints:
+    @pytest.mark.asyncio
+    async def test_ready_not_loaded(self, client: Any) -> None:
+        """Ready endpoint returns 503 when model is not loaded."""
+        resp = await client.get("/api/v1/ready")
+        assert resp.status_code == 503
+        data = resp.json()
+        assert data["ready"] is False
+        assert "model" in data
+
+    @pytest.mark.asyncio
+    async def test_warmup_returns_status(self, client: Any) -> None:
+        """Warmup endpoint returns model loading status."""
+        resp = await client.post("/api/v1/warmup")
+        # Without a real model, warmup kicks off async loading — returns 202
+        assert resp.status_code in (200, 202, 503)
+        data = resp.json()
+        assert "status" in data
+        assert "model" in data
+
+    @pytest.mark.asyncio
+    async def test_warmup_in_openapi(self, client: Any) -> None:
+        resp = await client.get("/openapi.json")
+        paths = resp.json()["paths"]
+        assert "/api/v1/warmup" in paths
+        assert "/api/v1/ready" in paths
+
+
+# ---------------------------------------------------------------------------
+# Agent card readiness
+# ---------------------------------------------------------------------------
+
+
+class TestAgentCardReadiness:
+    @pytest.mark.asyncio
+    async def test_agent_card_has_readiness_urls(self, client: Any) -> None:
+        resp = await client.get("/.well-known/agent-card.json")
+        card = resp.json()
+        assert "readinessUrls" in card
+        assert "warmup" in card["readinessUrls"]
+        assert "ready" in card["readinessUrls"]
+
+    @pytest.mark.asyncio
+    async def test_agent_card_skill_readiness(self, client: Any) -> None:
+        """Platform tools are always ready; code tools reflect model state."""
+        resp = await client.get("/.well-known/agent-card.json")
+        card = resp.json()
+        skills_by_id = {s["id"]: s for s in card["skills"]}
+        # Platform tools should be ready even without a model
+        assert skills_by_id["resolve_model"]["ready"] is True
+        assert skills_by_id["list_models"]["ready"] is True
+        # Code tools should NOT be ready without a loaded model
+        assert skills_by_id["generate_code"]["ready"] is False
+        assert skills_by_id["review_code"]["ready"] is False
+        assert skills_by_id["general_task"]["ready"] is False
+
+
+# ---------------------------------------------------------------------------
+# Cloud fallback
+# ---------------------------------------------------------------------------
+
+
+class TestCloudFallback:
+    @pytest.mark.asyncio
+    async def test_code_tool_cloud_fallback(self, client: Any) -> None:
+        """When local model fails but OCTOMIL_API_KEY is set, falls back to cloud."""
+        backend = client._transport.app.state.backend
+        mock_client = MagicMock()
+        mock_client.chat.return_value = {"message": {"role": "assistant", "content": "def fib(n): ..."}}
+        with (
+            patch.object(backend, "generate", side_effect=RuntimeError("no model")),
+            patch.dict(os.environ, {"OCTOMIL_API_KEY": "key"}),
+            patch("octomil.client.OctomilClient", return_value=mock_client),
+        ):
+            resp = await client.post("/api/v1/generate_code", json={"description": "fibonacci"})
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["metrics"]["fallback"] is True
+        assert data["metrics"]["engine"] == "cloud"
+
+    @pytest.mark.asyncio
+    async def test_code_tool_no_fallback_no_key(self, client: Any) -> None:
+        """Without OCTOMIL_API_KEY, returns 503 when local model is unavailable."""
+        backend = client._transport.app.state.backend
+        with (
+            patch.object(backend, "generate", side_effect=RuntimeError("no model")),
+            patch.dict(os.environ, {}, clear=False),
+        ):
+            os.environ.pop("OCTOMIL_API_KEY", None)
+            resp = await client.post("/api/v1/general_task", json={"prompt": "hello"})
+        assert resp.status_code == 503
+        data = resp.json()
+        assert data["retryable"] is True
+        assert "actions" in data
 
 
 # ---------------------------------------------------------------------------

@@ -49,6 +49,8 @@ class OctomilMCPBackend:
         self._model_name: str = model or os.environ.get("OCTOMIL_MCP_MODEL") or "qwen-coder-7b"
         self._backend: object = _NOT_LOADED
         self._engine_name: str = "unknown"
+        self._loading: bool = False
+        self._load_error: str = ""
 
     @property
     def model_name(self) -> str:
@@ -100,6 +102,77 @@ class OctomilMCPBackend:
             "ttfc_ms": getattr(metrics, "ttfc_ms", 0.0),
         }
         return text, metrics_dict
+
+    def warmup(self) -> dict[str, Any]:
+        """Eagerly load the model, returning status info.
+
+        Unlike generate(), this doesn't require a prompt — it just ensures
+        the model is downloaded and loaded into memory. Useful for warmup
+        endpoints so agents can trigger model readiness before calling tools.
+
+        If already loading in a background thread, returns "loading" status.
+        Returns dict with status, model name, engine, and any error.
+        """
+        if self._backend is not _NOT_LOADED:
+            return {
+                "status": "ready",
+                "model": self._model_name,
+                "engine": self._engine_name,
+            }
+
+        if self._loading:
+            return {
+                "status": "loading",
+                "model": self._model_name,
+                "engine": "pending",
+                "message": "Model is currently being downloaded and loaded. Poll GET /api/v1/ready to check.",
+            }
+
+        try:
+            self._loading = True
+            self._ensure_loaded()
+            return {
+                "status": "ready",
+                "model": self._model_name,
+                "engine": self._engine_name,
+            }
+        except Exception as exc:
+            logger.warning("warmup failed for %s: %s", self._model_name, exc)
+            return self._build_warmup_error(exc)
+        finally:
+            self._loading = False
+
+    def _build_warmup_error(self, exc: Exception) -> dict[str, Any]:
+        """Build an agent-friendly warmup error with available engines and suggestions."""
+        available_engines: list[str] = []
+        try:
+            from octomil.engines.registry import get_registry
+
+            registry = get_registry()
+            detections = registry.detect_all()
+            available_engines = [d.engine.name for d in detections if d.available and d.engine.name != "echo"]
+        except Exception:
+            pass
+
+        suggestions: list[str] = []
+        if available_engines:
+            suggestions.append(f"Available engines: {', '.join(available_engines)}")
+            suggestions.append("Try a model compatible with these engines, e.g. 'octomil mcp serve --model gemma2:2b'")
+        else:
+            suggestions.append("No inference engines detected. Install one: pip install mlx-lm, or start Ollama.")
+
+        suggestions.append("Run 'octomil list-models' to see available models.")
+        suggestions.append("Set OCTOMIL_API_KEY for cloud fallback when local inference is unavailable.")
+
+        return {
+            "status": "error",
+            "model": self._model_name,
+            "engine": "none",
+            "error": f"Could not load model '{self._model_name}'.",
+            "details": str(exc),
+            "availableEngines": available_engines,
+            "suggestions": suggestions,
+        }
 
     def format_metrics(self, metrics: dict[str, Any]) -> str:
         """Format metrics as a compact tag for appending to tool output."""

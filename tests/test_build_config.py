@@ -161,14 +161,10 @@ class TestInstallScript:
         assert "github.com" in script_content
         assert "octomil/octomil-python" in script_content
 
-    def test_install_script_supports_octomil_version_env(
-        self, script_content: str
-    ) -> None:
+    def test_install_script_supports_octomil_version_env(self, script_content: str) -> None:
         assert "OCTOMIL_VERSION" in script_content
 
-    def test_install_script_supports_octomil_install_env(
-        self, script_content: str
-    ) -> None:
+    def test_install_script_supports_octomil_install_env(self, script_content: str) -> None:
         assert "OCTOMIL_INSTALL" in script_content
 
     def test_install_script_fallback_install_dir(self, script_content: str) -> None:
@@ -289,10 +285,10 @@ class TestReleaseWorkflow:
 class TestConsistency:
     """Verify files are consistent with each other and the project."""
 
-    def test_spec_entry_point_matches_setup_py(self) -> None:
-        """octomil.spec should use the same entry point as setup.py."""
-        setup_content = (ROOT / "setup.py").read_text()
-        assert "octomil.cli:main" in setup_content
+    def test_spec_entry_point_matches_pyproject(self) -> None:
+        """octomil.spec should use the same entry point as pyproject.toml."""
+        pyproject_content = (ROOT / "pyproject.toml").read_text()
+        assert "octomil.cli:main" in pyproject_content
         spec_content = (ROOT / "octomil.spec").read_text()
         assert "octomil/__main__.py" in spec_content
 
@@ -316,15 +312,15 @@ class TestConsistency:
             content = path.read_text()
             assert repo in content, f"{path.name} missing repo reference"
 
-    def test_version_in_formula_matches_setup(self) -> None:
-        """The formula version should match setup.py version."""
+    def test_version_in_formula_matches_pyproject(self) -> None:
+        """The formula version should match pyproject.toml version."""
         import re
 
-        setup_content = (ROOT / "setup.py").read_text()
+        pyproject_content = (ROOT / "pyproject.toml").read_text()
         formula_content = (ROOT / "homebrew" / "octomil.rb").read_text()
-        # Extract version from setup.py and formula, then compare
-        setup_match = re.search(r'version="([^"]+)"', setup_content)
+        # Extract version from pyproject.toml and formula, then compare
+        pyproject_match = re.search(r'version\s*=\s*"([^"]+)"', pyproject_content)
         formula_match = re.search(r'version "([^"]+)"', formula_content)
-        assert setup_match is not None, "version not found in setup.py"
+        assert pyproject_match is not None, "version not found in pyproject.toml"
         assert formula_match is not None, "version not found in formula"
-        assert setup_match.group(1) == formula_match.group(1)
+        assert pyproject_match.group(1) == formula_match.group(1)

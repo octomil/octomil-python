@@ -247,7 +247,8 @@ class TestLaunchAgent:
         mock_serve.assert_called_once_with("qwen3", port=8080)
         mock_proc.terminate.assert_called_once()
 
-    def test_launch_claude_with_model_raises_error(self):
+    @patch("octomil.agents.registry.is_agent_installed", return_value=True)
+    def test_launch_claude_with_model_raises_error(self, mock_installed):
         """Claude Code uses Anthropic's API; --model should error."""
         with pytest.raises(click.ClickException, match="proprietary API"):
             launch_agent("claude", model="qwen3")

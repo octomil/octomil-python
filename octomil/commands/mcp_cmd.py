@@ -76,10 +76,22 @@ def status() -> None:
 
 @mcp.command()
 @click.option("--port", "-p", default=8402, help="Port to listen on (default: 8402).")
-@click.option("--host", "-h", default="0.0.0.0", help="Host to bind to (default: 0.0.0.0).")
+@click.option("--host", "-H", default="0.0.0.0", help="Host to bind to (default: 0.0.0.0).")
 @click.option("--model", "-m", default=None, help="Model to use (default: qwen-coder-7b).")
 @click.option("--x402", is_flag=True, default=False, help="Enable x402 payment gating.")
-def serve(port: int, host: str, model: Optional[str], x402: bool) -> None:
+@click.option("--x402-price", default="0.001", envvar="OCTOMIL_X402_PRICE", help="Price per call (default: 0.001).")
+@click.option(
+    "--x402-currency", default="USDC", envvar="OCTOMIL_X402_CURRENCY", help="Payment currency (default: USDC)."
+)
+@click.option(
+    "--x402-address",
+    default="0x7BeEa3e83033e5399FfAAdfb8bf731eBb36126F3",
+    envvar="OCTOMIL_X402_ADDRESS",
+    help="Payment receiving address.",
+)
+def serve(
+    port: int, host: str, model: Optional[str], x402: bool, x402_price: str, x402_currency: str, x402_address: str
+) -> None:
     """Start the Octomil HTTP agent server.
 
     Exposes all tools via REST, serves an A2A agent card for discovery,
@@ -108,6 +120,9 @@ def serve(port: int, host: str, model: Optional[str], x402: bool) -> None:
         port=port,
         model=model,
         enable_x402=x402,
+        x402_address=x402_address,
+        x402_price=x402_price,
+        x402_currency=x402_currency,
     )
     app = create_http_app(config)
 

@@ -70,11 +70,11 @@ class TestParse:
 
     def test_hf_repo_passthrough(self) -> None:
         """Full HuggingFace repo ID passes through without parsing."""
-        p = parse("REDACTED")
+        p = parse("some-org/some-model")
         assert p.family is None
         assert p.variant is None
         assert p.is_passthrough is True
-        assert p.raw == "REDACTED"
+        assert p.raw == "some-org/some-model"
 
     def test_local_gguf_passthrough(self) -> None:
         """Local .gguf file path passes through."""
@@ -329,13 +329,13 @@ class TestResolve:
         """Explicit 4bit variant."""
         r = resolve("gemma-4b:4bit")
         assert r.quant == "4bit"
-        assert r.mlx_repo == "REDACTED"
+        assert r.mlx_repo == "mlx-community/REDACTED"
 
     def test_with_8bit_variant(self) -> None:
         """8bit variant resolves to 8bit artifacts."""
         r = resolve("gemma-4b:8bit")
         assert r.quant == "8bit"
-        assert r.mlx_repo == "REDACTED"
+        assert r.mlx_repo == "mlx-community/REDACTED-8bit"
 
     def test_with_fp16_variant(self) -> None:
         """fp16 variant resolves to source repo."""
@@ -357,7 +357,7 @@ class TestResolve:
         """Forcing mlx-lm engine returns MLX repo."""
         r = resolve("gemma-4b:4bit", engine="mlx-lm")
         assert r.engine == "mlx-lm"
-        assert r.hf_repo == "REDACTED"
+        assert r.hf_repo == "mlx-community/REDACTED"
 
     def test_llamacpp_engine_gets_gguf(self) -> None:
         """Forcing llama.cpp engine returns GGUF repo+file."""

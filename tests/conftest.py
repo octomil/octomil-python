@@ -21,20 +21,20 @@ _MOCK_CATALOG: dict = {
         "engines": ["mlx-lm", "llama.cpp", "mnn", "executorch", "onnxruntime", "mlc-llm"],
         "variants": {
             "4bit": {
-                "mlx": "REDACTED",
+                "mlx": "mlx-community/REDACTED",
                 "gguf": {
                     "repo": "REDACTED",
-                    "filename": "REDACTED",
+                    "filename": "REDACTED.gguf",
                 },
-                "mlc": "REDACTED",
+                "mlc": "mlc-ai/REDACTED-MLC",
                 "ollama": "gemma3:1b",
                 "source_repo": "REDACTED",
             },
             "8bit": {
-                "mlx": "REDACTED",
+                "mlx": "mlx-community/REDACTED",
                 "gguf": {
                     "repo": "REDACTED",
-                    "filename": "REDACTED",
+                    "filename": "REDACTED.gguf",
                 },
                 "source_repo": "REDACTED",
             },
@@ -50,20 +50,20 @@ _MOCK_CATALOG: dict = {
         "engines": ["mlx-lm", "llama.cpp", "mnn", "executorch", "onnxruntime", "mlc-llm"],
         "variants": {
             "4bit": {
-                "mlx": "REDACTED",
+                "mlx": "mlx-community/REDACTED",
                 "gguf": {
                     "repo": "REDACTED",
-                    "filename": "REDACTED",
+                    "filename": "REDACTED.gguf",
                 },
-                "mlc": "REDACTED",
+                "mlc": "mlc-ai/REDACTED-MLC",
                 "ollama": "gemma3:4b",
                 "source_repo": "REDACTED",
             },
             "8bit": {
-                "mlx": "REDACTED",
+                "mlx": "mlx-community/REDACTED-8bit",
                 "gguf": {
                     "repo": "REDACTED",
-                    "filename": "REDACTED",
+                    "filename": "REDACTED.gguf",
                 },
                 "source_repo": "REDACTED",
             },
@@ -79,12 +79,12 @@ _MOCK_CATALOG: dict = {
         "engines": ["mlx-lm"],
         "variants": {
             "4bit": {
-                "mlx": "REDACTED",
+                "mlx": "mlx-community/REDACTED",
                 "ollama": "gemma3:12b",
                 "source_repo": "REDACTED",
             },
             "8bit": {
-                "mlx": "REDACTED",
+                "mlx": "mlx-community/REDACTED",
                 "source_repo": "REDACTED",
             },
         },
@@ -96,7 +96,7 @@ _MOCK_CATALOG: dict = {
         "engines": ["mlx-lm"],
         "variants": {
             "4bit": {
-                "mlx": "REDACTED",
+                "mlx": "mlx-community/REDACTED",
                 "ollama": "gemma3:27b",
                 "source_repo": "REDACTED",
             },
@@ -109,19 +109,20 @@ _MOCK_CATALOG: dict = {
         "engines": ["mlx-lm", "llama.cpp", "mnn", "executorch", "onnxruntime", "mlc-llm"],
         "variants": {
             "4bit": {
-                "mlx": "REDACTED",
+                "mlx": "mlx-community/REDACTED",
                 "gguf": {
                     "repo": "REDACTED",
-                    "filename": "REDACTED",
+                    "filename": "REDACTED.gguf",
                 },
+                "mlc": "mlc-ai/REDACTED-MLC",
                 "ollama": "llama3.2:1b",
                 "source_repo": "REDACTED",
             },
             "8bit": {
-                "mlx": "REDACTED",
+                "mlx": "mlx-community/REDACTED",
                 "gguf": {
                     "repo": "REDACTED",
-                    "filename": "REDACTED",
+                    "filename": "REDACTED.gguf",
                 },
                 "source_repo": "REDACTED",
             },
@@ -134,22 +135,23 @@ _MOCK_CATALOG: dict = {
         "publisher": "Meta",
         "params": "3B",
         "default_quant": "4bit",
-        "engines": ["mlx-lm", "llama.cpp", "mnn", "executorch", "onnxruntime"],
+        "engines": ["mlx-lm", "llama.cpp", "mnn", "executorch", "onnxruntime", "mlc-llm"],
         "variants": {
             "4bit": {
-                "mlx": "REDACTED",
+                "mlx": "mlx-community/REDACTED",
                 "gguf": {
                     "repo": "REDACTED",
-                    "filename": "REDACTED",
+                    "filename": "REDACTED.gguf",
                 },
+                "mlc": "mlc-ai/REDACTED-MLC",
                 "ollama": "llama3.2:3b",
                 "source_repo": "REDACTED",
             },
             "8bit": {
-                "mlx": "REDACTED",
+                "mlx": "mlx-community/REDACTED",
                 "gguf": {
                     "repo": "REDACTED",
-                    "filename": "REDACTED",
+                    "filename": "REDACTED.gguf",
                 },
                 "source_repo": "REDACTED",
             },
@@ -159,22 +161,23 @@ _MOCK_CATALOG: dict = {
         "publisher": "Meta",
         "params": "8B",
         "default_quant": "4bit",
-        "engines": ["mlx-lm", "llama.cpp", "mnn", "executorch"],
+        "engines": ["mlx-lm", "llama.cpp", "mnn", "executorch", "mlc-llm"],
         "variants": {
             "4bit": {
-                "mlx": "REDACTED",
+                "mlx": "mlx-community/REDACTED",
                 "gguf": {
                     "repo": "REDACTED",
-                    "filename": "REDACTED",
+                    "filename": "REDACTED.gguf",
                 },
+                "mlc": "mlc-ai/REDACTED-MLC",
                 "ollama": "llama3.1:8b",
                 "source_repo": "REDACTED",
             },
             "8bit": {
-                "mlx": "REDACTED",
+                "mlx": "mlx-community/REDACTED",
                 "gguf": {
                     "repo": "REDACTED",
-                    "filename": "REDACTED",
+                    "filename": "REDACTED.gguf",
                 },
                 "source_repo": "REDACTED",
             },
@@ -187,7 +190,7 @@ _MOCK_CATALOG: dict = {
         "engines": ["mlx-lm", "llama.cpp"],
         "variants": {
             "4bit": {
-                "mlx": "REDACTED",
+                "mlx": "mlx-community/REDACTED",
                 "gguf": {
                     "repo": "bartowski/phi-4-GGUF",
                     "filename": "phi-4-Q4_K_M.gguf",
@@ -201,22 +204,23 @@ _MOCK_CATALOG: dict = {
         "publisher": "Microsoft",
         "params": "3.8B",
         "default_quant": "4bit",
-        "engines": ["mlx-lm", "llama.cpp", "mnn", "executorch", "onnxruntime"],
+        "engines": ["mlx-lm", "llama.cpp", "mnn", "executorch", "onnxruntime", "mlc-llm"],
         "variants": {
             "4bit": {
-                "mlx": "REDACTED",
+                "mlx": "mlx-community/REDACTED",
                 "gguf": {
                     "repo": "REDACTED",
-                    "filename": "REDACTED",
+                    "filename": "REDACTED.gguf",
                 },
+                "mlc": "mlc-ai/REDACTED-MLC",
                 "ollama": "phi3.5",
                 "source_repo": "REDACTED",
             },
             "8bit": {
-                "mlx": "REDACTED",
+                "mlx": "mlx-community/REDACTED",
                 "gguf": {
                     "repo": "REDACTED",
-                    "filename": "REDACTED",
+                    "filename": "REDACTED.gguf",
                 },
                 "source_repo": "REDACTED",
             },
@@ -229,19 +233,19 @@ _MOCK_CATALOG: dict = {
         "engines": ["mlx-lm", "llama.cpp", "mnn"],
         "variants": {
             "4bit": {
-                "mlx": "REDACTED",
+                "mlx": "mlx-community/REDACTED",
                 "gguf": {
                     "repo": "REDACTED",
-                    "filename": "REDACTED",
+                    "filename": "REDACTED.gguf",
                 },
                 "ollama": "qwen2.5:1.5b",
                 "source_repo": "REDACTED",
             },
             "8bit": {
-                "mlx": "REDACTED",
+                "mlx": "mlx-community/REDACTED",
                 "gguf": {
                     "repo": "REDACTED",
-                    "filename": "REDACTED",
+                    "filename": "REDACTED.gguf",
                 },
                 "source_repo": "REDACTED",
             },
@@ -254,19 +258,19 @@ _MOCK_CATALOG: dict = {
         "engines": ["mlx-lm", "llama.cpp", "mnn"],
         "variants": {
             "4bit": {
-                "mlx": "REDACTED",
+                "mlx": "mlx-community/REDACTED",
                 "gguf": {
                     "repo": "REDACTED",
-                    "filename": "REDACTED",
+                    "filename": "REDACTED.gguf",
                 },
                 "ollama": "qwen2.5:3b",
                 "source_repo": "REDACTED",
             },
             "8bit": {
-                "mlx": "REDACTED",
+                "mlx": "mlx-community/REDACTED",
                 "gguf": {
                     "repo": "REDACTED",
-                    "filename": "REDACTED",
+                    "filename": "REDACTED.gguf",
                 },
                 "source_repo": "REDACTED",
             },
@@ -279,7 +283,7 @@ _MOCK_CATALOG: dict = {
         "engines": ["mlx-lm"],
         "variants": {
             "4bit": {
-                "mlx": "REDACTED",
+                "mlx": "mlx-community/REDACTED",
                 "ollama": "qwen2.5:7b",
                 "source_repo": "REDACTED",
             },
@@ -292,19 +296,19 @@ _MOCK_CATALOG: dict = {
         "engines": ["mlx-lm", "llama.cpp", "mnn"],
         "variants": {
             "4bit": {
-                "mlx": "REDACTED",
+                "mlx": "mlx-community/REDACTED",
                 "gguf": {
                     "repo": "REDACTED",
-                    "filename": "REDACTED",
+                    "filename": "REDACTED.gguf",
                 },
                 "ollama": "mistral:7b",
                 "source_repo": "REDACTED",
             },
             "8bit": {
-                "mlx": "REDACTED",
+                "mlx": "mlx-community/REDACTED",
                 "gguf": {
                     "repo": "REDACTED",
-                    "filename": "REDACTED",
+                    "filename": "REDACTED.gguf",
                 },
                 "source_repo": "REDACTED",
             },
@@ -317,17 +321,17 @@ _MOCK_CATALOG: dict = {
         "engines": ["mlx-lm", "llama.cpp"],
         "variants": {
             "4bit": {
-                "mlx": "REDACTED",
+                "mlx": "mlx-community/REDACTED",
                 "gguf": {
                     "repo": "REDACTED",
-                    "filename": "REDACTED",
+                    "filename": "REDACTED.gguf",
                 },
                 "source_repo": "REDACTED",
             },
             "8bit": {
                 "gguf": {
                     "repo": "REDACTED",
-                    "filename": "REDACTED",
+                    "filename": "REDACTED.gguf",
                 },
                 "source_repo": "REDACTED",
             },
@@ -346,6 +350,169 @@ _MOCK_CATALOG: dict = {
         "default_quant": "fp16",
         "engines": ["whisper.cpp"],
         "variants": {"fp16": {"source_repo": "REDACTED"}},
+    },
+    "whisper-small": {
+        "publisher": "OpenAI",
+        "params": "244M",
+        "default_quant": "fp16",
+        "engines": ["whisper.cpp"],
+        "variants": {"fp16": {"source_repo": "REDACTED"}},
+    },
+    "whisper-medium": {
+        "publisher": "OpenAI",
+        "params": "769M",
+        "default_quant": "fp16",
+        "engines": ["whisper.cpp"],
+        "variants": {"fp16": {"source_repo": "REDACTED"}},
+    },
+    "whisper-large-v3": {
+        "publisher": "OpenAI",
+        "params": "1.55B",
+        "default_quant": "fp16",
+        "engines": ["whisper.cpp"],
+        "variants": {"fp16": {"source_repo": "REDACTED"}},
+    },
+    # ---- MoE models ----
+    "mixtral-8x7b": {
+        "publisher": "Mistral AI",
+        "params": "46.7B",
+        "default_quant": "4bit",
+        "engines": ["mlx-lm", "llama.cpp"],
+        "architecture": "moe",
+        "moe": {
+            "num_experts": 8,
+            "active_experts": 2,
+            "expert_size": "7B",
+            "total_params": "46.7B",
+            "active_params": "12.9B",
+        },
+        "variants": {
+            "4bit": {
+                "mlx": "mlx-community/REDACTED",
+                "gguf": {
+                    "repo": "REDACTED",
+                    "filename": "REDACTED.gguf",
+                },
+            },
+            "8bit": {
+                "mlx": "mlx-community/REDACTED",
+                "gguf": {
+                    "repo": "REDACTED",
+                    "filename": "REDACTED.gguf",
+                },
+            },
+        },
+    },
+    "mixtral-8x22b": {
+        "publisher": "Mistral AI",
+        "params": "141B",
+        "default_quant": "4bit",
+        "engines": ["mlx-lm", "llama.cpp"],
+        "architecture": "moe",
+        "moe": {
+            "num_experts": 8,
+            "active_experts": 2,
+            "expert_size": "22B",
+            "total_params": "141B",
+            "active_params": "39B",
+        },
+        "variants": {
+            "4bit": {
+                "mlx": "mlx-community/REDACTED",
+                "gguf": {
+                    "repo": "REDACTED",
+                    "filename": "REDACTED.gguf",
+                },
+            },
+        },
+    },
+    "dbrx": {
+        "publisher": "Databricks",
+        "params": "132B",
+        "default_quant": "4bit",
+        "engines": ["mlx-lm", "llama.cpp"],
+        "architecture": "moe",
+        "moe": {
+            "num_experts": 16,
+            "active_experts": 4,
+            "expert_size": "8B",
+            "total_params": "132B",
+            "active_params": "36B",
+        },
+        "variants": {
+            "4bit": {
+                "gguf": {
+                    "repo": "REDACTED",
+                    "filename": "REDACTED.gguf",
+                },
+            },
+        },
+    },
+    "deepseek-v3": {
+        "publisher": "DeepSeek",
+        "params": "671B",
+        "default_quant": "4bit",
+        "engines": ["llama.cpp"],
+        "architecture": "moe",
+        "moe": {
+            "num_experts": 256,
+            "active_experts": 8,
+            "expert_size": "2.4B",
+            "total_params": "671B",
+            "active_params": "37B",
+        },
+        "variants": {
+            "4bit": {
+                "gguf": {
+                    "repo": "REDACTED",
+                    "filename": "REDACTED.gguf",
+                },
+            },
+        },
+    },
+    "deepseek-v2-lite": {
+        "publisher": "DeepSeek",
+        "params": "16B",
+        "default_quant": "4bit",
+        "engines": ["llama.cpp"],
+        "architecture": "moe",
+        "moe": {
+            "num_experts": 64,
+            "active_experts": 6,
+            "expert_size": "0.25B",
+            "total_params": "16B",
+            "active_params": "2.4B",
+        },
+        "variants": {
+            "4bit": {
+                "gguf": {
+                    "repo": "REDACTED",
+                    "filename": "REDACTED.gguf",
+                },
+            },
+        },
+    },
+    "qwen-moe-14b": {
+        "publisher": "Qwen",
+        "params": "14B",
+        "default_quant": "4bit",
+        "engines": ["llama.cpp"],
+        "architecture": "moe",
+        "moe": {
+            "num_experts": 60,
+            "active_experts": 4,
+            "expert_size": "0.25B",
+            "total_params": "14B",
+            "active_params": "2.7B",
+        },
+        "variants": {
+            "4bit": {
+                "gguf": {
+                    "repo": "REDACTED",
+                    "filename": "REDACTED.gguf",
+                },
+            },
+        },
     },
 }
 
@@ -367,6 +534,10 @@ _MOCK_CATALOG_ALIASES: dict[str, str] = {
     "qwen-2.5-7b": "qwen-7b",
     "phi4": "phi-4",
     "phi4-mini": "phi-mini",
+    "mixtral": "mixtral-8x7b",
+    "mixtral-instruct": "mixtral-8x7b",
+    "dbrx-instruct": "dbrx",
+    "qwen-moe": "qwen-moe-14b",
 }
 
 # Mock engine priority (same as old hardcoded)
@@ -391,27 +562,27 @@ _MOCK_MODEL_FAMILIES: dict = {
         "variants": {
             "q4_k_m": {
                 "quantization_family": "4bit",
-                "mlx": "REDACTED",
+                "mlx": "mlx-community/REDACTED",
                 "sources": [
                     {"type": "huggingface", "ref": "REDACTED", "trust": "official"},
                     {"type": "ollama", "ref": "gemma3:1b", "trust": "curated"},
                     {
                         "type": "huggingface",
                         "ref": "REDACTED",
-                        "file": "REDACTED",
+                        "file": "REDACTED.gguf",
                         "trust": "community",
                     },
                 ],
             },
             "q8_0": {
                 "quantization_family": "8bit",
-                "mlx": "REDACTED",
+                "mlx": "mlx-community/REDACTED",
                 "sources": [
                     {"type": "huggingface", "ref": "REDACTED", "trust": "official"},
                     {
                         "type": "huggingface",
                         "ref": "REDACTED",
-                        "file": "REDACTED",
+                        "file": "REDACTED.gguf",
                         "trust": "community",
                     },
                 ],
@@ -431,27 +602,27 @@ _MOCK_MODEL_FAMILIES: dict = {
         "variants": {
             "q4_k_m": {
                 "quantization_family": "4bit",
-                "mlx": "REDACTED",
+                "mlx": "mlx-community/REDACTED",
                 "sources": [
                     {"type": "huggingface", "ref": "REDACTED", "trust": "official"},
                     {"type": "ollama", "ref": "gemma3:4b", "trust": "curated"},
                     {
                         "type": "huggingface",
                         "ref": "REDACTED",
-                        "file": "REDACTED",
+                        "file": "REDACTED.gguf",
                         "trust": "community",
                     },
                 ],
             },
             "q8_0": {
                 "quantization_family": "8bit",
-                "mlx": "REDACTED",
+                "mlx": "mlx-community/REDACTED",
                 "sources": [
                     {"type": "huggingface", "ref": "REDACTED", "trust": "official"},
                     {
                         "type": "huggingface",
                         "ref": "REDACTED",
-                        "file": "REDACTED",
+                        "file": "REDACTED.gguf",
                         "trust": "community",
                     },
                 ],
@@ -471,14 +642,14 @@ _MOCK_MODEL_FAMILIES: dict = {
         "variants": {
             "q4_k_m": {
                 "quantization_family": "4bit",
-                "mlx": "REDACTED",
+                "mlx": "mlx-community/REDACTED",
                 "sources": [
                     {"type": "huggingface", "ref": "REDACTED", "trust": "official"},
                     {"type": "ollama", "ref": "llama3.2:1b", "trust": "curated"},
                     {
                         "type": "huggingface",
                         "ref": "REDACTED",
-                        "file": "REDACTED",
+                        "file": "REDACTED.gguf",
                         "trust": "community",
                     },
                 ],
@@ -492,14 +663,14 @@ _MOCK_MODEL_FAMILIES: dict = {
         "variants": {
             "q4_k_m": {
                 "quantization_family": "4bit",
-                "mlx": "REDACTED",
+                "mlx": "mlx-community/REDACTED",
                 "sources": [
                     {"type": "huggingface", "ref": "REDACTED", "trust": "official"},
                     {"type": "ollama", "ref": "llama3.2:3b", "trust": "curated"},
                     {
                         "type": "huggingface",
                         "ref": "REDACTED",
-                        "file": "REDACTED",
+                        "file": "REDACTED.gguf",
                         "trust": "community",
                     },
                 ],
@@ -513,14 +684,14 @@ _MOCK_MODEL_FAMILIES: dict = {
         "variants": {
             "q4_k_m": {
                 "quantization_family": "4bit",
-                "mlx": "REDACTED",
+                "mlx": "mlx-community/REDACTED",
                 "sources": [
                     {"type": "huggingface", "ref": "REDACTED", "trust": "official"},
                     {"type": "ollama", "ref": "llama3.1:8b", "trust": "curated"},
                     {
                         "type": "huggingface",
                         "ref": "REDACTED",
-                        "file": "REDACTED",
+                        "file": "REDACTED.gguf",
                         "trust": "community",
                     },
                 ],
@@ -534,7 +705,7 @@ _MOCK_MODEL_FAMILIES: dict = {
         "variants": {
             "q4_k_m": {
                 "quantization_family": "4bit",
-                "mlx": "REDACTED",
+                "mlx": "mlx-community/REDACTED",
                 "sources": [
                     {"type": "huggingface", "ref": "REDACTED", "trust": "official"},
                     {"type": "ollama", "ref": "phi4", "trust": "curated"},
@@ -549,27 +720,27 @@ _MOCK_MODEL_FAMILIES: dict = {
         "variants": {
             "q4_k_m": {
                 "quantization_family": "4bit",
-                "mlx": "REDACTED",
+                "mlx": "mlx-community/REDACTED",
                 "sources": [
                     {"type": "huggingface", "ref": "REDACTED", "trust": "official"},
                     {"type": "ollama", "ref": "phi3.5", "trust": "curated"},
                     {
                         "type": "huggingface",
                         "ref": "REDACTED",
-                        "file": "REDACTED",
+                        "file": "REDACTED.gguf",
                         "trust": "community",
                     },
                 ],
             },
             "q8_0": {
                 "quantization_family": "8bit",
-                "mlx": "REDACTED",
+                "mlx": "mlx-community/REDACTED",
                 "sources": [
                     {"type": "huggingface", "ref": "REDACTED", "trust": "official"},
                     {
                         "type": "huggingface",
                         "ref": "REDACTED",
-                        "file": "REDACTED",
+                        "file": "REDACTED.gguf",
                         "trust": "community",
                     },
                 ],
@@ -583,12 +754,12 @@ _MOCK_MODEL_FAMILIES: dict = {
         "variants": {
             "q4_k_m": {
                 "quantization_family": "4bit",
-                "mlx": "REDACTED",
+                "mlx": "mlx-community/REDACTED",
                 "sources": [
                     {
                         "type": "huggingface",
                         "ref": "REDACTED",
-                        "file": "REDACTED",
+                        "file": "REDACTED.gguf",
                         "trust": "official",
                     },
                     {"type": "ollama", "ref": "qwen2.5:1.5b", "trust": "curated"},
@@ -596,12 +767,12 @@ _MOCK_MODEL_FAMILIES: dict = {
             },
             "q8_0": {
                 "quantization_family": "8bit",
-                "mlx": "REDACTED",
+                "mlx": "mlx-community/REDACTED",
                 "sources": [
                     {
                         "type": "huggingface",
                         "ref": "REDACTED",
-                        "file": "REDACTED",
+                        "file": "REDACTED.gguf",
                         "trust": "official",
                     },
                 ],
@@ -615,12 +786,12 @@ _MOCK_MODEL_FAMILIES: dict = {
         "variants": {
             "q4_k_m": {
                 "quantization_family": "4bit",
-                "mlx": "REDACTED",
+                "mlx": "mlx-community/REDACTED",
                 "sources": [
                     {
                         "type": "huggingface",
                         "ref": "REDACTED",
-                        "file": "REDACTED",
+                        "file": "REDACTED.gguf",
                         "trust": "official",
                     },
                     {"type": "ollama", "ref": "qwen2.5:3b", "trust": "curated"},
@@ -635,7 +806,7 @@ _MOCK_MODEL_FAMILIES: dict = {
         "variants": {
             "q4_k_m": {
                 "quantization_family": "4bit",
-                "mlx": "REDACTED",
+                "mlx": "mlx-community/REDACTED",
                 "sources": [
                     {"type": "huggingface", "ref": "REDACTED", "trust": "official"},
                     {"type": "ollama", "ref": "qwen2.5:7b", "trust": "curated"},
@@ -650,27 +821,27 @@ _MOCK_MODEL_FAMILIES: dict = {
         "variants": {
             "q4_k_m": {
                 "quantization_family": "4bit",
-                "mlx": "REDACTED",
+                "mlx": "mlx-community/REDACTED",
                 "sources": [
                     {"type": "huggingface", "ref": "REDACTED", "trust": "official"},
                     {"type": "ollama", "ref": "mistral:7b", "trust": "curated"},
                     {
                         "type": "huggingface",
                         "ref": "REDACTED",
-                        "file": "REDACTED",
+                        "file": "REDACTED.gguf",
                         "trust": "community",
                     },
                 ],
             },
             "q8_0": {
                 "quantization_family": "8bit",
-                "mlx": "REDACTED",
+                "mlx": "mlx-community/REDACTED",
                 "sources": [
                     {"type": "huggingface", "ref": "REDACTED", "trust": "official"},
                     {
                         "type": "huggingface",
                         "ref": "REDACTED",
-                        "file": "REDACTED",
+                        "file": "REDACTED.gguf",
                         "trust": "community",
                     },
                 ],
@@ -684,13 +855,13 @@ _MOCK_MODEL_FAMILIES: dict = {
         "variants": {
             "q4_k_m": {
                 "quantization_family": "4bit",
-                "mlx": "REDACTED",
+                "mlx": "mlx-community/REDACTED",
                 "sources": [
                     {"type": "huggingface", "ref": "REDACTED", "trust": "official"},
                     {
                         "type": "huggingface",
                         "ref": "REDACTED",
-                        "file": "REDACTED",
+                        "file": "REDACTED.gguf",
                         "trust": "community",
                     },
                 ],
@@ -702,7 +873,7 @@ _MOCK_MODEL_FAMILIES: dict = {
                     {
                         "type": "huggingface",
                         "ref": "REDACTED",
-                        "file": "REDACTED",
+                        "file": "REDACTED.gguf",
                         "trust": "community",
                     },
                 ],
@@ -858,3 +1029,66 @@ def _mock_model_routing_clients(monkeypatch):
     cat_mod.MODEL_ALIASES._loaded = False  # type: ignore[attr-defined]
     reg_mod.MODEL_FAMILIES.clear()
     reg_mod.MODEL_FAMILIES._loaded = False  # type: ignore[attr-defined]
+
+    # Force CATALOG to reload so we can recompute derived module-level globals.
+    cat_mod.CATALOG._ensure_loaded()  # type: ignore[attr-defined]
+
+    # Recompute _ORT_CATALOG (set computed at import time from CATALOG).
+    import octomil.engines.ort_engine as ort_mod
+
+    ort_mod._ORT_CATALOG.clear()
+    ort_mod._ORT_CATALOG.update(name for name, entry in cat_mod.CATALOG.items() if "onnxruntime" in entry.engines)
+
+    # Recompute _GGUF_MODELS (dict computed at import time from CATALOG).
+    import octomil.serve as serve_mod
+
+    serve_mod._GGUF_MODELS.clear()
+    for _name, _entry in cat_mod.CATALOG.items():
+        _variant = _entry.variants.get(_entry.default_quant)
+        if _variant is None:
+            continue
+        if _variant.gguf is not None:
+            serve_mod._GGUF_MODELS[_name] = (_variant.gguf.repo, _variant.gguf.filename)
+
+    # Recompute _MOE_MODELS and _MLX_CATALOG/_GGUF_CATALOG in engine plugins.
+    import octomil.engines.cactus_engine as cactus_mod
+    import octomil.engines.executorch_engine as et_mod
+    import octomil.engines.llamacpp_engine as llama_mod
+    import octomil.engines.mlx_engine as mlx_mod
+
+    llama_mod._MOE_MODELS.clear()
+    llama_mod._MOE_MODELS.update(
+        name for name, entry in cat_mod.CATALOG.items() if entry.architecture == "moe" and "llama.cpp" in entry.engines
+    )
+
+    llama_mod._GGUF_CATALOG.clear()
+    llama_mod._GGUF_CATALOG.update(name for name, entry in cat_mod.CATALOG.items() if "llama.cpp" in entry.engines)
+
+    mlx_mod._MOE_MODELS.clear()
+    mlx_mod._MOE_MODELS.update(
+        name for name, entry in cat_mod.CATALOG.items() if entry.architecture == "moe" and "mlx-lm" in entry.engines
+    )
+
+    mlx_mod._MLX_CATALOG.clear()
+    mlx_mod._MLX_CATALOG.update(name for name, entry in cat_mod.CATALOG.items() if "mlx-lm" in entry.engines)
+
+    cactus_mod._CACTUS_CATALOG.clear()
+    cactus_mod._CACTUS_CATALOG.update(name for name, entry in cat_mod.CATALOG.items() if "llama.cpp" in entry.engines)
+
+    et_mod._ET_CATALOG.clear()
+    et_mod._ET_CATALOG.update(name for name, entry in cat_mod.CATALOG.items() if "executorch" in entry.engines)
+
+    # Recompute _MLC_CATALOG (set computed at import time from CATALOG).
+    import octomil.engines.mlc_engine as mlc_mod
+
+    mlc_mod._MLC_CATALOG.clear()
+    mlc_mod._MLC_CATALOG.update(name for name, entry in cat_mod.CATALOG.items() if "mlc-llm" in entry.engines)
+
+    # Recompute _MNN_CATALOG (set computed at import time from CATALOG).
+    import octomil.engines.mnn_engine as mnn_mod
+
+    mnn_mod._MNN_CATALOG.clear()
+    mnn_mod._MNN_CATALOG.update(name for name, entry in cat_mod.CATALOG.items() if "mnn" in entry.engines)
+
+    # Patch _ENGINE_PRIORITY in-place (tests import the list reference directly).
+    res_mod._ENGINE_PRIORITY[:] = _MOCK_ENGINE_PRIORITY

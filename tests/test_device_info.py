@@ -22,30 +22,22 @@ except ImportError:
     HAS_DEVICE_INFO = False
 
 
-@unittest.skipUnless(
-    HAS_DEVICE_INFO, "octomil.device_info not available in this install"
-)
+@unittest.skipUnless(HAS_DEVICE_INFO, "octomil.device_info not available in this install")
 class TestGetStableDeviceId(unittest.TestCase):
     @patch("octomil.device_info.platform.system", return_value="Darwin")
     @patch("octomil.device_info.subprocess.check_output")
     def test_macos_returns_hardware_uuid(self, mock_subprocess, mock_system):
-        mock_subprocess.return_value = (
-            "Hardware Overview:\n"
-            "  Hardware UUID: ABCD1234-5678-EFGH-IJKL-MNOPQRSTUVWX\n"
-        )
+        mock_subprocess.return_value = "Hardware Overview:\n" "  Hardware UUID: ABCD1234-5678-EFGH-IJKL-MNOPQRSTUVWX\n"
         result = get_stable_device_id()
         self.assertEqual(result, "MacBook-ABCD1234")
-        mock_subprocess.assert_called_once_with(
-            ["system_profiler", "SPHardwareDataType"], text=True
-        )
+        mock_subprocess.assert_called_once_with(["system_profiler", "SPHardwareDataType"], text=True)
 
     @patch("octomil.device_info.platform.system", return_value="Darwin")
     @patch("octomil.device_info.subprocess.check_output")
     def test_macos_uuid_line_generic(self, mock_subprocess, mock_system):
         """A line containing 'UUID' but not 'Hardware UUID' should still match."""
         mock_subprocess.return_value = (
-            "Hardware Overview:\n"
-            "  Provisioning UUID: 11112222-3333-4444-5555-666677778888\n"
+            "Hardware Overview:\n" "  Provisioning UUID: 11112222-3333-4444-5555-666677778888\n"
         )
         result = get_stable_device_id()
         self.assertEqual(result, "MacBook-11112222")
@@ -53,9 +45,7 @@ class TestGetStableDeviceId(unittest.TestCase):
     @patch("octomil.device_info.platform.system", return_value="Darwin")
     @patch("octomil.device_info.subprocess.check_output")
     @patch("octomil.device_info.socket.gethostname", return_value="my-mac")
-    def test_macos_no_uuid_line_falls_back_to_hostname(
-        self, mock_hostname, mock_subprocess, mock_system
-    ):
+    def test_macos_no_uuid_line_falls_back_to_hostname(self, mock_hostname, mock_subprocess, mock_system):
         mock_subprocess.return_value = "Hardware Overview:\n  Model: MacBookPro\n"
         result = get_stable_device_id()
         self.assertEqual(result, "my-mac")
@@ -69,9 +59,7 @@ class TestGetStableDeviceId(unittest.TestCase):
     @patch("octomil.device_info.platform.system", return_value="Linux")
     @patch("builtins.open", side_effect=FileNotFoundError)
     @patch("octomil.device_info.socket.gethostname", return_value="linux-box")
-    def test_linux_machine_id_missing_falls_back_to_hostname(
-        self, mock_hostname, mock_open_fn, mock_system
-    ):
+    def test_linux_machine_id_missing_falls_back_to_hostname(self, mock_hostname, mock_open_fn, mock_system):
         result = get_stable_device_id()
         self.assertEqual(result, "linux-box")
 
@@ -93,9 +81,7 @@ class TestGetStableDeviceId(unittest.TestCase):
         side_effect=subprocess.CalledProcessError(1, "system_profiler"),
     )
     @patch("octomil.device_info.socket.gethostname", return_value="err-host")
-    def test_macos_subprocess_error_falls_back(
-        self, mock_hostname, mock_subprocess, mock_system
-    ):
+    def test_macos_subprocess_error_falls_back(self, mock_hostname, mock_subprocess, mock_system):
         result = get_stable_device_id()
         self.assertEqual(result, "err-host")
 
@@ -103,9 +89,7 @@ class TestGetStableDeviceId(unittest.TestCase):
 # ---------------------------------------------------------------------------
 # get_battery_level
 # ---------------------------------------------------------------------------
-@unittest.skipUnless(
-    HAS_DEVICE_INFO, "octomil.device_info not available in this install"
-)
+@unittest.skipUnless(HAS_DEVICE_INFO, "octomil.device_info not available in this install")
 class TestGetBatteryLevel(unittest.TestCase):
     def test_with_psutil_available(self):
         fake_battery = MagicMock()
@@ -146,20 +130,22 @@ class TestGetBatteryLevel(unittest.TestCase):
 # ---------------------------------------------------------------------------
 # get_network_type
 # ---------------------------------------------------------------------------
-@unittest.skipUnless(
-    HAS_DEVICE_INFO, "octomil.device_info not available in this install"
-)
+@unittest.skipUnless(HAS_DEVICE_INFO, "octomil.device_info not available in this install")
 class TestGetNetworkType(unittest.TestCase):
     def test_always_returns_wifi(self):
-        self.assertEqual(get_network_type(), "wifi")
+        import types
+
+        fake_psutil = types.ModuleType("psutil")
+        fake_info = types.SimpleNamespace(isup=True)
+        fake_psutil.net_if_stats = lambda: {"en0": fake_info}
+        with patch.dict(sys.modules, {"psutil": fake_psutil}):
+            self.assertEqual(get_network_type(), "wifi")
 
 
 # ---------------------------------------------------------------------------
 # get_timezone
 # ---------------------------------------------------------------------------
-@unittest.skipUnless(
-    HAS_DEVICE_INFO, "octomil.device_info not available in this install"
-)
+@unittest.skipUnless(HAS_DEVICE_INFO, "octomil.device_info not available in this install")
 class TestGetTimezone(unittest.TestCase):
     @patch("octomil.device_info.platform.system", return_value="Darwin")
     @patch("octomil.device_info.subprocess.check_output")
@@ -167,9 +153,7 @@ class TestGetTimezone(unittest.TestCase):
         mock_subprocess.return_value = "/var/db/timezone/zoneinfo/America/New_York\n"
         result = get_timezone()
         self.assertEqual(result, "America/New_York")
-        mock_subprocess.assert_called_once_with(
-            ["readlink", "/etc/localtime"], text=True
-        )
+        mock_subprocess.assert_called_once_with(["readlink", "/etc/localtime"], text=True)
 
     @patch("octomil.device_info.platform.system", return_value="Darwin")
     @patch("octomil.device_info.subprocess.check_output")
@@ -184,9 +168,7 @@ class TestGetTimezone(unittest.TestCase):
         mock_subprocess.return_value = "Europe/London\n"
         result = get_timezone()
         self.assertEqual(result, "Europe/London")
-        mock_subprocess.assert_called_once_with(
-            ["timedatectl", "show", "--value", "-p", "Timezone"], text=True
-        )
+        mock_subprocess.assert_called_once_with(["timedatectl", "show", "--value", "-p", "Timezone"], text=True)
 
     @patch("octomil.device_info.platform.system", return_value="Darwin")
     @patch(
@@ -207,9 +189,7 @@ class TestGetTimezone(unittest.TestCase):
 # ---------------------------------------------------------------------------
 # get_manufacturer
 # ---------------------------------------------------------------------------
-@unittest.skipUnless(
-    HAS_DEVICE_INFO, "octomil.device_info not available in this install"
-)
+@unittest.skipUnless(HAS_DEVICE_INFO, "octomil.device_info not available in this install")
 class TestGetManufacturer(unittest.TestCase):
     @patch("octomil.device_info.platform.system", return_value="Darwin")
     def test_macos_returns_apple(self, mock_system):
@@ -222,9 +202,7 @@ class TestGetManufacturer(unittest.TestCase):
 
     @patch("octomil.device_info.platform.system", return_value="Linux")
     @patch("builtins.open", side_effect=FileNotFoundError)
-    def test_linux_file_missing_returns_platform_system(
-        self, mock_open_fn, mock_system
-    ):
+    def test_linux_file_missing_returns_platform_system(self, mock_open_fn, mock_system):
         self.assertEqual(get_manufacturer(), "Linux")
 
     @patch("octomil.device_info.platform.system", return_value="Windows")
@@ -235,9 +213,7 @@ class TestGetManufacturer(unittest.TestCase):
 # ---------------------------------------------------------------------------
 # get_model
 # ---------------------------------------------------------------------------
-@unittest.skipUnless(
-    HAS_DEVICE_INFO, "octomil.device_info not available in this install"
-)
+@unittest.skipUnless(HAS_DEVICE_INFO, "octomil.device_info not available in this install")
 class TestGetModel(unittest.TestCase):
     @patch("octomil.device_info.platform.system", return_value="Darwin")
     @patch("octomil.device_info.subprocess.check_output")
@@ -253,9 +229,7 @@ class TestGetModel(unittest.TestCase):
         side_effect=subprocess.CalledProcessError(1, "sysctl"),
     )
     @patch("octomil.device_info.platform.node", return_value="my-node")
-    def test_macos_sysctl_failure_falls_back_to_node(
-        self, mock_node, mock_subprocess, mock_system
-    ):
+    def test_macos_sysctl_failure_falls_back_to_node(self, mock_node, mock_subprocess, mock_system):
         result = get_model()
         self.assertEqual(result, "my-node")
 
@@ -269,9 +243,7 @@ class TestGetModel(unittest.TestCase):
 # ---------------------------------------------------------------------------
 # get_memory_info
 # ---------------------------------------------------------------------------
-@unittest.skipUnless(
-    HAS_DEVICE_INFO, "octomil.device_info not available in this install"
-)
+@unittest.skipUnless(HAS_DEVICE_INFO, "octomil.device_info not available in this install")
 class TestGetMemoryInfo(unittest.TestCase):
     def test_with_psutil(self):
         fake_memory = MagicMock()
@@ -302,9 +274,7 @@ class TestGetMemoryInfo(unittest.TestCase):
 # ---------------------------------------------------------------------------
 # get_storage_info
 # ---------------------------------------------------------------------------
-@unittest.skipUnless(
-    HAS_DEVICE_INFO, "octomil.device_info not available in this install"
-)
+@unittest.skipUnless(HAS_DEVICE_INFO, "octomil.device_info not available in this install")
 class TestGetStorageInfo(unittest.TestCase):
     def test_with_psutil(self):
         fake_disk = MagicMock()
@@ -336,16 +306,12 @@ class TestGetStorageInfo(unittest.TestCase):
 # ---------------------------------------------------------------------------
 # detect_gpu
 # ---------------------------------------------------------------------------
-@unittest.skipUnless(
-    HAS_DEVICE_INFO, "octomil.device_info not available in this install"
-)
+@unittest.skipUnless(HAS_DEVICE_INFO, "octomil.device_info not available in this install")
 class TestDetectGpu(unittest.TestCase):
     @patch("octomil.device_info.platform.system", return_value="Darwin")
     @patch("octomil.device_info.subprocess.check_output")
     def test_macos_with_chipset_model(self, mock_subprocess, mock_system):
-        mock_subprocess.return_value = (
-            "Graphics/Displays:\n  Chipset Model: Apple M1 Pro\n"
-        )
+        mock_subprocess.return_value = "Graphics/Displays:\n  Chipset Model: Apple M1 Pro\n"
         self.assertTrue(detect_gpu())
 
     @patch("octomil.device_info.platform.system", return_value="Darwin")
@@ -380,9 +346,7 @@ class TestDetectGpu(unittest.TestCase):
 # ---------------------------------------------------------------------------
 # DeviceInfo class
 # ---------------------------------------------------------------------------
-@unittest.skipUnless(
-    HAS_DEVICE_INFO, "octomil.device_info not available in this install"
-)
+@unittest.skipUnless(HAS_DEVICE_INFO, "octomil.device_info not available in this install")
 class TestDeviceInfo(unittest.TestCase):
     def test_init_state(self):
         info = DeviceInfo()
@@ -456,9 +420,7 @@ class TestDeviceInfo(unittest.TestCase):
     @patch("octomil.device_info.platform.python_version", return_value="3.11.5")
     @patch("octomil.device_info.detect_gpu", return_value=False)
     @patch("octomil.device_info.platform.machine", return_value="x86_64")
-    def test_collect_capabilities_keys_and_values(
-        self, mock_machine, mock_gpu, mock_python
-    ):
+    def test_collect_capabilities_keys_and_values(self, mock_machine, mock_gpu, mock_python):
         info = DeviceInfo()
         result = info.collect_capabilities()
 
@@ -524,9 +486,7 @@ class TestDeviceInfo(unittest.TestCase):
 
     @patch("octomil.device_info.get_network_type", return_value="wifi")
     @patch("octomil.device_info.get_battery_level", return_value=42)
-    def test_update_metadata_returns_same_as_collect_metadata(
-        self, mock_battery, mock_network
-    ):
+    def test_update_metadata_returns_same_as_collect_metadata(self, mock_battery, mock_network):
         info = DeviceInfo()
         metadata = info.update_metadata()
         collected = info.collect_metadata()

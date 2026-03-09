@@ -19,7 +19,6 @@ from octomil.serve import (
     resolve_model_name,
 )
 
-
 # ---------------------------------------------------------------------------
 # resolve_model_name
 # ---------------------------------------------------------------------------
@@ -27,16 +26,14 @@ from octomil.serve import (
 
 class TestResolveModelName:
     def test_full_repo_id_passthrough(self):
-        assert resolve_model_name("REDACTED", "mlx") == (
-            "REDACTED"
-        )
+        assert resolve_model_name("some-org/some-model", "mlx") == "some-org/some-model"
 
     def test_full_repo_id_passthrough_gguf(self):
         assert resolve_model_name("user/repo", "gguf") == "user/repo"
 
     def test_mlx_short_name(self):
         result = resolve_model_name("gemma-1b", "mlx")
-        assert result == "REDACTED"
+        assert result == "mlx-community/REDACTED"
 
     def test_mlx_unknown_name_raises(self):
         with pytest.raises(ValueError, match="Unknown model 'nonexistent'"):
@@ -127,9 +124,13 @@ class TestDetectBackend:
     def test_falls_back_to_echo_when_no_backends(self):
         """With no real engines installed, _detect_backend returns echo."""
         from octomil.engines import reset_registry
+        from octomil.engines.ollama_engine import OllamaEngine
 
         reset_registry()
-        with patch.dict("sys.modules", {"mlx_lm": None, "llama_cpp": None}):
+        with (
+            patch.dict("sys.modules", {"mlx_lm": None, "llama_cpp": None}),
+            patch.object(OllamaEngine, "detect", return_value=False),
+        ):
             backend = _detect_backend("some-model")
         assert backend.name == "echo"
         reset_registry()
@@ -137,9 +138,11 @@ class TestDetectBackend:
     def test_echo_for_unknown_model_name(self):
         """Unknown model name still gets a backend (echo fallback)."""
         from octomil.engines import reset_registry
+        from octomil.engines.ollama_engine import OllamaEngine
 
         reset_registry()
-        backend = _detect_backend("totally-unknown-model")
+        with patch.object(OllamaEngine, "detect", return_value=False):
+            backend = _detect_backend("totally-unknown-model")
         # Should return echo since no real engine supports unknown models
         assert backend.name == "echo"
         reset_registry()

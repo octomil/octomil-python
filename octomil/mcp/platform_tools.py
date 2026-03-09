@@ -180,10 +180,10 @@ def register_platform_tools(mcp: Any, backend: Any) -> None:
 
     @mcp.tool()
     def get_metrics() -> str:
-        """Get current model and engine status.
+        """Get current model, engine, and device status.
 
-        Returns the loaded model name, engine, and whether the backend
-        is ready for inference.
+        Returns loaded model, engine, hardware profile, and available
+        inference engines for this device.
         """
         try:
             status: dict[str, Any] = {
@@ -191,6 +191,34 @@ def register_platform_tools(mcp: Any, backend: Any) -> None:
                 "engine": backend._engine_name,
                 "loaded": backend.is_loaded,
             }
+
+            try:
+                from octomil.hardware._unified import detect_hardware
+
+                hw = detect_hardware()
+                status["hardware"] = {
+                    "platform": hw.platform,
+                    "best_backend": hw.best_backend,
+                    "total_ram_gb": round(hw.total_ram_gb, 2),
+                    "available_ram_gb": round(hw.available_ram_gb, 2),
+                    "cpu": hw.cpu.brand,
+                    "architecture": hw.cpu.architecture,
+                }
+                if hw.gpu:
+                    status["hardware"]["gpu"] = hw.gpu.backend
+                    status["hardware"]["vram_gb"] = round(hw.gpu.total_vram_gb, 2)
+            except Exception:
+                pass
+
+            try:
+                from octomil.engines.registry import get_registry
+
+                registry = get_registry()
+                detections = registry.detect_all()
+                status["engines"] = [d.engine.name for d in detections if d.available and d.engine.name != "echo"]
+            except Exception:
+                pass
+
             return json.dumps(status, indent=2)
         except Exception as exc:
             logger.exception("get_metrics failed")

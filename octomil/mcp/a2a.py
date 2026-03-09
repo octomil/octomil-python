@@ -29,7 +29,12 @@ class AgentCardConfig:
     extra_capabilities: dict[str, bool] = field(default_factory=dict)
 
 
-def _tool_to_skill(name: str, description: str, schema: dict[str, Any] | None = None) -> dict[str, Any]:
+def _tool_to_skill(
+    name: str,
+    description: str,
+    schema: dict[str, Any] | None = None,
+    ready: bool | None = None,
+) -> dict[str, Any]:
     """Convert a tool definition to an A2A skill entry."""
     skill: dict[str, Any] = {
         "id": name,
@@ -38,12 +43,15 @@ def _tool_to_skill(name: str, description: str, schema: dict[str, Any] | None = 
     }
     if schema:
         skill["inputSchema"] = schema
+    if ready is not None:
+        skill["ready"] = ready
     return skill
 
 
 def build_agent_card(
     tools: list[dict[str, Any]],
     config: AgentCardConfig | None = None,
+    model_ready: bool = False,
 ) -> dict[str, Any]:
     """Build an A2A agent card from tool definitions.
 
@@ -51,9 +59,13 @@ def build_agent_card(
     ----------
     tools:
         List of dicts with at minimum ``name`` and ``description`` keys.
-        Optionally include ``inputSchema`` for parameter schemas.
+        Optionally include ``inputSchema`` for parameter schemas and
+        ``requires_model`` (bool) for readiness gating.
     config:
         Agent card configuration. Uses defaults if not provided.
+    model_ready:
+        Whether the inference model is currently loaded. Skills that
+        require a model will have ``ready: false`` when this is False.
 
     Returns
     -------
@@ -63,7 +75,11 @@ def build_agent_card(
     if config is None:
         config = AgentCardConfig()
 
-    skills = [_tool_to_skill(t["name"], t.get("description", ""), t.get("inputSchema")) for t in tools]
+    skills = []
+    for t in tools:
+        requires_model = t.get("requires_model", False)
+        ready = True if not requires_model else model_ready
+        skills.append(_tool_to_skill(t["name"], t.get("description", ""), t.get("inputSchema"), ready=ready))
 
     capabilities: dict[str, Any] = {
         "mcp": True,
@@ -94,6 +110,10 @@ def build_agent_card(
                 "description": "Bearer token in Authorization header",
             }
         ],
+        "readinessUrls": {
+            "warmup": f"{config.url}/api/v1/warmup",
+            "ready": f"{config.url}/api/v1/ready",
+        },
     }
 
     return card

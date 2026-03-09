@@ -30,10 +30,38 @@ _DEFAULT_API_BASE = "https://api.octomil.com/api/v1"
 # ---------------------------------------------------------------------------
 
 COMPLIANCE_PRESETS: dict[str, dict[str, Any]] = {
-    "hipaa": {"name": "hipaa"},
-    "gdpr": {"name": "gdpr"},
-    "pci": {"name": "pci"},
-    "soc2": {"name": "soc2"},
+    "hipaa": {
+        "name": "hipaa",
+        "hipaa_mode": True,
+        "audit_retention_days": 2190,
+        "require_mfa_for_admin": True,
+        "policy_profile": "regulated",
+        "session_duration_hours": 8,
+        "reauth_interval_minutes": 30,
+    },
+    "gdpr": {
+        "name": "gdpr",
+        "audit_retention_days": 1825,
+        "require_mfa_for_admin": True,
+        "policy_profile": "balanced",
+    },
+    "pci": {
+        "name": "pci",
+        "require_mfa_for_admin": True,
+        "mfa_required": True,
+        "session_duration_hours": 8,
+        "require_admin_approval": True,
+        "policy_profile": "regulated",
+    },
+    "soc2": {
+        "name": "soc2",
+        "audit_retention_days": 365,
+        "require_mfa_for_admin": True,
+        "require_admin_approval": True,
+        "require_model_approval": True,
+        "auto_rollback_enabled": True,
+        "policy_profile": "balanced",
+    },
 }
 
 

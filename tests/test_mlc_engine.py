@@ -4,18 +4,16 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
-
 from octomil.engines.base import BenchmarkResult
 from octomil.engines.mlc_engine import (
-    MLCBackend,
-    MLCEngine,
     _MLC_CATALOG,
     _MLC_QUANT_SUFFIXES,
+    MLCBackend,
+    MLCEngine,
     _detect_gpu,
     _get_mlc_version,
     _has_mlc_llm,
 )
-
 
 # ---------------------------------------------------------------------------
 # Detection helpers
@@ -62,9 +60,7 @@ class TestGetMlcVersion:
         with patch(
             "builtins.__import__",
             side_effect=lambda name, *a, **kw: (
-                (_ for _ in ()).throw(ImportError())
-                if name == "mlc_llm"
-                else __import__(name, *a, **kw)
+                (_ for _ in ()).throw(ImportError()) if name == "mlc_llm" else __import__(name, *a, **kw)
             ),
         ):
             saved = sys.modules.pop("mlc_llm", None)
@@ -123,9 +119,7 @@ class TestDetectGpu:
                 patch("shutil.which", return_value="/usr/bin/nvidia-smi"),
                 patch("subprocess.run") as mock_run,
             ):
-                mock_run.return_value = MagicMock(
-                    returncode=0, stdout="NVIDIA GeForce RTX 4090\n"
-                )
+                mock_run.return_value = MagicMock(returncode=0, stdout="NVIDIA GeForce RTX 4090\n")
                 assert _detect_gpu() == "cuda"
         finally:
             if saved_tvm is not None:
@@ -228,7 +222,7 @@ class TestMLCEngine:
             assert self.engine.supports_model(model_name) is True
 
     def test_supports_mlc_repo_id(self) -> None:
-        assert self.engine.supports_model("REDACTED") is True
+        assert self.engine.supports_model("mlc-ai/test-model-MLC") is True
 
     def test_supports_hf_repo_id(self) -> None:
         assert self.engine.supports_model("some-user/some-model") is True
@@ -244,7 +238,7 @@ class TestMLCEngine:
         with patch("octomil.engines.mlc_engine._has_mlc_llm", return_value=False):
             result = self.engine.benchmark("gemma-1b")
             assert result.ok is False
-            assert "not available" in result.error
+            assert "not available" in result.error  # type: ignore[operator]
 
     def test_benchmark_no_gpu(self) -> None:
         with (
@@ -253,7 +247,7 @@ class TestMLCEngine:
         ):
             result = self.engine.benchmark("gemma-1b")
             assert result.ok is False
-            assert "No GPU" in result.error
+            assert "No GPU" in result.error  # type: ignore[operator]
 
     def test_benchmark_success(self) -> None:
         # Mock the streaming response
@@ -297,7 +291,7 @@ class TestMLCEngine:
         ):
             result = self.engine.benchmark("gemma-1b")
             assert result.ok is False
-            assert "CUDA OOM" in result.error
+            assert "CUDA OOM" in result.error  # type: ignore[operator]
 
     def test_create_backend(self) -> None:
         backend = self.engine.create_backend("gemma-1b")
@@ -320,7 +314,7 @@ class TestMLCEngine:
     def test_resolve_repo_id_catalog_lookup(self) -> None:
         """Catalog names resolve to MLC repo IDs."""
         repo = self.engine._resolve_repo_id("gemma-1b")
-        assert repo == "REDACTED"
+        assert repo == "mlc-ai/REDACTED-MLC"
 
     def test_resolve_repo_id_fallback(self) -> None:
         """Unknown names are returned as-is."""
@@ -358,9 +352,7 @@ class TestMLCBackend:
         ):
             backend = MLCBackend("mlc-ai/test-model-MLC")
             backend.load_model("mlc-ai/test-model-MLC")
-            mock_mlc_engine_cls.assert_called_once_with(
-                model="mlc-ai/test-model-MLC", device="cuda"
-            )
+            mock_mlc_engine_cls.assert_called_once_with(model="mlc-ai/test-model-MLC", device="cuda")
             assert backend._engine is mock_engine_instance
 
     def test_load_model_metal_uses_auto(self) -> None:
@@ -376,9 +368,7 @@ class TestMLCBackend:
         ):
             backend = MLCBackend("mlc-ai/test-model-MLC")
             backend.load_model("mlc-ai/test-model-MLC")
-            mock_mlc_engine_cls.assert_called_once_with(
-                model="mlc-ai/test-model-MLC", device="auto"
-            )
+            mock_mlc_engine_cls.assert_called_once_with(model="mlc-ai/test-model-MLC", device="auto")
 
     def test_generate(self) -> None:
         mock_response = MagicMock()
@@ -502,9 +492,7 @@ class TestMLCBackend:
         backend = MLCBackend("gemma-1b")
         backend._engine = mock_engine
 
-        tokens = list(
-            backend.generate_stream("test", max_tokens=64, temperature=0.2, stop=["!"])
-        )
+        tokens = list(backend.generate_stream("test", max_tokens=64, temperature=0.2, stop=["!"]))
 
         assert tokens == ["ok"]
         mock_engine.chat.completions.create.assert_called_once_with(
@@ -571,9 +559,7 @@ class TestMLCCatalog:
     def test_mlc_models_in_catalog(self) -> None:
         from octomil.models.catalog import CATALOG
 
-        mlc_models = [
-            name for name, entry in CATALOG.items() if "mlc-llm" in entry.engines
-        ]
+        mlc_models = [name for name, entry in CATALOG.items() if "mlc-llm" in entry.engines]
         assert len(mlc_models) >= 5
 
     def test_gemma_1b_has_mlc(self) -> None:
@@ -669,7 +655,7 @@ class TestMLCResolver:
 
         result = resolve("gemma-1b", engine="mlc-llm")
         assert result.engine == "mlc-llm"
-        assert result.hf_repo == "REDACTED"
+        assert result.hf_repo == "mlc-ai/REDACTED-MLC"
 
     def test_resolve_with_mlc_alias(self) -> None:
         from octomil.models.resolver import resolve
