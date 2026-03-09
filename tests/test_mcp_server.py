@@ -19,20 +19,23 @@ class TestReadFile:
         f.write_text("print('hello')")
         from octomil.mcp.server import _read_file
 
-        assert _read_file(str(f)) == "print('hello')"
+        with patch("octomil.mcp.server._allowed_roots", return_value=[tmp_path]):
+            assert _read_file(str(f)) == "print('hello')"
 
-    def test_nonexistent_file(self) -> None:
+    def test_nonexistent_file(self, tmp_path: Path) -> None:
         from octomil.mcp.server import _read_file
 
-        with pytest.raises(FileNotFoundError):
-            _read_file("/nonexistent/path/to/file.py")
+        with patch("octomil.mcp.server._allowed_roots", return_value=[tmp_path]):
+            with pytest.raises(FileNotFoundError):
+                _read_file(str(tmp_path / "nonexistent.py"))
 
     def test_truncates_large_file(self, tmp_path: Path) -> None:
         f = tmp_path / "big.py"
         f.write_text("x" * 60_000)
         from octomil.mcp.server import _read_file
 
-        result = _read_file(str(f), max_chars=1000)
+        with patch("octomil.mcp.server._allowed_roots", return_value=[tmp_path]):
+            result = _read_file(str(f), max_chars=1000)
         assert len(result) < 2000
         assert "truncated" in result
 
