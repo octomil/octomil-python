@@ -241,10 +241,15 @@ class TestLaunchAgent:
         mock_run.return_value = MagicMock(returncode=0)
 
         with pytest.raises(SystemExit):
-            launch_agent("claude", model="qwen3")
+            launch_agent("codex", model="qwen3")
 
         mock_serve.assert_called_once_with("qwen3", port=8080)
         mock_proc.terminate.assert_called_once()
+
+    def test_launch_claude_with_model_raises_error(self):
+        """Claude Code uses Anthropic's API; --model should error."""
+        with pytest.raises(click.ClickException, match="proprietary API"):
+            launch_agent("claude", model="qwen3")
 
     @patch("octomil.agents.launcher.click.confirm", return_value=False)
     @patch("octomil.agents.launcher.subprocess.run")

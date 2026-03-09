@@ -625,6 +625,20 @@ def launch_agent(
     # Agents that don't need a local model (e.g. Claude Code) are exec'd
     # directly unless the user explicitly passed --model to proxy through
     # the local server.
+    #
+    # However, some agents (Claude Code) use a non-OpenAI API format.
+    # octomil serve only exposes OpenAI-compatible endpoints, so we can't
+    # proxy local models to those agents.
+    if model is not None and not agent.needs_local_model and not agent.env_key.startswith("OPENAI"):
+        raise click.ClickException(
+            f"{agent.display_name} uses a proprietary API that is not compatible "
+            f"with local model serving.\n\n"
+            f"  To use a local model, try one of these agents instead:\n"
+            f"    octomil launch codex --model {model}\n"
+            f"    octomil launch aider --model {model}\n"
+            f"    octomil launch opencode --model {model}\n"
+        )
+
     use_local_server = agent.needs_local_model or model is not None
 
     serve_proc: Optional[subprocess.Popen] = None
