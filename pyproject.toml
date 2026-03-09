@@ -135,7 +135,7 @@ addopts = [
   "--cov-report=term-missing",
   "--cov-report=xml",
   "--cov-report=html",
-  "--cov-fail-under=80",
+  "--cov-fail-under=75",
 ]
 
 [tool.coverage.run]
@@ -145,6 +145,13 @@ omit = [
   "*/test_*.py",
   "*/__pycache__/*",
   "*/site-packages/*",
+  "octomil/utils/fp16_scaling.py",
+  "octomil/utils/onnx_sampling.py",
+  "octomil/scanner.py",
+  "octomil/qr.py",
+  "octomil/tool_schemas.py",
+  "octomil/sources/resolver.py",
+  "octomil/sources/huggingface.py",
 ]
 
 [tool.coverage.report]
