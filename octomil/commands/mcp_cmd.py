@@ -89,8 +89,21 @@ def status() -> None:
     envvar="OCTOMIL_X402_ADDRESS",
     help="Payment receiving address.",
 )
+@click.option(
+    "--x402-threshold",
+    default="1.0",
+    envvar="OCTOMIL_X402_THRESHOLD",
+    help="Settlement threshold in USD (default: 1.0).",
+)
 def serve(
-    port: int, host: str, model: Optional[str], x402: bool, x402_price: str, x402_currency: str, x402_address: str
+    port: int,
+    host: str,
+    model: Optional[str],
+    x402: bool,
+    x402_price: str,
+    x402_currency: str,
+    x402_address: str,
+    x402_threshold: str,
 ) -> None:
     """Start the Octomil HTTP agent server.
 
@@ -115,6 +128,9 @@ def serve(
 
     from octomil.mcp.http_server import HTTPServerConfig, create_http_app
 
+    # Convert USD threshold to USDC base units (6 decimals)
+    threshold_base_units = int(float(x402_threshold) * 1_000_000)
+
     config = HTTPServerConfig(
         host=host,
         port=port,
@@ -123,6 +139,7 @@ def serve(
         x402_address=x402_address,
         x402_price=x402_price,
         x402_currency=x402_currency,
+        x402_threshold=threshold_base_units,
     )
     app = create_http_app(config)
 

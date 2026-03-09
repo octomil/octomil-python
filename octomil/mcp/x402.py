@@ -10,13 +10,17 @@ Implements the x402 payment protocol:
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import json
 import logging
 import threading
 import time
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from .x402_settlement import SettlementStore
 
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 from starlette.requests import Request
@@ -66,6 +70,8 @@ class X402Config:
     token_contract: str = ""  # auto-resolved from network if empty
     verify_signatures: bool = True  # False for dev/testing
     facilitator_url: str = ""  # optional: forward to facilitator for settlement
+    settlement_threshold: int = 1_000_000  # base units = $1 USDC (6 decimals)
+    enable_settlement: bool = True
     protected_prefixes: list[str] = field(default_factory=lambda: ["/api/v1/"])
     exempt_paths: list[str] = field(
         default_factory=lambda: [
@@ -86,6 +92,8 @@ class X402Config:
             "/api/v1/recommend_model",
             "/api/v1/scan_codebase",
             "/api/v1/compress_prompt",
+            # Settlement status — operator-only, not gated by x402
+            "/api/v1/settlement_status",
             # Cloud-proxied tools — gated by OCTOMIL_API_KEY, not x402
             "/api/v1/deploy_model",
             "/api/v1/optimize_model",
@@ -368,10 +376,18 @@ class X402Middleware(BaseHTTPMiddleware):
     8. Pass through to handler
     """
 
-    def __init__(self, app: Any, config: X402Config) -> None:
+    def __init__(self, app: Any, config: X402Config, settlement_store: SettlementStore | None = None) -> None:
         super().__init__(app)
         self.config = config
         self.nonce_tracker = NonceTracker()
+        if settlement_store is not None:
+            self.settlement_store: SettlementStore | None = settlement_store
+        elif config.enable_settlement:
+            from .x402_settlement import SettlementStore as _SS
+
+            self.settlement_store = _SS(threshold=config.settlement_threshold)
+        else:
+            self.settlement_store = None
 
     async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:
         path = request.url.path
@@ -460,8 +476,28 @@ class X402Middleware(BaseHTTPMiddleware):
         # If the service fails (5xx) or returns client error (4xx), the agent
         # shouldn't be charged — their payment is accepted but not settled.
         if 200 <= response.status_code < 300:
-            response.headers["x-payment-response"] = json.dumps({"status": "settled"})
+            if self.settlement_store is not None:
+                from .x402_settlement import PendingAuthorization, settle_batch
+
+                amount = int(authorization.get("value", 0))
+                nonce_key = nonce_str if nonce else ""
+                pending = PendingAuthorization(
+                    authorization=authorization,
+                    signature=signature,
+                    payer=payer,
+                    amount=amount,
+                    request_path=path,
+                )
+                ready = self.settlement_store.add(nonce_key, pending)
+                if ready:
+                    asyncio.ensure_future(settle_batch(self.settlement_store, self.config.facilitator_url, self.config))
+                response.headers["x-payment-response"] = json.dumps({"status": "pending_settlement"})
+            else:
+                response.headers["x-payment-response"] = json.dumps({"status": "settled"})
         elif response.status_code >= 400:
+            if self.settlement_store is not None:
+                nonce_key = nonce_str if nonce else ""
+                self.settlement_store.discard(nonce_key)
             response.headers["x-payment-response"] = json.dumps(
                 {"status": "refunded", "reason": f"Service returned {response.status_code}"}
             )

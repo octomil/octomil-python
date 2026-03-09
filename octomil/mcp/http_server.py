@@ -160,6 +160,7 @@ class HTTPServerConfig:
     x402_price: str = "0.001"
     x402_currency: str = "USDC"
     x402_network: str = "base"
+    x402_threshold: int = 1_000_000  # base units = $1 USDC
     base_url: str = ""  # auto-detected if empty
 
 
@@ -240,16 +241,21 @@ def create_http_app(config: HTTPServerConfig | None = None) -> FastAPI:
     )
 
     # x402 middleware (opt-in)
+    settlement_store = None
     if config.enable_x402:
         from .x402 import X402Config, X402Middleware
+        from .x402_settlement import SettlementStore
 
         x402_config = X402Config(
             price_per_call=config.x402_price or os.environ.get("OCTOMIL_X402_PRICE", "0.001"),
             currency=config.x402_currency or os.environ.get("OCTOMIL_X402_CURRENCY", "USDC"),
             network=config.x402_network or os.environ.get("OCTOMIL_X402_NETWORK", "base"),
             payment_address=config.x402_address or os.environ.get("OCTOMIL_X402_ADDRESS", ""),
+            settlement_threshold=config.x402_threshold,
         )
-        app.add_middleware(X402Middleware, config=x402_config)
+        if x402_config.enable_settlement:
+            settlement_store = SettlementStore(threshold=x402_config.settlement_threshold)
+        app.add_middleware(X402Middleware, config=x402_config, settlement_store=settlement_store)
         logger.info("x402 payment gating enabled (address=%s)", x402_config.payment_address)
 
     # Shared backend instance
@@ -262,6 +268,7 @@ def create_http_app(config: HTTPServerConfig | None = None) -> FastAPI:
 
     # Store on app state for testing access
     app.state.backend = backend
+    app.state.settlement_store = settlement_store
 
     # ------------------------------------------------------------------
     # Discovery, readiness & health endpoints (no auth)
@@ -284,6 +291,16 @@ def create_http_app(config: HTTPServerConfig | None = None) -> FastAPI:
             "model": backend.model_name,
             "loaded": backend.is_loaded,
         }
+
+    @app.get("/api/v1/settlement_status", tags=["x402"])
+    async def api_settlement_status() -> JSONResponse:
+        """Return x402 batch settlement statistics."""
+        if settlement_store is None:
+            return JSONResponse(
+                status_code=404,
+                content={"error": "settlement_disabled", "message": "x402 settlement is not enabled."},
+            )
+        return JSONResponse(content=settlement_store.stats())
 
     @app.get("/api/v1/ready", tags=["readiness"])
     async def api_ready() -> JSONResponse:

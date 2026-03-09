@@ -68,6 +68,7 @@ mcp = [
 ]
 x402 = [
   "eth-account>=0.10.0",
+  "httpx>=0.25.0",
 ]
 test = [
   "pytest>=7.0.0",
