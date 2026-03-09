@@ -9,7 +9,6 @@ from click.testing import CliRunner
 from octomil.cli import main
 from octomil.cli_helpers import _get_api_key
 
-
 # ---------------------------------------------------------------------------
 # _get_api_key
 # ---------------------------------------------------------------------------
@@ -22,9 +21,7 @@ class TestGetApiKey:
 
     def test_empty_when_no_env_no_file(self, monkeypatch, tmp_path):
         monkeypatch.delenv("OCTOMIL_API_KEY", raising=False)
-        monkeypatch.setattr(
-            "os.path.expanduser", lambda x: str(tmp_path / ".octomil" / "credentials")
-        )
+        monkeypatch.setattr("os.path.expanduser", lambda x: str(tmp_path / ".octomil" / "credentials"))
         assert _get_api_key() == ""
 
     def test_from_credentials_file_json(self, monkeypatch, tmp_path):
@@ -36,9 +33,7 @@ class TestGetApiKey:
         cred_file = cred_dir / "credentials"
         cred_file.write_text(json.dumps({"api_key": "file-key-456", "org": "acme"}))
 
-        monkeypatch.setattr(
-            "octomil.cli_helpers.os.path.expanduser", lambda x: str(cred_dir / "credentials")
-        )
+        monkeypatch.setattr("octomil.cli_helpers.os.path.expanduser", lambda x: str(cred_dir / "credentials"))
         assert _get_api_key() == "file-key-456"
 
     def test_from_credentials_file_legacy(self, monkeypatch, tmp_path):
@@ -49,9 +44,7 @@ class TestGetApiKey:
         cred_file = cred_dir / "credentials"
         cred_file.write_text("api_key=legacy-key-789\n")
 
-        monkeypatch.setattr(
-            "octomil.cli_helpers.os.path.expanduser", lambda x: str(cred_dir / "credentials")
-        )
+        monkeypatch.setattr("octomil.cli_helpers.os.path.expanduser", lambda x: str(cred_dir / "credentials"))
         assert _get_api_key() == "legacy-key-789"
 
     def test_env_takes_priority(self, monkeypatch):
@@ -75,7 +68,7 @@ class TestMainGroup:
         runner = CliRunner()
         result = runner.invoke(main, ["--version"])
         assert result.exit_code == 0
-        assert "2.6.0" in result.output
+        assert "2.7.0" in result.output
 
     def test_no_args_shows_quickstart(self):
         """Bare `octomil` with no args shows focused onboarding screen."""
@@ -122,7 +115,6 @@ class TestServeCommand:
             result = runner.invoke(main, ["serve", "gemma-1b", "--port", "9000"])
         assert result.exit_code == 0
         assert "9000" in result.output
-
 
 
 # ---------------------------------------------------------------------------
@@ -209,9 +201,7 @@ class TestDeployCommand:
             mock_post_resp,
             mock_poll_resp,
         ]
-        mock_client_instance.__enter__ = MagicMock(
-            return_value=mock_client_instance
-        )
+        mock_client_instance.__enter__ = MagicMock(return_value=mock_client_instance)
         mock_client_instance.__exit__ = MagicMock(return_value=False)
 
         with (
@@ -238,9 +228,7 @@ class TestDeployCommand:
         mock_get_client.return_value = mock_client
 
         runner = CliRunner()
-        result = runner.invoke(
-            main, ["deploy", "sentiment-v1", "--rollout", "10", "--strategy", "canary"]
-        )
+        result = runner.invoke(main, ["deploy", "sentiment-v1", "--rollout", "10", "--strategy", "canary"])
         assert result.exit_code == 0
         assert "Rollout created" in result.output
 
@@ -257,9 +245,7 @@ class TestStatusCommand:
         mock_client = MagicMock()
         mock_client.status.return_value = {
             "model": {"name": "test-model", "id": "abc", "framework": "pytorch"},
-            "active_rollouts": [
-                {"version": "1.0.0", "rollout_percentage": 50, "status": "active"}
-            ],
+            "active_rollouts": [{"version": "1.0.0", "rollout_percentage": 50, "status": "active"}],
         }
         mock_get_client.return_value = mock_client
 
@@ -326,9 +312,7 @@ class TestPullCommand:
         mock_get_client.return_value = mock_client
 
         runner = CliRunner()
-        result = runner.invoke(
-            main, ["pull", "test-model", "--version", "1.0.0", "--format", "onnx"]
-        )
+        result = runner.invoke(main, ["pull", "test-model", "--version", "1.0.0", "--format", "onnx"])
         assert result.exit_code == 0
         assert "Downloaded: /tmp/model.onnx" in result.output
 
@@ -450,9 +434,7 @@ class TestTrainStartCommand:
     def test_train_start_invalid_strategy(self, monkeypatch):
         monkeypatch.setenv("OCTOMIL_API_KEY", "test-key")
         runner = CliRunner()
-        result = runner.invoke(
-            main, ["train", "start", "model", "--strategy", "invalid"]
-        )
+        result = runner.invoke(main, ["train", "start", "model", "--strategy", "invalid"])
         assert result.exit_code != 0
 
 
@@ -589,9 +571,7 @@ class TestBenchmarkCommand:
             patch("psutil.virtual_memory", return_value=mock_vm),
         ):
             runner = CliRunner()
-            result = runner.invoke(
-                main, ["benchmark", "gemma-1b", "--local", "--iterations", "1"]
-            )
+            result = runner.invoke(main, ["benchmark", "gemma-1b", "--local", "--iterations", "1"])
 
         assert result.exit_code == 0
         assert "Results kept local (--local)" in result.output
