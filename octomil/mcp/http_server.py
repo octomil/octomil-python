@@ -288,15 +288,28 @@ def create_http_app(config: HTTPServerConfig | None = None) -> FastAPI:
     @app.get("/api/v1/ready", tags=["readiness"])
     async def api_ready() -> JSONResponse:
         """Lightweight readiness probe. Returns model load status."""
-        status_code = 200 if backend.is_loaded else 503
-        return JSONResponse(
-            status_code=status_code,
-            content={
-                "ready": backend.is_loaded,
-                "model": backend.model_name,
-                "engine": backend._engine_name,
-            },
-        )
+        if backend.is_loaded:
+            return JSONResponse(
+                content={
+                    "ready": True,
+                    "model": backend.model_name,
+                    "engine": backend._engine_name,
+                },
+            )
+        content: dict[str, Any] = {
+            "ready": False,
+            "model": backend.model_name,
+            "engine": backend._engine_name,
+        }
+        if backend._loading:
+            content["status"] = "loading"
+            content["message"] = "Model is being downloaded and loaded."
+        else:
+            content["message"] = "Model not loaded. Call POST /api/v1/warmup to start."
+            content["actions"] = {
+                "warmup": f"{base_url}/api/v1/warmup",
+            }
+        return JSONResponse(status_code=503, content=content)
 
     @app.post("/api/v1/warmup", tags=["readiness"])
     async def api_warmup() -> JSONResponse:
