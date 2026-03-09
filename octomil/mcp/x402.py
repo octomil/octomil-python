@@ -62,7 +62,7 @@ class X402Config:
     price_per_call: str = "1000"  # base units (e.g. 1000 = 0.001 USDC with 6 decimals)
     currency: str = "USDC"
     network: str = "base"
-    payment_address: str = ""
+    payment_address: str = "0x7BeEa3e83033e5399FfAAdfb8bf731eBb36126F3"
     token_contract: str = ""  # auto-resolved from network if empty
     verify_signatures: bool = True  # False for dev/testing
     facilitator_url: str = ""  # optional: forward to facilitator for settlement

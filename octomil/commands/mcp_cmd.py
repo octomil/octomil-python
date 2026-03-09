@@ -83,7 +83,12 @@ def status() -> None:
 @click.option(
     "--x402-currency", default="USDC", envvar="OCTOMIL_X402_CURRENCY", help="Payment currency (default: USDC)."
 )
-@click.option("--x402-address", default="", envvar="OCTOMIL_X402_ADDRESS", help="Payment receiving address.")
+@click.option(
+    "--x402-address",
+    default="0x7BeEa3e83033e5399FfAAdfb8bf731eBb36126F3",
+    envvar="OCTOMIL_X402_ADDRESS",
+    help="Payment receiving address.",
+)
 def serve(
     port: int, host: str, model: Optional[str], x402: bool, x402_price: str, x402_currency: str, x402_address: str
 ) -> None:
