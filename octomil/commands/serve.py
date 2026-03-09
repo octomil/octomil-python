@@ -58,7 +58,7 @@ def register(cli: click.Group) -> None:
 @click.option(
     "--auto-route",
     is_flag=True,
-    help="Enable automatic query routing across loaded models. " "Requires --models with 2+ models.",
+    help="Enable automatic query routing across loaded models. Requires --models with 2+ models.",
 )
 @click.option(
     "--route-strategy",
@@ -90,14 +90,13 @@ def register(cli: click.Group) -> None:
     "--compression-ratio",
     default=0.5,
     type=float,
-    help="Target compression ratio for token pruning (0.0-1.0, default: 0.5). "
-    "Higher values prune more aggressively.",
+    help="Target compression ratio for token pruning (0.0-1.0, default: 0.5). Higher values prune more aggressively.",
 )
 @click.option(
     "--compression-max-turns",
     default=4,
     type=int,
-    help="Number of recent conversation turns to keep verbatim " "when using sliding_window strategy (default: 4).",
+    help="Number of recent conversation turns to keep verbatim when using sliding_window strategy (default: 4).",
 )
 @click.option(
     "--compression-threshold",
@@ -510,32 +509,24 @@ def _prompt_engine_install() -> bool:
 
 
 def _print_engine_detection(model: str, engine_override: str | None) -> None:
-    """Print engine detection results to terminal."""
+    """Print resolved engine for the model."""
+    if engine_override:
+        click.echo(f"\n  Engine: {engine_override} (manual override)")
+        return
+
     from octomil.engines import get_registry
 
     registry = get_registry()
-
-    click.echo("\nDetecting engines...")
     detections = registry.detect_all(model)
-    for d in detections:
-        if d.engine.name == "echo":
-            continue
-        if d.available:
-            info = f" ({d.info})" if d.info else ""
-            click.echo(click.style(f"  + {d.engine.display_name}{info}", fg="green"))
-        else:
-            click.echo(click.style(f"  - {d.engine.display_name}", dim=True))
-
-    if engine_override:
-        click.echo(f"\nUsing {engine_override} (manual override)")
-        return
-
     available = [d for d in detections if d.available and d.engine.name != "echo"]
+
     if len(available) > 1:
-        click.echo(f"\nBenchmarking {model} across {len(available)} engines...")
-        click.echo("(this runs a quick 32-token generation on each)")
+        names = ", ".join(d.engine.display_name for d in available)
+        click.echo(f"\n  Engines available: {names}")
+        click.echo("  Benchmarking to select fastest...")
     elif len(available) == 1:
-        click.echo(f"\nUsing {available[0].engine.display_name} (only available engine)")
+        info = f" ({available[0].info})" if available[0].info else ""
+        click.echo(click.style(f"\n  Engine: {available[0].engine.display_name}{info}", fg="green"))
     else:
         # Frozen binary: try re-exec into managed venv before prompting
         if getattr(sys, "frozen", False):
@@ -548,11 +539,11 @@ def _print_engine_detection(model: str, engine_override: str | None) -> None:
             detections = registry.detect_all(model)
             available = [d for d in detections if d.available and d.engine.name != "echo"]
             if available:
-                click.echo(f"  Using {available[0].engine.display_name}")
+                click.echo(f"  Engine: {available[0].engine.display_name}")
                 return
         click.echo(
             click.style(
-                "  Using echo backend for now (mirrors input, no real inference).\n",
+                "  Engine: echo (mirrors input, no real inference)\n",
                 dim=True,
             )
         )
