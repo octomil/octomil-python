@@ -64,6 +64,7 @@ class X402Config:
     """Configuration for x402 payment gating."""
 
     price_per_call: str = "1000"  # base units (e.g. 1000 = 0.001 USDC with 6 decimals)
+    cloud_price_per_call: str = "10000"  # base units = $0.01 USDC (10x local for cloud fallback)
     currency: str = "USDC"
     network: str = "base"
     payment_address: str = "0x7BeEa3e83033e5399FfAAdfb8bf731eBb36126F3"
@@ -468,7 +469,12 @@ class X402Middleware(BaseHTTPMiddleware):
 
         # Payment accepted
         payer = authorization.get("from", payment_data.get("payer", "?"))
-        logger.info("x402: payment accepted for %s from %s", path, payer)
+        paid_amount = int(authorization.get("value", 0))
+        logger.info("x402: payment accepted for %s from %s (amount=%d)", path, payer, paid_amount)
+
+        # Store paid amount on request state so endpoints can check pricing tiers
+        request.state.x402_paid_amount = paid_amount
+        request.state.x402_cloud_price = int(self.config.cloud_price_per_call)
 
         response = await call_next(request)
 

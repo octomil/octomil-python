@@ -1175,14 +1175,10 @@ class TestSettlementStatusEndpoint:
 # ---------------------------------------------------------------------------
 
 
-class TestX402NoCloudFallback:
+class TestX402CloudPricing:
     @pytest.mark.asyncio
-    async def test_no_cloud_fallback_with_x402(self, x402_client: Any) -> None:
-        """With x402 enabled, cloud fallback is skipped — returns 503 + refund.
-
-        Cloud inference costs ~$0.003-0.01/call, more than the $0.001 x402 price.
-        We'd lose money on every cloud fallback, so we skip it and refund.
-        """
+    async def test_low_payment_no_cloud_fallback(self, x402_client: Any) -> None:
+        """Agent paying $0.001 (local price) gets 503 + cloud pricing info, not cloud fallback."""
         import time as _time
 
         now = int(_time.time())
@@ -1190,7 +1186,7 @@ class TestX402NoCloudFallback:
             "authorization": {
                 "from": "0xPAYER",
                 "to": "0xTEST_ADDRESS",
-                "value": "1000",
+                "value": "1000",  # local price only
                 "validAfter": str(now - 60),
                 "validBefore": str(now + 300),
                 "nonce": str(uuid.uuid4()),
@@ -1209,7 +1205,47 @@ class TestX402NoCloudFallback:
                 json={"description": "hello"},
                 headers={"x-payment": encoded},
             )
-        # Should be 503 (not 200 from cloud fallback), payment refunded
         assert resp.status_code == 503
-        payment_resp = json.loads(resp.headers["x-payment-response"])
-        assert payment_resp["status"] == "refunded"
+        data = resp.json()
+        # Should include cloud fallback pricing so agent can resubmit
+        assert "cloud_fallback" in data
+        assert data["cloud_fallback"]["available"] is True
+        assert int(data["cloud_fallback"]["price"]) > 1000
+
+    @pytest.mark.asyncio
+    async def test_high_payment_gets_cloud_fallback(self, x402_client: Any) -> None:
+        """Agent paying >= cloud price ($0.01) gets cloud fallback when local fails."""
+        import time as _time
+        from unittest.mock import MagicMock
+
+        now = int(_time.time())
+        payload = {
+            "authorization": {
+                "from": "0xPAYER",
+                "to": "0xTEST_ADDRESS",
+                "value": "10000",  # cloud price ($0.01)
+                "validAfter": str(now - 60),
+                "validBefore": str(now + 300),
+                "nonce": str(uuid.uuid4()),
+            },
+            "signature": "0xSIG",
+        }
+        encoded = base64.b64encode(json.dumps(payload).encode()).decode()
+        mock_backend = x402_client._transport.app.state.backend  # type: ignore[union-attr]
+        mock_cloud_client = MagicMock()
+        mock_cloud_client.chat.return_value = {"message": {"role": "assistant", "content": "def hello(): pass"}}
+        with (
+            patch.object(mock_backend, "generate", side_effect=RuntimeError("no model")),
+            patch("octomil.mcp.x402.verify_eip712_signature", return_value=(True, "")),
+            patch.dict("os.environ", {"OCTOMIL_API_KEY": "test-key"}),
+            patch("octomil.client.OctomilClient", return_value=mock_cloud_client),
+        ):
+            resp = await x402_client.post(
+                "/api/v1/generate_code",
+                json={"description": "hello"},
+                headers={"x-payment": encoded},
+            )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["metrics"]["engine"] == "cloud"
+        assert data["metrics"]["fallback"] is True

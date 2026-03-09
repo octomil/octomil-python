@@ -14,7 +14,7 @@ import os
 from dataclasses import dataclass
 from typing import Any, Optional
 
-from fastapi import Depends, FastAPI
+from fastapi import Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
@@ -457,11 +457,19 @@ def create_http_app(config: Optional[HTTPServerConfig] = None) -> FastAPI:
             logger.exception("detect_engines failed")
             return JSONResponse(status_code=500, content={"error": "internal_error", "message": str(exc)})
 
+    def _x402_pricing(request: Request) -> tuple[int, int]:
+        """Extract x402 pricing from request state (set by middleware)."""
+        return (
+            getattr(request.state, "x402_paid_amount", 0),
+            getattr(request.state, "x402_cloud_price", 0),
+        )
+
     @app.post("/api/v1/run_inference", tags=["inference"], dependencies=[Depends(require_auth)])
-    async def api_run_inference(req: RunInferenceRequest) -> JSONResponse:
+    async def api_run_inference(req: RunInferenceRequest, request: Request) -> JSONResponse:
         """Run inference through the local on-device model."""
         messages = [{"role": "user", "content": req.prompt}]
-        return _code_tool_response("run_inference", messages)
+        paid, cloud = _x402_pricing(request)
+        return _code_tool_response("run_inference", messages, paid_amount=paid, cloud_price=cloud)
 
     @app.get("/api/v1/metrics", tags=["monitoring"], dependencies=[Depends(require_auth)])
     async def api_metrics() -> JSONResponse:
@@ -804,14 +812,22 @@ def create_http_app(config: Optional[HTTPServerConfig] = None) -> FastAPI:
     # Code tool endpoints — with cloud fallback and 503 next actions
     # ------------------------------------------------------------------
 
-    def _code_tool_response(tool_name: str, messages: list[dict[str, str]]) -> JSONResponse:
+    def _code_tool_response(
+        tool_name: str,
+        messages: list[dict[str, str]],
+        paid_amount: int = 0,
+        cloud_price: int = 0,
+    ) -> JSONResponse:
         """Run a code tool through local model with cloud fallback.
 
         1. Try local model (backend.generate)
-        2. On failure, try cloud fallback via OctomilClient (if OCTOMIL_API_KEY set)
-           — skipped when x402 is enabled (agent paid for local inference,
-             cloud costs more than the $0.001 per-call price)
+        2. On failure, try cloud fallback if the agent paid enough
         3. If both fail, return 503 with machine-readable next actions
+
+        When x402 is active, cloud fallback requires ``paid_amount >= cloud_price``
+        ($0.01 default, 10x the local inference price). If the agent only paid
+        the local rate ($0.001), they get 503 with the cloud price so they can
+        resubmit with a higher payment.
         """
         # 1. Try local model
         try:
@@ -820,72 +836,83 @@ def create_http_app(config: Optional[HTTPServerConfig] = None) -> FastAPI:
         except Exception as local_exc:
             logger.warning("%s: local model failed: %s", tool_name, local_exc)
 
-        # 2. Try cloud fallback — only when x402 is NOT active.
-        # When x402 is enabled the agent paid $0.001 for local inference.
-        # Cloud inference costs ~$0.003-0.01 per call — we'd lose money.
-        # Instead return 503 so the payment is refunded and the agent retries.
-        if not config.enable_x402:
-            api_key = os.environ.get("OCTOMIL_API_KEY")
-            if api_key:
-                try:
-                    from octomil.client import OctomilClient
+        # 2. Try cloud fallback
+        # When x402 is enabled, only allow cloud if the agent paid the cloud price.
+        # Without x402, cloud fallback is free (gated by OCTOMIL_API_KEY only).
+        allow_cloud = True
+        if config.enable_x402 and cloud_price > 0 and paid_amount < cloud_price:
+            allow_cloud = False
 
-                    client = OctomilClient(api_key=api_key)
-                    result = client.chat(backend.model_name, messages)
-                    text = result.get("message", {}).get("content", str(result))
-                    return JSONResponse(
-                        content={
-                            "text": text,
-                            "metrics": {"engine": "cloud", "model": backend.model_name, "fallback": True},
-                        }
-                    )
-                except Exception as cloud_exc:
-                    logger.warning("%s: cloud fallback also failed: %s", tool_name, cloud_exc)
+        api_key = os.environ.get("OCTOMIL_API_KEY")
+        if allow_cloud and api_key:
+            try:
+                from octomil.client import OctomilClient
+
+                client = OctomilClient(api_key=api_key)
+                result = client.chat(backend.model_name, messages)
+                text = result.get("message", {}).get("content", str(result))
+                return JSONResponse(
+                    content={
+                        "text": text,
+                        "metrics": {"engine": "cloud", "model": backend.model_name, "fallback": True},
+                    }
+                )
+            except Exception as cloud_exc:
+                logger.warning("%s: cloud fallback also failed: %s", tool_name, cloud_exc)
 
         # 3. Return 503 with next actions
-        return JSONResponse(
-            status_code=503,
-            content={
-                "error": "model_not_ready",
-                "message": f"No local model loaded and no cloud fallback available for {tool_name}.",
-                "retryable": True,
-                "retryAfterSeconds": 30,
-                "actions": {
-                    "warmup": f"{base_url}/api/v1/warmup",
-                    "ready": f"{base_url}/api/v1/ready",
-                },
+        error_content: dict[str, Any] = {
+            "error": "model_not_ready",
+            "message": f"No local model loaded for {tool_name}.",
+            "retryable": True,
+            "retryAfterSeconds": 30,
+            "actions": {
+                "warmup": f"{base_url}/api/v1/warmup",
+                "ready": f"{base_url}/api/v1/ready",
             },
-        )
+        }
+        # Tell the agent the cloud fallback price so they can resubmit
+        if config.enable_x402 and cloud_price > 0 and paid_amount < cloud_price:
+            error_content["cloud_fallback"] = {
+                "available": True,
+                "price": str(cloud_price),
+                "currency": "USDC",
+                "message": f"Resubmit with payment >= {cloud_price} base units for cloud inference.",
+            }
+        return JSONResponse(status_code=503, content=error_content)
 
     @app.post("/api/v1/generate_code", tags=["code"], dependencies=[Depends(require_auth)])
-    async def api_generate_code(req: GenerateCodeRequest) -> JSONResponse:
+    async def api_generate_code(req: GenerateCodeRequest, request: Request) -> JSONResponse:
         """Generate code from a natural language description."""
         parts = [f"Generate {req.language + ' ' if req.language else ''}code: {req.description}"]
         if req.context:
             parts.append(f"\nContext:\n{req.context}")
         messages = build_messages("generate_code", "\n".join(parts))
-        return _code_tool_response("generate_code", messages)
+        paid, cloud = _x402_pricing(request)
+        return _code_tool_response("generate_code", messages, paid_amount=paid, cloud_price=cloud)
 
     @app.post("/api/v1/review_code", tags=["code"], dependencies=[Depends(require_auth)])
-    async def api_review_code(req: ReviewCodeRequest) -> JSONResponse:
+    async def api_review_code(req: ReviewCodeRequest, request: Request) -> JSONResponse:
         """Review code for bugs, security issues, and improvements."""
         parts = [f"Review this {req.language + ' ' if req.language else ''}code:"]
         if req.focus:
             parts.append(f"Focus on: {req.focus}")
         parts.append(f"\n```{req.language}\n{req.code}\n```")
         messages = build_messages("review_code", "\n".join(parts))
-        return _code_tool_response("review_code", messages)
+        paid, cloud = _x402_pricing(request)
+        return _code_tool_response("review_code", messages, paid_amount=paid, cloud_price=cloud)
 
     @app.post("/api/v1/explain_code", tags=["code"], dependencies=[Depends(require_auth)])
-    async def api_explain_code(req: ExplainCodeRequest) -> JSONResponse:
+    async def api_explain_code(req: ExplainCodeRequest, request: Request) -> JSONResponse:
         """Explain code in plain English."""
         parts = [f"Explain this {req.language + ' ' if req.language else ''}code ({req.detail_level} detail):"]
         parts.append(f"\n```{req.language}\n{req.code}\n```")
         messages = build_messages("explain_code", "\n".join(parts))
-        return _code_tool_response("explain_code", messages)
+        paid, cloud = _x402_pricing(request)
+        return _code_tool_response("explain_code", messages, paid_amount=paid, cloud_price=cloud)
 
     @app.post("/api/v1/write_tests", tags=["code"], dependencies=[Depends(require_auth)])
-    async def api_write_tests(req: WriteTestsRequest) -> JSONResponse:
+    async def api_write_tests(req: WriteTestsRequest, request: Request) -> JSONResponse:
         """Generate unit tests for code."""
         parts = [
             f"Write {req.framework + ' ' if req.framework else ''}tests for this {req.language + ' ' if req.language else ''}code:"
@@ -894,15 +921,17 @@ def create_http_app(config: Optional[HTTPServerConfig] = None) -> FastAPI:
             parts.append(f"Focus on: {req.focus}")
         parts.append(f"\n```{req.language}\n{req.code}\n```")
         messages = build_messages("write_tests", "\n".join(parts))
-        return _code_tool_response("write_tests", messages)
+        paid, cloud = _x402_pricing(request)
+        return _code_tool_response("write_tests", messages, paid_amount=paid, cloud_price=cloud)
 
     @app.post("/api/v1/general_task", tags=["code"], dependencies=[Depends(require_auth)])
-    async def api_general_task(req: GeneralTaskRequest) -> JSONResponse:
+    async def api_general_task(req: GeneralTaskRequest, request: Request) -> JSONResponse:
         """Run a free-form prompt through the local model."""
         content = req.prompt
         if req.context:
             content = f"{req.prompt}\n\nContext:\n{req.context}"
         messages = build_messages("general_task", content)
-        return _code_tool_response("general_task", messages)
+        paid, cloud = _x402_pricing(request)
+        return _code_tool_response("general_task", messages, paid_amount=paid, cloud_price=cloud)
 
     return app
