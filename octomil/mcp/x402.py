@@ -70,7 +70,8 @@ class X402Config:
     payment_address: str = "0x7BeEa3e83033e5399FfAAdfb8bf731eBb36126F3"
     token_contract: str = ""  # auto-resolved from network if empty
     verify_signatures: bool = True  # False for dev/testing
-    facilitator_url: str = ""  # optional: forward to facilitator for settlement
+    facilitator_url: str = ""  # settle402 service URL
+    settler_token: str = ""  # X-Settler-Token for settle402 auth
     settlement_threshold: int = 1_000_000  # base units = $1 USDC (6 decimals)
     enable_settlement: bool = True
     protected_prefixes: list[str] = field(default_factory=lambda: ["/api/v1/"])

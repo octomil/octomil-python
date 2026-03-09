@@ -161,6 +161,8 @@ class HTTPServerConfig:
     x402_currency: str = "USDC"
     x402_network: str = "base"
     x402_threshold: int = 1_000_000  # base units = $1 USDC
+    settler_url: str = ""  # settle402 service URL (e.g. https://settle402.example.com)
+    settler_token: str = ""  # X-Settler-Token for auth
     base_url: str = ""  # auto-detected if empty
 
 
@@ -252,6 +254,8 @@ def create_http_app(config: Optional[HTTPServerConfig] = None) -> FastAPI:
             network=config.x402_network or os.environ.get("OCTOMIL_X402_NETWORK", "base"),
             payment_address=config.x402_address or os.environ.get("OCTOMIL_X402_ADDRESS", ""),
             settlement_threshold=config.x402_threshold,
+            facilitator_url=config.settler_url or os.environ.get("OCTOMIL_SETTLER_URL", ""),
+            settler_token=config.settler_token or os.environ.get("OCTOMIL_SETTLER_TOKEN", ""),
         )
         if x402_config.enable_settlement:
             settlement_store = SettlementStore(threshold=x402_config.settlement_threshold)
