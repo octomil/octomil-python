@@ -303,11 +303,11 @@ class StreamingInferenceClient:
         try:
             import mlx_lm  # type: ignore
 
-            model, tokenizer = mlx_lm.load("mlx-community/phi-3-mini")
+            model, tokenizer, *_ = mlx_lm.load("mlx-community/phi-3-mini")
             for token in mlx_lm.stream_generate(
                 model, tokenizer, prompt=prompt_str, max_tokens=max_tokens
             ):
-                yield token.encode("utf-8")
+                yield str(token).encode("utf-8")
             return
         except Exception:
             pass

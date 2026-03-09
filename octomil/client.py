@@ -28,9 +28,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-from .python.octomil.api_client import OctomilClientError
-
-from .models import (
+from .models import (  # noqa: E402
     DeploymentPlan,
     DeploymentResult,
     DeviceDeployment,
@@ -38,10 +36,9 @@ from .models import (
     RollbackResult,
     TrainingSession,
 )
-from .python.octomil.api_client import _ApiClient
-from .python.octomil.control_plane import RolloutsAPI
-from .python.octomil.registry import ModelRegistry
-
+from .python.octomil.api_client import OctomilClientError, _ApiClient  # noqa: E402
+from .python.octomil.control_plane import RolloutsAPI  # noqa: E402
+from .python.octomil.registry import ModelRegistry  # noqa: E402
 
 _DEFAULT_API_BASE = "https://api.octomil.com/api/v1"
 
@@ -80,16 +77,8 @@ class OctomilClient:
         api_base: Optional[str] = None,
     ) -> None:
         _key = api_key if api_key is not None else os.environ.get("OCTOMIL_API_KEY", "")
-        _oid = (
-            org_id
-            if org_id is not None
-            else os.environ.get("OCTOMIL_ORG_ID", "default")
-        )
-        _base = (
-            api_base
-            if api_base is not None
-            else os.environ.get("OCTOMIL_API_BASE", _DEFAULT_API_BASE)
-        )
+        _oid = org_id if org_id is not None else os.environ.get("OCTOMIL_ORG_ID", "default")
+        _base = api_base if api_base is not None else os.environ.get("OCTOMIL_API_BASE", _DEFAULT_API_BASE)
         self._api_key: str = _key
         self._org_id: str = _oid
         self._api_base: str = _base
@@ -122,8 +111,6 @@ class OctomilClient:
                 )
             except Exception:
                 logger.debug("Failed to initialise telemetry reporter", exc_info=True)
-
-        self._models: dict[str, Model] = {}
 
     # ------------------------------------------------------------------
     # Push — upload a model file + trigger server-side conversion
@@ -703,7 +690,7 @@ class OctomilClient:
                     payload["group"] = group
 
                 resp = self._api.post("/deploy/execute", payload)
-                result = _parse_deployment_result(resp, name, version)
+                result: Any = _parse_deployment_result(resp, name, version)
             else:
                 # Fallback: existing rollout-based deploy
                 result = self._registry.deploy_version(
@@ -874,9 +861,7 @@ class OctomilClient:
                 if len(versions) < 2:
                     from .python.octomil.api_client import OctomilClientError
 
-                    raise OctomilClientError(
-                        f"Cannot rollback {name}: only one version exists"
-                    )
+                    raise OctomilClientError(f"Cannot rollback {name}: only one version exists")
                 # Versions come sorted newest-first from the API; pick the second.
                 to_version = versions[1].get("version", "")
 
@@ -1022,9 +1007,7 @@ class OctomilClient:
         if selected_engine.manages_own_download:
             pull_result = {}
         else:
-            pull_result = self.pull(
-                name, version=version, format=format, destination=destination
-            )
+            pull_result = self.pull(name, version=version, format=format, destination=destination)
             engine_kwargs["model_path"] = pull_result.get("model_path")
 
         model_id = self._registry.resolve_model_id(name)
@@ -1092,9 +1075,7 @@ class OctomilClient:
 # ------------------------------------------------------------------
 
 
-def _parse_deployment_result(
-    resp: dict[str, Any], name: str, version: str
-) -> DeploymentResult:
+def _parse_deployment_result(resp: dict[str, Any], name: str, version: str) -> DeploymentResult:
     """Convert a raw API response into a ``DeploymentResult``."""
     device_statuses = [
         DeviceDeploymentStatus(
@@ -1114,9 +1095,7 @@ def _parse_deployment_result(
     )
 
 
-def _parse_deployment_plan(
-    resp: dict[str, Any], name: str, version: str
-) -> DeploymentPlan:
+def _parse_deployment_plan(resp: dict[str, Any], name: str, version: str) -> DeploymentPlan:
     """Convert a raw API response into a ``DeploymentPlan``."""
     deployments = [
         DeviceDeployment(

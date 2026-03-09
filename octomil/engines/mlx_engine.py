@@ -25,17 +25,13 @@ from .base import BenchmarkResult, EnginePlugin, ProfileResult
 logger = logging.getLogger(__name__)
 
 # Models known to work with mlx-lm — derived from the unified catalog.
-from ..models.catalog import CATALOG as _UNIFIED_CATALOG
+from ..models.catalog import CATALOG as _UNIFIED_CATALOG  # noqa: E402
 
-_MLX_CATALOG = {
-    name for name, entry in _UNIFIED_CATALOG.items() if "mlx-lm" in entry.engines
-}
+_MLX_CATALOG = {name for name, entry in _UNIFIED_CATALOG.items() if "mlx-lm" in entry.engines}
 
 # MoE models in the catalog that MLX supports natively
 _MOE_MODELS = {
-    name
-    for name, entry in _UNIFIED_CATALOG.items()
-    if entry.architecture == "moe" and "mlx-lm" in entry.engines
+    name for name, entry in _UNIFIED_CATALOG.items() if entry.architecture == "moe" and "mlx-lm" in entry.engines
 }
 
 
@@ -89,7 +85,7 @@ class MLXEngine(EnginePlugin):
             from ..serve import resolve_model_name
 
             repo_id = resolve_model_name(model_name, "mlx")
-            model, tokenizer = mlx_lm.load(repo_id)
+            model, tokenizer, *_ = mlx_lm.load(repo_id)
 
             # Build a simple prompt
             prompt = "Hello, how are you?"
@@ -109,9 +105,7 @@ class MLXEngine(EnginePlugin):
             # Warmup: JIT-compile Metal shaders and warm GPU caches.
             # A 1-token warmup compiles kernels but doesn't warm the decode
             # loop, so generate a few tokens to match Ollama's always-warm state.
-            for response in mlx_lm.stream_generate(
-                model, tokenizer, prompt=formatted, max_tokens=8, sampler=sampler
-            ):
+            for response in mlx_lm.stream_generate(model, tokenizer, prompt=formatted, max_tokens=8, sampler=sampler):
                 if response.finish_reason:
                     break
 
@@ -138,9 +132,7 @@ class MLXEngine(EnginePlugin):
             ttft = ((first_token_time or start) - start) * 1000
             # Use MLX's generation_tps (decode-only, excludes prompt processing)
             # to match Ollama's eval_duration measurement for fair comparison.
-            tps = generation_tps if generation_tps > 0 else (
-                tokens_generated / (time.monotonic() - start)
-            )
+            tps = generation_tps if generation_tps > 0 else (tokens_generated / (time.monotonic() - start))
 
             # Clean up to free GPU memory
             del model, tokenizer, sampler
@@ -206,8 +198,7 @@ class MLXEngine(EnginePlugin):
 
         if self.is_moe_model(model_name):
             logger.info(
-                "MoE model '%s' detected — MLX handles expert "
-                "routing natively in unified memory",
+                "MoE model '%s' detected — MLX handles expert " "routing natively in unified memory",
                 model_name,
             )
 

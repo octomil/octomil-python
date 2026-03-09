@@ -28,11 +28,9 @@ _DELEGATES = {
 }
 
 # Models known to have ExecuTorch exports — derived from the unified catalog.
-from ..models.catalog import CATALOG as _UNIFIED_CATALOG
+from ..models.catalog import CATALOG as _UNIFIED_CATALOG  # noqa: E402
 
-_ET_CATALOG = {
-    name for name, entry in _UNIFIED_CATALOG.items() if "executorch" in entry.engines
-}
+_ET_CATALOG = {name for name, entry in _UNIFIED_CATALOG.items() if "executorch" in entry.engines}
 
 
 def _has_executorch() -> bool:
@@ -78,11 +76,7 @@ class ExecuTorchEngine(EnginePlugin):
     @property
     def display_name(self) -> str:
         delegate_info = _DELEGATES.get(self._delegate, {})
-        desc = (
-            delegate_info.get("description", self._delegate)
-            if delegate_info
-            else self._delegate
-        )
+        desc = delegate_info.get("description", self._delegate) if delegate_info else self._delegate
         return f"ExecuTorch ({desc})"
 
     @property
@@ -116,11 +110,7 @@ class ExecuTorchEngine(EnginePlugin):
         from ..models.catalog import _resolve_alias
 
         canonical = _resolve_alias(model_name)
-        return (
-            canonical in _ET_CATALOG
-            or model_name.endswith(".pte")
-            or "/" in model_name
-        )
+        return canonical in _ET_CATALOG or model_name.endswith(".pte") or "/" in model_name
 
     def benchmark(self, model_name: str, n_tokens: int = 32) -> BenchmarkResult:
         try:
@@ -187,9 +177,7 @@ class ExecuTorchEngine(EnginePlugin):
 class _ExecuTorchBackend:
     """Thin wrapper around ExecuTorch runtime for the InferenceBackend interface."""
 
-    def __init__(
-        self, model_name: str, delegate: str = "xnnpack", **kwargs: Any
-    ) -> None:
+    def __init__(self, model_name: str, delegate: str = "xnnpack", **kwargs: Any) -> None:
         self.model_name = model_name
         self._delegate = delegate
         self._method: Any = None
@@ -218,6 +206,7 @@ class _ExecuTorchBackend:
         # Simple tokenization placeholder — real impl would use a tokenizer
         input_ids = torch.randint(0, 32000, (1, len(prompt.split())), dtype=torch.long)
 
+        assert self._method is not None
         start = time.monotonic()
         tokens_generated = 0
         for _ in range(max_tokens):

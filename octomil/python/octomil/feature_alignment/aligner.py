@@ -101,12 +101,12 @@ class FeatureAligner:
             datasets = {"default": datasets}
 
         # Collect all features across datasets
-        all_features = set()
+        all_features_set: set[str] = set()
         for df in datasets.values():
             features = set(df.columns) - {target_col}
-            all_features.update(features)
+            all_features_set.update(features)
 
-        all_features = sorted(all_features)
+        all_features: list[str] = sorted(all_features_set)
 
         if self.strategy == "embedding":
             self._fit_embedding(datasets, all_features)
@@ -140,6 +140,7 @@ class FeatureAligner:
         random projection (standard, non-proprietary technique).
         """
         n_features = len(all_features)
+        assert self.input_dim is not None
         matrix = self._fetch_projection_matrix(all_features, n_features, self.input_dim)
         if matrix is not None:
             self._projection_matrix = matrix
@@ -311,9 +312,11 @@ class FeatureAligner:
                 input_matrix[:, idx] = values
 
         # Project to output dimension
+        assert self._projection_matrix is not None
         output_matrix = input_matrix @ self._projection_matrix
 
         # Create output DataFrame
+        assert self.input_dim is not None
         output_cols = [f"emb_{i}" for i in range(self.input_dim)]
         result = pd.DataFrame(output_matrix, columns=output_cols, index=df.index)
 
@@ -326,6 +329,7 @@ class FeatureAligner:
     def _transform_union(self, df: pd.DataFrame, target_col: str) -> pd.DataFrame:
         """Transform using union with imputation."""
         result = df.copy()
+        assert self.feature_schema is not None
 
         for feature in self.feature_schema:
             if feature not in result.columns:
@@ -339,7 +343,7 @@ class FeatureAligner:
                 result[feature] = fill_value
 
         # Reorder columns to match schema
-        cols = self.feature_schema.copy()
+        cols = list(self.feature_schema)
         if target_col in result.columns:
             cols.append(target_col)
         result = result[[c for c in cols if c in result.columns]]
@@ -348,6 +352,7 @@ class FeatureAligner:
 
     def _transform_intersection(self, df: pd.DataFrame, target_col: str) -> pd.DataFrame:
         """Transform using intersection - keep only common features."""
+        assert self.feature_schema is not None
         cols = [c for c in self.feature_schema if c in df.columns]
         if target_col in df.columns:
             cols.append(target_col)

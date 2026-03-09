@@ -46,12 +46,10 @@ def _build_command_catalog(group: click.Group) -> list[_CommandEntry]:
         help_text = ""
         if isinstance(cmd, click.Command) and cmd.help:
             help_text = cmd.help.split("\n")[0].strip()
-        elif isinstance(cmd, click.MultiCommand):
+        elif isinstance(cmd, click.MultiCommand):  # type: ignore[arg-type]
             help_text = cmd.help.split("\n")[0].strip() if cmd.help else ""
         category = CATEGORY_MAP.get(name, "Other")
-        entries.append(
-            _CommandEntry(name=name, description=help_text, category=category)
-        )
+        entries.append(_CommandEntry(name=name, description=help_text, category=category))
     return entries
 
 
@@ -88,7 +86,7 @@ def _fallback_interactive(commands: list[_CommandEntry]) -> str | None:
 
     click.echo("  Type a command name to run it, or 'q' to quit.")
     try:
-        choice = click.prompt("  >", type=str, default="q")
+        choice: str = click.prompt("  >", type=str, default="q")
     except (click.Abort, EOFError):
         return None
 
@@ -221,9 +219,7 @@ def _run_tui(cli_group: click.Group, commands: list[_CommandEntry]) -> None:
             selected[0] = 0
 
     layout = Layout(Window(content=control))
-    app: Application[None] = Application(
-        layout=layout, key_bindings=bindings, full_screen=True
-    )
+    app: Application[None] = Application(layout=layout, key_bindings=bindings, full_screen=True)
     app.run()
 
     # Execute selected command

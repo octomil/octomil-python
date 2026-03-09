@@ -131,9 +131,7 @@ class RequestQueue:
                 try:
                     item = self._queue.get_nowait()
                     if not item.future.done():
-                        item.future.set_exception(
-                            QueueTimeoutError("Queue shutting down")
-                        )
+                        item.future.set_exception(QueueTimeoutError("Queue shutting down"))
                 except asyncio.QueueEmpty:
                     break
 
@@ -170,20 +168,17 @@ class RequestQueue:
         # Attach the callable so the worker can invoke it
         entry._generate_fn = generate_fn  # type: ignore[attr-defined]
 
+        assert self._queue is not None
         try:
             self._queue.put_nowait(entry)
         except asyncio.QueueFull:
-            raise QueueFullError(
-                f"Request queue full ({self._max_depth} pending). Try again later."
-            )
+            raise QueueFullError(f"Request queue full ({self._max_depth} pending). Try again later.")
 
         try:
             return await asyncio.wait_for(future, timeout=self._timeout)
         except asyncio.TimeoutError:
             entry.cancelled = True
-            raise QueueTimeoutError(
-                f"Request timed out after {self._timeout}s waiting in queue."
-            )
+            raise QueueTimeoutError(f"Request timed out after {self._timeout}s waiting in queue.")
         except asyncio.CancelledError:
             entry.cancelled = True
             raise
@@ -215,12 +210,11 @@ class RequestQueue:
         )
         entry._generate_stream_fn = generate_stream_fn  # type: ignore[attr-defined]
 
+        assert self._queue is not None
         try:
             self._queue.put_nowait(entry)
         except asyncio.QueueFull:
-            raise QueueFullError(
-                f"Request queue full ({self._max_depth} pending). Try again later."
-            )
+            raise QueueFullError(f"Request queue full ({self._max_depth} pending). Try again later.")
 
         # Wait for our turn — the worker will resolve the future with
         # a "go" signal (the async generator), or with an exception.
@@ -228,9 +222,7 @@ class RequestQueue:
             result = await asyncio.wait_for(future, timeout=self._timeout)
         except asyncio.TimeoutError:
             entry.cancelled = True
-            raise QueueTimeoutError(
-                f"Request timed out after {self._timeout}s waiting in queue."
-            )
+            raise QueueTimeoutError(f"Request timed out after {self._timeout}s waiting in queue.")
         except asyncio.CancelledError:
             entry.cancelled = True
             raise
@@ -259,6 +251,7 @@ class RequestQueue:
         """Drain the queue, processing one request at a time."""
         while self._started:
             try:
+                assert self._queue is not None
                 entry = await asyncio.wait_for(self._queue.get(), timeout=1.0)
             except asyncio.TimeoutError:
                 continue
@@ -273,11 +266,7 @@ class RequestQueue:
             waited = time.monotonic() - entry.enqueued_at
             if waited > self._timeout:
                 if not entry.future.done():
-                    entry.future.set_exception(
-                        QueueTimeoutError(
-                            f"Request timed out after {waited:.1f}s in queue."
-                        )
-                    )
+                    entry.future.set_exception(QueueTimeoutError(f"Request timed out after {waited:.1f}s in queue."))
                 continue
 
             self._active = 1

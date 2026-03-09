@@ -235,7 +235,7 @@ class _LazyDict(dict):  # type: ignore[type-arg]
 
     def __bool__(self) -> bool:
         self._ensure_loaded()
-        return super().__bool__()
+        return len(self) > 0
 
 
 CATALOG: dict[str, ModelEntry] = _LazyDict(_get_catalog)  # type: ignore[assignment]
