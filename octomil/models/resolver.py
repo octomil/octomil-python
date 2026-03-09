@@ -234,9 +234,15 @@ def resolve(
     variant = entry.variants.get(quant)
     if variant is None:
         available_quants = ", ".join(sorted(entry.variants.keys()))
-        raise ModelResolutionError(
-            f"Unknown variant '{parsed.variant or quant}' for model '{parsed.family}'. Available: {available_quants}"
-        )
+        if available_quants:
+            msg = f"Unknown variant '{parsed.variant or quant}' for model '{parsed.family}'. Available: {available_quants}"
+        else:
+            msg = (
+                f"Model '{parsed.family}' has no downloadable variants in the local catalog. "
+                f"Set OCTOMIL_API_KEY to fetch the full catalog from api.octomil.com, "
+                f"or use a raw model ID (e.g. 'gemma2:2b' for Ollama)."
+            )
+        raise ModelResolutionError(msg)
 
     # Determine engine
     if engine:
