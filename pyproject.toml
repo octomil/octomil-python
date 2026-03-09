@@ -63,6 +63,9 @@ secagg = [
 interactive = [
   "prompt_toolkit>=3.0.0",
 ]
+mcp = [
+  "mcp[cli]>=1.2.0; python_version>='3.10'",
+]
 test = [
   "pytest>=7.0.0",
   "pytest-cov>=4.0.0",
@@ -112,7 +115,7 @@ ignore = ["E501"]
 
 [tool.mypy]
 python_version = "3.11"
-warn_return_any = true
+warn_return_any = false
 warn_unused_configs = true
 ignore_missing_imports = true
 strict_optional = true

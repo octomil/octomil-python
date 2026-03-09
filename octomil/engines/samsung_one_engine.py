@@ -245,9 +245,7 @@ class _SamsungOneBackend:
         model_path = engine._resolve_model_path(model_name)
         self._session = infer.session(model_path, self._backend)
         self.model_name = model_name
-        logger.info(
-            "Loaded %s with Samsung ONE (backend=%s)", model_name, self._backend
-        )
+        logger.info("Loaded %s with Samsung ONE (backend=%s)", model_name, self._backend)
 
     def generate(self, request: Any) -> tuple[str, Any]:
         """Run a single inference pass and return (text, metrics).
@@ -263,6 +261,7 @@ class _SamsungOneBackend:
             self.load_model(self.model_name)
 
         # Build inputs from the model's expected tensor info
+        assert self._session is not None
         input_infos = self._session.get_inputs_tensorinfo()
         inputs = []
         for info in input_infos:

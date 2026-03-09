@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sys
 from unittest.mock import MagicMock, patch
 
 import click
@@ -9,8 +10,11 @@ import pytest
 from click.testing import CliRunner
 
 from octomil.agents.launcher import (
+    _PICKER_AGENTS,
     RecommendedModel,
     _auto_select_model,
+    _build_serve_cmd,
+    _select_agent_fallback,
     _select_model_fallback,
     is_serve_running,
     launch_agent,
@@ -18,7 +22,6 @@ from octomil.agents.launcher import (
 )
 from octomil.agents.registry import AGENTS, get_agent, is_agent_installed, list_agents
 from octomil.cli import main
-
 
 # ---------------------------------------------------------------------------
 # Agent registry
@@ -41,6 +44,8 @@ class TestAgentRegistry:
         names = [a.name for a in agents]
         assert "claude" in names
         assert "codex" in names
+        assert "droid" in names
+        assert "opencode" in names
         assert "openclaw" in names
         assert "aider" in names
 
@@ -60,6 +65,7 @@ class TestAgentRegistry:
         for agent in list_agents():
             assert agent.name
             assert agent.display_name
+            assert agent.description
             assert agent.env_key
             assert agent.install_check
             assert agent.install_cmd
@@ -83,13 +89,11 @@ class TestLaunchCLI:
         result = runner.invoke(main, ["launch", "invalid"])
         assert result.exit_code != 0
 
-    def test_launch_lists_agent_choices(self):
+    def test_launch_help_shows_examples(self):
         runner = CliRunner()
         result = runner.invoke(main, ["launch", "--help"])
-        assert "claude" in result.output
-        assert "codex" in result.output
-        assert "aider" in result.output
-        assert "openclaw" in result.output
+        assert "octomil launch" in result.output
+        assert "octomil launch codex" in result.output
 
     def test_launch_help_shows_select_flag(self):
         runner = CliRunner()
@@ -107,9 +111,7 @@ class TestIsServeRunning:
     def test_returns_true_when_server_responds(self, mock_urlopen):
         mock_urlopen.return_value = MagicMock()
         assert is_serve_running() is True
-        mock_urlopen.assert_called_once_with(
-            "http://localhost:8080/v1/models", timeout=2
-        )
+        mock_urlopen.assert_called_once_with("http://localhost:8080/v1/models", timeout=2)
 
     @patch("octomil.agents.launcher.urllib.request.urlopen")
     def test_returns_false_on_connection_error(self, mock_urlopen):
@@ -128,32 +130,84 @@ class TestIsServeRunning:
 # ---------------------------------------------------------------------------
 
 
+class TestBuildServeCmd:
+    def test_unfrozen_uses_python_m(self):
+        with patch.object(sys, "frozen", False, create=True):
+            cmd = _build_serve_cmd("llama-8b", 8080)
+        assert "-m" in cmd
+        assert "octomil" in cmd
+        assert "serve" in cmd
+        assert "llama-8b" in cmd
+
+    def test_frozen_skips_python_m(self):
+        with patch.object(sys, "frozen", True, create=True):
+            cmd = _build_serve_cmd("llama-8b", 8080)
+        assert "-m" not in cmd
+        assert "octomil" not in cmd  # no -m octomil
+        assert "serve" in cmd
+        assert "llama-8b" in cmd
+
+    def test_port_in_cmd(self):
+        cmd = _build_serve_cmd("model", 9090)
+        assert "--port" in cmd
+        assert "9090" in cmd
+
+
 class TestStartServeBackground:
     @patch("octomil.agents.launcher.is_serve_running")
     @patch("octomil.agents.launcher.subprocess.Popen")
-    def test_starts_and_waits_for_ready(self, mock_popen, mock_running):
+    def test_starts_and_waits_for_ready(self, mock_popen, mock_running, tmp_path):
         mock_proc = MagicMock()
+        mock_proc.poll.return_value = None
         mock_popen.return_value = mock_proc
-        # First call: not ready; second call: ready
         mock_running.side_effect = [False, True]
 
-        with patch("octomil.agents.launcher.time.sleep"):
-            proc = start_serve_background("qwen3", port=8080)
+        log_path = str(tmp_path / "serve.log")
+        with (
+            patch("octomil.agents.launcher.time.sleep"),
+            patch("octomil.agents.launcher.os.path.join", return_value=log_path),
+        ):
+            proc = start_serve_background("qwen3", port=8080, timeout=5)
 
         assert proc is mock_proc
         mock_popen.assert_called_once()
 
     @patch("octomil.agents.launcher.is_serve_running", return_value=False)
     @patch("octomil.agents.launcher.subprocess.Popen")
-    def test_raises_on_timeout(self, mock_popen, mock_running):
+    def test_raises_on_timeout(self, mock_popen, mock_running, tmp_path):
         mock_proc = MagicMock()
+        mock_proc.poll.return_value = None
         mock_popen.return_value = mock_proc
 
-        with patch("octomil.agents.launcher.time.sleep"):
+        log_path = str(tmp_path / "serve.log")
+        with (
+            patch("octomil.agents.launcher.time.sleep"),
+            patch("octomil.agents.launcher.os.path.join", return_value=log_path),
+        ):
             with pytest.raises(RuntimeError, match="failed to start"):
-                start_serve_background("model", port=8080)
+                start_serve_background("model", port=8080, timeout=3)
 
         mock_proc.terminate.assert_called_once()
+
+    @patch("octomil.agents.launcher.is_serve_running", return_value=False)
+    @patch("octomil.agents.launcher.subprocess.Popen")
+    def test_raises_on_early_exit(self, mock_popen, mock_running, tmp_path):
+        mock_proc = MagicMock()
+        mock_proc.poll.return_value = 1  # process already exited
+        mock_proc.returncode = 1
+        mock_popen.return_value = mock_proc
+
+        log_path = str(tmp_path / "serve.log")
+        # Write a fake log so tail reads something
+        with open(log_path, "w") as f:
+            f.write("error: model not found\n")
+
+        with (
+            patch("octomil.agents.launcher.time.sleep"),
+            patch("octomil.agents.launcher.os.path.join", return_value=log_path),
+        ):
+            with pytest.raises(RuntimeError, match="exited with code 1"):
+                start_serve_background("model", port=8080, timeout=5)
 
 
 # ---------------------------------------------------------------------------
@@ -181,9 +235,7 @@ class TestLaunchAgent:
     @patch("octomil.agents.launcher.start_serve_background")
     @patch("octomil.agents.launcher.is_serve_running", return_value=False)
     @patch("octomil.agents.registry.is_agent_installed", return_value=True)
-    def test_launch_starts_serve_when_not_running(
-        self, mock_installed, mock_running, mock_serve, mock_run
-    ):
+    def test_launch_starts_serve_when_not_running(self, mock_installed, mock_running, mock_serve, mock_run):
         mock_proc = MagicMock()
         mock_serve.return_value = mock_proc
         mock_run.return_value = MagicMock(returncode=0)
@@ -198,9 +250,7 @@ class TestLaunchAgent:
     @patch("octomil.agents.launcher.subprocess.run")
     @patch("octomil.agents.launcher.is_serve_running", return_value=True)
     @patch("octomil.agents.registry.is_agent_installed", return_value=False)
-    def test_launch_offers_install(
-        self, mock_installed, mock_running, mock_run, mock_confirm
-    ):
+    def test_launch_offers_install(self, mock_installed, mock_running, mock_run, mock_confirm):
         """When agent is not installed and user declines, raises SystemExit(1)."""
         with pytest.raises(SystemExit):
             launch_agent("claude")
@@ -212,9 +262,7 @@ class TestLaunchAgent:
     @patch("octomil.agents.launcher.subprocess.run")
     @patch("octomil.agents.launcher.is_serve_running", return_value=True)
     @patch("octomil.agents.registry.is_agent_installed", return_value=True)
-    def test_launch_sets_openai_api_key_for_openai_agents(
-        self, mock_installed, mock_running, mock_run
-    ):
+    def test_launch_sets_openai_api_key_for_openai_agents(self, mock_installed, mock_running, mock_run):
         mock_run.return_value = MagicMock(returncode=0)
 
         with pytest.raises(SystemExit):
@@ -230,9 +278,7 @@ class TestLaunchAgent:
     @patch("octomil.agents.launcher.start_serve_background")
     @patch("octomil.agents.launcher.is_serve_running", return_value=False)
     @patch("octomil.agents.registry.is_agent_installed", return_value=True)
-    def test_launch_auto_selects_when_no_model(
-        self, mock_installed, mock_running, mock_serve, mock_run, mock_auto
-    ):
+    def test_launch_auto_selects_when_no_model(self, mock_installed, mock_running, mock_serve, mock_run, mock_auto):
         mock_serve.return_value = MagicMock()
         mock_run.return_value = MagicMock(returncode=0)
 
@@ -247,9 +293,7 @@ class TestLaunchAgent:
     @patch("octomil.agents.launcher.start_serve_background")
     @patch("octomil.agents.launcher.is_serve_running", return_value=False)
     @patch("octomil.agents.registry.is_agent_installed", return_value=True)
-    def test_launch_shows_tui_with_select_flag(
-        self, mock_installed, mock_running, mock_serve, mock_run, mock_tui
-    ):
+    def test_launch_shows_tui_with_select_flag(self, mock_installed, mock_running, mock_serve, mock_run, mock_tui):
         mock_serve.return_value = MagicMock()
         mock_run.return_value = MagicMock(returncode=0)
 
@@ -275,6 +319,47 @@ class TestLaunchAgent:
 
         mock_auto.assert_not_called()
         mock_serve.assert_called_once_with("llama-8b", port=8080)
+
+    @patch("octomil.agents.launcher._select_agent_tui", return_value="codex")
+    @patch("octomil.agents.launcher.subprocess.run")
+    @patch("octomil.agents.launcher.is_serve_running", return_value=True)
+    @patch("octomil.agents.registry.is_agent_installed", return_value=True)
+    def test_launch_no_agent_shows_picker(self, mock_installed, mock_running, mock_run, mock_picker):
+        mock_run.return_value = MagicMock(returncode=0)
+
+        with pytest.raises(SystemExit):
+            launch_agent()  # no agent_name
+
+        mock_picker.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# Agent picker
+# ---------------------------------------------------------------------------
+
+
+class TestAgentPicker:
+    def test_picker_agents_exist_in_registry(self):
+        for name in _PICKER_AGENTS:
+            assert get_agent(name) is not None
+
+    @patch("shutil.which", return_value=None)
+    @patch("click.prompt", return_value="1")
+    def test_fallback_returns_first_agent(self, mock_prompt, mock_which):
+        from octomil.agents.registry import list_agents
+
+        agents = list_agents()
+        result = _select_agent_fallback(agents, lambda a: False)
+        assert result == agents[0].name
+
+    @patch("shutil.which", return_value=None)
+    @patch("click.prompt", return_value="codex")
+    def test_fallback_returns_custom_name(self, mock_prompt, mock_which):
+        from octomil.agents.registry import list_agents
+
+        agents = list_agents()
+        result = _select_agent_fallback(agents, lambda a: False)
+        assert result == "codex"
 
 
 # ---------------------------------------------------------------------------
@@ -419,9 +504,7 @@ class TestAutoSelectPrefersDownloaded:
 
     @patch("octomil.agents.launcher._get_memory_budget_gb", return_value=16.0)
     @patch("octomil.agents.launcher._build_recommendations")
-    def test_auto_select_picks_largest_when_none_downloaded(
-        self, mock_recs, mock_budget
-    ):
+    def test_auto_select_picks_largest_when_none_downloaded(self, mock_recs, mock_budget):
         """When no models are downloaded, pick the largest fitting model."""
         mock_recs.return_value = [
             RecommendedModel(
@@ -469,9 +552,7 @@ class TestAutoSelectPrefersDownloaded:
 
     @patch("octomil.agents.launcher._get_memory_budget_gb", return_value=16.0)
     @patch("octomil.agents.launcher._build_recommendations")
-    def test_auto_select_prints_already_downloaded_message(
-        self, mock_recs, mock_budget, capsys
-    ):
+    def test_auto_select_prints_already_downloaded_message(self, mock_recs, mock_budget, capsys):
         """When selecting a downloaded model, prints 'already downloaded'."""
         mock_recs.return_value = [
             RecommendedModel(
@@ -489,9 +570,7 @@ class TestAutoSelectPrefersDownloaded:
 
     @patch("octomil.agents.launcher._get_memory_budget_gb", return_value=16.0)
     @patch("octomil.agents.launcher._build_recommendations")
-    def test_auto_select_prints_will_download_message(
-        self, mock_recs, mock_budget, capsys
-    ):
+    def test_auto_select_prints_will_download_message(self, mock_recs, mock_budget, capsys):
         """When no model is downloaded, prints 'will download' with size."""
         mock_recs.return_value = [
             RecommendedModel(

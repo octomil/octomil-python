@@ -225,7 +225,21 @@ class ExperimentsAPI:
         confidence_level: float = 0.95,
         primary_metric: str = "conversion",
     ) -> dict[str, Any]:
-        payload = {
+        variants: list[dict[str, Any]] = [
+            {
+                "name": "control",
+                "model_version": control_version,
+                "traffic_allocation": control_allocation,
+                "is_control": True,
+            },
+            {
+                "name": "treatment",
+                "model_version": treatment_version,
+                "traffic_allocation": treatment_allocation,
+                "is_control": False,
+            },
+        ]
+        payload: dict[str, Any] = {
             "name": name,
             "model_id": model_id,
             "description": description,
@@ -233,27 +247,14 @@ class ExperimentsAPI:
             "min_sample_size": min_sample_size,
             "confidence_level": confidence_level,
             "primary_metric": primary_metric,
-            "variants": [
-                {
-                    "name": "control",
-                    "model_version": control_version,
-                    "traffic_allocation": control_allocation,
-                    "is_control": True,
-                },
-                {
-                    "name": "treatment",
-                    "model_version": treatment_version,
-                    "traffic_allocation": treatment_allocation,
-                    "is_control": False,
-                },
-            ],
+            "variants": variants,
         }
         result = self.api.post("/experiments", payload)
 
         # Emit experiment-assigned telemetry for each variant
         if self._reporter:
             experiment_id = result.get("id", "")
-            for variant in payload["variants"]:
+            for variant in variants:
                 try:
                     self._reporter.report_experiment_assigned(
                         model_id=model_id,

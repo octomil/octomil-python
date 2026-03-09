@@ -239,7 +239,7 @@ class _LazyFamiliesDict(dict):  # type: ignore[type-arg]
 
     def __bool__(self) -> bool:
         self._ensure_loaded()
-        return super().__bool__()
+        return len(self) > 0
 
 
 MODEL_FAMILIES: dict[str, ModelFamily] = _LazyFamiliesDict()  # type: ignore[assignment]

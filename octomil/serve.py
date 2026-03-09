@@ -29,7 +29,7 @@ import os
 import time
 import uuid
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, AsyncIterator, Optional
+from typing import TYPE_CHECKING, Any, AsyncIterator, Optional, Union
 
 if TYPE_CHECKING:
     from .early_exit import EarlyExitConfig, EarlyExitMonitor
@@ -116,10 +116,7 @@ def resolve_model_name(name: str, backend: str) -> str:
             return resolved.mlx_repo
         if resolved.hf_repo:
             return resolved.hf_repo
-        raise ValueError(
-            f"No MLX source found for '{name}'. "
-            f"Pass a full HuggingFace repo ID (e.g. REDACTED)"
-        )
+        raise ValueError(f"No MLX source found for '{name}'. " f"Pass a full HuggingFace repo ID (e.g. REDACTED)")
 
     if backend == "gguf":
         # For GGUF, return the short name — LlamaCppBackend resolves via _GGUF_MODELS
@@ -130,8 +127,7 @@ def resolve_model_name(name: str, backend: str) -> str:
         if resolved.is_gguf and family:
             return family
         raise ValueError(
-            f"No GGUF source found for '{name}'. "
-            f"Pass a path to a local .gguf file or a HuggingFace repo ID."
+            f"No GGUF source found for '{name}'. " f"Pass a path to a local .gguf file or a HuggingFace repo ID."
         )
 
     return name
@@ -251,7 +247,7 @@ class MLXBackend(InferenceBackend):
         self._repo_id = resolve_model_name(model_name, "mlx")
 
         logger.info("Loading %s (%s) with mlx-lm...", model_name, self._repo_id)
-        self._model, self._tokenizer = mlx_lm.load(self._repo_id)
+        self._model, self._tokenizer, *_ = mlx_lm.load(self._repo_id)
         logger.info("Model loaded: %s", self._repo_id)
 
         # Set Metal buffer cache limit to prevent unbounded growth
@@ -268,7 +264,7 @@ class MLXBackend(InferenceBackend):
         if draft_repo:
             logger.info("Loading draft model for speculative decoding: %s", draft_repo)
             try:
-                self._draft_model, _ = mlx_lm.load(draft_repo)
+                self._draft_model, *_ = mlx_lm.load(draft_repo)
             except Exception:
                 logger.debug("Draft model load failed (non-fatal)", exc_info=True)
 
@@ -283,9 +279,8 @@ class MLXBackend(InferenceBackend):
     def _apply_chat_template(self, messages: list[dict[str, str]]) -> str:
         """Format messages using the model's chat template."""
         try:
-            return self._tokenizer.apply_chat_template(
-                messages, tokenize=False, add_generation_prompt=True
-            )
+            result: str = self._tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+            return result
         except Exception:
             # Fallback for models without a chat template
             parts: list[str] = []
@@ -307,9 +302,7 @@ class MLXBackend(InferenceBackend):
         stripped = text.strip()
         return stripped in self._stop_strings
 
-    def _fetch_or_create_cache(
-        self, prompt_token_ids: list[int]
-    ) -> tuple[list[Any], list[int], bool]:
+    def _fetch_or_create_cache(self, prompt_token_ids: list[int]) -> tuple[list[Any], list[int], bool]:
         """Fetch a reusable prompt cache or create a fresh one.
 
         Returns (cache, remaining_tokens, cache_hit).  Looks up the longest
@@ -379,9 +372,7 @@ class MLXBackend(InferenceBackend):
         final_tps: float = 0.0
 
         # Fetch reusable prompt cache or create fresh
-        cache, remaining_tokens, cache_hit = self._fetch_or_create_cache(
-            prompt_token_ids
-        )
+        cache, remaining_tokens, cache_hit = self._fetch_or_create_cache(prompt_token_ids)
 
         extra_kwargs: dict[str, Any] = {
             "prompt_cache": cache,
@@ -439,9 +430,7 @@ class MLXBackend(InferenceBackend):
         sampler = self._make_sampler(request.temperature, request.top_p)
 
         # Fetch reusable prompt cache or create fresh
-        cache, remaining_tokens, _cache_hit = self._fetch_or_create_cache(
-            prompt_token_ids
-        )
+        cache, remaining_tokens, _cache_hit = self._fetch_or_create_cache(prompt_token_ids)
 
         extra_kwargs: dict[str, Any] = {
             "prompt_cache": cache,
@@ -778,10 +767,9 @@ def _detect_backend(
         engine = registry.get_engine(engine_override)
         if engine is None:
             available = [e.name for e in registry.engines]
-            raise ValueError(
-                f"Unknown engine '{engine_override}'. Available: {', '.join(available)}"
-            )
-        return engine.create_backend(model_name, **backend_kwargs)
+            raise ValueError(f"Unknown engine '{engine_override}'. Available: {', '.join(available)}")
+        backend: InferenceBackend = engine.create_backend(model_name, **backend_kwargs)
+        return backend
 
     # Detect all available engines for this model
     detections = registry.detect_all(model_name)
@@ -808,7 +796,8 @@ def _detect_backend(
         echo.load_model(model_name)
         return echo
 
-    return best.engine.create_backend(model_name, **backend_kwargs)
+    best_backend: InferenceBackend = best.engine.create_backend(model_name, **backend_kwargs)
+    return best_backend
 
 
 def _log_startup_error(model_name: str, exc: Exception) -> None:
@@ -922,9 +911,7 @@ class MultiModelServerState:
     compressor: Any = None  # PromptCompressor instance
 
 
-def _resolve_grammar(
-    body: ChatCompletionBody, default_json_mode: bool = False
-) -> tuple[Optional[str], bool]:
+def _resolve_grammar(body: ChatCompletionBody, default_json_mode: bool = False) -> tuple[Optional[str], bool]:
     """Determine the GBNF grammar string and json_mode flag from a request.
 
     Returns (grammar_string_or_None, is_json_mode).
@@ -1035,7 +1022,8 @@ def create_app(
     from fastapi.responses import StreamingResponse
 
     # Detect MoE model from catalog
-    from .models.catalog import get_moe_metadata, is_moe_model as _is_moe
+    from .models.catalog import get_moe_metadata
+    from .models.catalog import is_moe_model as _is_moe
 
     _moe_detected = _is_moe(model_name)
     _moe_meta = get_moe_metadata(model_name)
@@ -1077,8 +1065,7 @@ def create_app(
         if state.is_moe_model and state.moe_metadata and state.moe_config.enabled:
             _m = state.moe_metadata
             logger.info(
-                "MoE model detected: %s (%d experts, %d active per token, "
-                "%s total params, %s active params)",
+                "MoE model detected: %s (%d experts, %d active per token, " "%s total params, %s active params)",
                 model_name,
                 _m.num_experts,
                 _m.active_experts,
@@ -1124,9 +1111,7 @@ def create_app(
                 "Early exit enabled (threshold=%.2f, min_layers_frac=%.2f%s)",
                 state.early_exit_config.effective_threshold,
                 state.early_exit_config.effective_min_layers_fraction,
-                f", preset={state.early_exit_config.preset.value}"
-                if state.early_exit_config.preset
-                else "",
+                f", preset={state.early_exit_config.preset.value}" if state.early_exit_config.preset else "",
             )
 
         # Initialise request queue
@@ -1360,9 +1345,7 @@ def create_app(
                 from .batch import QueueFullError, QueueTimeoutError
 
                 try:
-                    text, metrics = await _queue.submit_generate(
-                        gen_req, state.backend.generate
-                    )
+                    text, metrics = await _queue.submit_generate(gen_req, state.backend.generate)
                 except QueueFullError:
                     raise HTTPException(
                         status_code=503,
@@ -1400,9 +1383,7 @@ def create_app(
                     text = json.dumps(extracted)
                 else:
                     # Retry once with a stronger system prompt
-                    retry_messages = _inject_json_system_prompt(
-                        messages, schema_for_prompt
-                    )
+                    retry_messages = _inject_json_system_prompt(messages, schema_for_prompt)
                     retry_req = GenerationRequest(
                         model=gen_req.model,
                         messages=retry_messages,
@@ -1440,11 +1421,7 @@ def create_app(
         if _reporter is not None:
             try:
                 total_tokens = metrics.total_tokens
-                throughput = (
-                    total_tokens / (gen_elapsed_ms / 1000)
-                    if gen_elapsed_ms > 0
-                    else 0.0
-                )
+                throughput = total_tokens / (gen_elapsed_ms / 1000) if gen_elapsed_ms > 0 else 0.0
                 _reporter.report_inference_completed(
                     session_id=session_id,
                     model_id=gen_req.model,
@@ -1573,9 +1550,7 @@ def create_app(
                 "display_name": d.engine.display_name,
                 "available": d.available,
                 "info": d.info,
-                "active": (
-                    state.backend is not None and state.backend.name == d.engine.name
-                ),
+                "active": (state.backend is not None and state.backend.name == d.engine.name),
             }
             engines_list.append(entry)
 
@@ -1587,9 +1562,7 @@ def create_app(
     @app.get("/health")
     async def health() -> dict[str, Any]:
         cache_info: dict[str, Any] = {"enabled": state.cache_enabled}
-        cache_mgr = (
-            _get_cache_manager(state.backend) if state.backend is not None else None
-        )
+        cache_mgr = _get_cache_manager(state.backend) if state.backend is not None else None
         if cache_mgr is not None:
             cs = cache_mgr.stats()
             cache_info["entries"] = cs.entries
@@ -1632,8 +1605,7 @@ def create_app(
         if state.whisper_backend is None:
             raise HTTPException(
                 status_code=503,
-                detail="No whisper model loaded. Start server with a whisper model: "
-                "octomil serve whisper-base",
+                detail="No whisper model loaded. Start server with a whisper model: " "octomil serve whisper-base",
             )
 
         if file is None:
@@ -1651,7 +1623,7 @@ def create_app(
             os.close(fd)
 
             state.request_count += 1
-            result = state.whisper_backend.transcribe(tmp_path)
+            result: dict[str, Any] = state.whisper_backend.transcribe(tmp_path)
             return result
         finally:
             if os.path.exists(tmp_path):
@@ -1661,7 +1633,7 @@ def create_app(
 
 
 async def _stream_response(
-    state: ServerState,
+    state: Union[ServerState, "_MultiModelStateAdapter"],
     request: GenerationRequest,
     req_id: str,
     session_id: str = "",
@@ -1739,16 +1711,8 @@ async def _stream_response(
     if _reporter is not None and not failed:
         try:
             total_duration_ms = (time.monotonic() - stream_start) * 1000
-            ttfc_ms = (
-                (first_chunk_time - stream_start) * 1000
-                if first_chunk_time is not None
-                else 0.0
-            )
-            throughput = (
-                chunk_index / (total_duration_ms / 1000)
-                if total_duration_ms > 0
-                else 0.0
-            )
+            ttfc_ms = (first_chunk_time - stream_start) * 1000 if first_chunk_time is not None else 0.0
+            throughput = chunk_index / (total_duration_ms / 1000) if total_duration_ms > 0 else 0.0
             _reporter.report_inference_completed(
                 session_id=session_id,
                 model_id=request.model,
@@ -1757,11 +1721,7 @@ async def _stream_response(
                 total_duration_ms=total_duration_ms,
                 ttfc_ms=ttfc_ms,
                 throughput=throughput,
-                attention_backend=(
-                    state.backend.attention_backend
-                    if state.backend is not None
-                    else None
-                ),
+                attention_backend=(state.backend.attention_backend if state.backend is not None else None),
             )
         except Exception:
             pass
@@ -1792,9 +1752,7 @@ async def _queued_stream_response(
     prev_chunk_time = stream_start
 
     try:
-        chunk_iter = queue.submit_generate_stream(
-            request, state.backend.generate_stream
-        )
+        chunk_iter = queue.submit_generate_stream(request, state.backend.generate_stream)
         # Build SSE events from the chunk iterator (same format as _stream_response)
         chunk_index = 0
         async for chunk in chunk_iter:
@@ -1846,16 +1804,8 @@ async def _queued_stream_response(
         if _reporter is not None:
             try:
                 total_duration_ms = (time.monotonic() - stream_start) * 1000
-                ttfc_ms = (
-                    (first_chunk_time - stream_start) * 1000
-                    if first_chunk_time is not None
-                    else 0.0
-                )
-                throughput = (
-                    chunk_index / (total_duration_ms / 1000)
-                    if total_duration_ms > 0
-                    else 0.0
-                )
+                ttfc_ms = (first_chunk_time - stream_start) * 1000 if first_chunk_time is not None else 0.0
+                throughput = chunk_index / (total_duration_ms / 1000) if total_duration_ms > 0 else 0.0
                 _reporter.report_inference_completed(
                     session_id=session_id,
                     model_id=request.model,
@@ -2056,9 +2006,7 @@ def create_multi_model_app(
         if state.reporter is not None:
             state.reporter.close()
 
-    app = FastAPI(
-        title="Octomil Serve (Multi-Model)", version="1.0.0", lifespan=lifespan
-    )
+    app = FastAPI(title="Octomil Serve (Multi-Model)", version="1.0.0", lifespan=lifespan)
 
     app.add_middleware(
         CORSMiddleware,
@@ -2125,9 +2073,7 @@ def create_multi_model_app(
                 if rf.get("type") == "json_schema":
                     raw = rf.get("json_schema") or rf.get("schema")
                     schema_for_prompt = raw.get("schema", raw) if raw else None
-                req_messages = _inject_json_system_prompt(
-                    req_messages, schema_for_prompt
-                )
+                req_messages = _inject_json_system_prompt(req_messages, schema_for_prompt)
 
             gen_req = GenerationRequest(
                 model=model_name,
@@ -2207,9 +2153,7 @@ def create_multi_model_app(
                     if extracted is not None:
                         text = json.dumps(extracted)
                     else:
-                        retry_messages = _inject_json_system_prompt(
-                            messages, schema_for_prompt
-                        )
+                        retry_messages = _inject_json_system_prompt(messages, schema_for_prompt)
                         retry_req = GenerationRequest(
                             model=model_name,
                             messages=retry_messages,
@@ -2229,11 +2173,7 @@ def create_multi_model_app(
             if _reporter is not None:
                 try:
                     total_tokens = metrics.total_tokens
-                    throughput = (
-                        total_tokens / (gen_elapsed_ms / 1000)
-                        if gen_elapsed_ms > 0
-                        else 0.0
-                    )
+                    throughput = total_tokens / (gen_elapsed_ms / 1000) if gen_elapsed_ms > 0 else 0.0
                     _reporter.report_inference_completed(
                         session_id=session_id,
                         model_id=model_name,
@@ -2357,9 +2297,7 @@ def create_multi_model_app(
                 if rf.get("type") == "json_schema":
                     raw = rf.get("json_schema") or rf.get("schema")
                     schema_for_prompt = raw.get("schema", raw) if raw else None
-                req_messages = _inject_json_system_prompt(
-                    req_messages, schema_for_prompt
-                )
+                req_messages = _inject_json_system_prompt(req_messages, schema_for_prompt)
 
             gen_req = GenerationRequest(
                 model=model_name,
@@ -2373,9 +2311,7 @@ def create_multi_model_app(
             )
 
             mm_state.request_count += 1
-            mm_state.routed_counts[model_name] = (
-                mm_state.routed_counts.get(model_name, 0) + 1
-            )
+            mm_state.routed_counts[model_name] = mm_state.routed_counts.get(model_name, 0) + 1
 
             try:
                 text, _metrics = backend.generate(gen_req)

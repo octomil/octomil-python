@@ -51,6 +51,8 @@ hidden_imports = [
     "octomil.commands.federation",
     "octomil.commands.interactive",
     "octomil.commands.completions",
+    "octomil.commands.setup",
+    "octomil.setup",
     "octomil.demos",
     "octomil.cli_hw",
     "octomil.sources",

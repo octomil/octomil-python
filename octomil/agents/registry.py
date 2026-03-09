@@ -13,6 +13,7 @@ class AgentDef:
 
     name: str  # short key: "claude", "codex", etc.
     display_name: str  # "Claude Code", "Codex CLI", etc.
+    description: str  # one-line description for picker
     env_key: str  # env var for API base URL
     install_check: str  # command to check if installed (e.g. "claude")
     install_cmd: str  # command to install the agent
@@ -24,6 +25,7 @@ AGENTS: dict[str, AgentDef] = {
     "claude": AgentDef(
         name="claude",
         display_name="Claude Code",
+        description="Anthropic's agentic coding tool",
         env_key="ANTHROPIC_BASE_URL",
         install_check="claude",
         install_cmd="npm install -g @anthropic-ai/claude-code",
@@ -33,14 +35,35 @@ AGENTS: dict[str, AgentDef] = {
     "codex": AgentDef(
         name="codex",
         display_name="Codex CLI",
+        description="OpenAI's lightweight coding agent",
         env_key="OPENAI_BASE_URL",
         install_check="codex",
         install_cmd="npm install -g @openai/codex",
         exec_cmd="codex",
     ),
+    "droid": AgentDef(
+        name="droid",
+        display_name="Droid",
+        description="Factory's software development agent",
+        env_key="OPENAI_BASE_URL",
+        install_check="droid",
+        install_cmd="npm install -g droid",
+        exec_cmd="droid",
+        needs_local_model=False,
+    ),
+    "opencode": AgentDef(
+        name="opencode",
+        display_name="OpenCode",
+        description="Open source coding agent, 75+ providers",
+        env_key="OPENAI_BASE_URL",
+        install_check="opencode",
+        install_cmd="npm install -g opencode-ai@latest",
+        exec_cmd="opencode",
+    ),
     "openclaw": AgentDef(
         name="openclaw",
         display_name="OpenClaw",
+        description="Conversational agent with chat channels",
         env_key="OPENAI_BASE_URL",
         install_check="openclaw",
         install_cmd="npm install -g openclaw",
@@ -49,6 +72,7 @@ AGENTS: dict[str, AgentDef] = {
     "aider": AgentDef(
         name="aider",
         display_name="Aider",
+        description="AI pair programming in your terminal",
         env_key="OPENAI_API_BASE",
         install_check="aider",
         install_cmd="pip install aider-chat",

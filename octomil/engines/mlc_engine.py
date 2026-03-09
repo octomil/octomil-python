@@ -22,11 +22,9 @@ from .base import BenchmarkResult, EnginePlugin
 logger = logging.getLogger(__name__)
 
 # Models known to work with MLC-LLM — derived from the unified catalog.
-from ..models.catalog import CATALOG as _UNIFIED_CATALOG
+from ..models.catalog import CATALOG as _UNIFIED_CATALOG  # noqa: E402
 
-_MLC_CATALOG = {
-    name for name, entry in _UNIFIED_CATALOG.items() if "mlc-llm" in entry.engines
-}
+_MLC_CATALOG = {name for name, entry in _UNIFIED_CATALOG.items() if "mlc-llm" in entry.engines}
 
 # MLC-LLM quantization format suffixes
 _MLC_QUANT_SUFFIXES = frozenset(
@@ -157,12 +155,7 @@ class MLCEngine(EnginePlugin):
         from ..models.catalog import _resolve_alias
 
         canonical = _resolve_alias(model_name)
-        return (
-            canonical in _MLC_CATALOG
-            or model_name.endswith("-MLC")
-            or "mlc-ai/" in model_name
-            or "/" in model_name
-        )
+        return canonical in _MLC_CATALOG or model_name.endswith("-MLC") or "mlc-ai/" in model_name or "/" in model_name
 
     def benchmark(self, model_name: str, n_tokens: int = 32) -> BenchmarkResult:
         """Run a quick inference benchmark using MLC-LLM engine."""
@@ -171,9 +164,7 @@ class MLCEngine(EnginePlugin):
 
         gpu = _detect_gpu()
         if gpu is None:
-            return BenchmarkResult(
-                engine_name=self.name, error="No GPU detected for MLC-LLM"
-            )
+            return BenchmarkResult(engine_name=self.name, error="No GPU detected for MLC-LLM")
 
         try:
             from mlc_llm import MLCEngine as _MLCEngine  # type: ignore[import-untyped]
@@ -288,6 +279,7 @@ class MLCBackend:
         """Generate a complete response (non-streaming)."""
         if self._engine is None:
             self.load_model(self._model_name)
+        assert self._engine is not None
 
         response = self._engine.chat.completions.create(
             messages=[{"role": "user", "content": prompt}],
@@ -311,6 +303,7 @@ class MLCBackend:
         """Generate tokens in a streaming fashion, yielding each token."""
         if self._engine is None:
             self.load_model(self._model_name)
+        assert self._engine is not None
 
         for chunk in self._engine.chat.completions.create(
             messages=[{"role": "user", "content": prompt}],

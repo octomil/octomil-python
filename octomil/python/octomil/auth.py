@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 try:
     import keyring
 except ImportError:  # pragma: no cover - optional dependency
-    keyring = None
+    keyring = None  # type: ignore[assignment]
 
 
 @dataclass

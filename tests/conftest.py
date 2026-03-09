@@ -805,8 +805,10 @@ def _mock_model_routing_clients(monkeypatch):
             "fast": EarlyExitPresetConfig(threshold=0.5, min_layers_fraction=0.25),
         },
         routing_offsets=RoutingOffsets(
-            REDACTED_FIELD=0.5,
-            REDACTED_FIELD=0.25,
+            quality_score_offset=0.5,
+            balanced_score_offset=0.25,
+            latency_offset=0.5,
+            throughput_offset=0.25,
         ),
         smart_router=SmartRouterDefaults(
             long_gen_threshold=512,

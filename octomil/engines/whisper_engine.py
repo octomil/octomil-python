@@ -93,9 +93,7 @@ class WhisperCppEngine(EnginePlugin):
         ``audio_seconds_per_second`` (real-time factor).
         """
         if not _has_pywhispercpp():
-            return BenchmarkResult(
-                engine_name=self.name, error="pywhispercpp not available"
-            )
+            return BenchmarkResult(engine_name=self.name, error="pywhispercpp not available")
 
         if not is_whisper_model(model_name):
             return BenchmarkResult(
@@ -163,8 +161,7 @@ class _WhisperBackend:
         whisper_size = _WHISPER_MODELS.get(model_name.lower())
         if whisper_size is None:
             raise ValueError(
-                f"Unknown whisper model '{model_name}'. "
-                f"Available: {', '.join(sorted(_WHISPER_MODELS))}"
+                f"Unknown whisper model '{model_name}'. " f"Available: {', '.join(sorted(_WHISPER_MODELS))}"
             )
 
         from pywhispercpp.model import Model  # type: ignore[import-untyped]
@@ -188,6 +185,7 @@ class _WhisperBackend:
         """
         if self._model is None:
             self.load_model(self._model_name)
+        assert self._model is not None
 
         segments_raw = self._model.transcribe(audio_path)
 

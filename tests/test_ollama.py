@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from typing import Any
 from unittest.mock import MagicMock, patch
 
 import httpx
@@ -61,8 +62,8 @@ SAMPLE_TAGS_RESPONSE = {
 }
 
 
-def _make_model(**overrides) -> OllamaModel:
-    defaults = {
+def _make_model(**overrides: Any) -> OllamaModel:
+    defaults: dict[str, Any] = {
         "name": "gemma:2b",
         "size": 1_678_000_000,
         "family": "gemma",
@@ -152,9 +153,7 @@ class TestListOllamaModels:
     def test_returns_empty_on_http_error(self, mock_get):
         mock_resp = MagicMock()
         mock_resp.status_code = 500
-        mock_resp.raise_for_status.side_effect = httpx.HTTPStatusError(
-            "error", request=MagicMock(), response=mock_resp
-        )
+        mock_resp.raise_for_status.side_effect = httpx.HTTPStatusError("error", request=MagicMock(), response=mock_resp)
         mock_get.return_value = mock_resp
         assert list_ollama_models() == []
 
@@ -354,10 +353,15 @@ class TestDeployWithOllama:
         )
 
         mock_check = MagicMock(status_code=200, json=MagicMock(return_value={"name": "gemma:2b"}))
-        mock_post_resp = MagicMock(status_code=200, json=MagicMock(return_value={
-            "code": "XYZ789",
-            "expires_at": "2026-02-18T12:00:00Z",
-        }))
+        mock_post_resp = MagicMock(
+            status_code=200,
+            json=MagicMock(
+                return_value={
+                    "code": "XYZ789",
+                    "expires_at": "2026-02-18T12:00:00Z",
+                }
+            ),
+        )
         mock_poll_resp = MagicMock(status_code=200, json=MagicMock(return_value={"status": "done"}))
 
         mock_client = MagicMock()
@@ -384,10 +388,15 @@ class TestDeployWithOllama:
         monkeypatch.setenv("OCTOMIL_API_KEY", "test-key")
 
         mock_check = MagicMock(status_code=200, json=MagicMock(return_value={"name": "my-custom-model"}))
-        mock_post_resp = MagicMock(status_code=200, json=MagicMock(return_value={
-            "code": "ABC123",
-            "expires_at": "2026-02-18T12:00:00Z",
-        }))
+        mock_post_resp = MagicMock(
+            status_code=200,
+            json=MagicMock(
+                return_value={
+                    "code": "ABC123",
+                    "expires_at": "2026-02-18T12:00:00Z",
+                }
+            ),
+        )
         mock_poll_resp = MagicMock(status_code=200, json=MagicMock(return_value={"status": "done"}))
 
         mock_client = MagicMock()

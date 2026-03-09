@@ -267,42 +267,39 @@ setup_completions() {
 }
 
 # ---------------------------------------------------------------------------
-# Install Python SDK
+# Engine setup (background)
 # ---------------------------------------------------------------------------
 
-detect_or_install_ollama() {
-    # Check if ollama is already installed
-    if command -v ollama >/dev/null 2>&1; then
-        OLLAMA_VERSION=$(ollama --version 2>&1 || true)
-        info "Ollama detected: ${OLLAMA_VERSION}"
+setup_engine_background() {
+    OCTOMIL_BIN="${INSTALL_DIR}/${BINARY_NAME}"
+    STATE_FILE="${HOME}/.octomil/setup_state.json"
+
+    # Skip if setup already completed
+    if [ -f "$STATE_FILE" ]; then
+        PHASE=$(grep '"phase"' "$STATE_FILE" 2>/dev/null | sed -E 's/.*"phase":[[:space:]]*"([^"]+)".*/\1/' || true)
+        if [ "$PHASE" = "complete" ]; then
+            info "Engine already set up."
+            return
+        fi
+    fi
+
+    # Verify the binary can run setup
+    if ! "$OCTOMIL_BIN" setup --status >/dev/null 2>&1; then
+        warn "Could not run 'octomil setup'. Skipping engine auto-setup."
+        echo ""
+        echo "  You can set up manually later:"
+        echo "    octomil setup"
+        echo ""
         return
     fi
 
-    info "Ollama not found — recommended for on-device inference."
-    echo ""
-    echo "  Install Ollama (no pip needed):"
+    info "Setting up native inference engine in background..."
+    echo "  This installs the best engine for your hardware and downloads a model."
+    echo "  Run 'octomil setup --status' to check progress."
     echo ""
 
-    OS_NAME="$(uname -s)"
-    case "$OS_NAME" in
-        Darwin)
-            echo "    brew install ollama"
-            echo ""
-            echo "  Or download from: https://ollama.com/download/mac"
-            ;;
-        Linux)
-            echo "    curl -fsSL https://ollama.com/install.sh | sh"
-            ;;
-        *)
-            echo "    Visit https://ollama.com/download"
-            ;;
-    esac
-
-    echo ""
-    echo "  After installing, start the server:"
-    echo ""
-    echo "    ollama serve"
-    echo ""
+    mkdir -p "${HOME}/.octomil"
+    nohup "$OCTOMIL_BIN" setup --foreground > "${HOME}/.octomil/setup.log" 2>&1 &
 }
 
 # ---------------------------------------------------------------------------
@@ -316,7 +313,7 @@ main() {
     download_and_install
     verify
     setup_completions
-    detect_or_install_ollama
+    setup_engine_background
 
     echo ""
     info "Octomil ${VERSION} installed successfully."

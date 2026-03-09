@@ -390,7 +390,7 @@ def _safe_eval(expr: str) -> Optional[float]:
     if pct:
         return (float(pct.group(1)) / 100.0) * float(pct.group(2))
 
-    _SAFE_NODES = (
+    _SAFE_NODES: tuple[type[ast.AST], ...] = (
         ast.Expression,
         ast.Constant,
         ast.UnaryOp,
@@ -432,7 +432,10 @@ def _safe_eval(expr: str) -> Optional[float]:
         if isinstance(node, ast.Constant) and isinstance(node.value, (int, float)):
             return float(node.value)
         if hasattr(ast, "Num") and isinstance(node, ast.Num):
-            return float(node.n)
+            n = node.n  # type: ignore[attr-defined]
+            if isinstance(n, (int, float)):
+                return float(n)
+            raise ValueError
         if isinstance(node, ast.UnaryOp):
             val = _eval_node(node.operand)
             if isinstance(node.op, ast.UAdd):
@@ -456,11 +459,13 @@ def _safe_eval(expr: str) -> Optional[float]:
                 raise ValueError
             if isinstance(node.op, ast.Pow) and abs(right) > 10000:
                 raise ValueError("Exponent too large")
-            return fn(left, right)
+            binop_result: float = fn(left, right)
+            return binop_result
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
             if node.func.id not in _FUNCS or node.keywords:
                 raise ValueError
-            return _FUNCS[node.func.id](*[_eval_node(a) for a in node.args])
+            fn_result: float = _FUNCS[node.func.id](*[_eval_node(a) for a in node.args])
+            return fn_result
         if isinstance(node, ast.Name) and node.id in _CONSTS:
             return _CONSTS[node.id]
         raise ValueError
@@ -544,8 +549,8 @@ class QueryRouter:
             key=lambda n: models[n].tier_index,
         )
 
-        _base = api_base or os.environ.get("OCTOMIL_API_BASE", "https://api.octomil.com/api/v1")
-        _key = api_key or os.environ.get("OCTOMIL_API_KEY", "")
+        _base: str = api_base or os.environ.get("OCTOMIL_API_BASE") or "https://api.octomil.com/api/v1"
+        _key: str = api_key or os.environ.get("OCTOMIL_API_KEY") or ""
         self._policy_client = PolicyClient(api_base=_base, api_key=_key)
 
         logger.info(

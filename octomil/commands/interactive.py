@@ -13,7 +13,6 @@ import click
 
 from octomil.cli_helpers import _complete_model_name
 
-
 # ---------------------------------------------------------------------------
 # octomil chat
 # ---------------------------------------------------------------------------
@@ -148,10 +147,7 @@ def warmup() -> None:
 
 
 @click.command()
-@click.argument(
-    "agent",
-    type=click.Choice(["claude", "codex", "openclaw", "aider"], case_sensitive=False),
-)
+@click.argument("agent", required=False, default=None)
 @click.option(
     "--model",
     "-m",
@@ -160,9 +156,10 @@ def warmup() -> None:
 )
 @click.option("--port", "-p", default=8080, help="Port for local server.")
 @click.option("--select", "-s", is_flag=True, help="Interactively choose a model.")
-def launch(agent: str, model: Optional[str], port: int, select: bool) -> None:
+def launch(agent: Optional[str], model: Optional[str], port: int, select: bool) -> None:
     """Launch a coding agent powered by a local model.
 
+    Run without arguments to pick an agent interactively.
     Starts octomil serve in the background (if not already running),
     configures the agent's environment to point at the local
     OpenAI-compatible endpoint, and execs the agent.
@@ -171,10 +168,10 @@ def launch(agent: str, model: Optional[str], port: int, select: bool) -> None:
 
     \b
     Examples:
+        octomil launch
         octomil launch codex
         octomil launch codex --select
         octomil launch codex --model codestral
-        octomil launch aider --model deepseek-coder-v2
     """
     from octomil.agents.launcher import launch_agent
 
@@ -234,9 +231,7 @@ def demo_code_assistant(
     """
     from octomil.demos.code_assistant import run_demo
 
-    effective_model: str = (
-        model if model else os.environ.get("OCTOMIL_MODEL", "gemma-2b")
-    )
+    effective_model: str = model if model else os.environ.get("OCTOMIL_MODEL", "gemma-2b")
     effective_url: str = url if url else f"http://localhost:{port}"
     run_demo(url=effective_url, model=effective_model, auto_start=not no_auto_start)
 
@@ -265,7 +260,7 @@ def completions(shell: Optional[str]) -> None:
     snippets = {
         "bash": 'eval "$(_OCTOMIL_COMPLETE=bash_source octomil)"',
         "zsh": 'eval "$(_OCTOMIL_COMPLETE=zsh_source octomil)"',
-        "fish": '_OCTOMIL_COMPLETE=fish_source octomil | source',
+        "fish": "_OCTOMIL_COMPLETE=fish_source octomil | source",
     }
     rc_files = {"bash": "~/.bashrc", "zsh": "~/.zshrc", "fish": "~/.config/fish/config.fish"}
 

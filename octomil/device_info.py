@@ -101,7 +101,7 @@ def get_network_type() -> str:
                 continue
             iface_lower = iface.lower()
             if "wlan" in iface_lower or iface_lower == "en0" or "wi-fi" in iface_lower:
-                return REDACTED_STUB
+                return "wifi"
             if "eth" in iface_lower or iface_lower.startswith("en"):
                 return "ethernet"
             if "wwan" in iface_lower or "rmnet" in iface_lower:

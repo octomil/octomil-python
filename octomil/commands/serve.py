@@ -25,9 +25,7 @@ def register(cli: click.Group) -> None:
 @click.option("--port", "-p", default=8080, help="Port to listen on.")
 @click.option("--host", default="0.0.0.0", help="Host to bind to.")
 @click.option("--benchmark", is_flag=True, help="Run latency benchmark on startup.")
-@click.option(
-    "--share", is_flag=True, help="Share anonymous benchmark data with Octomil."
-)
+@click.option("--share", is_flag=True, help="Share anonymous benchmark data with Octomil.")
 @click.option(
     "--json-mode",
     is_flag=True,
@@ -60,8 +58,7 @@ def register(cli: click.Group) -> None:
 @click.option(
     "--auto-route",
     is_flag=True,
-    help="Enable automatic query routing across loaded models. "
-    "Requires --models with 2+ models.",
+    help="Enable automatic query routing across loaded models. " "Requires --models with 2+ models.",
 )
 @click.option(
     "--route-strategy",
@@ -100,8 +97,7 @@ def register(cli: click.Group) -> None:
     "--compression-max-turns",
     default=4,
     type=int,
-    help="Number of recent conversation turns to keep verbatim "
-    "when using sliding_window strategy (default: 4).",
+    help="Number of recent conversation turns to keep verbatim " "when using sliding_window strategy (default: 4).",
 )
 @click.option(
     "--compression-threshold",
@@ -194,9 +190,7 @@ def serve(
     """
     api_key = _get_api_key() if share else None
     api_base: str = (
-        os.environ.get("OCTOMIL_API_URL")
-        or os.environ.get("OCTOMIL_API_BASE")
-        or "https://api.octomil.com/api/v1"
+        os.environ.get("OCTOMIL_API_URL") or os.environ.get("OCTOMIL_API_BASE") or "https://api.octomil.com/api/v1"
     )
     cache_enabled = not no_cache
 
@@ -260,9 +254,7 @@ def serve(
             click.echo(f"Engine: {engine} (manual override)")
         if json_mode:
             click.echo("JSON mode: enabled (all responses default to valid JSON)")
-        click.echo(
-            f"OpenAI-compatible API: http://localhost:{port}/v1/chat/completions"
-        )
+        click.echo(f"OpenAI-compatible API: http://localhost:{port}/v1/chat/completions")
     click.echo(f"Engine info: http://localhost:{port}/v1/engines")
     click.echo(f"Health check: http://localhost:{port}/health")
     if not is_whisper:
@@ -296,9 +288,7 @@ def serve(
     )
 
     if not is_whisper and ee_config.enabled:
-        preset_label = (
-            f" (preset: {ee_config.preset.value})" if ee_config.preset else ""
-        )
+        preset_label = f" (preset: {ee_config.preset.value})" if ee_config.preset else ""
         click.echo(
             f"Early exit: enabled (threshold={ee_config.effective_threshold:.2f}"
             f", min_layers_frac={ee_config.effective_min_layers_fraction:.2f}"
@@ -423,44 +413,24 @@ def _prompt_engine_install() -> bool:
     # Build platform-specific recommendation list (best performance first)
     recommendations: list[tuple[str, str]] = []  # (label, install_cmd)
     if is_apple_silicon:
-        recommendations.append(
-            ("MLX — fastest on Apple Silicon", "pip install octomil-sdk[mlx]")
-        )
-        recommendations.append(
-            ("llama.cpp — good alternative", "pip install llama-cpp-python")
-        )
+        recommendations.append(("MLX — fastest on Apple Silicon", "pip install octomil-sdk[mlx]"))
+        recommendations.append(("llama.cpp — good alternative", "pip install llama-cpp-python"))
     elif system == "Darwin":
-        recommendations.append(
-            ("llama.cpp", "pip install llama-cpp-python")
-        )
-        recommendations.append(
-            ("ONNX Runtime", "pip install onnxruntime")
-        )
+        recommendations.append(("llama.cpp", "pip install llama-cpp-python"))
+        recommendations.append(("ONNX Runtime", "pip install onnxruntime"))
     elif system == "Linux":
-        recommendations.append(
-            ("llama.cpp", "pip install llama-cpp-python")
-        )
-        recommendations.append(
-            ("ONNX Runtime", "pip install onnxruntime")
-        )
+        recommendations.append(("llama.cpp", "pip install llama-cpp-python"))
+        recommendations.append(("ONNX Runtime", "pip install onnxruntime"))
     else:
-        recommendations.append(
-            ("llama.cpp", "pip install llama-cpp-python")
-        )
+        recommendations.append(("llama.cpp", "pip install llama-cpp-python"))
 
     # Ollama always last — zero-pip fallback
     if system == "Darwin":
-        recommendations.append(
-            ("Ollama — no pip needed", "brew install ollama")
-        )
+        recommendations.append(("Ollama — no pip needed", "brew install ollama"))
     elif system == "Linux":
-        recommendations.append(
-            ("Ollama — no pip needed", "curl -fsSL https://ollama.com/install.sh | sh")
-        )
+        recommendations.append(("Ollama — no pip needed", "curl -fsSL https://ollama.com/install.sh | sh"))
     else:
-        recommendations.append(
-            ("Ollama — no pip needed", "Visit https://ollama.com/download")
-        )
+        recommendations.append(("Ollama — no pip needed", "Visit https://ollama.com/download"))
 
     if not sys.stdin.isatty():
         # Non-interactive: print all options
@@ -489,9 +459,7 @@ def _prompt_engine_install() -> bool:
                 from octomil.ollama import is_ollama_running
 
                 if is_ollama_running():
-                    click.echo(
-                        click.style("  Ollama started.\n", fg="green")
-                    )
+                    click.echo(click.style("  Ollama started.\n", fg="green"))
                     return True
             except Exception:
                 pass
@@ -517,9 +485,7 @@ def _prompt_engine_install() -> bool:
                 pip_cmd = [sys.executable, "-m", "pip", "install", pkg]
             try:
                 subprocess.check_call(pip_cmd)
-                click.echo(
-                    click.style(f"\n  {pkg} installed successfully.\n", fg="green")
-                )
+                click.echo(click.style(f"\n  {pkg} installed successfully.\n", fg="green"))
                 try:
                     reporter = _get_telemetry_reporter()
                     if reporter:
@@ -569,16 +535,18 @@ def _print_engine_detection(model: str, engine_override: str | None) -> None:
         click.echo(f"\nBenchmarking {model} across {len(available)} engines...")
         click.echo("(this runs a quick 32-token generation on each)")
     elif len(available) == 1:
-        click.echo(
-            f"\nUsing {available[0].engine.display_name} (only available engine)"
-        )
+        click.echo(f"\nUsing {available[0].engine.display_name} (only available engine)")
     else:
+        # Frozen binary: try re-exec into managed venv before prompting
+        if getattr(sys, "frozen", False):
+            reexeced = _try_venv_reexec()
+            if reexeced:
+                return  # os.execv replaces process; this line is unreachable
+
         installed = _prompt_engine_install()
         if installed:
             detections = registry.detect_all(model)
-            available = [
-                d for d in detections if d.available and d.engine.name != "echo"
-            ]
+            available = [d for d in detections if d.available and d.engine.name != "echo"]
             if available:
                 click.echo(f"  Using {available[0].engine.display_name}")
                 return
@@ -588,3 +556,74 @@ def _print_engine_detection(model: str, engine_override: str | None) -> None:
                 dim=True,
             )
         )
+
+
+def _try_venv_reexec() -> bool:
+    """Try to re-exec into the managed venv's Python for native engine support.
+
+    When running from a frozen binary with no native engines, this checks
+    if ``octomil setup`` has prepared a venv with mlx-lm or llama.cpp.
+    If so, ``os.execv()`` replaces this process entirely with the venv's
+    Python running ``octomil serve``. Single process, no proxy.
+
+    Returns True if re-exec was initiated (unreachable after os.execv).
+    Returns False if no venv is available and we should fall through.
+    """
+    from octomil.setup import (
+        get_venv_python,
+        is_engine_ready,
+        is_setup_in_progress,
+    )
+
+    if is_setup_in_progress():
+        _wait_for_setup()
+
+    venv_py = get_venv_python()
+    if not venv_py or not is_engine_ready():
+        return False
+
+    # Build the argv for re-exec: venv python -m octomil serve <original args>
+    # Reconstruct original args from sys.argv (frozen binary: ["octomil", "serve", ...])
+    # We need everything after "serve" in the original invocation.
+    original_args = sys.argv[1:]  # ["serve", "model", "--port", "8080", ...]
+    new_argv = [venv_py, "-m", "octomil", *original_args]
+
+    click.echo(
+        click.style(
+            "\n  Re-launching with native engine via managed venv...\n",
+            fg="green",
+        )
+    )
+    os.execv(venv_py, new_argv)
+    return True  # unreachable after execv
+
+
+def _wait_for_setup() -> None:
+    """Wait for a running ``octomil setup`` to finish, showing progress."""
+    import time
+
+    from octomil.setup import is_setup_in_progress, load_state
+
+    click.echo("\n  Engine setup is in progress, waiting...")
+    phase_labels = {
+        "creating_venv": "creating virtual environment",
+        "installing_engine": "installing inference engine",
+        "downloading_model": "downloading model",
+    }
+
+    last_phase = ""
+    waited = 0
+    while is_setup_in_progress() and waited < 600:
+        state = load_state()
+        label = phase_labels.get(state.phase, state.phase)
+        if state.phase != last_phase:
+            click.echo(f"    {label}...")
+            last_phase = state.phase
+        time.sleep(2)
+        waited += 2
+
+    state = load_state()
+    if state.phase == "complete":
+        click.echo(click.style("  Setup complete.", fg="green"))
+    elif state.phase == "failed":
+        click.echo(click.style(f"  Setup failed: {state.error}", fg="red"))

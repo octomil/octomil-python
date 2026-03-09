@@ -29,9 +29,7 @@ def register(cli: click.Group) -> None:
 
 
 @click.command()
-@click.argument(
-    "path", required=False, default=None, shell_complete=_complete_model_name
-)
+@click.argument("path", required=False, default=None, shell_complete=_complete_model_name)
 @click.option(
     "--model-id",
     "-m",
@@ -39,9 +37,7 @@ def register(cli: click.Group) -> None:
     help="Model ID in the registry. Inferred from path or model name if omitted.",
     shell_complete=_complete_model_name,
 )
-@click.option(
-    "--version", "-v", default="1.0.0", help="Semantic version (default: 1.0.0)."
-)
+@click.option("--version", "-v", default="1.0.0", help="Semantic version (default: 1.0.0).")
 @click.option("--description", "-d", default=None, help="Version description.")
 @click.option(
     "--formats",
@@ -89,8 +85,7 @@ def push(
             model_file = _find_model_file(path)
             if not model_file:
                 click.echo(
-                    f"Error: no model file found in {path}\n"
-                    "  Expected: .safetensors, .gguf, .pt, .pth, .bin, .onnx",
+                    f"Error: no model file found in {path}\n" "  Expected: .safetensors, .gguf, .pt, .pth, .bin, .onnx",
                     err=True,
                 )
                 sys.exit(1)
@@ -126,8 +121,7 @@ def push(
     if not hf_repo:
         click.echo(f"Error: unknown model '{model_name}'", err=True)
         click.echo(
-            "  Use a known model name (phi-4-mini, gemma-4b, llama-8b, ...)\n"
-            "  or a HuggingFace repo: hf:org/model",
+            "  Use a known model name (phi-4-mini, gemma-4b, llama-8b, ...)\n" "  or a HuggingFace repo: hf:org/model",
             err=True,
         )
         sys.exit(1)
@@ -198,9 +192,7 @@ def _print_sdk_snippet(model_name: str, version: str) -> None:
 
 @click.command()
 @click.argument("name", shell_complete=_complete_model_name)
-@click.option(
-    "--version", "-v", default=None, help="Version to download. Defaults to latest."
-)
+@click.option("--version", "-v", default=None, help="Version to download. Defaults to latest.")
 @click.option(
     "--format",
     "-f",
@@ -283,17 +275,11 @@ def check(model_path: str, devices: Optional[str]) -> None:
     click.echo("\nRecommendations:")
     if ext in (".pt", ".pth"):
         click.echo("  - Convert to ONNX: octomil convert model.pt --target onnx")
-        click.echo(
-            "  - Convert to CoreML (iOS): octomil convert model.pt --target coreml"
-        )
-        click.echo(
-            "  - Convert to TFLite (Android): octomil convert model.pt --target tflite"
-        )
+        click.echo("  - Convert to CoreML (iOS): octomil convert model.pt --target coreml")
+        click.echo("  - Convert to TFLite (Android): octomil convert model.pt --target tflite")
     elif ext == ".onnx":
         click.echo("  - ONNX is cross-platform — ready for deployment")
-        click.echo(
-            "  - Convert to CoreML (iOS): octomil convert model.onnx --target coreml"
-        )
+        click.echo("  - Convert to CoreML (iOS): octomil convert model.onnx --target coreml")
     elif ext == ".gguf":
         click.echo("  - GGUF models work with llama.cpp backend")
         click.echo("  - Serve locally: octomil serve model.gguf")
@@ -394,7 +380,7 @@ def convert(model_path: str, target: str, output: str, input_shape: str) -> None
             model.eval()
             sample = torch.randn(*shape)
             onnx_path = os.path.join(output, f"{model_name}.onnx")
-            torch.onnx.export(model, sample, onnx_path, opset_version=13)
+            torch.onnx.export(model, (sample,), onnx_path, opset_version=13)
             results["onnx"] = onnx_path
         except ImportError:
             click.echo("  onnx: requires torch — pip install torch", err=True)
@@ -408,8 +394,7 @@ def convert(model_path: str, target: str, output: str, input_shape: str) -> None
             onnx_src = results.get("onnx")
             if not onnx_src:
                 click.echo(
-                    "  coreml: requires onnx conversion first — "
-                    "include onnx in --target",
+                    "  coreml: requires onnx conversion first — " "include onnx in --target",
                     err=True,
                 )
             else:
@@ -418,9 +403,7 @@ def convert(model_path: str, target: str, output: str, input_shape: str) -> None
                 ml_model.save(coreml_path)
                 results["coreml"] = coreml_path
         except ImportError:
-            click.echo(
-                "  coreml: requires coremltools — pip install coremltools", err=True
-            )
+            click.echo("  coreml: requires coremltools — pip install coremltools", err=True)
         except Exception as exc:
             click.echo(f"  coreml: failed — {exc}", err=True)
 
@@ -432,8 +415,7 @@ def convert(model_path: str, target: str, output: str, input_shape: str) -> None
             onnx_src = results.get("onnx")
             if not onnx_src:
                 click.echo(
-                    "  tflite: requires onnx conversion first — "
-                    "include onnx in --target",
+                    "  tflite: requires onnx conversion first — " "include onnx in --target",
                     err=True,
                 )
             else:
@@ -451,8 +433,7 @@ def convert(model_path: str, target: str, output: str, input_shape: str) -> None
                 results["tflite"] = tflite_path
         except ImportError:
             click.echo(
-                "  tflite: requires onnx, onnx-tf, tensorflow — "
-                "pip install onnx onnx-tf tensorflow",
+                "  tflite: requires onnx, onnx-tf, tensorflow — " "pip install onnx onnx-tf tensorflow",
                 err=True,
             )
         except Exception as exc:
@@ -493,28 +474,22 @@ def list_models_cmd(model_family: Optional[str]) -> None:
     from octomil.models.catalog import CATALOG, get_model
 
     if model_family is None:
-        click.echo(
-            f"{'Model':<18s} {'Publisher':<14s} {'Params':<8s} "
-            f"{'Default':<10s} {'Variants'}"
-        )
+        click.echo(f"{'Model':<18s} {'Publisher':<14s} {'Params':<8s} " f"{'Default':<10s} {'Variants'}")
         click.echo("-" * 76)
         for name, entry in sorted(CATALOG.items()):
             variant_tags = ", ".join(sorted(entry.variants.keys()))
             click.echo(
-                f"  {name:<16s} {entry.publisher:<14s} {entry.params:<8s} "
-                f"{entry.default_quant:<10s} {variant_tags}"
+                f"  {name:<16s} {entry.publisher:<14s} {entry.params:<8s} " f"{entry.default_quant:<10s} {variant_tags}"
             )
         click.echo(f"\n{len(CATALOG)} model families available.")
         click.echo("Use `octomil list <model>` to see variants and engine artifacts.")
         click.echo("Use `octomil serve <model>:<variant>` to serve a specific variant.")
     else:
-        entry = get_model(model_family)
-        if entry is None:
+        entry_or_none = get_model(model_family)
+        if entry_or_none is None:
             import difflib
 
-            suggestions = difflib.get_close_matches(
-                model_family, CATALOG.keys(), n=3, cutoff=0.4
-            )
+            suggestions = difflib.get_close_matches(model_family, CATALOG.keys(), n=3, cutoff=0.4)
             click.echo(f"Unknown model family: {model_family}", err=True)
             if suggestions:
                 click.echo(f"Did you mean: {', '.join(suggestions)}?", err=True)
@@ -524,6 +499,7 @@ def list_models_cmd(model_family: Optional[str]) -> None:
             )
             sys.exit(1)
 
+        entry = entry_or_none
         click.echo(f"{model_family} ({entry.publisher}, {entry.params})")
         click.echo(f"Default variant: {entry.default_quant}")
         engines_str = ", ".join(sorted(entry.engines))
@@ -536,9 +512,7 @@ def list_models_cmd(model_family: Optional[str]) -> None:
             if variant.mlx:
                 click.echo(f"    mlx-lm:    {variant.mlx}")
             if variant.gguf:
-                click.echo(
-                    f"    llama.cpp: {variant.gguf.repo} ({variant.gguf.filename})"
-                )
+                click.echo(f"    llama.cpp: {variant.gguf.repo} ({variant.gguf.filename})")
             if variant.source_repo:
                 click.echo(f"    source:    {variant.source_repo}")
             click.echo("")
@@ -566,15 +540,11 @@ def models(source: str) -> None:
             ollama_models = list_ollama_models()
             if ollama_models:
                 click.echo("Local (ollama):")
-                click.echo(
-                    f"  {'NAME':<20s}{'SIZE':>8s}   "
-                    f"{'QUANT':<9s}{'FAMILY':<12s}DEPLOY URI"
-                )
+                click.echo(f"  {'NAME':<20s}{'SIZE':>8s}   " f"{'QUANT':<9s}{'FAMILY':<12s}DEPLOY URI")
                 for m in ollama_models:
                     deploy_uri = f"ollama://{m.name}"
                     click.echo(
-                        f"  {m.name:<20s}{m.size_display:>8s}   "
-                        f"{m.quantization:<9s}{m.family:<12s}{deploy_uri}"
+                        f"  {m.name:<20s}{m.size_display:>8s}   " f"{m.quantization:<9s}{m.family:<12s}{deploy_uri}"
                     )
             else:
                 click.echo("Local (ollama): no models found")
@@ -596,9 +566,7 @@ def models(source: str) -> None:
                         fmt = rm.get("format", "unknown")
                         framework = rm.get("framework", "unknown")
                         size_mb = size / (1024 * 1024) if size else 0
-                        click.echo(
-                            f"  {name_val:<20s}{size_mb:>5.0f} MB   {fmt:<9s}{framework}"
-                        )
+                        click.echo(f"  {name_val:<20s}{size_mb:>5.0f} MB   {fmt:<9s}{framework}")
                 else:
                     click.echo("Registry (octomil): no models found")
             except Exception:

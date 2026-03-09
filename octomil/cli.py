@@ -32,7 +32,6 @@ import click
 from octomil import __version__
 from octomil.cli_helpers import WELCOME_MESSAGE
 
-
 # ---------------------------------------------------------------------------
 # CLI group
 # ---------------------------------------------------------------------------
@@ -52,15 +51,20 @@ def main(ctx: click.Context) -> None:
 # ---------------------------------------------------------------------------
 
 from octomil.commands import (  # noqa: E402
-    serve,
-    model_ops,
-    deploy,
     benchmark,
+    completions,
+    deploy,
     enterprise,
     federation,
     interactive,
-    completions,
+    model_ops,
+    serve,
+    setup,
 )
 
-for _mod in [serve, model_ops, deploy, benchmark, enterprise, federation, interactive, completions]:
+for _mod in [serve, model_ops, deploy, benchmark, enterprise, federation, interactive, completions, setup]:
     _mod.register(main)
+
+from octomil.commands import mcp_cmd  # noqa: E402
+
+mcp_cmd.register_cmd(main)

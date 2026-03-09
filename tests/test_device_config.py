@@ -35,8 +35,10 @@ class TestDeviceConfigFromDict:
                 "fast": {"threshold": 0.5, "min_layers_fraction": 0.25},
             },
             "routing_offsets": {
-                "REDACTED_FIELD": 0.5,
-                "REDACTED_FIELD": 0.25,
+                "quality_score_offset": 0.5,
+                "balanced_score_offset": 0.25,
+                "latency_offset": 0.5,
+                "throughput_offset": 0.25,
             },
             "smart_router": {
                 "long_gen_threshold": 512,
@@ -51,8 +53,10 @@ class TestDeviceConfigFromDict:
         assert cfg.quant_preference_order == ["Q8_0", "Q4_K_M"]
         assert cfg.early_exit_presets["quality"].threshold == 0.1
         assert cfg.early_exit_presets["fast"].min_layers_fraction == 0.25
-        assert cfg.routing_offsets.REDACTED_FIELD == 0.5
-        assert cfg.routing_offsets.REDACTED_FIELD == 0.25
+        assert cfg.routing_offsets.quality_score_offset == 0.5
+        assert cfg.routing_offsets.balanced_score_offset == 0.25
+        assert cfg.routing_offsets.latency_offset == 0.5
+        assert cfg.routing_offsets.throughput_offset == 0.25
         assert cfg.smart_router.long_gen_threshold == 512
         assert cfg.smart_router.prefer_throughput_engine == "mlx-lm"
         assert cfg.smart_router.prefer_latency_engine == "llama.cpp"
@@ -66,8 +70,10 @@ class TestDeviceConfigFromDict:
         assert cfg.early_exit_presets["quality"].threshold == 0.3
         assert cfg.early_exit_presets["balanced"].threshold == 0.3
         assert cfg.early_exit_presets["fast"].threshold == 0.3
-        assert cfg.routing_offsets.REDACTED_FIELD == 0.0
-        assert cfg.routing_offsets.REDACTED_FIELD == 0.0
+        assert cfg.routing_offsets.quality_score_offset == 0.0
+        assert cfg.routing_offsets.balanced_score_offset == 0.0
+        assert cfg.routing_offsets.latency_offset == 0.0
+        assert cfg.routing_offsets.throughput_offset == 0.0
         assert cfg.smart_router.long_gen_threshold == 256
         assert cfg.smart_router.prefer_throughput_engine == "auto"
         assert cfg.smart_router.prefer_latency_engine == "auto"
@@ -128,8 +134,10 @@ class TestFallbackDefaults:
     def test_fallback_routing_offsets_zero(self) -> None:
         """Fallback routing offsets should be zero (no bias)."""
         cfg = DeviceConfig.from_dict(_FALLBACK_DATA)
-        assert cfg.routing_offsets.REDACTED_FIELD == 0.0
-        assert cfg.routing_offsets.REDACTED_FIELD == 0.0
+        assert cfg.routing_offsets.quality_score_offset == 0.0
+        assert cfg.routing_offsets.balanced_score_offset == 0.0
+        assert cfg.routing_offsets.latency_offset == 0.0
+        assert cfg.routing_offsets.throughput_offset == 0.0
 
     def test_fallback_smart_router_auto(self) -> None:
         """Fallback smart router engine prefs should be 'auto'."""

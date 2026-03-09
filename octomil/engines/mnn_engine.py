@@ -19,11 +19,9 @@ from .base import BenchmarkResult, EnginePlugin
 logger = logging.getLogger(__name__)
 
 # Models known to work with MNN-LLM — derived from the unified catalog.
-from ..models.catalog import CATALOG as _UNIFIED_CATALOG
+from ..models.catalog import CATALOG as _UNIFIED_CATALOG  # noqa: E402
 
-_MNN_CATALOG = {
-    name for name, entry in _UNIFIED_CATALOG.items() if "mnn" in entry.engines
-}
+_MNN_CATALOG = {name for name, entry in _UNIFIED_CATALOG.items() if "mnn" in entry.engines}
 
 
 def _find_mnn_cli() -> Optional[str]:
@@ -128,9 +126,7 @@ class MNNEngine(EnginePlugin):
         except Exception as exc:
             return BenchmarkResult(engine_name=self.name, error=str(exc))
 
-    def _benchmark_cli(
-        self, cli_path: str, model_name: str, n_tokens: int
-    ) -> BenchmarkResult:
+    def _benchmark_cli(self, cli_path: str, model_name: str, n_tokens: int) -> BenchmarkResult:
         try:
             result = subprocess.run(
                 [
@@ -159,18 +155,14 @@ class MNNEngine(EnginePlugin):
                 metadata={"method": "cli"},
             )
         except subprocess.TimeoutExpired:
-            return BenchmarkResult(
-                engine_name=self.name, error="Benchmark timed out (120s)"
-            )
+            return BenchmarkResult(engine_name=self.name, error="Benchmark timed out (120s)")
         except Exception as exc:
             return BenchmarkResult(engine_name=self.name, error=str(exc))
 
     def create_backend(self, model_name: str, **kwargs: Any) -> Any:
         if _has_pymnn():
             return _MNNBackend(model_name, **kwargs)
-        raise RuntimeError(
-            "MNN Python bindings required for serving. Install with: pip install MNN"
-        )
+        raise RuntimeError("MNN Python bindings required for serving. Install with: pip install MNN")
 
 
 def _parse_tps_from_output(output: str) -> float:
@@ -206,6 +198,7 @@ class _MNNBackend:
         prompt = request.messages[-1]["content"] if request.messages else ""
         max_tokens = getattr(request, "max_tokens", 512)
 
+        assert self._model is not None
         start = time.monotonic()
         output = self._model.generate(prompt, max_new_tokens=max_tokens)
         elapsed = time.monotonic() - start

@@ -43,6 +43,7 @@ except ImportError:
     pd = None  # type: ignore[assignment]
     HAS_PANDAS = False
 
+
 def _get_sdk_version() -> str:
     """Return the SDK version, avoiding circular imports."""
     from octomil import __version__
@@ -131,6 +132,7 @@ class FederatedClient:
         """Return the global TelemetryReporter, or None."""
         try:
             from octomil import get_reporter
+
             return get_reporter()
         except Exception:
             return None
@@ -840,7 +842,7 @@ class FederatedClient:
         try:
             import torch  # type: ignore
         except Exception:
-            torch = None
+            torch = None  # type: ignore[assignment]
 
         if torch is not None:
             if isinstance(weights, torch.nn.Module):

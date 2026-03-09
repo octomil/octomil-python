@@ -30,7 +30,7 @@ from .base import BenchmarkResult, EnginePlugin
 logger = logging.getLogger(__name__)
 
 # Build a catalog of models that have an Ollama tag in the unified catalog.
-from ..models.catalog import CATALOG as _UNIFIED_CATALOG
+from ..models.catalog import CATALOG as _UNIFIED_CATALOG  # noqa: E402
 
 _OLLAMA_CATALOG: dict[str, str] = {}  # octomil name -> ollama tag
 for _name, _entry in _UNIFIED_CATALOG.items():
@@ -121,9 +121,7 @@ class OllamaEngine(EnginePlugin):
     def benchmark(self, model_name: str, n_tokens: int = 32) -> BenchmarkResult:
         """Quick benchmark via Ollama /api/chat."""
         if not _is_ollama_reachable(self._base_url):
-            return BenchmarkResult(
-                engine_name=self.name, error="Ollama not reachable"
-            )
+            return BenchmarkResult(engine_name=self.name, error="Ollama not reachable")
 
         tag = self._resolve_tag(model_name)
         try:
