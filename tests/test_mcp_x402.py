@@ -1081,8 +1081,11 @@ class TestBatchSettlement:
 
         config = X402Config()
 
-        mock_response = AsyncMock()
-        mock_response.raise_for_status = AsyncMock()
+        from unittest.mock import MagicMock
+
+        mock_response = MagicMock()
+        mock_response.raise_for_status = MagicMock()
+        mock_response.json.return_value = {"status": "settled", "total_succeeded": 1, "total_failed": 0, "results": []}
 
         mock_client = AsyncMock()
         mock_client.post.return_value = mock_response

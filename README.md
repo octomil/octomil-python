@@ -160,6 +160,8 @@ octomil serve gemma-1b
 | `octomil push <file>`       | Upload a model to registry                  |
 | `octomil status <model>`    | Check deployment status                     |
 | `octomil scan <path>`       | Security scan a model or app bundle         |
+| `octomil mcp serve`         | Start the HTTP agent server (REST + A2A)    |
+| `octomil mcp register`      | Register MCP server with Claude Code        |
 | `octomil pair`              | Pair with a phone for deployment            |
 | `octomil dashboard`         | Open the web dashboard                      |
 | `octomil login`             | Authenticate with Octomil                   |
@@ -202,6 +204,36 @@ client.experiments.create(
     treatment_version="1.1.0",
 )
 ```
+
+## MCP Server & x402 Payments
+
+Octomil exposes its tools as an MCP server that agents can call over HTTP, with micro-payments via the [x402 protocol](https://www.x402.org/).
+
+```bash
+# Start with x402 payment gating (agents pay per call)
+OCTOMIL_X402_ADDRESS=0xYourWallet \
+OCTOMIL_SETTLER_TOKEN=s402_... \
+octomil mcp serve --x402
+```
+
+**How it works:**
+
+1. Agent calls an Octomil tool (e.g. `/api/v1/run_inference`)
+2. Server returns `402 Payment Required` with x402 payment requirements
+3. Agent signs an EIP-3009 `transferWithAuthorization` and retries with `x-payment` header
+4. Server verifies the signature, serves the response, and accumulates the payment
+5. When payments reach the settlement threshold ($1 USDC by default), the batch is submitted to [settle402](https://settle402.dev) for on-chain settlement via Multicall3
+
+**Environment variables:**
+
+| Variable                 | Default                     | Description                                        |
+| ------------------------ | --------------------------- | -------------------------------------------------- |
+| `OCTOMIL_X402_ADDRESS`   | —                           | Your wallet address (where you get paid)           |
+| `OCTOMIL_X402_PRICE`     | `1000`                      | Price per call in base units (1000 = $0.001 USDC)  |
+| `OCTOMIL_X402_NETWORK`   | `base`                      | Chain: base, ethereum, polygon, arbitrum, optimism |
+| `OCTOMIL_X402_THRESHOLD` | `1.0`                       | Settlement threshold in USD                        |
+| `OCTOMIL_SETTLER_URL`    | `https://api.settle402.dev` | settle402 batch settlement endpoint                |
+| `OCTOMIL_SETTLER_TOKEN`  | —                           | settle402 API key                                  |
 
 ## Requirements
 

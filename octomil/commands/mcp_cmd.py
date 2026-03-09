@@ -79,7 +79,12 @@ def status() -> None:
 @click.option("--host", "-H", default="0.0.0.0", help="Host to bind to (default: 0.0.0.0).")
 @click.option("--model", "-m", default=None, help="Model to use (default: qwen-coder-7b).")
 @click.option("--x402", is_flag=True, default=False, help="Enable x402 payment gating.")
-@click.option("--x402-price", default="0.001", envvar="OCTOMIL_X402_PRICE", help="Price per call (default: 0.001).")
+@click.option(
+    "--x402-price",
+    default="1000",
+    envvar="OCTOMIL_X402_PRICE",
+    help="Price per call in base units (default: 1000 = $0.001 USDC).",
+)
 @click.option(
     "--x402-currency", default="USDC", envvar="OCTOMIL_X402_CURRENCY", help="Payment currency (default: USDC)."
 )
@@ -95,6 +100,18 @@ def status() -> None:
     envvar="OCTOMIL_X402_THRESHOLD",
     help="Settlement threshold in USD (default: 1.0).",
 )
+@click.option(
+    "--settler-url",
+    default="https://api.settle402.dev",
+    envvar="OCTOMIL_SETTLER_URL",
+    help="settle402 batch settlement URL.",
+)
+@click.option(
+    "--settler-token",
+    default="",
+    envvar="OCTOMIL_SETTLER_TOKEN",
+    help="settle402 API key (X-Settler-Token).",
+)
 def serve(
     port: int,
     host: str,
@@ -104,11 +121,14 @@ def serve(
     x402_currency: str,
     x402_address: str,
     x402_threshold: str,
+    settler_url: str,
+    settler_token: str,
 ) -> None:
     """Start the Octomil HTTP agent server.
 
     Exposes all tools via REST, serves an A2A agent card for discovery,
-    and auto-generates OpenAPI docs at /docs.
+    and auto-generates OpenAPI docs at /docs. When --x402 is enabled,
+    accepted payments are batched and settled on-chain via settle402.
 
     Examples:
 
@@ -116,7 +136,7 @@ def serve(
 
         octomil mcp serve --port 9000 --model gemma-3b
 
-        OCTOMIL_X402_ADDRESS=0x... octomil mcp serve --x402
+        OCTOMIL_X402_ADDRESS=0x... OCTOMIL_SETTLER_TOKEN=s402_... octomil mcp serve --x402
     """
     try:
         import fastapi as _fa  # noqa: F401
@@ -140,6 +160,8 @@ def serve(
         x402_price=x402_price,
         x402_currency=x402_currency,
         x402_threshold=threshold_base_units,
+        settler_url=settler_url,
+        settler_token=settler_token,
     )
     app = create_http_app(config)
 
@@ -149,6 +171,9 @@ def serve(
     click.echo(f"  Health: http://{host}:{port}/health")
     if x402:
         click.echo("  x402 payment gating: enabled")
+        click.echo(f"  settle402: {settler_url or 'not configured'}")
+        if settler_token:
+            click.echo(f"  settler token: {settler_token[:10]}...")
 
     import uvicorn
 

@@ -157,11 +157,11 @@ class HTTPServerConfig:
     model: Optional[str] = None
     enable_x402: bool = False
     x402_address: str = ""
-    x402_price: str = "0.001"
+    x402_price: str = "1000"  # base units (1000 = $0.001 USDC)
     x402_currency: str = "USDC"
     x402_network: str = "base"
     x402_threshold: int = 1_000_000  # base units = $1 USDC
-    settler_url: str = ""  # settle402 service URL (e.g. https://settle402.example.com)
+    settler_url: str = "https://api.settle402.dev"  # settle402 batch settlement service
     settler_token: str = ""  # X-Settler-Token for auth
     base_url: str = ""  # auto-detected if empty
 
@@ -249,12 +249,12 @@ def create_http_app(config: Optional[HTTPServerConfig] = None) -> FastAPI:
         from .x402_settlement import SettlementStore
 
         x402_config = X402Config(
-            price_per_call=config.x402_price or os.environ.get("OCTOMIL_X402_PRICE", "0.001"),
+            price_per_call=config.x402_price or os.environ.get("OCTOMIL_X402_PRICE", "1000"),
             currency=config.x402_currency or os.environ.get("OCTOMIL_X402_CURRENCY", "USDC"),
             network=config.x402_network or os.environ.get("OCTOMIL_X402_NETWORK", "base"),
             payment_address=config.x402_address or os.environ.get("OCTOMIL_X402_ADDRESS", ""),
             settlement_threshold=config.x402_threshold,
-            facilitator_url=config.settler_url or os.environ.get("OCTOMIL_SETTLER_URL", ""),
+            facilitator_url=config.settler_url or os.environ.get("OCTOMIL_SETTLER_URL", "https://api.settle402.dev"),
             settler_token=config.settler_token or os.environ.get("OCTOMIL_SETTLER_TOKEN", ""),
         )
         if x402_config.enable_settlement:
