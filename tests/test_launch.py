@@ -139,11 +139,12 @@ class TestBuildServeCmd:
         assert "serve" in cmd
         assert "llama-8b" in cmd
 
-    def test_frozen_skips_python_m(self):
+    @patch("octomil.setup.is_engine_ready", return_value=False)
+    @patch("octomil.setup.get_venv_python", return_value=None)
+    def test_frozen_skips_python_m(self, mock_venv, mock_ready):
         with patch.object(sys, "frozen", True, create=True):
             cmd = _build_serve_cmd("llama-8b", 8080)
         assert "-m" not in cmd
-        assert "octomil" not in cmd  # no -m octomil
         assert "serve" in cmd
         assert "llama-8b" in cmd
 

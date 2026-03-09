@@ -566,13 +566,18 @@ def _try_venv_reexec() -> bool:
     If so, ``os.execv()`` replaces this process entirely with the venv's
     Python running ``octomil serve``. Single process, no proxy.
 
+    If no venv exists and setup hasn't run yet, runs setup inline so that
+    ``octomil serve`` is a single-command experience with no separate step.
+
     Returns True if re-exec was initiated (unreachable after os.execv).
-    Returns False if no venv is available and we should fall through.
+    Returns False if setup failed and we should fall through.
     """
     from octomil.setup import (
         get_venv_python,
         is_engine_ready,
         is_setup_in_progress,
+        load_state,
+        run_setup,
     )
 
     if is_setup_in_progress():
@@ -580,7 +585,25 @@ def _try_venv_reexec() -> bool:
 
     venv_py = get_venv_python()
     if not venv_py or not is_engine_ready():
-        return False
+        # No venv yet — run setup inline so serve just works
+        state = load_state()
+        if state.phase != "failed":
+            click.echo(
+                click.style(
+                    "\n  First run: setting up native inference engine...\n",
+                    fg="cyan",
+                )
+            )
+            result = run_setup()
+            if result.phase == "failed":
+                click.echo(click.style(f"  Setup failed: {result.error}", fg="red"))
+                return False
+            # Re-check after setup
+            venv_py = get_venv_python()
+            if not venv_py or not is_engine_ready():
+                return False
+        else:
+            return False
 
     # Build the argv for re-exec: venv python -m octomil serve <original args>
     # Reconstruct original args from sys.argv (frozen binary: ["octomil", "serve", ...])

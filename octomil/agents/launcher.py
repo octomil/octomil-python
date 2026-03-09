@@ -378,6 +378,51 @@ def is_serve_running(host: str = "localhost", port: int = 8080) -> bool:
         return False
 
 
+def _ensure_engine_ready() -> None:
+    """Ensure the managed venv and native engine are set up.
+
+    Called before starting ``octomil serve`` as a subprocess so that
+    ``octomil launch <agent>`` is a single-command experience.  If setup
+    hasn't run yet, runs it inline with progress output.
+    """
+    if not getattr(sys, "frozen", False):
+        return  # dev installs have engines available directly
+
+    from octomil.setup import (
+        get_venv_python,
+        is_engine_ready,
+        is_setup_in_progress,
+        load_state,
+        run_setup,
+    )
+
+    if is_setup_in_progress():
+        click.echo("\n  Engine setup is in progress, waiting...")
+        import time
+
+        waited = 0
+        while is_setup_in_progress() and waited < 600:
+            time.sleep(2)
+            waited += 2
+        return
+
+    venv_py = get_venv_python()
+    if venv_py and is_engine_ready():
+        return  # already set up
+
+    state = load_state()
+    if state.phase == "failed":
+        return  # previous failure, _build_serve_cmd will use fallback
+
+    click.echo(
+        click.style(
+            "\n  First run: setting up native inference engine...\n",
+            fg="cyan",
+        )
+    )
+    run_setup()
+
+
 def _build_serve_cmd(model: str, port: int) -> list[str]:
     """Build the command to start ``octomil serve``.
 
@@ -647,6 +692,7 @@ def launch_agent(
     if use_local_server:
         base_url = f"http://localhost:{port}/v1"
         if not is_serve_running(port=port):
+            _ensure_engine_ready()
             if model is None:
                 model = _select_model_tui() if select else _auto_select_model()
             click.echo(f"Starting octomil serve {model}...")
@@ -655,9 +701,15 @@ def launch_agent(
         else:
             click.echo(f"Using existing server at {base_url}")
 
-        env[agent.env_key] = base_url
-        if agent.env_key.startswith("OPENAI"):
-            env["OPENAI_API_KEY"] = "octomil-local"
+        # Configure the agent to use the local server
+        if agent.configure_local is not None and model is not None:
+            click.echo(f"Configuring {agent.display_name} for local model...")
+            extra_env = agent.configure_local(base_url, model)
+            env.update(extra_env)
+        else:
+            env[agent.env_key] = base_url
+            if agent.env_key.startswith("OPENAI"):
+                env["OPENAI_API_KEY"] = "octomil-local"
 
     try:
         click.echo(f"Launching {agent.display_name}...\n")
