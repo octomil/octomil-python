@@ -22,6 +22,7 @@ from pydantic import BaseModel, Field
 from .a2a import AgentCardConfig, build_agent_card
 from .auth import require_auth
 from .backend import OctomilMCPBackend
+from .prompts import build_messages
 
 logger = logging.getLogger(__name__)
 
@@ -107,6 +108,39 @@ class PlanDeploymentRequest(BaseModel):
 class EmbedRequest(BaseModel):
     text: str = Field(..., description="Text to embed (string or JSON array of strings)")
     model: str = Field("", description="Model ID for embeddings")
+
+
+# Code tool request models
+
+
+class GenerateCodeRequest(BaseModel):
+    description: str = Field(..., description="What the code should do")
+    language: str = Field("", description="Target programming language")
+    context: str = Field("", description="Additional context")
+
+
+class ReviewCodeRequest(BaseModel):
+    code: str = Field(..., description="Code to review")
+    language: str = Field("", description="Programming language")
+    focus: str = Field("", description="Focus area (security, performance, style)")
+
+
+class ExplainCodeRequest(BaseModel):
+    code: str = Field(..., description="Code to explain")
+    language: str = Field("", description="Programming language")
+    detail_level: str = Field("medium", description="Detail level: brief, medium, thorough")
+
+
+class WriteTestsRequest(BaseModel):
+    code: str = Field(..., description="Code to test")
+    language: str = Field("", description="Programming language")
+    framework: str = Field("", description="Test framework (pytest, jest, etc.)")
+    focus: str = Field("", description="Focus areas to test")
+
+
+class GeneralTaskRequest(BaseModel):
+    prompt: str = Field(..., description="The prompt or question")
+    context: str = Field("", description="Additional context")
 
 
 # ---------------------------------------------------------------------------
@@ -206,9 +240,9 @@ def create_http_app(config: HTTPServerConfig | None = None) -> FastAPI:
         from .x402 import X402Config, X402Middleware
 
         x402_config = X402Config(
-            price_per_call=config.x402_price,
-            currency=config.x402_currency,
-            network=config.x402_network,
+            price_per_call=config.x402_price or os.environ.get("OCTOMIL_X402_PRICE", "0.001"),
+            currency=config.x402_currency or os.environ.get("OCTOMIL_X402_CURRENCY", "USDC"),
+            network=config.x402_network or os.environ.get("OCTOMIL_X402_NETWORK", "base"),
             payment_address=config.x402_address or os.environ.get("OCTOMIL_X402_ADDRESS", ""),
         )
         app.add_middleware(X402Middleware, config=x402_config)
@@ -652,5 +686,82 @@ def create_http_app(config: HTTPServerConfig | None = None) -> FastAPI:
         except Exception as exc:
             logger.exception("embed failed")
             return JSONResponse(status_code=500, content={"error": "embed_error", "message": str(exc)})
+
+    # ------------------------------------------------------------------
+    # Code tool endpoints
+    # ------------------------------------------------------------------
+
+    @app.post("/api/v1/generate_code", tags=["code"], dependencies=[Depends(require_auth)])
+    async def api_generate_code(req: GenerateCodeRequest) -> JSONResponse:
+        """Generate code from a natural language description."""
+        try:
+            parts = [f"Generate {req.language + ' ' if req.language else ''}code: {req.description}"]
+            if req.context:
+                parts.append(f"\nContext:\n{req.context}")
+            messages = build_messages("generate_code", "\n".join(parts))
+            text, metrics = backend.generate(messages)
+            return JSONResponse(content={"text": text, "metrics": metrics})
+        except Exception as exc:
+            logger.exception("generate_code failed")
+            return JSONResponse(status_code=500, content={"error": "generate_code_error", "message": str(exc)})
+
+    @app.post("/api/v1/review_code", tags=["code"], dependencies=[Depends(require_auth)])
+    async def api_review_code(req: ReviewCodeRequest) -> JSONResponse:
+        """Review code for bugs, security issues, and improvements."""
+        try:
+            parts = [f"Review this {req.language + ' ' if req.language else ''}code:"]
+            if req.focus:
+                parts.append(f"Focus on: {req.focus}")
+            parts.append(f"\n```{req.language}\n{req.code}\n```")
+            messages = build_messages("review_code", "\n".join(parts))
+            text, metrics = backend.generate(messages)
+            return JSONResponse(content={"text": text, "metrics": metrics})
+        except Exception as exc:
+            logger.exception("review_code failed")
+            return JSONResponse(status_code=500, content={"error": "review_code_error", "message": str(exc)})
+
+    @app.post("/api/v1/explain_code", tags=["code"], dependencies=[Depends(require_auth)])
+    async def api_explain_code(req: ExplainCodeRequest) -> JSONResponse:
+        """Explain code in plain English."""
+        try:
+            parts = [f"Explain this {req.language + ' ' if req.language else ''}code ({req.detail_level} detail):"]
+            parts.append(f"\n```{req.language}\n{req.code}\n```")
+            messages = build_messages("explain_code", "\n".join(parts))
+            text, metrics = backend.generate(messages)
+            return JSONResponse(content={"text": text, "metrics": metrics})
+        except Exception as exc:
+            logger.exception("explain_code failed")
+            return JSONResponse(status_code=500, content={"error": "explain_code_error", "message": str(exc)})
+
+    @app.post("/api/v1/write_tests", tags=["code"], dependencies=[Depends(require_auth)])
+    async def api_write_tests(req: WriteTestsRequest) -> JSONResponse:
+        """Generate unit tests for code."""
+        try:
+            parts = [
+                f"Write {req.framework + ' ' if req.framework else ''}tests for this {req.language + ' ' if req.language else ''}code:"
+            ]
+            if req.focus:
+                parts.append(f"Focus on: {req.focus}")
+            parts.append(f"\n```{req.language}\n{req.code}\n```")
+            messages = build_messages("write_tests", "\n".join(parts))
+            text, metrics = backend.generate(messages)
+            return JSONResponse(content={"text": text, "metrics": metrics})
+        except Exception as exc:
+            logger.exception("write_tests failed")
+            return JSONResponse(status_code=500, content={"error": "write_tests_error", "message": str(exc)})
+
+    @app.post("/api/v1/general_task", tags=["code"], dependencies=[Depends(require_auth)])
+    async def api_general_task(req: GeneralTaskRequest) -> JSONResponse:
+        """Run a free-form prompt through the local model."""
+        try:
+            content = req.prompt
+            if req.context:
+                content = f"{req.prompt}\n\nContext:\n{req.context}"
+            messages = build_messages("general_task", content)
+            text, metrics = backend.generate(messages)
+            return JSONResponse(content={"text": text, "metrics": metrics})
+        except Exception as exc:
+            logger.exception("general_task failed")
+            return JSONResponse(status_code=500, content={"error": "general_task_error", "message": str(exc)})
 
     return app

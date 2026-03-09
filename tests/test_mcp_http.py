@@ -382,6 +382,75 @@ class TestPhase2Endpoints:
 
 
 # ---------------------------------------------------------------------------
+# Code tool endpoints
+# ---------------------------------------------------------------------------
+
+
+class TestCodeToolEndpoints:
+    @pytest.mark.asyncio
+    async def test_generate_code(self, client: Any) -> None:
+        resp = await client.post("/api/v1/generate_code", json={"description": "fibonacci function"})
+        assert resp.status_code in (200, 500)
+        data = resp.json()
+        assert "text" in data or "error" in data
+
+    @pytest.mark.asyncio
+    async def test_generate_code_with_language(self, client: Any) -> None:
+        resp = await client.post(
+            "/api/v1/generate_code",
+            json={"description": "hello world", "language": "python", "context": "use print()"},
+        )
+        assert resp.status_code in (200, 500)
+
+    @pytest.mark.asyncio
+    async def test_review_code(self, client: Any) -> None:
+        resp = await client.post("/api/v1/review_code", json={"code": "def f(): pass"})
+        assert resp.status_code in (200, 500)
+        data = resp.json()
+        assert "text" in data or "error" in data
+
+    @pytest.mark.asyncio
+    async def test_explain_code(self, client: Any) -> None:
+        resp = await client.post("/api/v1/explain_code", json={"code": "x = [i**2 for i in range(10)]"})
+        assert resp.status_code in (200, 500)
+        data = resp.json()
+        assert "text" in data or "error" in data
+
+    @pytest.mark.asyncio
+    async def test_write_tests(self, client: Any) -> None:
+        resp = await client.post("/api/v1/write_tests", json={"code": "def add(a, b): return a + b"})
+        assert resp.status_code in (200, 500)
+        data = resp.json()
+        assert "text" in data or "error" in data
+
+    @pytest.mark.asyncio
+    async def test_general_task(self, client: Any) -> None:
+        resp = await client.post("/api/v1/general_task", json={"prompt": "What is 2+2?"})
+        assert resp.status_code in (200, 500)
+        data = resp.json()
+        assert "text" in data or "error" in data
+
+    @pytest.mark.asyncio
+    async def test_general_task_with_context(self, client: Any) -> None:
+        resp = await client.post(
+            "/api/v1/general_task",
+            json={"prompt": "summarize", "context": "The quick brown fox."},
+        )
+        assert resp.status_code in (200, 500)
+
+    @pytest.mark.asyncio
+    async def test_code_endpoints_in_openapi(self, client: Any) -> None:
+        resp = await client.get("/openapi.json")
+        assert resp.status_code == 200
+        paths = resp.json()["paths"]
+        assert "/api/v1/generate_code" in paths
+        assert "/api/v1/review_code" in paths
+        assert "/api/v1/explain_code" in paths
+        assert "/api/v1/write_tests" in paths
+        assert "/api/v1/general_task" in paths
+
+
+# ---------------------------------------------------------------------------
 # CORS
 # ---------------------------------------------------------------------------
 

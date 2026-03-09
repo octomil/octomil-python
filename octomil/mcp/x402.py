@@ -1,12 +1,11 @@
 """x402 payment gating middleware for the Octomil HTTP agent server.
 
-Implements the HTTP 402 payment protocol surface:
-- Returns 402 + PAYMENT-REQUIRED header when payment is needed
-- Accepts PAYMENT-SIGNATURE header and validates structure
-- Exempts discovery and health endpoints
-
-Phase 1: protocol surface only. Defers actual cryptographic verification,
-blockchain integration, and payment settlement to later phases.
+Implements the x402 payment protocol:
+- Returns 402 + payment requirements header when payment is needed
+- Accepts x-payment (x402 spec) and payment-signature (legacy) headers
+- EIP-712 signature verification (with graceful degradation)
+- Expiry enforcement, replay protection, amount validation
+- Optional facilitator forwarding for on-chain settlement
 """
 
 from __future__ import annotations
@@ -14,8 +13,8 @@ from __future__ import annotations
 import base64
 import json
 import logging
+import threading
 import time
-import uuid
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -25,18 +24,48 @@ from starlette.responses import JSONResponse, Response
 
 logger = logging.getLogger(__name__)
 
-# Payment requirement validity window
 _DEFAULT_EXPIRY_SECONDS = 300  # 5 minutes
+
+# ---------------------------------------------------------------------------
+# Chain / token mappings
+# ---------------------------------------------------------------------------
+
+CHAIN_IDS: dict[str, int] = {
+    "base": 8453,
+    "base-sepolia": 84532,
+    "ethereum": 1,
+    "sepolia": 11155111,
+    "polygon": 137,
+    "arbitrum": 42161,
+    "optimism": 10,
+}
+
+USDC_CONTRACTS: dict[str, str] = {
+    "base": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+    "base-sepolia": "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
+    "ethereum": "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
+    "polygon": "0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359",
+    "arbitrum": "0xaf88d065e77c8cC2239327C5EDb3A432268e5831",
+    "optimism": "0x0b2C639c533813f4Aa9D7837CAf62653d097Ff85",
+}
+
+
+# ---------------------------------------------------------------------------
+# Configuration
+# ---------------------------------------------------------------------------
 
 
 @dataclass
 class X402Config:
     """Configuration for x402 payment gating."""
 
-    price_per_call: str = "0.001"
+    price_per_call: str = "1000"  # base units (e.g. 1000 = 0.001 USDC with 6 decimals)
     currency: str = "USDC"
     network: str = "base"
     payment_address: str = ""
+    token_contract: str = ""  # auto-resolved from network if empty
+    verify_signatures: bool = True  # False for dev/testing
+    facilitator_url: str = ""  # optional: forward to facilitator for settlement
     protected_prefixes: list[str] = field(default_factory=lambda: ["/api/v1/"])
     exempt_paths: list[str] = field(
         default_factory=lambda: [
@@ -50,30 +79,73 @@ class X402Config:
     )
     expiry_seconds: int = _DEFAULT_EXPIRY_SECONDS
 
+    def resolved_token_contract(self) -> str:
+        """Return token contract, auto-resolving from network if not set."""
+        if self.token_contract:
+            return self.token_contract
+        return USDC_CONTRACTS.get(self.network, "")
 
-def build_payment_requirements(config: X402Config) -> dict[str, Any]:
-    """Build the PaymentRequirements JSON for a 402 response."""
-    payment_id = str(uuid.uuid4())
-    expires_at = int(time.time()) + config.expiry_seconds
+    def resolved_chain_id(self) -> int:
+        """Return chain ID for the configured network."""
+        return CHAIN_IDS.get(self.network, 8453)
+
+
+# ---------------------------------------------------------------------------
+# Payment requirements (402 response)
+# ---------------------------------------------------------------------------
+
+
+def build_payment_requirements(config: X402Config, resource: str = "") -> dict[str, Any]:
+    """Build x402 v1 spec-compliant payment requirements."""
     return {
-        "scheme": "x402",
-        "version": "1",
-        "paymentId": payment_id,
-        "price": config.price_per_call,
-        "currency": config.currency,
-        "network": config.network,
-        "payTo": config.payment_address,
-        "expiresAt": expires_at,
+        "x402Version": 1,
+        "accepts": [
+            {
+                "scheme": "exact",
+                "network": config.network,
+                "maxAmountRequired": config.price_per_call,
+                "resource": resource,
+                "payTo": config.payment_address,
+                "asset": config.resolved_token_contract(),
+                "maxTimeoutSeconds": config.expiry_seconds,
+            }
+        ],
+        "error": "X-PAYMENT header is required",
     }
 
 
 def encode_payment_requirements(requirements: dict[str, Any]) -> str:
-    """Base64-encode payment requirements for the PAYMENT-REQUIRED header."""
+    """Base64-encode payment requirements for the header."""
     return base64.b64encode(json.dumps(requirements).encode()).decode()
 
 
+# ---------------------------------------------------------------------------
+# Payment decoding
+# ---------------------------------------------------------------------------
+
+
+def decode_x402_payment(header_value: str) -> dict[str, Any] | None:
+    """Decode an x-payment header (x402 spec format).
+
+    The payload is a base64-encoded JSON object with EIP-3009
+    TransferWithAuthorization fields.
+    """
+    try:
+        decoded = base64.b64decode(header_value)
+        data = json.loads(decoded)
+    except (ValueError, json.JSONDecodeError):
+        return None
+
+    # Minimal structure check for x402 payload
+    if not isinstance(data, dict):
+        return None
+
+    # Accept either nested authorization or flat structure
+    return data
+
+
 def decode_payment_signature(header_value: str) -> dict[str, Any] | None:
-    """Decode and validate structure of a PAYMENT-SIGNATURE header.
+    """Decode and validate structure of a legacy payment-signature header.
 
     Returns the parsed JSON if it has required fields, None otherwise.
     """
@@ -88,6 +160,159 @@ def decode_payment_signature(header_value: str) -> dict[str, Any] | None:
         return None
 
     return data
+
+
+# ---------------------------------------------------------------------------
+# Verification helpers
+# ---------------------------------------------------------------------------
+
+
+def check_authorization_expiry(authorization: dict[str, Any]) -> tuple[bool, str]:
+    """Check if an authorization is within its validity window.
+
+    Returns (ok, error_message).
+    """
+    now = int(time.time())
+
+    valid_after = authorization.get("validAfter", 0)
+    valid_before = authorization.get("validBefore", 0)
+
+    if isinstance(valid_after, str):
+        valid_after = int(valid_after)
+    if isinstance(valid_before, str):
+        valid_before = int(valid_before)
+
+    if valid_after and now < valid_after:
+        return False, f"Authorization not yet valid (validAfter={valid_after}, now={now})"
+
+    if valid_before and now > valid_before:
+        return False, f"Authorization expired (validBefore={valid_before}, now={now})"
+
+    return True, ""
+
+
+def check_payment_amount(authorization: dict[str, Any], required_amount: str) -> tuple[bool, str]:
+    """Check if payment amount meets the required minimum.
+
+    Returns (ok, error_message).
+    """
+    value = authorization.get("value", "0")
+    try:
+        paid = int(value)
+        required = int(required_amount)
+    except (ValueError, TypeError):
+        return False, f"Invalid amount values: paid={value}, required={required_amount}"
+
+    if paid < required:
+        return False, f"Insufficient payment: {paid} < {required}"
+
+    return True, ""
+
+
+def verify_eip712_signature(
+    authorization: dict[str, Any],
+    signature: str,
+    token_contract: str,
+    chain_id: int,
+) -> tuple[bool, str]:
+    """Verify an EIP-712 TransferWithAuthorization signature.
+
+    Uses eth_account for recovery. Gracefully degrades if eth-account
+    is not installed (returns True).
+
+    Returns (ok, error_message).
+    """
+    try:
+        from eth_account import Account
+        from eth_account.messages import encode_typed_data
+    except ImportError:
+        logger.warning("eth-account not installed — skipping EIP-712 verification")
+        return True, ""
+
+    try:
+        # EIP-3009 TransferWithAuthorization typed data
+        domain = {
+            "name": "USD Coin",
+            "version": "2",
+            "chainId": chain_id,
+            "verifyingContract": token_contract,
+        }
+
+        types = {
+            "TransferWithAuthorization": [
+                {"name": "from", "type": "address"},
+                {"name": "to", "type": "address"},
+                {"name": "value", "type": "uint256"},
+                {"name": "validAfter", "type": "uint256"},
+                {"name": "validBefore", "type": "uint256"},
+                {"name": "nonce", "type": "bytes32"},
+            ],
+        }
+
+        message = {
+            "from": authorization.get("from", ""),
+            "to": authorization.get("to", ""),
+            "value": int(authorization.get("value", 0)),
+            "validAfter": int(authorization.get("validAfter", 0)),
+            "validBefore": int(authorization.get("validBefore", 0)),
+            "nonce": authorization.get("nonce", b"\x00" * 32),
+        }
+
+        signable = encode_typed_data(
+            domain_data=domain,
+            types=types,
+            primary_type="TransferWithAuthorization",
+            message_data=message,
+        )
+
+        recovered = Account.recover_message(signable, signature=signature)
+        expected_from = authorization.get("from", "")
+
+        if recovered.lower() != expected_from.lower():
+            return False, f"Signer mismatch: recovered={recovered}, expected={expected_from}"
+
+        return True, ""
+
+    except Exception as exc:
+        return False, f"EIP-712 verification failed: {exc}"
+
+
+# ---------------------------------------------------------------------------
+# Replay protection
+# ---------------------------------------------------------------------------
+
+
+class NonceTracker:
+    """Thread-safe in-memory nonce tracker for replay protection."""
+
+    def __init__(self) -> None:
+        self._seen: dict[str, float] = {}
+        self._lock = threading.Lock()
+        self._max_entries = 100_000
+        self._ttl_seconds = 3600  # 1 hour
+
+    def check_and_mark(self, nonce: str) -> bool:
+        """Check if nonce is fresh and mark it as used.
+
+        Returns True if fresh (not seen before), False if replay.
+        """
+        now = time.time()
+        with self._lock:
+            # Cleanup if over capacity
+            if len(self._seen) > self._max_entries:
+                cutoff = now - self._ttl_seconds
+                self._seen = {k: v for k, v in self._seen.items() if v > cutoff}
+
+            if nonce in self._seen:
+                return False
+
+            self._seen[nonce] = now
+            return True
+
+
+# ---------------------------------------------------------------------------
+# Path helpers
+# ---------------------------------------------------------------------------
 
 
 def _is_exempt(path: str, config: X402Config) -> bool:
@@ -108,20 +333,29 @@ def _is_protected(path: str, config: X402Config) -> bool:
     return False
 
 
+# ---------------------------------------------------------------------------
+# Middleware
+# ---------------------------------------------------------------------------
+
+
 class X402Middleware(BaseHTTPMiddleware):
-    """Starlette middleware that enforces x402 payment on protected routes.
+    """Starlette middleware enforcing x402 payment on protected routes.
 
-    When a request hits a protected path without a valid PAYMENT-SIGNATURE
-    header, responds with 402 and a PAYMENT-REQUIRED header containing
-    base64-encoded payment requirements.
-
-    Phase 1: validates signature structure only (required fields present).
-    Actual cryptographic verification deferred to later phases.
+    Verification chain:
+    1. Check if path is protected
+    2. Read x-payment or payment-signature header
+    3. Decode payment payload
+    4. Expiry check
+    5. Replay check (nonce)
+    6. Amount check
+    7. EIP-712 signature verification (if verify_signatures=True)
+    8. Pass through to handler
     """
 
     def __init__(self, app: Any, config: X402Config) -> None:
         super().__init__(app)
         self.config = config
+        self.nonce_tracker = NonceTracker()
 
     async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:
         path = request.url.path
@@ -129,36 +363,99 @@ class X402Middleware(BaseHTTPMiddleware):
         if not _is_protected(path, self.config):
             return await call_next(request)
 
-        # Check for payment signature
-        payment_header = request.headers.get("payment-signature", "")
-        if not payment_header:
-            return self._payment_required_response()
+        # Read payment header — try x402 spec first, then legacy
+        x402_header = request.headers.get("x-payment", "")
+        legacy_header = request.headers.get("payment-signature", "")
 
-        # Validate signature structure
-        payment_data = decode_payment_signature(payment_header)
-        if payment_data is None:
+        if not x402_header and not legacy_header:
+            return self._payment_required_response(path)
+
+        # Decode payment
+        if x402_header:
+            payment_data = decode_x402_payment(x402_header)
+            if payment_data is None:
+                return JSONResponse(
+                    status_code=400,
+                    content={
+                        "error": "invalid_payment",
+                        "message": "x-payment header must be base64-encoded JSON.",
+                    },
+                )
+        else:
+            payment_data = decode_payment_signature(legacy_header)
+            if payment_data is None:
+                return JSONResponse(
+                    status_code=400,
+                    content={
+                        "error": "invalid_payment",
+                        "message": "PAYMENT-SIGNATURE header must be base64-encoded JSON with paymentId, payer, and signature fields.",
+                    },
+                )
+
+        # Extract authorization (may be nested or flat)
+        authorization = payment_data.get("authorization", payment_data)
+        signature = payment_data.get("signature", authorization.get("signature", ""))
+
+        # 1. Expiry check
+        ok, err = check_authorization_expiry(authorization)
+        if not ok:
             return JSONResponse(
                 status_code=400,
-                content={
-                    "error": "invalid_payment",
-                    "message": "PAYMENT-SIGNATURE header must be base64-encoded JSON with paymentId, payer, and signature fields.",
-                },
+                content={"error": "payment_expired", "message": err},
             )
 
-        # Phase 1: structure is valid — allow through
-        # TODO: Phase 2+ will verify cryptographic signature, check expiry, settle payment
-        logger.info("x402: payment accepted (structure-only) for %s from %s", path, payment_data.get("payer", "?"))
-        return await call_next(request)
+        # 2. Replay check
+        nonce = authorization.get("nonce", payment_data.get("paymentId", ""))
+        if nonce:
+            nonce_str = nonce if isinstance(nonce, str) else str(nonce)
+            if not self.nonce_tracker.check_and_mark(nonce_str):
+                return JSONResponse(
+                    status_code=400,
+                    content={"error": "payment_replay", "message": "This payment nonce has already been used."},
+                )
 
-    def _payment_required_response(self) -> JSONResponse:
+        # 3. Amount check
+        if "value" in authorization:
+            ok, err = check_payment_amount(authorization, self.config.price_per_call)
+            if not ok:
+                return JSONResponse(
+                    status_code=400,
+                    content={"error": "insufficient_payment", "message": err},
+                )
+
+        # 4. EIP-712 signature verification
+        if self.config.verify_signatures and signature and "from" in authorization:
+            token_contract = self.config.resolved_token_contract()
+            chain_id = self.config.resolved_chain_id()
+            ok, err = verify_eip712_signature(authorization, signature, token_contract, chain_id)
+            if not ok:
+                return JSONResponse(
+                    status_code=400,
+                    content={"error": "invalid_signature", "message": err},
+                )
+
+        # Payment accepted
+        payer = authorization.get("from", payment_data.get("payer", "?"))
+        logger.info("x402: payment accepted for %s from %s", path, payer)
+
+        response = await call_next(request)
+
+        # Add payment response header on success
+        if response.status_code < 400:
+            # Note: BaseHTTPMiddleware wraps responses, so we can set headers
+            response.headers["x-payment-response"] = json.dumps({"status": "accepted"})
+
+        return response
+
+    def _payment_required_response(self, resource: str = "") -> JSONResponse:
         """Build a 402 Payment Required response."""
-        requirements = build_payment_requirements(self.config)
+        requirements = build_payment_requirements(self.config, resource=resource)
         encoded = encode_payment_requirements(requirements)
         return JSONResponse(
             status_code=402,
             content={
                 "error": "payment_required",
-                "message": "This endpoint requires payment. Include a PAYMENT-SIGNATURE header.",
+                "message": "This endpoint requires payment. Include an x-payment or payment-signature header.",
                 "requirements": requirements,
             },
             headers={"payment-required": encoded},

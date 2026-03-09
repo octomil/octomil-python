@@ -66,6 +66,9 @@ interactive = [
 mcp = [
   "mcp[cli]>=1.2.0; python_version>='3.10'",
 ]
+x402 = [
+  "eth-account>=0.10.0",
+]
 test = [
   "pytest>=7.0.0",
   "pytest-cov>=4.0.0",
@@ -78,6 +81,7 @@ test = [
   "fastapi>=0.100.0",
   "uvicorn[standard]>=0.20.0",
   "flwr-datasets>=0.3.0",
+  "eth-account>=0.10.0",
 ]
 dev = [
   "pytest>=7.0.0",
@@ -91,6 +95,7 @@ dev = [
   "ruff>=0.4.0",
   "fastapi>=0.100.0",
   "uvicorn[standard]>=0.20.0",
+  "eth-account>=0.10.0",
 ]
 
 [project.scripts]
