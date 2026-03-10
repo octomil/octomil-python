@@ -1,0 +1,17 @@
+# Smithery configuration file: https://smithery.ai/docs/config
+startCommand:
+  type: http
+  configSchema:
+    type: object
+    properties:
+      octomilApiKey:
+        type: string
+        title: Octomil API Key
+        description: API key for platform features (deployment, optimization, embeddings). Get one at https://octomil.com
+      model:
+        type: string
+        title: Model
+        description: Default model for inference (e.g. phi-mini, gemma-3b, qwen-coder-7b)
+        default: qwen-coder-7b
+    additionalProperties: false
+  url: https://mcp.octomil.com/mcp
