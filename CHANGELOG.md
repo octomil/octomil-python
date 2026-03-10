@@ -5,6 +5,12 @@
 - Added `DeviceAuthClient` runtime auth helper for device token bootstrap, refresh, and revoke flows.
 - Added optional `auth` extra with `keyring` secure storage dependency.
 
+## 2.9.0 (2026-03-10)
+
+### Features
+
+- register MCP server across all AI coding tools (#236)
+
 ## 2.8.0 (2026-03-10)
 
 ### Features
