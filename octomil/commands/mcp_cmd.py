@@ -1,4 +1,4 @@
-"""CLI command: ``octomil mcp`` — register, unregister, and check MCP status."""
+"""CLI command: ``octomil mcp`` — register MCP server across AI coding tools."""
 
 from __future__ import annotations
 
@@ -6,72 +6,89 @@ from typing import Optional
 
 import click
 
+from octomil.cli_helpers import cli_header, cli_kv, cli_success, cli_warn
+
 
 @click.group()
 def mcp() -> None:
-    """Manage the Octomil MCP server for Claude Code."""
+    """Set up the Octomil MCP server for AI coding tools."""
 
 
 @mcp.command()
 @click.option("--model", "-m", default=None, help="Model to use (default: qwen-coder-7b).")
-def register(model: Optional[str]) -> None:
-    """Register the Octomil MCP server with Claude Code."""
-    try:
-        import mcp as _mcp  # noqa: F401
-    except ImportError:
-        click.echo("Error: the 'mcp' package is required.", err=True)
-        click.echo("Install with: pip install 'mcp[cli]>=1.2.0'", err=True)
-        raise SystemExit(1)
+@click.option(
+    "--target",
+    "-t",
+    default=None,
+    type=click.Choice(["claude", "cursor", "vscode", "codex"]),
+    help="Register with a specific tool only.",
+)
+def register(model: Optional[str], target: Optional[str]) -> None:
+    """Register the Octomil MCP server with your AI tools.
 
-    from octomil.mcp.registration import RegistrationError, register_mcp_server
+    \b
+    Configures Claude Code, Cursor, VS Code, and Codex CLI
+    so they can use Octomil's local inference tools via MCP.
+    """
+    from octomil.mcp.registration import register_mcp_server
 
-    try:
-        path = register_mcp_server(model=model)
-        click.echo(f"Registered Octomil MCP server in {path}")
-        if model:
-            click.echo(f"Model: {model}")
+    results = register_mcp_server(model=model, target=target)
+
+    cli_header("MCP Setup")
+    any_success = False
+    for r in results:
+        if r.success:
+            cli_success(f"{r.display:<16s}{r.path}")
+            any_success = True
+        elif r.error:
+            cli_warn(f"{r.display:<16s}{r.error}")
         else:
-            click.echo("Model: qwen-coder-7b (default, set with --model)")
-    except RegistrationError as exc:
-        click.echo(f"Error: {exc}", err=True)
-        raise SystemExit(1)
+            cli_warn(f"{r.display:<16s}skipped")
+
+    if any_success:
+        click.echo()
+        if model:
+            cli_kv("Model", model)
+        else:
+            cli_kv("Model", "qwen-coder-7b (default, set with --model)")
+        click.echo()
 
 
 @mcp.command()
-def unregister() -> None:
-    """Remove the Octomil MCP server from Claude Code."""
-    from octomil.mcp.registration import RegistrationError, unregister_mcp_server
+@click.option(
+    "--target",
+    "-t",
+    default=None,
+    type=click.Choice(["claude", "cursor", "vscode", "codex"]),
+    help="Unregister from a specific tool only.",
+)
+def unregister(target: Optional[str]) -> None:
+    """Remove the Octomil MCP server from your AI tools."""
+    from octomil.mcp.registration import unregister_mcp_server
 
-    try:
-        removed = unregister_mcp_server()
-        if removed:
-            click.echo("Unregistered Octomil MCP server.")
+    results = unregister_mcp_server(target=target)
+
+    cli_header("MCP Unregister")
+    for r in results:
+        if r.success:
+            cli_success(f"Removed from {r.display}")
         else:
-            click.echo("Octomil MCP server was not registered.")
-    except RegistrationError as exc:
-        click.echo(f"Error: {exc}", err=True)
-        raise SystemExit(1)
+            click.echo(click.style(f"    {r.display:<16s}", dim=True) + "not registered")
 
 
 @mcp.command()
 def status() -> None:
-    """Show the current MCP registration status."""
-    from octomil.mcp.registration import get_registration_info, get_settings_path, is_registered
+    """Show MCP registration status across all tools."""
+    from octomil.mcp.registration import TARGETS, get_all_status
 
-    click.echo(f"Settings file: {get_settings_path()}")
-
-    if is_registered():
-        info = get_registration_info()
-        click.echo("Status: registered")
-        if info:
-            click.echo(f"  command: {info.get('command', '?')}")
-            click.echo(f"  args: {info.get('args', [])}")
-            env = info.get("env", {})
-            if env:
-                click.echo(f"  model: {env.get('OCTOMIL_MCP_MODEL', 'default')}")
-    else:
-        click.echo("Status: not registered")
-        click.echo("Run 'octomil mcp register' to set up.")
+    cli_header("MCP Status")
+    statuses = get_all_status()
+    for t in TARGETS:
+        registered = statuses.get(t.name, False)
+        if registered:
+            cli_success(f"{t.display:<16s}{t.path}")
+        else:
+            click.echo(click.style(f"    -  {t.display:<16s}", dim=True) + click.style(str(t.path), dim=True))
 
 
 @mcp.command()

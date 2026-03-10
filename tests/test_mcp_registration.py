@@ -1,4 +1,4 @@
-"""Tests for MCP server registration in Claude Code settings."""
+"""Tests for MCP server registration across AI coding tools."""
 
 from __future__ import annotations
 
@@ -9,134 +9,151 @@ from unittest.mock import patch
 
 import pytest
 
+from octomil.mcp.registration import (
+    MCPTarget,
+    RegistrationError,
+    get_all_status,
+    is_registered,
+    register_mcp_server,
+    unregister_mcp_server,
+)
+
+
+def _make_targets(tmp_path: Path) -> list[MCPTarget]:
+    """Create test targets pointing at tmp_path."""
+    return [
+        MCPTarget("claude", "Claude Code", tmp_path / "claude" / "settings.json", "json", "mcpServers"),
+        MCPTarget("cursor", "Cursor", tmp_path / "cursor" / "mcp.json", "json", "mcpServers"),
+        MCPTarget("vscode", "VS Code", tmp_path / "vscode" / "mcp.json", "json", "servers"),
+        MCPTarget("codex", "Codex CLI", tmp_path / "codex" / "config.toml", "toml", "mcp.servers"),
+    ]
+
 
 @pytest.fixture()
-def settings_dir(tmp_path: Path):
-    """Provide a temp settings path and patch the module constant."""
-    settings_file = tmp_path / "settings.json"
-    with patch("octomil.mcp.registration._SETTINGS_PATH", settings_file):
-        yield settings_file
+def targets(tmp_path: Path):
+    """Patch TARGETS to use temp dirs."""
+    test_targets = _make_targets(tmp_path)
+    with patch("octomil.mcp.registration.TARGETS", test_targets):
+        yield test_targets
 
 
-class TestRegister:
-    def test_creates_settings_file(self, settings_dir: Path) -> None:
-        from octomil.mcp.registration import register_mcp_server
+class TestRegisterAll:
+    def test_creates_all_config_files(self, targets: list[MCPTarget]) -> None:
+        results = register_mcp_server()
+        assert all(r.success for r in results)
+        for t in targets:
+            assert t.path.is_file(), f"{t.display} config not created"
 
+    def test_json_targets_correct_structure(self, targets: list[MCPTarget]) -> None:
+        register_mcp_server(model="test-model")
+        for t in targets:
+            if t.format != "json":
+                continue
+            data = json.loads(t.path.read_text())
+            entry = data[t.server_key]["octomil"]
+            assert entry["command"] == sys.executable
+            assert entry["args"] == ["-m", "octomil.mcp"]
+            assert entry["env"]["OCTOMIL_MCP_MODEL"] == "test-model"
+
+    def test_toml_target_correct_structure(self, targets: list[MCPTarget]) -> None:
+        register_mcp_server(model="phi-mini")
+        codex = next(t for t in targets if t.name == "codex")
+        content = codex.path.read_text()
+        assert "[mcp.servers.octomil]" in content
+        assert sys.executable in content
+        assert "phi-mini" in content
+
+    def test_no_model_omits_env(self, targets: list[MCPTarget]) -> None:
         register_mcp_server()
-        assert settings_dir.is_file()
-        data = json.loads(settings_dir.read_text())
-        assert "octomil" in data["mcpServers"]
+        claude = next(t for t in targets if t.name == "claude")
+        data = json.loads(claude.path.read_text())
+        assert data["mcpServers"]["octomil"]["env"] == {}
 
-    def test_uses_sys_executable(self, settings_dir: Path) -> None:
-        from octomil.mcp.registration import register_mcp_server
 
+class TestRegisterTarget:
+    def test_register_single_target(self, targets: list[MCPTarget]) -> None:
+        results = register_mcp_server(target="claude")
+        assert len(results) == 1
+        assert results[0].target == "claude"
+        assert results[0].success
+
+    def test_invalid_target_raises(self, targets: list[MCPTarget]) -> None:
+        with pytest.raises(RegistrationError, match="Unknown target"):
+            register_mcp_server(target="invalid")
+
+
+class TestPreserveExisting:
+    def test_preserves_other_settings(self, targets: list[MCPTarget]) -> None:
+        claude = next(t for t in targets if t.name == "claude")
+        claude.path.parent.mkdir(parents=True, exist_ok=True)
+        claude.path.write_text(json.dumps({"theme": "dark", "mcpServers": {"other": {"command": "foo"}}}))
         register_mcp_server()
-        data = json.loads(settings_dir.read_text())
-        assert data["mcpServers"]["octomil"]["command"] == sys.executable
-
-    def test_preserves_existing_settings(self, settings_dir: Path) -> None:
-        from octomil.mcp.registration import register_mcp_server
-
-        settings_dir.write_text(json.dumps({"theme": "dark", "mcpServers": {"other": {"command": "foo"}}}))
-        register_mcp_server()
-        data = json.loads(settings_dir.read_text())
+        data = json.loads(claude.path.read_text())
         assert data["theme"] == "dark"
         assert "other" in data["mcpServers"]
         assert "octomil" in data["mcpServers"]
 
-    def test_overwrites_existing_octomil_entry(self, settings_dir: Path) -> None:
-        from octomil.mcp.registration import register_mcp_server
-
-        register_mcp_server(model="old-model")
-        register_mcp_server(model="new-model")
-        data = json.loads(settings_dir.read_text())
-        assert data["mcpServers"]["octomil"]["env"]["OCTOMIL_MCP_MODEL"] == "new-model"
-
-    def test_returns_path(self, settings_dir: Path) -> None:
-        from octomil.mcp.registration import register_mcp_server
-
-        result = register_mcp_server()
-        assert result == str(settings_dir)
-
-    def test_sets_model_env(self, settings_dir: Path) -> None:
-        from octomil.mcp.registration import register_mcp_server
-
-        register_mcp_server(model="phi-4-mini")
-        data = json.loads(settings_dir.read_text())
-        assert data["mcpServers"]["octomil"]["env"]["OCTOMIL_MCP_MODEL"] == "phi-4-mini"
+    def test_overwrites_existing_octomil(self, targets: list[MCPTarget]) -> None:
+        register_mcp_server(model="old")
+        register_mcp_server(model="new")
+        claude = next(t for t in targets if t.name == "claude")
+        data = json.loads(claude.path.read_text())
+        assert data["mcpServers"]["octomil"]["env"]["OCTOMIL_MCP_MODEL"] == "new"
 
 
 class TestUnregister:
-    def test_removes_entry(self, settings_dir: Path) -> None:
-        from octomil.mcp.registration import register_mcp_server, unregister_mcp_server
-
+    def test_removes_from_all(self, targets: list[MCPTarget]) -> None:
         register_mcp_server()
-        assert unregister_mcp_server() is True
-        data = json.loads(settings_dir.read_text())
-        assert "mcpServers" not in data
+        results = unregister_mcp_server()
+        assert all(r.success for r in results)
+        for t in targets:
+            if t.format == "json":
+                data = json.loads(t.path.read_text())
+                assert "octomil" not in data.get(t.server_key, {})
 
-    def test_preserves_other_servers(self, settings_dir: Path) -> None:
-        from octomil.mcp.registration import unregister_mcp_server
-
-        settings_dir.write_text(json.dumps({"mcpServers": {"octomil": {}, "other": {"command": "bar"}}}))
-        assert unregister_mcp_server() is True
-        data = json.loads(settings_dir.read_text())
+    def test_preserves_other_servers(self, targets: list[MCPTarget]) -> None:
+        claude = next(t for t in targets if t.name == "claude")
+        claude.path.parent.mkdir(parents=True, exist_ok=True)
+        claude.path.write_text(json.dumps({"mcpServers": {"octomil": {}, "other": {"command": "bar"}}}))
+        unregister_mcp_server(target="claude")
+        data = json.loads(claude.path.read_text())
         assert "other" in data["mcpServers"]
         assert "octomil" not in data["mcpServers"]
 
-    def test_returns_false_when_not_registered(self, settings_dir: Path) -> None:
-        from octomil.mcp.registration import unregister_mcp_server
+    def test_not_registered_returns_false(self, targets: list[MCPTarget]) -> None:
+        results = unregister_mcp_server()
+        assert not any(r.success for r in results)
 
-        assert unregister_mcp_server() is False
 
-
-class TestIsRegistered:
-    def test_true_when_registered(self, settings_dir: Path) -> None:
-        from octomil.mcp.registration import is_registered, register_mcp_server
-
+class TestStatus:
+    def test_all_registered(self, targets: list[MCPTarget]) -> None:
         register_mcp_server()
+        statuses = get_all_status()
+        assert all(statuses.values())
+
+    def test_none_registered(self, targets: list[MCPTarget]) -> None:
+        statuses = get_all_status()
+        assert not any(statuses.values())
+
+    def test_partial_registration(self, targets: list[MCPTarget]) -> None:
+        register_mcp_server(target="claude")
+        statuses = get_all_status()
+        assert statuses["claude"] is True
+        assert statuses["cursor"] is False
+
+
+class TestBackwardCompat:
+    def test_is_registered_checks_claude(self, targets: list[MCPTarget]) -> None:
+        assert is_registered() is False
+        register_mcp_server(target="claude")
         assert is_registered() is True
 
-    def test_false_when_not_registered(self, settings_dir: Path) -> None:
-        from octomil.mcp.registration import is_registered
 
-        assert is_registered() is False
-
-
-class TestGetRegistrationInfo:
-    def test_returns_config(self, settings_dir: Path) -> None:
-        from octomil.mcp.registration import get_registration_info, register_mcp_server
-
-        register_mcp_server(model="test-model")
-        info = get_registration_info()
-        assert info is not None
-        assert info["command"] == sys.executable
-        assert info["env"]["OCTOMIL_MCP_MODEL"] == "test-model"
-
-    def test_returns_none_when_not_registered(self, settings_dir: Path) -> None:
-        from octomil.mcp.registration import get_registration_info
-
-        assert get_registration_info() is None
-
-
-class TestMalformedSettings:
-    def test_invalid_json(self, settings_dir: Path) -> None:
-        from octomil.mcp.registration import RegistrationError, register_mcp_server
-
-        settings_dir.write_text("{not valid json")
-        with pytest.raises(RegistrationError, match="Malformed JSON"):
-            register_mcp_server()
-
-    def test_invalid_mcp_servers_type(self, settings_dir: Path) -> None:
-        from octomil.mcp.registration import RegistrationError, register_mcp_server
-
-        settings_dir.write_text(json.dumps({"mcpServers": "not a dict"}))
-        with pytest.raises(RegistrationError, match="Expected mcpServers"):
-            register_mcp_server()
-
-    def test_non_dict_root(self, settings_dir: Path) -> None:
-        from octomil.mcp.registration import RegistrationError, register_mcp_server
-
-        settings_dir.write_text(json.dumps([1, 2, 3]))
-        with pytest.raises(RegistrationError, match="Expected dict"):
-            register_mcp_server()
+class TestMalformedConfig:
+    def test_invalid_json_fails_gracefully(self, targets: list[MCPTarget]) -> None:
+        claude = next(t for t in targets if t.name == "claude")
+        claude.path.parent.mkdir(parents=True, exist_ok=True)
+        claude.path.write_text("{not valid json")
+        results = register_mcp_server(target="claude")
+        assert not results[0].success
+        assert "Malformed JSON" in (results[0].error or "")
