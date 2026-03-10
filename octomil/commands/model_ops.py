@@ -506,14 +506,17 @@ def list_models_cmd(model_family: Optional[str]) -> None:
 
     if model_family is None:
         cli_header("Model Catalog")
-        cli_table_header(("MODEL", 18), ("PUBLISHER", 14), ("PARAMS", 8), ("DEFAULT", 10), ("VARIANTS", 26))
+        name_w = max((len(n) for n in CATALOG), default=16)
+        name_w = max(name_w + 2, 18)
+        cli_table_header(("MODEL", name_w), ("PUBLISHER", 14), ("PARAMS", 8), ("DEFAULT", 10), ("VARIANTS", 26))
         for name, entry in sorted(CATALOG.items()):
             variant_tags = ", ".join(sorted(entry.variants.keys()))
             click.echo(
-                f"    {click.style(name, fg='white', bold=True):<27s}"
-                f"{entry.publisher:<14s}{entry.params:<8s}"
-                f"{entry.default_quant:<10s}"
-                f"{click.style(variant_tags, dim=True)}"
+                "    "
+                + click.style(name.ljust(name_w), fg="white", bold=True)
+                + f"{entry.publisher:<14s}{entry.params:<8s}"
+                + f"{entry.default_quant:<10s}"
+                + click.style(variant_tags, dim=True)
             )
         click.echo()
         click.echo(click.style(f"  {len(CATALOG)} model families available.", dim=True))
@@ -586,14 +589,19 @@ def models(source: str) -> None:
             ollama_models = list_ollama_models()
             if ollama_models:
                 cli_section("Local (Ollama)")
-                cli_table_header(("NAME", 20), ("SIZE", 10), ("QUANT", 9), ("FAMILY", 12), ("DEPLOY URI", 25))
+                # Dynamic column width based on longest name
+                name_w = max(len(m.name) for m in ollama_models)
+                name_w = max(name_w + 2, 20)  # minimum 20, +2 padding
+                cli_table_header(("NAME", name_w), ("SIZE", 10), ("QUANT", 9), ("FAMILY", 12), ("DEPLOY URI", 25))
                 for m in ollama_models:
-                    deploy_uri = f"ollama://{m.name}"
+                    deploy_uri = "ollama://" + m.name
+                    padded_name = m.name.ljust(name_w)
                     click.echo(
-                        f"    {click.style(m.name, fg='white', bold=True):<29s}"
-                        f"{m.size_display:>8s}   "
-                        f"{m.quantization:<9s}{m.family:<12s}"
-                        f"{click.style(deploy_uri, dim=True)}"
+                        "    "
+                        + click.style(padded_name, fg="white", bold=True)
+                        + f"{m.size_display:>8s}   "
+                        + f"{m.quantization:<9s}{m.family:<12s}"
+                        + click.style(deploy_uri, dim=True)
                     )
                 click.echo()
             else:
@@ -610,7 +618,9 @@ def models(source: str) -> None:
                 registry_models: list[dict[str, Any]] = registry_data.get("models", [])
                 if registry_models:
                     cli_section("Registry (Octomil)")
-                    cli_table_header(("NAME", 20), ("SIZE", 10), ("FORMAT", 9), ("FRAMEWORK", 14))
+                    rname_w = max((len(rm.get("name", "")) for rm in registry_models), default=16)
+                    rname_w = max(rname_w + 2, 20)
+                    cli_table_header(("NAME", rname_w), ("SIZE", 10), ("FORMAT", 9), ("FRAMEWORK", 14))
                     for rm in registry_models:
                         name_val = rm.get("name", "unknown")
                         size = rm.get("size", 0)
@@ -618,8 +628,9 @@ def models(source: str) -> None:
                         framework = rm.get("framework", "unknown")
                         size_mb = size / (1024 * 1024) if size else 0
                         click.echo(
-                            f"    {click.style(name_val, fg='white', bold=True):<29s}"
-                            f"{size_mb:>5.0f} MB   {fmt:<9s}{framework}"
+                            "    "
+                            + click.style(name_val.ljust(rname_w), fg="white", bold=True)
+                            + f"{size_mb:>5.0f} MB   {fmt:<9s}{framework}"
                         )
                     click.echo()
                 else:
