@@ -223,18 +223,23 @@ def _run_model_tui(
     """Full prompt_toolkit TUI for model selection."""
     statuses = {m.key: _is_model_downloaded(m.key) for m in recommendations}
 
+    # Split into recommended (top 3) and more
+    recommended = [m for m in recommendations if m.recommended or recommendations.index(m) < 3]
+    more = [m for m in recommendations if m not in recommended]
+    all_items = recommended + more
+
     selected = [0]
     search_mode = [False]
     search_query = [""]
-    filtered: list[list[RecommendedModel]] = [list(recommendations)]
+    filtered: list[list[RecommendedModel]] = [list(all_items)]
     result: list[str | None] = [None]
 
     def _fuzzy_filter(query: str) -> list[RecommendedModel]:
         if not query:
-            return list(recommendations)
+            return list(all_items)
         q = query.lower()
         out: list[RecommendedModel] = []
-        for m in recommendations:
+        for m in all_items:
             target = f"{m.key} {m.description}".lower()
             qi = 0
             for ch in target:
@@ -244,26 +249,55 @@ def _run_model_tui(
                 out.append(m)
         return out
 
+    def _status_tag(m: RecommendedModel) -> str:
+        if statuses.get(m.key):
+            return ""
+        return ", (not downloaded)"
+
     def get_display_text():  # type: ignore[no-untyped-def]
         lines: list[tuple[str, str]] = []
-        lines.append(("bold", f"  Model Selection ({budget:.0f} GB available)\n"))
-        lines.append(
-            (
-                "",
-                "  Use \u2191\u2193 to navigate, Enter to select, / to search, Esc to cancel\n\n",
-            )
-        )
-
-        for i, m in enumerate(filtered[0]):
-            dl = "downloaded" if statuses.get(m.key) else "not downloaded"
-            tag = " \u2605 recommended" if m.recommended else ""
-            prefix = " \u25b8 " if i == selected[0] else "   "
-            style = "reverse" if i == selected[0] else ""
-            lines.append((style, f"{prefix}{m.key}{tag}\n"))
-            lines.append(("", f"     {m.description}  |  {m.size}  |  {dl}\n"))
 
         if search_mode[0]:
-            lines.append(("bold", f"\n  Search: {search_query[0]}\u2588\n"))
+            lines.append(("bold", f"  Select model: {search_query[0]}\u2588\n"))
+        else:
+            lines.append(("bold", "  Select model: "))
+            lines.append(("italic", "Type to filter...\n"))
+
+        # Find which section the cursor is in
+        flat = filtered[0]
+
+        # Split filtered items back into sections
+        f_rec = [m for m in flat if m in recommended]
+        f_more = [m for m in flat if m in more]
+
+        idx = 0  # global flat index
+
+        if f_rec:
+            lines.append(("", "\n"))
+            lines.append(("bold", "  Recommended\n"))
+            for m in f_rec:
+                is_sel = idx == selected[0]
+                prefix = "  \u25b8 " if is_sel else "    "
+                style = "bold" if is_sel else ""
+                dl = _status_tag(m)
+                lines.append((style, f"{prefix}{m.key}\n"))
+                lines.append(("", f"      {m.description}, ~{m.size}{dl}\n"))
+                idx += 1
+
+        if f_more:
+            lines.append(("", "\n"))
+            lines.append(("bold", "  More\n"))
+            for m in f_more:
+                is_sel = idx == selected[0]
+                prefix = "  \u25b8 " if is_sel else "    "
+                style = "bold" if is_sel else ""
+                dl = _status_tag(m)
+                lines.append((style, f"{prefix}{m.key}\n"))
+                lines.append(("", f"      {m.description}, ~{m.size}{dl}\n"))
+                idx += 1
+
+        lines.append(("", "\n"))
+        lines.append(("", "  \u2191/\u2193 navigate \u2022 enter select \u2022 / search \u2022 esc cancel\n"))
 
         return lines
 
@@ -295,7 +329,7 @@ def _run_model_tui(
         if search_mode[0]:
             search_mode[0] = False
             search_query[0] = ""
-            filtered[0] = list(recommendations)
+            filtered[0] = list(all_items)
             selected[0] = 0
         else:
             event.app.exit()
@@ -336,26 +370,33 @@ def _select_model_fallback(
     budget: float,
 ) -> str:
     """Plain numbered list fallback when TUI is unavailable."""
-    click.echo(f"\nModel Selection ({budget:.0f} GB available)\n")
+    click.echo("\n  Select model:\n")
 
-    for i, m in enumerate(recommendations):
-        downloaded = _is_model_downloaded(m.key)
-        status = "downloaded" if downloaded else "not downloaded"
-        marker = " (Recommended)" if m.recommended else ""
-        prefix = "  > " if i == 0 else "    "
-        click.echo(f"{prefix}{i + 1}. {m.label}{marker}")
-        click.echo(f"      {m.description}, {m.size}, ({status})")
+    recommended = recommendations[:3]
+    more = recommendations[3:]
+
+    if recommended:
+        click.echo("  Recommended")
+        for i, m in enumerate(recommended):
+            downloaded = _is_model_downloaded(m.key)
+            dl = "" if downloaded else ", (not downloaded)"
+            click.echo(f"    {i + 1}. {m.key}")
+            click.echo(f"       {m.description}, ~{m.size}{dl}")
+
+    if more:
+        click.echo("\n  More")
+        for j, m in enumerate(more):
+            num = len(recommended) + j + 1
+            downloaded = _is_model_downloaded(m.key)
+            dl = "" if downloaded else ", (not downloaded)"
+            click.echo(f"    {num}. {m.key}")
+            click.echo(f"       {m.description}, ~{m.size}{dl}")
 
     click.echo()
 
     choices = {str(i + 1): m.key for i, m in enumerate(recommendations)}
-    labels = {str(i + 1): m.label for i, m in enumerate(recommendations)}
-
-    hint_parts = [f"{k}={labels[k]}" for k in sorted(choices)]
-    hint = ", ".join(hint_parts)
-
     selection: str = click.prompt(
-        f"Select model [{hint}] or enter a model name",
+        "  Select model (number or name)",
         default="1",
     )
 
