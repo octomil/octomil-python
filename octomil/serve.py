@@ -116,7 +116,9 @@ def resolve_model_name(name: str, backend: str) -> str:
             return resolved.mlx_repo
         if resolved.hf_repo:
             return resolved.hf_repo
-        raise ValueError(f"No MLX source found for '{name}'. " f"Pass a full HuggingFace repo ID (e.g. REDACTED)")
+        raise ValueError(
+            f"No MLX source found for '{name}'. Pass a full HuggingFace repo ID (e.g. 'mlx-community/model-4bit')."
+        )
 
     if backend == "gguf":
         # For GGUF, return the short name — LlamaCppBackend resolves via _GGUF_MODELS
