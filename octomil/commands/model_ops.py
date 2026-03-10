@@ -566,76 +566,45 @@ def list_models_cmd(model_family: Optional[str]) -> None:
 
 
 @click.command()
-@click.option(
-    "--source",
-    type=click.Choice(["all", "ollama", "registry"]),
-    default="all",
-    help="Filter model source.",
-)
-def models(source: str) -> None:
-    """List available models from ollama and the Octomil registry.
+def models() -> None:
+    """List models available for local inference.
 
     \b
-    Deploy ollama models directly:
-        octomil deploy ollama://llama3.2 --phone
-        octomil deploy ollama://gemma:2b --phone
+    Run a model:
+        octomil serve gemma-1b
+        octomil serve qwen-3b:8bit
     """
+    from octomil.models.catalog import CATALOG
+
     cli_header("Models")
 
-    if source in ("all", "ollama"):
-        from octomil.ollama import is_ollama_running, list_ollama_models
+    if not CATALOG:
+        cli_warn("No models available")
+        return
 
-        if is_ollama_running():
-            ollama_models = list_ollama_models()
-            if ollama_models:
-                cli_section("Local (Ollama)")
-                # Dynamic column width based on longest name
-                name_w = max(len(m.name) for m in ollama_models)
-                name_w = max(name_w + 2, 20)  # minimum 20, +2 padding
-                cli_table_header(("NAME", name_w), ("SIZE", 10), ("QUANT", 9), ("FAMILY", 12), ("DEPLOY URI", 25))
-                for m in ollama_models:
-                    deploy_uri = "ollama://" + m.name
-                    padded_name = m.name.ljust(name_w)
-                    click.echo(
-                        "    "
-                        + click.style(padded_name, fg="white", bold=True)
-                        + f"{m.size_display:>8s}   "
-                        + f"{m.quantization:<9s}{m.family:<12s}"
-                        + click.style(deploy_uri, dim=True)
-                    )
-                click.echo()
-            else:
-                cli_warn("Local (Ollama): no models found")
-        else:
-            cli_warn("Local (Ollama): not running")
+    # Build rows: (name, params, quants, engines)
+    rows: list[tuple[str, str, str, str]] = []
+    for name, entry in sorted(CATALOG.items()):
+        quants = ", ".join(sorted(entry.variants.keys()))
+        engines = ", ".join(sorted(entry.engines))
+        rows.append((name, entry.params, quants, engines))
 
-    if source in ("all", "registry"):
-        api_key = _get_api_key()
-        if api_key:
-            try:
-                client = _get_client()
-                registry_data = client.list_models()
-                registry_models: list[dict[str, Any]] = registry_data.get("models", [])
-                if registry_models:
-                    cli_section("Registry (Octomil)")
-                    rname_w = max((len(rm.get("name", "")) for rm in registry_models), default=16)
-                    rname_w = max(rname_w + 2, 20)
-                    cli_table_header(("NAME", rname_w), ("SIZE", 10), ("FORMAT", 9), ("FRAMEWORK", 14))
-                    for rm in registry_models:
-                        name_val = rm.get("name", "unknown")
-                        size = rm.get("size", 0)
-                        fmt = rm.get("format", "unknown")
-                        framework = rm.get("framework", "unknown")
-                        size_mb = size / (1024 * 1024) if size else 0
-                        click.echo(
-                            "    "
-                            + click.style(name_val.ljust(rname_w), fg="white", bold=True)
-                            + f"{size_mb:>5.0f} MB   {fmt:<9s}{framework}"
-                        )
-                    click.echo()
-                else:
-                    cli_warn("Registry (Octomil): no models found")
-            except Exception:
-                cli_warn("Registry (Octomil): unable to fetch")
-        elif source == "registry":
-            cli_warn("No API key — run `octomil login` first")
+    name_w = max(len(r[0]) for r in rows) + 2
+    name_w = max(name_w, 14)
+    params_w = 8
+    quants_w = 20
+    cli_table_header(("MODEL", name_w), ("PARAMS", params_w), ("QUANTS", quants_w), ("ENGINES", 30))
+    for model_name, params, quants, engines in rows:
+        click.echo(
+            "    "
+            + click.style(model_name.ljust(name_w), fg="white", bold=True)
+            + params.ljust(params_w)
+            + quants.ljust(quants_w)
+            + click.style(engines, dim=True)
+        )
+    click.echo()
+    click.echo(
+        click.style("    Tip: ", dim=True)
+        + click.style("octomil list <model>", bold=True)
+        + click.style(" for full variant details", dim=True)
+    )
