@@ -5,6 +5,12 @@
 - Added `DeviceAuthClient` runtime auth helper for device token bootstrap, refresh, and revoke flows.
 - Added optional `auth` extra with `keyring` secure storage dependency.
 
+## 2.10.0 (2026-03-10)
+
+### Features
+
+- add MCP registration to octomil setup (#238)
+
 ## 2.9.0 (2026-03-10)
 
 ### Features
