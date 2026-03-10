@@ -30,7 +30,7 @@ from __future__ import annotations
 import click
 
 from octomil import __version__
-from octomil.cli_helpers import WELCOME_MESSAGE
+from octomil.cli_helpers import print_welcome
 
 # ---------------------------------------------------------------------------
 # CLI group
@@ -43,7 +43,7 @@ from octomil.cli_helpers import WELCOME_MESSAGE
 def main(ctx: click.Context) -> None:
     """Octomil — serve, deploy, and observe ML models on edge devices."""
     if ctx.invoked_subcommand is None:
-        click.echo(WELCOME_MESSAGE)
+        print_welcome()
 
 
 # ---------------------------------------------------------------------------

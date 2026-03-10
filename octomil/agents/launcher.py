@@ -355,7 +355,7 @@ def _run_model_tui(
         lines: list[tuple[str, str]] = []
 
         # Header
-        lines.append(("bold fg:ansicyan", "\n  \u25c6 "))
+        lines.append(("bold fg:ansicyan", "\n  \U0001f419 "))
         if search_mode[0]:
             lines.append(("bold", "Select model: "))
             lines.append(("fg:ansiyellow", f"{search_query[0]}"))
@@ -706,6 +706,8 @@ def _run_agent_tui(
     """Full prompt_toolkit TUI for agent selection."""
     import shutil as _shutil
 
+    from .. import __version__
+
     statuses = {a.name: _shutil.which(a.install_check) is not None for a in agents}
 
     selected = [0]
@@ -713,8 +715,9 @@ def _run_agent_tui(
 
     def get_display_text():  # type: ignore[no-untyped-def]
         lines: list[tuple[str, str]] = []
-        lines.append(("bold fg:ansicyan", "\n  \u25c6 "))
-        lines.append(("bold", "Select a coding agent\n"))
+
+        # Header
+        lines.append(("bold fg:ansicyan", f"\n  \U0001f419 Octomil {__version__}\n"))
         lines.append(("", "\n"))
 
         for i, a in enumerate(agents):
@@ -722,26 +725,25 @@ def _run_agent_tui(
             is_sel = i == selected[0]
             if is_sel:
                 lines.append(("bold fg:ansicyan", "  \u25b8 "))
-                lines.append(("bold fg:ansiwhite", f"{a.display_name}"))
+                lines.append(("bold fg:ansiwhite", f"Launch {a.display_name}"))
             else:
                 lines.append(("", "    "))
-                lines.append(("fg:ansiwhite", f"{a.display_name}"))
-            lines.append(("fg:ansibrightblack", f"  ({a.name})"))
+                lines.append(("fg:ansiwhite", f"Launch {a.display_name}"))
             if installed:
                 lines.append(("fg:ansigreen", "  \u2713"))
             else:
-                lines.append(("fg:ansiyellow", "  \u2022 not installed"))
+                lines.append(("fg:ansibrightblack", "  \u2022 not installed"))
             lines.append(("", "\n"))
             lines.append(("fg:ansibrightblack", f"      {a.description}\n"))
+            lines.append(("", "\n"))
 
         # Footer
-        lines.append(("", "\n"))
         lines.append(("fg:ansibrightblack", "  \u2191\u2193"))
         lines.append(("fg:ansibrightblack", " navigate  "))
         lines.append(("fg:ansibrightblack", "\u21b5"))
         lines.append(("fg:ansibrightblack", " select  "))
         lines.append(("fg:ansibrightblack", "esc"))
-        lines.append(("fg:ansibrightblack", " cancel\n"))
+        lines.append(("fg:ansibrightblack", " quit\n"))
 
         return lines
 

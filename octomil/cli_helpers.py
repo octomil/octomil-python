@@ -37,7 +37,6 @@ def http_request(
     404s (FastAPI cold-start artifact).  Use this instead of raw
     ``httpx.get()`` / ``httpx.post()`` in CLI commands.
     """
-    last_exc: Optional[Exception] = None
     for attempt in range(max_retries):
         try:
             with httpx.Client(timeout=timeout) as client:
@@ -53,17 +52,12 @@ def http_request(
                 and resp.text.strip() in ('{"detail":"Not Found"}', "Not Found")
             ):
                 wait = backoff_base * (2**attempt)
-                _logger.debug(
-                    "Generic 404 on %s %s, retrying in %.1fs", method, url, wait
-                )
+                _logger.debug("Generic 404 on %s %s, retrying in %.1fs", method, url, wait)
                 time.sleep(wait)
                 continue
 
             # Retryable server error — backoff and retry.
-            if (
-                resp.status_code in _RETRYABLE_STATUS_CODES
-                and attempt < max_retries - 1
-            ):
+            if resp.status_code in _RETRYABLE_STATUS_CODES and attempt < max_retries - 1:
                 wait = backoff_base * (2**attempt)
                 _logger.debug(
                     "HTTP %d on %s %s, retrying in %.1fs",
@@ -81,8 +75,7 @@ def http_request(
             httpx.ConnectError,
             httpx.TimeoutException,
             httpx.RemoteProtocolError,
-        ) as exc:
-            last_exc = exc
+        ) as exc:  # noqa: PERF203
             if attempt < max_retries - 1:
                 wait = backoff_base * (2**attempt)
                 click.echo(
@@ -170,9 +163,7 @@ def _get_telemetry_reporter():  # type: ignore[no-untyped-def]
     if not api_key:
         return None
     api_base: str = (
-        os.environ.get("OCTOMIL_API_URL")
-        or os.environ.get("OCTOMIL_API_BASE")
-        or "https://api.octomil.com/api/v1"
+        os.environ.get("OCTOMIL_API_URL") or os.environ.get("OCTOMIL_API_BASE") or "https://api.octomil.com/api/v1"
     )
     return TelemetryReporter(api_key=api_key, api_base=api_base)
 
@@ -219,8 +210,7 @@ def _require_org_id() -> str:
     org_id = get_org_id()
     if not org_id:
         click.echo(
-            "No org_id configured. Run `octomil init <name>` first, or "
-            "set OCTOMIL_ORG_ID.",
+            "No org_id configured. Run `octomil init <name>` first, or set OCTOMIL_ORG_ID.",
             err=True,
         )
         sys.exit(1)
@@ -510,9 +500,7 @@ def _complete_model_name(ctx, param, incomplete):
 
         api_key = _get_api_key()
         api_base = (
-            os.environ.get("OCTOMIL_API_URL")
-            or os.environ.get("OCTOMIL_API_BASE")
-            or "https://api.octomil.com/api/v1"
+            os.environ.get("OCTOMIL_API_URL") or os.environ.get("OCTOMIL_API_BASE") or "https://api.octomil.com/api/v1"
         )
         if api_key:
             resp = httpx.get(
@@ -560,14 +548,9 @@ def _auto_optimize(model_tag: str, context_length: int = 4096) -> str | None:
     click.echo()
     click.secho("  Hardware optimization", bold=True)
     click.echo(f"    Quantization: {config.quantization}")
-    click.echo(
-        f"    Strategy: {config.strategy.value} ({config.gpu_layers} GPU layers)"
-    )
+    click.echo(f"    Strategy: {config.strategy.value} ({config.gpu_layers} GPU layers)")
     click.echo(f"    VRAM: {config.vram_gb:.1f} GB  RAM: {config.ram_gb:.1f} GB")
-    click.echo(
-        f"    Est. speed: {speed.tokens_per_second:.1f} tok/s"
-        f" ({speed.confidence} confidence)"
-    )
+    click.echo(f"    Est. speed: {speed.tokens_per_second:.1f} tok/s ({speed.confidence} confidence)")
     if config.warning:
         click.secho(f"    Warning: {config.warning}", fg="yellow")
 
@@ -578,21 +561,73 @@ def _auto_optimize(model_tag: str, context_length: int = 4096) -> str | None:
 # Welcome message
 # ---------------------------------------------------------------------------
 
-WELCOME_MESSAGE = """\
-Octomil — on-device AI inference
 
-  Get started:
-    1. octomil serve phi-4-mini              run a model locally
-    2. octomil benchmark phi-4-mini          measure performance
-    3. octomil deploy phi-4-mini --phone     ship to devices
-    4. octomil login                         unlock fleet features
+def print_welcome() -> None:
+    """Print the styled Octomil welcome screen."""
+    import sys
 
-  Useful commands:
-    octomil models                           list available models
-    octomil push <file> --version 1.0.0      upload a model
-    octomil dashboard                        open web dashboard
-    octomil launch <agent>                   launch coding agent
+    from octomil import __version__
 
-  Run octomil <command> --help for details.
-  Docs: https://docs.octomil.com
-"""
+    is_tty = sys.stdin.isatty() and sys.stdout.isatty()
+
+    # Header
+    click.echo()
+    click.echo(click.style(f"  \U0001f419 Octomil {__version__}", fg="cyan", bold=True))
+    click.echo(click.style("  on-device AI inference", dim=True))
+    click.echo()
+
+    if is_tty:
+        _print_welcome_tui()
+    else:
+        _print_welcome_plain()
+
+
+def _print_welcome_tui() -> None:
+    """Styled welcome for interactive terminals."""
+    # Workflow
+    click.echo(click.style("  Get started", bold=True))
+    click.echo()
+    _welcome_cmd("octomil serve qwen-7b", "Run a model locally")
+    _welcome_cmd("octomil launch codex", "Launch a coding agent with local AI")
+    _welcome_cmd("octomil deploy qwen-7b --phone", "Ship to iOS & Android devices")
+    _welcome_cmd("octomil benchmark qwen-7b", "Measure on-device performance")
+    click.echo()
+
+    # Commands
+    click.echo(click.style("  Commands", bold=True))
+    click.echo()
+    _welcome_cmd("octomil models", "Browse available models")
+    _welcome_cmd("octomil push <file>", "Upload a custom model")
+    _welcome_cmd("octomil dashboard", "Open the web dashboard")
+    _welcome_cmd("octomil login", "Authenticate for fleet features")
+    click.echo()
+
+    # Footer
+    click.echo(click.style("  octomil <command> --help", dim=True) + click.style("  for details", dim=True))
+    click.echo(click.style("  https://docs.octomil.com", dim=True))
+    click.echo()
+
+
+def _print_welcome_plain() -> None:
+    """Plain welcome for non-TTY (piped output, CI, etc.)."""
+    click.echo("  Get started:")
+    click.echo("    octomil serve qwen-7b              run a model locally")
+    click.echo("    octomil launch codex               launch a coding agent")
+    click.echo("    octomil deploy qwen-7b --phone     ship to devices")
+    click.echo("    octomil benchmark qwen-7b          measure performance")
+    click.echo()
+    click.echo("  Commands:")
+    click.echo("    octomil models                     browse available models")
+    click.echo("    octomil push <file>                upload a custom model")
+    click.echo("    octomil dashboard                  open web dashboard")
+    click.echo("    octomil login                      authenticate for fleet")
+    click.echo()
+    click.echo("  Run octomil <command> --help for details.")
+    click.echo("  Docs: https://docs.octomil.com")
+    click.echo()
+
+
+def _welcome_cmd(cmd: str, desc: str) -> None:
+    """Print a single command row in the welcome screen."""
+    padded = cmd.ljust(38)
+    click.echo(f"    {click.style(padded, fg='white')}{click.style(desc, dim=True)}")

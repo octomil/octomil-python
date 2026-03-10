@@ -108,7 +108,6 @@ AGENTS: dict[str, AgentDef] = {
         install_check="claude",
         install_cmd="npm install -g @anthropic-ai/claude-code",
         exec_cmd="claude",
-        needs_local_model=False,
         model_flag="--model {model}",
     ),
     "codex": AgentDef(
@@ -129,7 +128,6 @@ AGENTS: dict[str, AgentDef] = {
         install_check="droid",
         install_cmd="npm install -g droid",
         exec_cmd="droid",
-        needs_local_model=False,
     ),
     "opencode": AgentDef(
         name="opencode",
