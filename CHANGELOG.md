@@ -5,6 +5,15 @@
 - Added `DeviceAuthClient` runtime auth helper for device token bootstrap, refresh, and revoke flows.
 - Added optional `auth` extra with `keyring` secure storage dependency.
 
+## 2.10.1 (2026-03-10)
+
+### Fixes
+
+- add branded header and styled output (#240)
+- remove download status from model line
+- remove download status from model line (#241)
+- update 15 failing tests to match refactored source code
+
 ## 2.10.0 (2026-03-10)
 
 ### Features
