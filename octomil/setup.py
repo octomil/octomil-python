@@ -386,6 +386,36 @@ else:
 # ---------------------------------------------------------------------------
 
 
+def _log_setup_summary(state: SetupState, _log) -> None:  # noqa: ANN001
+    """Print a summary of the current setup state."""
+    _log("")
+    _log("  Setup complete")
+    if state.engine:
+        _log(f"  Engine:  {state.engine}")
+    if state.model_key:
+        dl = "downloaded" if state.model_downloaded else "downloads on first use"
+        _log(f"  Model:   {state.model_key} ({dl})")
+    _log("")
+
+
+def _register_mcp(model_key: str, _log) -> None:  # noqa: ANN001
+    """Register MCP server across AI tools (non-fatal)."""
+    _log("  MCP servers")
+    try:
+        from octomil.mcp.registration import register_mcp_server
+
+        results = register_mcp_server(model=model_key)
+        for r in results:
+            if r.success:
+                _log(f"    \u2713 {r.display}")
+            else:
+                _log(f"    - {r.display} (skipped)")
+    except Exception as e:
+        logger.debug("MCP registration failed (non-fatal): %s", e)
+        _log(f"    MCP registration skipped: {e}")
+    _log("")
+
+
 def run_setup(*, force: bool = False, foreground: bool = False) -> SetupState:
     """Run the full setup pipeline.
 
@@ -398,16 +428,18 @@ def run_setup(*, force: bool = False, foreground: bool = False) -> SetupState:
     """
     state = load_state()
 
-    # Skip if already complete (unless forced)
-    if state.phase == PHASE_COMPLETE and not force:
-        return state
-
     def _log(msg: str) -> None:
         logger.info(msg)
         if not foreground:
             import click
 
             click.echo(msg)
+
+    # If already complete, show status and re-run MCP registration only
+    if state.phase == PHASE_COMPLETE and not force:
+        _log_setup_summary(state, _log)
+        _register_mcp(state.model_key or "qwen-coder-7b", _log)
+        return state
 
     state = SetupState(started_at=time.time())
     _save_state(state)
@@ -485,6 +517,9 @@ def run_setup(*, force: bool = False, foreground: bool = False) -> SetupState:
         # user just gets a download on first serve.
         logger.warning("Model download failed (non-fatal): %s", e)
         _log(f"  Model download failed (will download on first use): {e}")
+
+    # Step 6: Register MCP server across AI coding tools
+    _register_mcp(model_key, _log)
 
     # Done
     state.phase = PHASE_COMPLETE

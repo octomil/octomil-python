@@ -45,6 +45,7 @@ def setup(foreground: bool, show_status: bool, force: bool) -> None:
         2. Creates ~/.octomil/engines/venv/
         3. Installs the best engine for your hardware (mlx-lm or llama.cpp)
         4. Downloads the recommended model for your device
+        5. Registers the MCP server with your AI tools (Claude, Cursor, VS Code, Codex)
     """
     from octomil.setup import (
         load_state,
