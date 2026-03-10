@@ -14,6 +14,13 @@ Octomil is a CLI + Python SDK that serves open-weight LLMs locally with an OpenA
 
 ```bash
 curl -fsSL https://get.octomil.com | sh
+```
+
+The installer runs `octomil setup` in the background — it creates a venv, installs the best engine for your hardware, downloads a recommended model, and registers the MCP server with your AI tools (Claude Code, Cursor, VS Code, Codex CLI).
+
+Then start serving:
+
+```bash
 octomil serve gemma-1b
 ```
 
@@ -50,10 +57,27 @@ octomil serve llama-3b
 **60+ models** -- Gemma, Llama, Phi, Qwen, DeepSeek, Mistral, Mixtral, and more:
 
 ```bash
+octomil models                  # list all available models
 octomil serve phi-mini          # Microsoft Phi-4 Mini (3.8B)
 octomil serve deepseek-r1-7b    # DeepSeek R1 reasoning
 octomil serve qwen3-4b          # Alibaba Qwen 3
 octomil serve whisper-small     # Speech-to-text
+```
+
+**Interactive chat** -- one command from install to conversation:
+
+```bash
+octomil chat                        # auto-picks best model for your device
+octomil chat qwen-coder-7b          # chat with a specific model
+octomil chat llama-8b -s "You are a Python expert."
+```
+
+**Launch coding agents** -- power Codex, aider, or other agents with local inference:
+
+```bash
+octomil launch                  # pick an agent interactively
+octomil launch codex            # launch OpenAI Codex CLI with local model
+octomil launch codex --model codestral
 ```
 
 **Deploy to phones** -- push models to iOS/Android devices:
@@ -73,6 +97,14 @@ octomil benchmark gemma-1b
 # Tokens/sec: 42.3
 # Memory: 1.2 GB
 # Time to first token: 89ms
+```
+
+**MCP server for AI tools** -- give Claude, Cursor, VS Code, and Codex access to local inference:
+
+```bash
+octomil mcp register                    # register with all detected AI tools
+octomil mcp register --target claude    # register with Claude Code only
+octomil mcp status                      # check registration status
 ```
 
 **Model conversion** -- convert to CoreML (iOS) or TFLite (Android):
@@ -135,6 +167,15 @@ Use aliases: `octomil serve deepseek-r1` resolves to `deepseek-r1-7b`. Each mode
 ## How it works
 
 ```
+curl -fsSL https://get.octomil.com | sh
+    │
+    └── octomil setup (background)
+         ├── 1. Find system Python with venv support
+         ├── 2. Create ~/.octomil/engines/venv/
+         ├── 3. Install best engine (mlx-lm on Apple Silicon, llama.cpp elsewhere)
+         ├── 4. Download recommended model for your device
+         └── 5. Register MCP server with AI tools (Claude, Cursor, VS Code, Codex)
+
 octomil serve gemma-1b
     │
     ├── 1. Resolve model name → catalog lookup (aliases, quant variants)
@@ -149,23 +190,31 @@ octomil serve gemma-1b
 
 ## CLI reference
 
-| Command                     | Description                                 |
-| --------------------------- | ------------------------------------------- |
-| `octomil serve <model>`     | Start an OpenAI-compatible inference server |
-| `octomil benchmark <model>` | Benchmark inference speed on your hardware  |
-| `octomil deploy <model>`    | Deploy a model to edge devices              |
-| `octomil rollback <model>`  | Roll back a deployment                      |
-| `octomil convert <file>`    | Convert model to CoreML / TFLite            |
-| `octomil pull <model>`      | Download a model                            |
-| `octomil push <file>`       | Upload a model to registry                  |
-| `octomil status <model>`    | Check deployment status                     |
-| `octomil scan <path>`       | Security scan a model or app bundle         |
-| `octomil mcp serve`         | Start the HTTP agent server (REST + A2A)    |
-| `octomil mcp register`      | Register MCP server with Claude Code        |
-| `octomil pair`              | Pair with a phone for deployment            |
-| `octomil dashboard`         | Open the web dashboard                      |
-| `octomil login`             | Authenticate with Octomil                   |
-| `octomil init`              | Initialize an organization                  |
+| Command                     | Description                                          |
+| --------------------------- | ---------------------------------------------------- |
+| `octomil setup`             | Install engine, download model, register MCP servers |
+| `octomil serve <model>`     | Start an OpenAI-compatible inference server          |
+| `octomil chat [model]`      | Interactive chat (auto-starts server)                |
+| `octomil launch [agent]`    | Launch a coding agent with local inference           |
+| `octomil models`            | List available models                                |
+| `octomil benchmark <model>` | Benchmark inference speed on your hardware           |
+| `octomil warmup`            | Pre-download the recommended model for your device   |
+| `octomil mcp register`      | Register MCP server with AI tools                    |
+| `octomil mcp unregister`    | Remove MCP server from AI tools                      |
+| `octomil mcp status`        | Show MCP registration status                         |
+| `octomil mcp serve`         | Start the HTTP agent server (REST + A2A)             |
+| `octomil deploy <model>`    | Deploy a model to edge devices                       |
+| `octomil rollback <model>`  | Roll back a deployment                               |
+| `octomil convert <file>`    | Convert model to CoreML / TFLite                     |
+| `octomil pull <model>`      | Download a model                                     |
+| `octomil push <file>`       | Upload a model to registry                           |
+| `octomil status <model>`    | Check deployment status                              |
+| `octomil scan <path>`       | Security scan a model or app bundle                  |
+| `octomil completions`       | Print shell completion setup instructions            |
+| `octomil pair`              | Pair with a phone for deployment                     |
+| `octomil dashboard`         | Open the web dashboard                               |
+| `octomil login`             | Authenticate with Octomil                            |
+| `octomil init`              | Initialize an organization                           |
 
 ## vs. alternatives
 
@@ -205,12 +254,26 @@ client.experiments.create(
 )
 ```
 
-## MCP Server & x402 Payments
+## MCP Server & AI Tool Integration
 
-Octomil exposes its tools as an MCP server that agents can call over HTTP, with micro-payments via the [x402 protocol](https://www.x402.org/).
+Octomil registers as an MCP server across your AI coding tools so they can use local inference. `octomil setup` does this automatically, or you can run it manually:
 
 ```bash
-# Start with x402 payment gating (agents pay per call)
+octomil mcp register                    # Claude Code, Cursor, VS Code, Codex CLI
+octomil mcp register --target cursor    # single tool
+octomil mcp status                      # check what's registered
+octomil mcp unregister                  # remove from all tools
+```
+
+### HTTP Agent Server & x402 Payments
+
+Octomil also exposes its tools over HTTP with an A2A agent card, OpenAPI docs, and optional micro-payments via the [x402 protocol](https://www.x402.org/).
+
+```bash
+octomil mcp serve                       # start HTTP agent server on :8402
+octomil mcp serve --port 9000           # custom port
+
+# With x402 payment gating (agents pay per call)
 OCTOMIL_X402_ADDRESS=0xYourWallet \
 OCTOMIL_SETTLER_TOKEN=s402_... \
 octomil mcp serve --x402
