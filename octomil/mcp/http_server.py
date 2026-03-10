@@ -222,8 +222,28 @@ def create_http_app(config: Optional[HTTPServerConfig] = None) -> FastAPI:
     FastAPI
         Configured app with all routes, middleware, and agent card.
     """
+    import contextlib
+    from collections.abc import AsyncIterator
+
+    from mcp.server.streamable_http_manager import StreamableHTTPSessionManager
+
+    from .server import create_mcp_server
+
     if config is None:
         config = HTTPServerConfig()
+
+    # Create MCP server + session manager before FastAPI so lifespan can manage it
+    mcp_server = create_mcp_server(model=config.model)
+    mcp_session_manager = StreamableHTTPSessionManager(
+        app=mcp_server._mcp_server,
+        json_response=False,
+        stateless=True,
+    )
+
+    @contextlib.asynccontextmanager
+    async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
+        async with mcp_session_manager.run():
+            yield
 
     app = FastAPI(
         title="Octomil Agent",
@@ -231,6 +251,7 @@ def create_http_app(config: Optional[HTTPServerConfig] = None) -> FastAPI:
         version="1.0.0",
         docs_url="/docs",
         redoc_url="/redoc",
+        lifespan=lifespan,
     )
 
     # CORS — permissive for agent-to-agent communication
@@ -964,13 +985,6 @@ def create_http_app(config: Optional[HTTPServerConfig] = None) -> FastAPI:
     # MCP Streamable HTTP transport at /mcp
     # ------------------------------------------------------------------
 
-    from .server import create_mcp_server
-
-    mcp_server = create_mcp_server(
-        model=config.model,
-        streamable_http_path="/",
-        stateless_http=True,
-    )
-    app.mount("/mcp", mcp_server.streamable_http_app())
+    app.add_route("/mcp", mcp_session_manager.handle_request, methods=["GET", "POST", "DELETE"])
 
     return app
