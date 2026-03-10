@@ -11,8 +11,7 @@ from typing import Any, Optional
 
 import click
 
-from octomil.cli_helpers import _get_client
-
+from octomil.cli_helpers import _get_client, cli_header
 
 # ---------------------------------------------------------------------------
 # Local helpers
@@ -55,6 +54,8 @@ def federation_create(name: str, description: Optional[str]) -> None:
 
         octomil federation create healthcare-consortium --description "Cross-hospital FL"
     """
+    cli_header(f"Federation — Create {name}")
+
     client = _get_client()
     payload: dict[str, Any] = {
         "name": name,
@@ -65,7 +66,7 @@ def federation_create(name: str, description: Optional[str]) -> None:
 
     result = client._api.post("/federations", payload)
     fed_id = result.get("id", "unknown")
-    click.echo(f"Federation created: {name}")
+    click.echo(f"  Federation created: {name}")
     click.echo(f"ID: {fed_id}")
 
 
@@ -85,6 +86,8 @@ def federation_invite(federation_name: str, org_ids: tuple[str, ...]) -> None:
 
         octomil federation invite healthcare-consortium --org org_abc --org org_def
     """
+    cli_header(f"Federation — Invite to {federation_name}")
+
     client = _get_client()
     fed_id = _resolve_federation_id(client, federation_name)
     result = client._api.post(
@@ -92,7 +95,7 @@ def federation_invite(federation_name: str, org_ids: tuple[str, ...]) -> None:
         {"org_ids": list(org_ids)},
     )
     invited = result if isinstance(result, list) else result.get("invited", [])
-    click.echo(f"Invited {len(invited)} org(s) to federation {federation_name}")
+    click.echo(f"  Invited {len(invited)} org(s)")
 
 
 @federation.command("join")
@@ -104,13 +107,15 @@ def federation_join(federation_name: str) -> None:
 
         octomil federation join healthcare-consortium
     """
+    cli_header(f"Federation — Join {federation_name}")
+
     client = _get_client()
     fed_id = _resolve_federation_id(client, federation_name)
     client._api.post(
         f"/federations/{fed_id}/join",
         {"org_id": client._org_id},
     )
-    click.echo(f"Joined federation: {federation_name}")
+    click.echo(f"  Joined federation: {federation_name}")
 
 
 @federation.command("list")
@@ -121,6 +126,8 @@ def federation_list() -> None:
 
         octomil federation list
     """
+    cli_header("Federation — List")
+
     client = _get_client()
     results = client._api.get(
         "/federations",
@@ -149,6 +156,8 @@ def federation_show(federation_name: str) -> None:
 
         octomil federation show healthcare-consortium
     """
+    cli_header(f"Federation — {federation_name}")
+
     client = _get_client()
     fed_id = _resolve_federation_id(client, federation_name)
     data = client._api.get(f"/federations/{fed_id}")
@@ -169,6 +178,8 @@ def federation_members(federation_name: str) -> None:
 
         octomil federation members healthcare-consortium
     """
+    cli_header(f"Federation — Members — {federation_name}")
+
     client = _get_client()
     fed_id = _resolve_federation_id(client, federation_name)
     members = client._api.get(f"/federations/{fed_id}/members")
@@ -206,6 +217,8 @@ def federation_share(model_name: str, federation_name: str) -> None:
 
         octomil federation share radiology-v1 --federation healthcare-consortium
     """
+    cli_header(f"Federation — Share {model_name}")
+
     client = _get_client()
     fed_id = _resolve_federation_id(client, federation_name)
 
@@ -219,8 +232,7 @@ def federation_share(model_name: str, federation_name: str) -> None:
                 break
     if not model_id:
         click.echo(
-            f"Model '{model_name}' not found in your organization. "
-            "Push it first with `octomil push`.",
+            f"Model '{model_name}' not found in your organization. Push it first with `octomil push`.",
             err=True,
         )
         sys.exit(1)
@@ -230,10 +242,7 @@ def federation_share(model_name: str, federation_name: str) -> None:
         {"model_id": model_id},
     )
     click.echo(f"Model '{model_name}' shared with federation '{federation_name}'")
-    click.echo(
-        "Active federation members can now contribute training updates "
-        "and deploy this model."
-    )
+    click.echo("Active federation members can now contribute training updates and deploy this model.")
 
 
 # ---------------------------------------------------------------------------

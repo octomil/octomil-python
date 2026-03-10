@@ -19,8 +19,8 @@ from octomil.cli_helpers import (
     _get_enterprise_client,
     _require_org_id,
     _save_credentials,
+    cli_header,
 )
-
 
 # ---------------------------------------------------------------------------
 # Browser-based login helper (local to this module)
@@ -50,11 +50,7 @@ def _browser_login() -> None:
 
     dashboard_url = os.environ.get("OCTOMIL_DASHBOARD_URL", "https://app.octomil.com")
     callback_url = f"http://127.0.0.1:{port}"
-    auth_url = (
-        f"{dashboard_url}/cli/auth"
-        f"?callback={urllib.parse.quote(callback_url, safe='')}"
-        f"&state={state}"
-    )
+    auth_url = f"{dashboard_url}/cli/auth" f"?callback={urllib.parse.quote(callback_url, safe='')}" f"&state={state}"
 
     received_key: str | None = None
     received_org: str | None = None
@@ -118,8 +114,8 @@ def _browser_login() -> None:
                 '<div class=ok><svg viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg></div>'
                 "<h2>CLI Authenticated</h2>"
                 "<p>You can close this tab and return to your terminal.</p>"
-                f'<div class=hint><code>$ {_CMD}</code>'
-                f'<button class=cb id=cpb>{_COPY_ICON}</button></div>'
+                f"<div class=hint><code>$ {_CMD}</code>"
+                f"<button class=cb id=cpb>{_COPY_ICON}</button></div>"
                 "<script>"
                 f"document.getElementById('cpb').onclick=function(){{navigator.clipboard.writeText('{_CMD}');"
                 f"this.innerHTML='{_CHECK_ICON}';var b=this;"
@@ -148,9 +144,7 @@ def _browser_login() -> None:
         _save_credentials(received_key, org=received_org, org_id=received_org_id)
         org_display = received_org or ""
         if org_display:
-            click.echo(
-                click.style(f"  Authenticated ({org_display})", fg="green")
-            )
+            click.echo(click.style(f"  Authenticated ({org_display})", fg="green"))
         else:
             click.echo(click.style("  Authenticated", fg="green"))
         click.echo("  Credentials saved to ~/.octomil/credentials")
@@ -159,9 +153,7 @@ def _browser_login() -> None:
 
             _install_completions()
         except Exception:
-            click.echo(
-                "\n  Tip: Run `octomil completions --install` for tab-completion setup."
-            )
+            click.echo("\n  Tip: Run `octomil completions --install` for tab-completion setup.")
         if not received_org_id:
             click.echo(
                 click.style(
@@ -194,9 +186,11 @@ def login(api_key: Optional[str]) -> None:
     Opens your browser to authenticate, then saves the API key locally.
     Use --api-key to paste a key directly (for CI/headless environments).
     """
+    cli_header("Login")
+
     if api_key:
         _save_credentials(api_key)
-        click.echo("API key saved to ~/.octomil/credentials")
+        click.echo("  API key saved to ~/.octomil/credentials")
         return
 
     _browser_login()
@@ -233,7 +227,9 @@ def init(
         octomil init "Acme Corp" --compliance hipaa --region us
         octomil init "Startup Inc" --region eu
     """
-    from octomil.enterprise import EnterpriseClient, save_config, load_config
+    from octomil.enterprise import EnterpriseClient, load_config, save_config
+
+    cli_header(f"Init — {org_name}")
 
     key = _get_api_key()
     if not key:
@@ -243,7 +239,7 @@ def init(
     client = EnterpriseClient(api_key=key, api_base=api_base)
 
     # 1. Create org
-    click.echo(f"Creating organization: {org_name} (region={region})")
+    click.echo(f"  Creating organization: {org_name} (region={region})")
     try:
         result = client.create_org(org_name, region=region, workspace_type="enterprise")
     except Exception as exc:
@@ -258,9 +254,7 @@ def init(
         click.echo(f"Applying {compliance.upper()} compliance preset...")
         try:
             client.set_compliance(org_id, compliance)
-            click.echo(
-                click.style(f"  {compliance.upper()} compliance applied", fg="green")
-            )
+            click.echo(click.style(f"  {compliance.upper()} compliance applied", fg="green"))
         except Exception as exc:
             click.echo(f"  Warning: compliance preset failed: {exc}", err=True)
 
@@ -282,9 +276,7 @@ def init(
     )
     click.echo("  2. Create an API key:    octomil keys create deploy-key")
     click.echo("  3. Set security policy:  octomil team set-policy --require-mfa")
-    click.echo(
-        "  4. Push a model:         octomil push my-model --version 1.0.0"
-    )
+    click.echo("  4. Push a model:         octomil push my-model --version 1.0.0")
 
 
 # ---------------------------------------------------------------------------
@@ -296,6 +288,8 @@ def init(
 def org_info() -> None:
     """Show current organization info and settings."""
     from octomil.enterprise import get_org_id, load_config
+
+    cli_header("Organization")
 
     org_id = get_org_id()
     if not org_id:
@@ -317,27 +311,13 @@ def org_info() -> None:
             settings = client.get_settings(org_id)
             click.echo("")
             click.echo("Settings:")
-            click.echo(
-                f"  Audit retention:     {settings.get('audit_retention_days', '?')} days"
-            )
-            click.echo(
-                f"  Require MFA:         {settings.get('require_mfa_for_admin', '?')}"
-            )
-            click.echo(
-                f"  Admin approval:      {settings.get('require_admin_approval', '?')}"
-            )
-            click.echo(
-                f"  Model approval:      {settings.get('require_model_approval', '?')}"
-            )
-            click.echo(
-                f"  Auto rollback:       {settings.get('auto_rollback_enabled', '?')}"
-            )
-            click.echo(
-                f"  Session duration:    {settings.get('session_duration_hours', '?')}h"
-            )
-            click.echo(
-                f"  Reauth interval:     {settings.get('reauth_interval_minutes', '?')}min"
-            )
+            click.echo(f"  Audit retention:     {settings.get('audit_retention_days', '?')} days")
+            click.echo(f"  Require MFA:         {settings.get('require_mfa_for_admin', '?')}")
+            click.echo(f"  Admin approval:      {settings.get('require_admin_approval', '?')}")
+            click.echo(f"  Model approval:      {settings.get('require_model_approval', '?')}")
+            click.echo(f"  Auto rollback:       {settings.get('auto_rollback_enabled', '?')}")
+            click.echo(f"  Session duration:    {settings.get('session_duration_hours', '?')}h")
+            click.echo(f"  Reauth interval:     {settings.get('reauth_interval_minutes', '?')}min")
         except Exception:
             click.echo("\n  (unable to fetch live settings)")
 
@@ -368,10 +348,12 @@ def team_add(email: str, role: str, name: Optional[str]) -> None:
 
         octomil team add alice@acme.com --role admin
     """
+    cli_header(f"Team — Add {email}")
+
     org_id = _require_org_id()
     client = _get_enterprise_client()
 
-    click.echo(f"Inviting {email} as {role}...")
+    click.echo(f"  Inviting {email} as {role}...")
     try:
         result = client.invite_member(org_id, email, role=role, name=name)
         click.echo(
@@ -393,6 +375,8 @@ def team_list() -> None:
 
         octomil team list
     """
+    cli_header("Team — Members")
+
     org_id = _require_org_id()
     client = _get_enterprise_client()
 
@@ -403,7 +387,7 @@ def team_list() -> None:
         sys.exit(1)
 
     if not members:
-        click.echo("No team members found.")
+        click.echo("  No team members found.")
         return
 
     # Table header
@@ -418,12 +402,8 @@ def team_list() -> None:
 
 
 @team.command("set-policy")
-@click.option(
-    "--min-privacy-budget", type=float, default=None, help="Minimum DP epsilon budget."
-)
-@click.option(
-    "--require-mfa", is_flag=True, default=None, help="Require MFA for admins."
-)
+@click.option("--min-privacy-budget", type=float, default=None, help="Minimum DP epsilon budget.")
+@click.option("--require-mfa", is_flag=True, default=None, help="Require MFA for admins.")
 @click.option(
     "--no-require-mfa",
     is_flag=True,
@@ -435,9 +415,7 @@ def team_list() -> None:
     default=None,
     help="Auto-rollback on model drift.",
 )
-@click.option(
-    "--session-hours", type=int, default=None, help="Session duration in hours."
-)
+@click.option("--session-hours", type=int, default=None, help="Session duration in hours.")
 @click.option(
     "--reauth-minutes",
     type=int,
@@ -480,6 +458,8 @@ def team_set_policy(
         octomil team set-policy --require-mfa --session-hours 8
         octomil team set-policy --auto-rollback --audit-retention-days 365
     """
+    cli_header("Team — Security Policy")
+
     org_id = _require_org_id()
     client = _get_enterprise_client()
 
@@ -549,6 +529,8 @@ def keys_create(name: str, scope: tuple[str, ...]) -> None:
         octomil keys create deploy-key --scope devices:write --scope models:read
         octomil keys create admin-key
     """
+    cli_header(f"Keys — Create {name}")
+
     org_id = _require_org_id()
     client = _get_enterprise_client()
 
@@ -587,6 +569,8 @@ def keys_list() -> None:
 
         octomil keys list
     """
+    cli_header("Keys — List")
+
     org_id = _require_org_id()
     client = _get_enterprise_client()
 
@@ -607,11 +591,7 @@ def keys_list() -> None:
         prefix = k.get("prefix", "?")
         created = k.get("created_at", "?")[:10]
         revoked = k.get("revoked_at")
-        status_str = (
-            click.style("revoked", fg="red")
-            if revoked
-            else click.style("active", fg="green")
-        )
+        status_str = click.style("revoked", fg="red") if revoked else click.style("active", fg="green")
         click.echo(f"{name:<25s} {prefix:<15s} {created:<20s} {status_str}")
     click.echo(f"\nTotal: {len(api_keys)} key(s)")
 
@@ -626,9 +606,11 @@ def keys_revoke(key_id: str) -> None:
 
         octomil keys revoke abc-123-def
     """
+    cli_header(f"Keys — Revoke {key_id}")
+
     client = _get_enterprise_client()
 
-    click.echo(f"Revoking API key: {key_id}")
+    click.echo(f"  Revoking key: {key_id}")
     try:
         result = client.revoke_api_key(key_id)
         click.echo(
@@ -681,9 +663,7 @@ def train() -> None:
     type=click.Choice(["dp-sgd", "none"]),
     help="Privacy mechanism.",
 )
-@click.option(
-    "--epsilon", default=None, type=float, help="Privacy budget (lower = more private)."
-)
+@click.option("--epsilon", default=None, type=float, help="Privacy budget (lower = more private).")
 @click.option("--min-devices", default=2, help="Minimum devices required per round.")
 def train_start(
     name: str,
@@ -700,8 +680,10 @@ def train_start(
 
         octomil train start sentiment-v1 --strategy fedavg --rounds 50
     """
+    cli_header(f"Train — {name}")
+
     client = _get_client()
-    click.echo(f"Starting federated training for {name}")
+    click.echo(f"  Starting federated training for {name}")
     click.echo(f"Strategy: {strategy} | Rounds: {rounds} | Min devices: {min_devices}")
     if privacy:
         click.echo(f"Privacy: {privacy} (e={epsilon})")
@@ -729,6 +711,8 @@ def train_status_cmd(name: str) -> None:
 
         octomil train status sentiment-v1
     """
+    cli_header(f"Train — Status — {name}")
+
     client = _get_client()
     info = client.train_status(name)
 
@@ -758,8 +742,10 @@ def train_stop_cmd(name: str) -> None:
 
         octomil train stop sentiment-v1
     """
+    cli_header(f"Train — Stop — {name}")
+
     client = _get_client()
-    click.echo(f"Stopping training for {name}...")
+    click.echo(f"  Stopping training for {name}...")
     result = client.train_stop(name)
     click.echo(f"Training stopped. Last round: {result.get('last_round', '?')}")
 

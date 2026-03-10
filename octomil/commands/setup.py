@@ -47,10 +47,13 @@ def setup(foreground: bool, show_status: bool, force: bool) -> None:
         4. Downloads the recommended model for your device
         5. Registers the MCP server with your AI tools (Claude, Cursor, VS Code, Codex)
     """
+    from octomil.cli_helpers import cli_header
     from octomil.setup import (
         load_state,
         run_setup,
     )
+
+    cli_header("Setup")
 
     if show_status:
         _print_status(load_state())

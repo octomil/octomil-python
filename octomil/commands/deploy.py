@@ -512,6 +512,8 @@ def pair(
     import platform as _platform
     import uuid
 
+    cli_header("Pair")
+
     api_base: str = (
         os.environ.get("OCTOMIL_API_URL") or os.environ.get("OCTOMIL_API_BASE") or "https://api.octomil.com/api/v1"
     )
@@ -638,6 +640,7 @@ def dashboard() -> None:
     Shows inference metrics across all devices — latency,
     throughput, errors, model versions side-by-side.
     """
+    cli_header("Dashboard")
     dashboard_url = os.environ.get("OCTOMIL_DASHBOARD_URL", "https://app.octomil.com")
-    cli_success(f"Opening dashboard: {dashboard_url}")
+    cli_success(f"Opening: {dashboard_url}")
     webbrowser.open(dashboard_url)

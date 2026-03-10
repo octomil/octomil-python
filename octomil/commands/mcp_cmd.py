@@ -155,6 +155,8 @@ def serve(
 
         OCTOMIL_X402_ADDRESS=0x... OCTOMIL_SETTLER_TOKEN=s402_... octomil mcp serve --x402
     """
+    cli_header("MCP — Serve")
+
     try:
         import fastapi as _fa  # noqa: F401
         import uvicorn as _uv  # noqa: F401

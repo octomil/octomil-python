@@ -74,6 +74,9 @@ def push(
         octomil push hf:microsoft/Phi-4-mini-instruct
         octomil push ./model.safetensors --model-id my-model
     """
+    display_name = model_id or path or "model"
+    cli_header(f"Push — {display_name}")
+
     if not path and not model_id:
         click.echo(
             "Error: provide a path or model name.\n\n"
@@ -353,7 +356,8 @@ def scan(path: str, output_format: str, platform: str | None) -> None:
     """
     from octomil.scanner import format_json, format_text, scan_directory
 
-    click.echo("Scanning for inference points...\n")
+    cli_header(f"Scan — {path}")
+    click.echo(click.style("  Scanning for inference points...", dim=True))
 
     try:
         points = scan_directory(path, platform=platform)
@@ -392,12 +396,14 @@ def convert(model_path: str, target: str, output: str, input_shape: str) -> None
         octomil convert model.pt --target onnx
         octomil convert model.pt --target onnx,coreml --input-shape 1,3,224,224
     """
+    cli_header(f"Convert — {os.path.basename(model_path)}")
+
     formats = [f.strip().lower() for f in target.split(",")]
     shape = [int(d) for d in input_shape.split(",")]
     os.makedirs(output, exist_ok=True)
     model_name = os.path.splitext(os.path.basename(model_path))[0]
 
-    click.echo(f"Converting {model_path} → {', '.join(formats)}")
+    click.echo(f"  Converting {model_path} → {', '.join(formats)}")
     click.echo(f"Input shape: {shape}")
     click.echo(f"Output: {output}")
 

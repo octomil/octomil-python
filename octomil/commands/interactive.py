@@ -11,7 +11,7 @@ from typing import Optional
 
 import click
 
-from octomil.cli_helpers import _complete_model_name
+from octomil.cli_helpers import _complete_model_name, cli_header
 
 # ---------------------------------------------------------------------------
 # octomil chat
@@ -64,6 +64,8 @@ def chat(
     if model is None:
         model = _auto_select_model()
 
+    cli_header(f"Chat — {model}")
+
     serve_proc = None
     if not is_serve_running(port=port):
         click.echo(f"Starting octomil serve {model}...")
@@ -105,6 +107,8 @@ def warmup() -> None:
     """
     from octomil.agents.launcher import _build_recommendations
     from octomil.sources.huggingface import HuggingFaceSource
+
+    cli_header("Warmup")
 
     recommendations = _build_recommendations()
     best = recommendations[0]
@@ -229,6 +233,8 @@ def demo_code_assistant(
         octomil demo code-assistant --model phi-3-mini
         octomil demo code-assistant --url http://localhost:8080
     """
+    cli_header("Demo — Code Assistant")
+
     from octomil.demos.code_assistant import run_demo
 
     effective_model: str = model if model else os.environ.get("OCTOMIL_MODEL", "gemma-2b")
@@ -249,6 +255,8 @@ def completions(shell: Optional[str]) -> None:
     Prints the eval snippet needed to enable tab completion for octomil
     commands and model names in your current shell.
     """
+    cli_header("Completions")
+
     if shell is None:
         # Auto-detect from SHELL env
         user_shell = os.path.basename(os.environ.get("SHELL", ""))

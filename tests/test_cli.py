@@ -173,7 +173,7 @@ class TestDashboardCommand:
         runner = CliRunner()
         result = runner.invoke(main, ["dashboard"])
         assert result.exit_code == 0
-        assert "Opening dashboard" in result.output
+        assert "Opening" in result.output
         mock_open.assert_called_once_with("https://app.octomil.com")
 
     @patch("octomil.commands.deploy.webbrowser.open")
