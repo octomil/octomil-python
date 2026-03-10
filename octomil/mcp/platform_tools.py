@@ -7,7 +7,7 @@ All tools return JSON for structured data, plain text for errors.
 Tools registered here:
   Phase 1: resolve_model, list_models, detect_engines, run_inference,
            get_metrics, deploy_model
-  Phase 2: convert_model, optimize_model, hardware_profile, benchmark_model,
+  Phase 2: convert_model, optimize_model, detect_hardware_profile, benchmark_model,
            recommend_model, scan_codebase, compress_prompt, plan_deployment, embed
 """
 
@@ -81,13 +81,19 @@ def register_platform_tools(mcp: Any, backend: Any) -> None:
     @mcp.tool(
         annotations=ToolAnnotations(title="List Models", readOnlyHint=True, idempotentHint=True, openWorldHint=False)
     )
-    def list_models() -> str:
+    def list_models(
+        filter_engine: Annotated[
+            str, Field(description="Filter models by engine compatibility (e.g. 'mlx', 'llama.cpp'). Empty = all.")
+        ] = "",
+    ) -> str:
         """List all available models in the Octomil catalog with publisher, parameter count, engines, and variants."""
         try:
             from octomil.models.catalog import CATALOG
 
             models: list[dict[str, Any]] = []
             for name, entry in sorted(CATALOG.items()):
+                if filter_engine and filter_engine.lower() not in {e.lower() for e in entry.engines}:
+                    continue
                 model_info: dict[str, Any] = {
                     "name": name,
                     "publisher": entry.publisher,
@@ -172,7 +178,9 @@ def register_platform_tools(mcp: Any, backend: Any) -> None:
     @mcp.tool(
         annotations=ToolAnnotations(title="Get Metrics", readOnlyHint=True, idempotentHint=True, openWorldHint=False)
     )
-    def get_metrics() -> str:
+    def get_metrics(
+        include_hardware: Annotated[bool, Field(description="Include hardware detection info (CPU, RAM, GPU)")] = True,
+    ) -> str:
         """Get current model, engine, hardware, and device status."""
         try:
             status: dict[str, Any] = {
@@ -181,32 +189,33 @@ def register_platform_tools(mcp: Any, backend: Any) -> None:
                 "loaded": backend.is_loaded,
             }
 
-            try:
-                from octomil.hardware._unified import detect_hardware
+            if include_hardware:
+                try:
+                    from octomil.hardware._unified import detect_hardware
 
-                hw = detect_hardware()
-                status["hardware"] = {
-                    "platform": hw.platform,
-                    "best_backend": hw.best_backend,
-                    "total_ram_gb": round(hw.total_ram_gb, 2),
-                    "available_ram_gb": round(hw.available_ram_gb, 2),
-                    "cpu": hw.cpu.brand,
-                    "architecture": hw.cpu.architecture,
-                }
-                if hw.gpu:
-                    status["hardware"]["gpu"] = hw.gpu.backend
-                    status["hardware"]["vram_gb"] = round(hw.gpu.total_vram_gb, 2)
-            except Exception:
-                pass
+                    hw = detect_hardware()
+                    status["hardware"] = {
+                        "platform": hw.platform,
+                        "best_backend": hw.best_backend,
+                        "total_ram_gb": round(hw.total_ram_gb, 2),
+                        "available_ram_gb": round(hw.available_ram_gb, 2),
+                        "cpu": hw.cpu.brand,
+                        "architecture": hw.cpu.architecture,
+                    }
+                    if hw.gpu:
+                        status["hardware"]["gpu"] = hw.gpu.backend
+                        status["hardware"]["vram_gb"] = round(hw.gpu.total_vram_gb, 2)
+                except Exception:
+                    pass
 
-            try:
-                from octomil.engines.registry import get_registry
+                try:
+                    from octomil.engines.registry import get_registry
 
-                registry = get_registry()
-                detections = registry.detect_all()
-                status["engines"] = [d.engine.name for d in detections if d.available and d.engine.name != "echo"]
-            except Exception:
-                pass
+                    registry = get_registry()
+                    detections = registry.detect_all()
+                    status["engines"] = [d.engine.name for d in detections if d.available and d.engine.name != "echo"]
+                except Exception:
+                    pass
 
             return json.dumps(status, indent=2)
         except Exception as exc:
@@ -397,15 +406,19 @@ def register_platform_tools(mcp: Any, backend: Any) -> None:
 
     @mcp.tool(
         annotations=ToolAnnotations(
-            title="Hardware Profile", readOnlyHint=True, idempotentHint=True, openWorldHint=False
+            title="Detect Hardware", readOnlyHint=True, idempotentHint=True, openWorldHint=False
         )
     )
-    def hardware_profile() -> str:
+    def detect_hardware_profile(
+        force_refresh: Annotated[
+            bool, Field(description="Force re-detection instead of using cached hardware info")
+        ] = False,
+    ) -> str:
         """Detect full hardware capabilities including CPU, GPU, RAM, and recommended inference backend."""
         try:
             from octomil.hardware._unified import detect_hardware
 
-            hw = detect_hardware(force=True)
+            hw = detect_hardware(force=force_refresh)
             result: dict[str, Any] = {
                 "platform": hw.platform,
                 "best_backend": hw.best_backend,
@@ -445,7 +458,7 @@ def register_platform_tools(mcp: Any, backend: Any) -> None:
 
             return json.dumps(result, indent=2)
         except Exception as exc:
-            logger.exception("hardware_profile failed")
+            logger.exception("detect_hardware_profile failed")
             return json.dumps({"error": "hardware_error", "message": str(exc)})
 
     @mcp.tool(
@@ -702,7 +715,7 @@ def register_platform_tools(mcp: Any, backend: Any) -> None:
             title="Generate Embeddings", readOnlyHint=True, idempotentHint=True, openWorldHint=True
         )
     )
-    def embed(
+    def embed_text(
         text: Annotated[str, Field(description="Text to embed (single string or JSON array of strings)")],
         model: Annotated[str, Field(description="Model ID for embeddings (required)")] = "",
     ) -> str:

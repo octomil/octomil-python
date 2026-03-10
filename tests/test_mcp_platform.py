@@ -143,7 +143,7 @@ def _get_tool_funcs(backend: Any = None) -> dict[str, Any]:
     mock_mcp = MagicMock()
     tool_funcs: dict[str, Any] = {}
 
-    def capture_tool(fn: Any = None) -> Any:
+    def capture_tool(fn: Any = None, **_kwargs: Any) -> Any:
         if fn is not None:
             tool_funcs[fn.__name__] = fn
             return fn
@@ -561,7 +561,7 @@ class TestOptimizeModel:
 
 
 # ---------------------------------------------------------------------------
-# hardware_profile
+# detect_hardware_profile
 # ---------------------------------------------------------------------------
 
 
@@ -569,7 +569,7 @@ class TestHardwareProfile:
     def test_detects_hardware(self) -> None:
         tools = _get_tool_funcs()
         with patch("octomil.hardware._unified.detect_hardware", return_value=FakeHardware()):
-            result = json.loads(tools["hardware_profile"]())
+            result = json.loads(tools["detect_hardware_profile"]())
 
         assert result["platform"] == "darwin"
         assert result["best_backend"] == "mlx"
@@ -582,14 +582,14 @@ class TestHardwareProfile:
         hw.gpu = None  # Override post_init
         tools = _get_tool_funcs()
         with patch("octomil.hardware._unified.detect_hardware", return_value=hw):
-            result = json.loads(tools["hardware_profile"]())
+            result = json.loads(tools["detect_hardware_profile"]())
 
         assert result["gpu"] is None
 
     def test_hardware_error(self) -> None:
         tools = _get_tool_funcs()
         with patch("octomil.hardware._unified.detect_hardware", side_effect=RuntimeError("detection failed")):
-            result = json.loads(tools["hardware_profile"]())
+            result = json.loads(tools["detect_hardware_profile"]())
 
         assert result["error"] == "hardware_error"
 
@@ -788,14 +788,14 @@ class TestEmbed:
         tools = _get_tool_funcs()
         with patch.dict(os.environ, {}, clear=True):
             os.environ.pop("OCTOMIL_API_KEY", None)
-            result = json.loads(tools["embed"]("hello"))
+            result = json.loads(tools["embed_text"]("hello"))
         assert result["error"] == "auth_required"
 
     def test_embed_requires_model(self) -> None:
         tools = _get_tool_funcs()
         with patch.dict(os.environ, {"OCTOMIL_API_KEY": "key"}):
             with patch("octomil.client.OctomilClient"):
-                result = json.loads(tools["embed"]("hello"))
+                result = json.loads(tools["embed_text"]("hello"))
         assert result["error"] == "model_required"
 
     def test_embed_success(self) -> None:
@@ -805,7 +805,7 @@ class TestEmbed:
         tools = _get_tool_funcs()
         with patch.dict(os.environ, {"OCTOMIL_API_KEY": "key"}):
             with patch("octomil.client.OctomilClient", return_value=mock_client):
-                result = json.loads(tools["embed"]("hello world", model="text-embed-v1"))
+                result = json.loads(tools["embed_text"]("hello world", model="text-embed-v1"))
 
         assert result["status"] == "ok"
         mock_client.embed.assert_called_once_with("text-embed-v1", "hello world")
@@ -818,7 +818,7 @@ class TestEmbed:
         texts = json.dumps(["hello", "world"])
         with patch.dict(os.environ, {"OCTOMIL_API_KEY": "key"}):
             with patch("octomil.client.OctomilClient", return_value=mock_client):
-                result = json.loads(tools["embed"](texts, model="m"))
+                result = json.loads(tools["embed_text"](texts, model="m"))
 
         assert result["status"] == "ok"
         mock_client.embed.assert_called_once_with("m", ["hello", "world"])
@@ -830,7 +830,7 @@ class TestEmbed:
         tools = _get_tool_funcs()
         with patch.dict(os.environ, {"OCTOMIL_API_KEY": "key"}):
             with patch("octomil.client.OctomilClient", return_value=mock_client):
-                result = json.loads(tools["embed"]("x", model="m"))
+                result = json.loads(tools["embed_text"]("x", model="m"))
 
         assert result["error"] == "embed_error"
 
@@ -854,13 +854,13 @@ class TestRegistration:
             # Phase 2
             "convert_model",
             "optimize_model",
-            "hardware_profile",
+            "detect_hardware_profile",
             "benchmark_model",
             "recommend_model",
             "scan_codebase",
             "compress_prompt",
             "plan_deployment",
-            "embed",
+            "embed_text",
         }
         assert set(tools.keys()) == expected
 

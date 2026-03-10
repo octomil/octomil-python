@@ -207,13 +207,13 @@ def create_mcp_server(model: Optional[str] = None, **fastmcp_kwargs: Any) -> Any
         return f"{text}\n\n{backend.format_metrics(metrics)}"
 
     @mcp.tool(
-        annotations=ToolAnnotations(title="General Task", readOnlyHint=True, idempotentHint=True, openWorldHint=False)
+        annotations=ToolAnnotations(title="Run Prompt", readOnlyHint=True, idempotentHint=True, openWorldHint=False)
     )
-    def general_task(
-        prompt: Annotated[str, Field(description="The prompt or question")],
-        context: Annotated[str, Field(description="Additional context")] = "",
+    def run_prompt(
+        prompt: Annotated[str, Field(description="The prompt or question to send to the local model")],
+        context: Annotated[str, Field(description="Additional context to include with the prompt")] = "",
     ) -> str:
-        """Run a free-form prompt through the local model."""
+        """Run a free-form prompt through the local on-device model."""
         content = prompt
         if context:
             content = f"{prompt}\n\nContext:\n{context}"
@@ -283,7 +283,7 @@ def create_mcp_server(model: Optional[str] = None, **fastmcp_kwargs: Any) -> Any
 
 Steps:
 1. First, resolve the model to check availability: use resolve_model with name="{model_name}"
-2. Check hardware capabilities: use hardware_profile
+2. Check hardware capabilities: use detect_hardware_profile
 3. Get optimization recommendations: use recommend_model
 4. Plan the deployment: use plan_deployment with name="{model_name}"
 5. Execute the deployment: use deploy_model with name="{model_name}"
