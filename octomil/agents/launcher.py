@@ -43,6 +43,28 @@ _CURATED_CANDIDATES: list[_Candidate] = [
 # Recommended keys shown in the top section of the picker
 _RECOMMENDED_KEYS = {"qwen-7b", "llama-8b", "phi-4"}
 
+# Rich descriptions for known models (key -> (description, best_for_tag))
+_MODEL_INFO: dict[str, tuple[str, str]] = {
+    "qwen-7b": ("Qwen 2.5 Coder 7B", "coding"),
+    "qwen-3b": ("Qwen 2.5 Coder 3B", "coding, fast"),
+    "qwen-1.5b": ("Qwen 2.5 Coder 1.5B", "coding, ultrafast"),
+    "qwen-32b": ("Qwen 2.5 Coder 32B", "coding, large"),
+    "qwen-moe-14b": ("Qwen MoE 14B active params", "efficient"),
+    "llama-8b": ("Meta Llama 3.1 8B", "general"),
+    "llama-3b": ("Meta Llama 3.2 3B", "general, fast"),
+    "llama-1b": ("Meta Llama 3.2 1B", "general, ultrafast"),
+    "llama-70b": ("Meta Llama 3.1 70B", "general, large"),
+    "phi-4": ("Microsoft Phi-4 14B", "reasoning"),
+    "phi-mini": ("Microsoft Phi-4 Mini 3.8B", "reasoning, fast"),
+    "gemma-12b": ("Google Gemma 3 12B", "multilingual"),
+    "gemma-4b": ("Google Gemma 3 4B", "multilingual, fast"),
+    "gemma-1b": ("Google Gemma 3 1B", "multilingual, tiny"),
+    "gemma-27b": ("Google Gemma 3 27B", "multilingual, large"),
+    "mistral-7b": ("Mistral 7B v0.3", "general"),
+    "codestral-22b": ("Codestral 22B", "coding, large"),
+    "smollm-360m": ("SmolLM2 360M", "ultra-light"),
+}
+
 
 def _params_to_float(params: str) -> float:
     """Convert catalog params string like '7B' or '360M' to float billions."""
@@ -82,15 +104,17 @@ def _build_all_candidates() -> list[_Candidate]:
 
         candidates: list[_Candidate] = []
         for key, entry in CATALOG.items():
-            # Skip speech-to-text models
             if "whisper" in key:
                 continue
             params_b = _params_to_float(entry.params)
-            desc = f"{entry.publisher} {key}, {entry.params} params"
+            info = _MODEL_INFO.get(key)
+            if info:
+                desc = info[0]
+            else:
+                desc = f"{entry.publisher} {key}"
             size = _estimate_size(params_b)
             candidates.append(_Candidate(key, params_b, desc, size))
 
-        # Sort largest → smallest
         candidates.sort(key=lambda c: c.params_b, reverse=True)
         if candidates:
             return candidates
@@ -297,55 +321,77 @@ def _run_model_tui(
                 out.append(m)
         return out
 
-    def _status_tag(m: RecommendedModel) -> str:
-        if statuses.get(m.key):
-            return ""
-        return ", (not downloaded)"
+    def _render_item(
+        m: RecommendedModel,
+        is_sel: bool,
+        lines: list[tuple[str, str]],
+    ) -> None:
+        downloaded = statuses.get(m.key, False)
+        info = _MODEL_INFO.get(m.key)
+        tag = info[1] if info else ""
+
+        if is_sel:
+            lines.append(("bold fg:ansicyan", "  \u25b8 "))
+            lines.append(("bold fg:ansiwhite", f"{m.key}"))
+        else:
+            lines.append(("", "    "))
+            lines.append(("fg:ansiwhite", f"{m.key}"))
+
+        # Size + param count
+        lines.append(("fg:ansibrightblack", f"  {m.size}"))
+
+        # Status indicators
+        if downloaded:
+            lines.append(("fg:ansigreen", "  \u2713 ready"))
+        # Best-for tag
+        if tag:
+            lines.append(("fg:ansimagenta", f"  [{tag}]"))
+        lines.append(("", "\n"))
+
+        # Description line
+        lines.append(("fg:ansibrightblack", f"      {m.description}\n"))
 
     def get_display_text():  # type: ignore[no-untyped-def]
         lines: list[tuple[str, str]] = []
 
+        # Header
+        lines.append(("bold fg:ansicyan", "\n  \u25c6 "))
         if search_mode[0]:
-            lines.append(("bold", f"  Select model: {search_query[0]}\u2588\n"))
+            lines.append(("bold", "Select model: "))
+            lines.append(("fg:ansiyellow", f"{search_query[0]}"))
+            lines.append(("fg:ansibrightblack", "\u2588\n"))
         else:
-            lines.append(("bold", "  Select model: "))
-            lines.append(("italic", "Type to filter...\n"))
+            lines.append(("bold", "Select model  "))
+            lines.append(("fg:ansibrightblack", "type to filter\n"))
 
-        # Find which section the cursor is in
         flat = filtered[0]
-
-        # Split filtered items back into sections
         f_rec = [m for m in flat if m in recommended]
         f_more = [m for m in flat if m in more]
 
-        idx = 0  # global flat index
+        idx = 0
 
         if f_rec:
             lines.append(("", "\n"))
-            lines.append(("bold", "  Recommended\n"))
+            lines.append(("bold fg:ansiyellow", "  \u2605 Recommended\n"))
             for m in f_rec:
-                is_sel = idx == selected[0]
-                prefix = "  \u25b8 " if is_sel else "    "
-                style = "bold" if is_sel else ""
-                dl = _status_tag(m)
-                lines.append((style, f"{prefix}{m.key}\n"))
-                lines.append(("", f"      {m.description}, ~{m.size}{dl}\n"))
+                _render_item(m, idx == selected[0], lines)
                 idx += 1
 
         if f_more:
             lines.append(("", "\n"))
-            lines.append(("bold", "  More\n"))
+            lines.append(("bold fg:ansibrightblack", "  \u2022 More\n"))
             for m in f_more:
-                is_sel = idx == selected[0]
-                prefix = "  \u25b8 " if is_sel else "    "
-                style = "bold" if is_sel else ""
-                dl = _status_tag(m)
-                lines.append((style, f"{prefix}{m.key}\n"))
-                lines.append(("", f"      {m.description}, ~{m.size}{dl}\n"))
+                _render_item(m, idx == selected[0], lines)
                 idx += 1
 
+        # Footer
         lines.append(("", "\n"))
-        lines.append(("", "  \u2191/\u2193 navigate \u2022 enter select \u2022 / search \u2022 esc cancel\n"))
+        lines.append(("fg:ansibrightblack", "  \u2191\u2193"))
+        lines.append(("fg:ansibrightblack", " navigate  "))
+        lines.append(("fg:ansibrightblack", "\u21b5"))
+        lines.append(("fg:ansibrightblack", " select  "))
+        lines.append(("fg:ansibrightblack", "esc"))
+        lines.append(("fg:ansibrightblack", " cancel\n"))
 
         return lines
 
@@ -422,27 +468,31 @@ def _select_model_fallback(
     budget: float,
 ) -> str:
     """Plain numbered list fallback when TUI is unavailable."""
-    click.echo("\n  Select model:\n")
+    click.echo()
+    click.echo(click.style("  Select model", bold=True))
+    click.echo()
 
     recommended = [m for m in recommendations if m.recommended]
     more = [m for m in recommendations if not m.recommended]
 
+    def _print_item(num: int, m: RecommendedModel) -> None:
+        downloaded = _is_model_downloaded(m.key)
+        info = _MODEL_INFO.get(m.key)
+        tag = f"  [{info[1]}]" if info else ""
+        status = click.style(" \u2713 ready", fg="green") if downloaded else ""
+        click.echo(f"    {num}. {click.style(m.key, bold=True)}  {m.size}{status}{tag}")
+        click.echo(click.style(f"       {m.description}", dim=True))
+
     if recommended:
-        click.echo("  Recommended")
+        click.echo(click.style("  \u2605 Recommended", fg="yellow", bold=True))
         for i, m in enumerate(recommended):
-            downloaded = _is_model_downloaded(m.key)
-            dl = "" if downloaded else ", (not downloaded)"
-            click.echo(f"    {i + 1}. {m.key}")
-            click.echo(f"       {m.description}, ~{m.size}{dl}")
+            _print_item(i + 1, m)
 
     if more:
-        click.echo("\n  More")
+        click.echo()
+        click.echo(click.style("  \u2022 More", dim=True, bold=True))
         for j, m in enumerate(more):
-            num = len(recommended) + j + 1
-            downloaded = _is_model_downloaded(m.key)
-            dl = "" if downloaded else ", (not downloaded)"
-            click.echo(f"    {num}. {m.key}")
-            click.echo(f"       {m.description}, ~{m.size}{dl}")
+            _print_item(len(recommended) + j + 1, m)
 
     click.echo()
 
@@ -663,15 +713,35 @@ def _run_agent_tui(
 
     def get_display_text():  # type: ignore[no-untyped-def]
         lines: list[tuple[str, str]] = []
-        lines.append(("bold", "  Select a coding agent\n"))
-        lines.append(("", "  Use \u2191\u2193 to navigate, Enter to select, Esc to cancel\n\n"))
+        lines.append(("bold fg:ansicyan", "\n  \u25c6 "))
+        lines.append(("bold", "Select a coding agent\n"))
+        lines.append(("", "\n"))
 
         for i, a in enumerate(agents):
-            installed = "\u2713 installed" if statuses.get(a.name) else "not installed"
-            prefix = " \u25b8 " if i == selected[0] else "   "
-            style = "reverse" if i == selected[0] else ""
-            lines.append((style, f"{prefix}{a.name}\n"))
-            lines.append(("", f"     {a.description}  |  {installed}\n"))
+            installed = statuses.get(a.name, False)
+            is_sel = i == selected[0]
+            if is_sel:
+                lines.append(("bold fg:ansicyan", "  \u25b8 "))
+                lines.append(("bold fg:ansiwhite", f"{a.display_name}"))
+            else:
+                lines.append(("", "    "))
+                lines.append(("fg:ansiwhite", f"{a.display_name}"))
+            lines.append(("fg:ansibrightblack", f"  ({a.name})"))
+            if installed:
+                lines.append(("fg:ansigreen", "  \u2713"))
+            else:
+                lines.append(("fg:ansiyellow", "  \u2022 not installed"))
+            lines.append(("", "\n"))
+            lines.append(("fg:ansibrightblack", f"      {a.description}\n"))
+
+        # Footer
+        lines.append(("", "\n"))
+        lines.append(("fg:ansibrightblack", "  \u2191\u2193"))
+        lines.append(("fg:ansibrightblack", " navigate  "))
+        lines.append(("fg:ansibrightblack", "\u21b5"))
+        lines.append(("fg:ansibrightblack", " select  "))
+        lines.append(("fg:ansibrightblack", "esc"))
+        lines.append(("fg:ansibrightblack", " cancel\n"))
 
         return lines
 
