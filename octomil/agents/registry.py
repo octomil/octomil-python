@@ -58,6 +58,40 @@ def _configure_openclaw(base_url: str, model: str) -> dict[str, str]:
     return {}  # no env overrides needed
 
 
+def _configure_opencode(base_url: str, model: str) -> dict[str, str]:
+    """Configure OpenCode to use a local octomil serve endpoint.
+
+    OpenCode uses a JSON config file with provider definitions.
+    We write an ``opencode.json`` in the current directory that defines
+    an ``octomil`` provider pointing at the local server.
+    """
+    import json
+    import os
+
+    config = {
+        "$schema": "https://opencode.ai/config.json",
+        "provider": {
+            "octomil": {
+                "npm": "@ai-sdk/openai-compatible",
+                "name": "Octomil Local",
+                "options": {
+                    "baseURL": base_url,
+                    "apiKey": "octomil-local",
+                },
+                "models": {
+                    model: {"name": model},
+                },
+            },
+        },
+    }
+
+    config_path = os.path.join(os.getcwd(), "opencode.json")
+    with open(config_path, "w") as f:
+        json.dump(config, f, indent=2)
+
+    return {}  # no env overrides needed
+
+
 AGENTS: dict[str, AgentDef] = {
     "claude": AgentDef(
         name="claude",
@@ -97,7 +131,8 @@ AGENTS: dict[str, AgentDef] = {
         install_check="opencode",
         install_cmd="npm install -g opencode-ai@latest",
         exec_cmd="opencode",
-        model_flag="--model openai/{model}",
+        model_flag="--model octomil/{model}",
+        configure_local=_configure_opencode,
     ),
     "openclaw": AgentDef(
         name="openclaw",
