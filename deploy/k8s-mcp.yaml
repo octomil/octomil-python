@@ -1,0 +1,111 @@
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: octomil-mcp-secrets
+  namespace: octomil
+type: Opaque
+stringData:
+  OCTOMIL_X402_ADDRESS: "REPLACE_ME"
+  OCTOMIL_SETTLER_TOKEN: "REPLACE_ME"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: octomil-mcp
+  namespace: octomil
+  labels:
+    app: octomil-mcp
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: octomil-mcp
+  template:
+    metadata:
+      labels:
+        app: octomil-mcp
+    spec:
+      imagePullSecrets:
+        - name: ghcr-credentials
+      containers:
+        - name: octomil-mcp
+          image: ghcr.io/octomil/octomil-mcp:latest
+          imagePullPolicy: Always
+          ports:
+            - name: http
+              containerPort: 8402
+              protocol: TCP
+          env:
+            - name: OCTOMIL_X402_ADDRESS
+              valueFrom:
+                secretKeyRef:
+                  name: octomil-mcp-secrets
+                  key: OCTOMIL_X402_ADDRESS
+            - name: OCTOMIL_SETTLER_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: octomil-mcp-secrets
+                  key: OCTOMIL_SETTLER_TOKEN
+            - name: OCTOMIL_SETTLER_URL
+              value: "https://api.settle402.dev"
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 30
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: octomil-mcp
+  namespace: octomil
+  labels:
+    app: octomil-mcp
+spec:
+  type: ClusterIP
+  ports:
+    - port: 8402
+      targetPort: http
+      protocol: TCP
+      name: http
+  selector:
+    app: octomil-mcp
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: octomil-mcp
+  namespace: octomil
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+spec:
+  rules:
+    - host: mcp.octomil.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: octomil-mcp
+                port:
+                  number: 8402
+  tls:
+    - secretName: octomil-mcp-tls
+      hosts:
+        - mcp.octomil.com

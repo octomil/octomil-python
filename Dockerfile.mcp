@@ -1,0 +1,16 @@
+FROM python:3.13-slim
+
+WORKDIR /app
+
+# Install build deps for eth-account (includes C extensions)
+RUN apt-get update && apt-get install -y --no-install-recommends gcc && \
+    rm -rf /var/lib/apt/lists/*
+
+COPY pyproject.toml README.md ./
+COPY octomil ./octomil
+
+RUN pip install --no-cache-dir -e ".[serve,mcp,x402]"
+
+EXPOSE 8402
+
+CMD ["octomil", "mcp", "serve", "--port", "8402", "--host", "0.0.0.0", "--x402"]
