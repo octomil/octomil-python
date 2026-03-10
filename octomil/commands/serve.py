@@ -254,6 +254,14 @@ def serve(
         if json_mode:
             click.echo("JSON mode: enabled (all responses default to valid JSON)")
         click.echo(f"OpenAI-compatible API: http://localhost:{port}/v1/chat/completions")
+        click.echo("")
+        click.echo(click.style("  Quick start:", bold=True))
+        click.echo("    octomil launch codex")
+        click.echo("    octomil launch claude")
+        click.echo("")
+        click.echo(click.style("  Or use any OpenAI-compatible client:", bold=True))
+        click.echo(f"    OPENAI_BASE_URL=http://localhost:{port}/v1 OPENAI_API_KEY=unused codex")
+        click.echo("")
     click.echo(f"Engine info: http://localhost:{port}/v1/engines")
     click.echo(f"Health check: http://localhost:{port}/health")
     if not is_whisper:

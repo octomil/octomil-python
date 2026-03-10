@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import dataclasses
 import shutil
-from typing import Callable, Optional
+from typing import Any, Callable, Optional
 
 
 @dataclasses.dataclass
@@ -19,6 +19,9 @@ class AgentDef:
     install_cmd: str  # command to install the agent
     exec_cmd: str  # command to launch the agent
     needs_local_model: bool = True  # whether agent requires a local model server
+    # Format string for --model flag when using a local model.
+    # Use {model} as placeholder.  e.g. "--model openai/{model}"
+    model_flag: Optional[str] = None
     # Optional hook to configure the agent for a local model server.
     # Called with (base_url, model_name) before launch.  Returns env overrides.
     configure_local: Optional[Callable[[str, str], dict[str, str]]] = dataclasses.field(default=None, repr=False)
@@ -28,19 +31,70 @@ def _configure_openclaw(base_url: str, model: str) -> dict[str, str]:
     """Configure OpenClaw to use a local octomil serve endpoint.
 
     OpenClaw reads model providers from its config file, not env vars.
-    We run ``openclaw config set`` to add an ``octomil`` provider pointing
-    at the local server, then set it as the default model.
+    We set the provider as a single JSON object (openclaw validates all
+    required fields together), then set the default model.
     """
+    import json
     import subprocess
 
+    provider = json.dumps(
+        {
+            "baseUrl": base_url,
+            "apiKey": "octomil-local",
+            "api": "openai-completions",
+            "models": [{"id": model, "name": model}],
+        }
+    )
     cmds = [
-        ["openclaw", "config", "set", "models.providers.octomil.baseUrl", base_url],
-        ["openclaw", "config", "set", "models.providers.octomil.apiKey", "octomil-local"],
-        ["openclaw", "config", "set", "models.providers.octomil.api", "openai-completions"],
+        ["openclaw", "config", "set", "models.providers.octomil", provider],
         ["openclaw", "config", "set", "agents.defaults.model.primary", f"octomil/{model}"],
     ]
     for cmd in cmds:
-        subprocess.run(cmd, check=True, capture_output=True)
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        if result.returncode != 0:
+            detail = result.stderr.strip() or result.stdout.strip() or "unknown error"
+            raise RuntimeError(f"Failed to configure OpenClaw: {' '.join(cmd[2:])}\n  {detail}")
+
+    return {}  # no env overrides needed
+
+
+def _configure_opencode(base_url: str, model: str) -> dict[str, str]:
+    """Configure OpenCode to use a local octomil serve endpoint.
+
+    OpenCode uses a JSON config file with provider definitions.
+    We write an ``opencode.json`` in the current directory that defines
+    an ``octomil`` provider pointing at the local server.
+    """
+    import json
+    import os
+
+    provider_def: dict[str, Any] = {
+        "npm": "@ai-sdk/openai-compatible",
+        "name": "Octomil Local",
+        "options": {
+            "baseURL": base_url,
+            "apiKey": "octomil-local",
+        },
+        "models": {
+            model: {"name": model},
+        },
+    }
+
+    config_dir = os.path.expanduser("~/.config/opencode")
+    os.makedirs(config_dir, exist_ok=True)
+    config_path = os.path.join(config_dir, "opencode.json")
+
+    # Merge with existing config if present
+    existing: dict[str, Any] = {}
+    if os.path.exists(config_path):
+        with open(config_path) as f:
+            existing = json.load(f)
+    existing.setdefault("$schema", "https://opencode.ai/config.json")
+    providers: dict[str, Any] = existing.setdefault("provider", {})
+    providers["octomil"] = provider_def
+
+    with open(config_path, "w") as f:
+        json.dump(existing, f, indent=2)
 
     return {}  # no env overrides needed
 
@@ -55,6 +109,7 @@ AGENTS: dict[str, AgentDef] = {
         install_cmd="npm install -g @anthropic-ai/claude-code",
         exec_cmd="claude",
         needs_local_model=False,
+        model_flag="--model {model}",
     ),
     "codex": AgentDef(
         name="codex",
@@ -64,6 +119,7 @@ AGENTS: dict[str, AgentDef] = {
         install_check="codex",
         install_cmd="npm install -g @openai/codex",
         exec_cmd="codex",
+        model_flag="-c model_provider=openai --model {model}",
     ),
     "droid": AgentDef(
         name="droid",
@@ -83,6 +139,8 @@ AGENTS: dict[str, AgentDef] = {
         install_check="opencode",
         install_cmd="npm install -g opencode-ai@latest",
         exec_cmd="opencode",
+        model_flag="--model octomil/{model}",
+        configure_local=_configure_opencode,
     ),
     "openclaw": AgentDef(
         name="openclaw",
@@ -102,6 +160,7 @@ AGENTS: dict[str, AgentDef] = {
         install_check="aider",
         install_cmd="pip install aider-chat",
         exec_cmd="aider",
+        model_flag="--model openai/{model} --no-show-model-warnings",
     ),
 }
 

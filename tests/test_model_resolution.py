@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import os
 import sys
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -26,7 +27,7 @@ from octomil.models.catalog import (
     supports_engine,
 )
 from octomil.models.parser import normalize_variant, parse
-from octomil.models.resolver import ModelResolutionError, resolve
+from octomil.models.resolver import ModelResolutionError, _resolve_via_server, resolve
 
 # =====================================================================
 # Parser tests
@@ -504,3 +505,116 @@ class TestBackwardCompat:
         # Quick sanity check
         plan = DeploymentPlan(model_name="test", model_version="1.0")
         assert plan.model_name == "test"
+
+
+# =====================================================================
+# Server-side resolve fallback tests
+# =====================================================================
+
+
+class TestServerResolveFallback:
+    """Tests for _resolve_via_server() — HTTP fallback when local catalog has no variants."""
+
+    def test_server_resolve_success(self) -> None:
+        """Server returns a valid resolved model."""
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {
+            "family": "gemma-1b",
+            "quant": "4bit",
+            "engine": "mlx-lm",
+            "hf_repo": "mlx-community/gemma-2-2b-it-4bit",
+            "mlx_repo": "mlx-community/gemma-2-2b-it-4bit",
+            "source_repo": "google/gemma-2-2b-it",
+            "architecture": "dense",
+        }
+
+        mock_client = MagicMock()
+        mock_client.__enter__ = MagicMock(return_value=mock_client)
+        mock_client.__exit__ = MagicMock(return_value=False)
+        mock_client.post.return_value = mock_response
+
+        with patch("httpx.Client", return_value=mock_client):
+            result = _resolve_via_server("gemma-1b", engine="mlx-lm")
+
+        assert result is not None
+        assert result.family == "gemma-1b"
+        assert result.engine == "mlx-lm"
+        assert result.hf_repo == "mlx-community/gemma-2-2b-it-4bit"
+        assert result.mlx_repo == "mlx-community/gemma-2-2b-it-4bit"
+
+    def test_server_resolve_404(self) -> None:
+        """Server returns 404 for unknown model — returns None."""
+        mock_response = MagicMock()
+        mock_response.status_code = 404
+
+        mock_client = MagicMock()
+        mock_client.__enter__ = MagicMock(return_value=mock_client)
+        mock_client.__exit__ = MagicMock(return_value=False)
+        mock_client.post.return_value = mock_response
+
+        with patch("httpx.Client", return_value=mock_client):
+            result = _resolve_via_server("nonexistent-model")
+
+        assert result is None
+
+    def test_server_resolve_network_error(self) -> None:
+        """Network error returns None (graceful fallback)."""
+        mock_client = MagicMock()
+        mock_client.__enter__ = MagicMock(return_value=mock_client)
+        mock_client.__exit__ = MagicMock(return_value=False)
+        mock_client.post.side_effect = ConnectionError("unreachable")
+
+        with patch("httpx.Client", return_value=mock_client):
+            result = _resolve_via_server("gemma-1b")
+
+        assert result is None
+
+    def test_resolve_falls_back_to_server_on_empty_variants(self) -> None:
+        """resolve() calls the server when local catalog entry has empty variants."""
+        from octomil.models import catalog as cat_mod
+        from octomil.models.catalog import ModelEntry
+
+        # Add a model with empty variants to simulate the scrubbed catalog
+        cat_mod.CATALOG["test-empty"] = ModelEntry(
+            publisher="Test",
+            params="1B",
+            default_quant="4bit",
+            variants={},
+            engines=frozenset(["mlx-lm"]),
+        )
+
+        mock_server_result = MagicMock()
+        mock_server_result.family = "test-empty"
+        mock_server_result.quant = "4bit"
+        mock_server_result.engine = "mlx-lm"
+        mock_server_result.hf_repo = "mlx-community/test-model-4bit"
+
+        with patch("octomil.models.resolver._resolve_via_server", return_value=mock_server_result) as mock_fn:
+            result = resolve("test-empty")
+
+        mock_fn.assert_called_once_with("test-empty", engine="")
+        assert result.hf_repo == "mlx-community/test-model-4bit"
+
+        # Clean up
+        del cat_mod.CATALOG["test-empty"]
+
+    def test_resolve_raises_when_server_also_fails(self) -> None:
+        """resolve() raises ModelResolutionError when both local and server fail."""
+        from octomil.models import catalog as cat_mod
+        from octomil.models.catalog import ModelEntry
+
+        cat_mod.CATALOG["test-empty2"] = ModelEntry(
+            publisher="Test",
+            params="1B",
+            default_quant="4bit",
+            variants={},
+            engines=frozenset(["mlx-lm"]),
+        )
+
+        with patch("octomil.models.resolver._resolve_via_server", return_value=None):
+            with pytest.raises(ModelResolutionError, match="no downloadable variants"):
+                resolve("test-empty2")
+
+        # Clean up
+        del cat_mod.CATALOG["test-empty2"]

@@ -116,7 +116,9 @@ def resolve_model_name(name: str, backend: str) -> str:
             return resolved.mlx_repo
         if resolved.hf_repo:
             return resolved.hf_repo
-        raise ValueError(f"No MLX source found for '{name}'. " f"Pass a full HuggingFace repo ID (e.g. REDACTED)")
+        raise ValueError(
+            f"No MLX source found for '{name}'. Pass a full HuggingFace repo ID (e.g. 'mlx-community/model-4bit')."
+        )
 
     if backend == "gguf":
         # For GGUF, return the short name — LlamaCppBackend resolves via _GGUF_MODELS
@@ -127,7 +129,7 @@ def resolve_model_name(name: str, backend: str) -> str:
         if resolved.is_gguf and family:
             return family
         raise ValueError(
-            f"No GGUF source found for '{name}'. " f"Pass a path to a local .gguf file or a HuggingFace repo ID."
+            f"No GGUF source found for '{name}'. Pass a path to a local .gguf file or a HuggingFace repo ID."
         )
 
     return name
@@ -826,8 +828,7 @@ def _log_startup_error(model_name: str, exc: Exception) -> None:
         logger.error("Failed to load model: %s", err_msg)
     else:
         logger.error(
-            "Failed to start server for model '%s': %s\n"
-            "  If this is a HuggingFace model, try: huggingface-cli login",
+            "Failed to start server for model '%s': %s\n  If this is a HuggingFace model, try: huggingface-cli login",
             model_name,
             exc,
         )
@@ -1065,7 +1066,7 @@ def create_app(
         if state.is_moe_model and state.moe_metadata and state.moe_config.enabled:
             _m = state.moe_metadata
             logger.info(
-                "MoE model detected: %s (%d experts, %d active per token, " "%s total params, %s active params)",
+                "MoE model detected: %s (%d experts, %d active per token, %s total params, %s active params)",
                 model_name,
                 _m.num_experts,
                 _m.active_experts,
@@ -1605,7 +1606,7 @@ def create_app(
         if state.whisper_backend is None:
             raise HTTPException(
                 status_code=503,
-                detail="No whisper model loaded. Start server with a whisper model: " "octomil serve whisper-base",
+                detail="No whisper model loaded. Start server with a whisper model: octomil serve whisper-base",
             )
 
         if file is None:
@@ -1628,6 +1629,11 @@ def create_app(
         finally:
             if os.path.exists(tmp_path):
                 os.unlink(tmp_path)
+
+    # Anthropic Messages API translation layer
+    from .serve_anthropic import register_anthropic_routes
+
+    register_anthropic_routes(app, state)
 
     return app
 

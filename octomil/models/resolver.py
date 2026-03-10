@@ -18,12 +18,16 @@ Usage::
 from __future__ import annotations
 
 import difflib
+import logging
+import os
 from dataclasses import dataclass
-from typing import Optional
+from typing import Any, Optional
 
 from .catalog import CATALOG, ModelEntry, MoEMetadata, _resolve_alias
 from .catalog_client import EnginePriorityClient
 from .parser import normalize_variant, parse
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -109,6 +113,56 @@ _ENGINE_PRIORITY: list[str] = ["auto"]
 def _normalize_engine(engine: str) -> str:
     """Normalize an engine name to its canonical form."""
     return _ENGINE_ALIASES.get(engine.lower(), engine.lower())
+
+
+# ---------------------------------------------------------------------------
+# Server-side resolution fallback
+# ---------------------------------------------------------------------------
+
+
+def _resolve_via_server(name: str, engine: str = "") -> Optional[ResolvedModel]:
+    """Resolve a model via the Octomil API when local catalog has no variants.
+
+    Calls ``POST /api/v1/resolve_model`` on the server, which has the full
+    unscrubbed catalog. Returns None on any failure (network, auth, etc.).
+    """
+    try:
+        import httpx
+    except ImportError:
+        return None
+
+    api_base = os.environ.get("OCTOMIL_API_BASE", "https://api.octomil.com/api/v1")
+    headers: dict[str, str] = {}
+    api_key = os.environ.get("OCTOMIL_API_KEY", "")
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+
+    try:
+        with httpx.Client(timeout=10.0) as client:
+            resp = client.post(
+                f"{api_base.rstrip('/')}/resolve_model",
+                json={"name": name, "engine": engine},
+                headers=headers,
+            )
+        if resp.status_code != 200:
+            logger.debug("Server resolve returned HTTP %d for '%s'", resp.status_code, name)
+            return None
+
+        data: dict[str, Any] = resp.json()
+        return ResolvedModel(
+            family=data.get("family"),
+            quant=data.get("quant", "unknown"),
+            engine=data.get("engine"),
+            hf_repo=data.get("hf_repo", ""),
+            filename=data.get("filename"),
+            mlx_repo=data.get("mlx_repo"),
+            source_repo=data.get("source_repo"),
+            raw=name,
+            architecture=data.get("architecture", "dense"),
+        )
+    except Exception:
+        logger.debug("Server resolve failed for '%s'", name, exc_info=True)
+        return None
 
 
 def _suggest_models(name: str, n: int = 3) -> list[str]:
@@ -235,14 +289,19 @@ def resolve(
     if variant is None:
         available_quants = ", ".join(sorted(entry.variants.keys()))
         if available_quants:
-            msg = f"Unknown variant '{parsed.variant or quant}' for model '{parsed.family}'. Available: {available_quants}"
-        else:
-            msg = (
-                f"Model '{parsed.family}' has no downloadable variants in the local catalog. "
-                f"Set OCTOMIL_API_KEY to fetch the full catalog from api.octomil.com, "
-                f"or use a raw model ID (e.g. 'gemma2:2b' for Ollama)."
+            raise ModelResolutionError(
+                f"Unknown variant '{parsed.variant or quant}' for model '{parsed.family}'. "
+                f"Available: {available_quants}"
             )
-        raise ModelResolutionError(msg)
+        # No variants in local catalog — try server-side resolution
+        server_result = _resolve_via_server(name, engine=engine or "")
+        if server_result is not None:
+            logger.info("Resolved '%s' via server (local catalog has no variants)", name)
+            return server_result
+        raise ModelResolutionError(
+            f"Model '{parsed.family}' has no downloadable variants. "
+            f"Try a full HuggingFace repo ID (e.g. 'mlx-community/gemma-2-2b-it-4bit')."
+        )
 
     # Determine engine
     if engine:
@@ -279,6 +338,11 @@ def resolve(
     elif variant.source_repo:
         hf_repo = variant.source_repo
     else:
+        # No local artifact — try server-side resolution
+        server_result = _resolve_via_server(name, engine=engine or "")
+        if server_result is not None:
+            logger.info("Resolved '%s' via server (no local artifact for engine '%s')", name, resolved_engine)
+            return server_result
         raise ModelResolutionError(
             f"No artifact found for '{parsed.family}:{quant}' "
             f"on engine '{resolved_engine}'. "

@@ -185,7 +185,7 @@ class TestStartServeBackground:
             patch("octomil.agents.launcher.time.sleep"),
             patch("octomil.agents.launcher.os.path.join", return_value=log_path),
         ):
-            with pytest.raises(RuntimeError, match="failed to start"):
+            with pytest.raises(click.ClickException):
                 start_serve_background("model", port=8080, timeout=3)
 
         mock_proc.terminate.assert_called_once()
@@ -207,7 +207,7 @@ class TestStartServeBackground:
             patch("octomil.agents.launcher.time.sleep"),
             patch("octomil.agents.launcher.os.path.join", return_value=log_path),
         ):
-            with pytest.raises(RuntimeError, match="exited with code 1"):
+            with pytest.raises(click.ClickException):
                 start_serve_background("model", port=8080, timeout=5)
 
 
@@ -247,11 +247,26 @@ class TestLaunchAgent:
         mock_serve.assert_called_once_with("qwen3", port=8080)
         mock_proc.terminate.assert_called_once()
 
+    @patch("octomil.agents.launcher.subprocess.run")
+    @patch("octomil.agents.launcher.start_serve_background")
+    @patch("octomil.agents.launcher.is_serve_running", return_value=False)
     @patch("octomil.agents.registry.is_agent_installed", return_value=True)
-    def test_launch_claude_with_model_raises_error(self, mock_installed):
-        """Claude Code uses Anthropic's API; --model should error."""
-        with pytest.raises(click.ClickException, match="proprietary API"):
-            launch_agent("claude", model="qwen3")
+    def test_launch_claude_with_model_starts_serve(self, mock_installed, mock_running, mock_serve, mock_run):
+        """Claude Code with --model should start serve and set ANTHROPIC env vars."""
+        mock_serve.return_value = MagicMock()
+        mock_run.return_value = MagicMock(returncode=0)
+
+        with pytest.raises(SystemExit):
+            launch_agent("claude", model="qwen-7b")
+
+        mock_serve.assert_called_once_with("qwen-7b", port=8080)
+        env = mock_run.call_args[1]["env"]
+        assert env["ANTHROPIC_BASE_URL"] == "http://localhost:8080/v1"
+        assert env["ANTHROPIC_API_KEY"] == "octomil-local"
+        # Verify --model flag is passed to claude
+        cmd = mock_run.call_args[0][0]
+        assert "--model" in cmd
+        assert "qwen-7b" in cmd
 
     @patch("octomil.agents.launcher.click.confirm", return_value=False)
     @patch("octomil.agents.launcher.subprocess.run")
@@ -280,19 +295,19 @@ class TestLaunchAgent:
         assert env["OPENAI_API_KEY"] == "octomil-local"
         assert "OPENAI_BASE_URL" in env
 
-    @patch("octomil.agents.launcher._auto_select_model", return_value="qwen-coder-7b")
+    @patch("octomil.agents.launcher._select_model_tui", return_value="qwen-coder-7b")
     @patch("octomil.agents.launcher.subprocess.run")
     @patch("octomil.agents.launcher.start_serve_background")
     @patch("octomil.agents.launcher.is_serve_running", return_value=False)
     @patch("octomil.agents.registry.is_agent_installed", return_value=True)
-    def test_launch_auto_selects_when_no_model(self, mock_installed, mock_running, mock_serve, mock_run, mock_auto):
+    def test_launch_auto_selects_when_no_model(self, mock_installed, mock_running, mock_serve, mock_run, mock_tui):
         mock_serve.return_value = MagicMock()
         mock_run.return_value = MagicMock(returncode=0)
 
         with pytest.raises(SystemExit):
             launch_agent("codex")
 
-        mock_auto.assert_called_once()
+        mock_tui.assert_called_once()
         mock_serve.assert_called_once_with("qwen-coder-7b", port=8080)
 
     @patch("octomil.agents.launcher._select_model_tui", return_value="llama-8b")

@@ -33,16 +33,94 @@ class _Candidate:
     size: str  # approximate Q4_K_M download size
 
 
-_ALL_CANDIDATES: list[_Candidate] = [
-    _Candidate("deepseek-v3.2", 685, "DeepSeek V3.2, top open model", "~405 GB"),
-    _Candidate("minimax-m2.1", 229, "MiniMax M2.1, strong multi-lang coding", "~138 GB"),
-    _Candidate("devstral-123b", 123, "Devstral 2, Mistral's agentic coder", "~75 GB"),
-    _Candidate("glm-flash", 30, "GLM-4.7 Flash, fast reasoning & code", "~18.5 GB"),
-    _Candidate("qwen-coder-7b", 7, "Best small coding model, purpose-built", "~4.5 GB"),
-    _Candidate("llama-8b", 8, "Meta Llama 3.1, solid all-rounder", "~4.5 GB"),
-    _Candidate("qwen-coder-3b", 3, "Fast coding model, runs anywhere", "~2 GB"),
-    _Candidate("qwen-coder-1.5b", 1.5, "Ultra-light coder, instant responses", "~1 GB"),
+_CURATED_CANDIDATES: list[_Candidate] = [
+    _Candidate("qwen-7b", 7, "Qwen 2.5 Coder, best small coding model", "4.5 GB"),
+    _Candidate("llama-8b", 8, "Meta Llama 3.1, solid all-rounder", "4.5 GB"),
+    _Candidate("phi-4", 14, "Microsoft Phi-4, strong reasoning", "8.5 GB"),
+    _Candidate("gemma-12b", 12, "Google Gemma 3, multilingual", "7.5 GB"),
 ]
+
+# Recommended keys shown in the top section of the picker
+_RECOMMENDED_KEYS = {"qwen-7b", "llama-8b", "phi-4"}
+
+# Rich descriptions for known models (key -> (description, best_for_tag))
+_MODEL_INFO: dict[str, tuple[str, str]] = {
+    "qwen-7b": ("Qwen 2.5 Coder 7B", "coding"),
+    "qwen-3b": ("Qwen 2.5 Coder 3B", "coding, fast"),
+    "qwen-1.5b": ("Qwen 2.5 Coder 1.5B", "coding, ultrafast"),
+    "qwen-32b": ("Qwen 2.5 Coder 32B", "coding, large"),
+    "qwen-moe-14b": ("Qwen MoE 14B active params", "efficient"),
+    "llama-8b": ("Meta Llama 3.1 8B", "general"),
+    "llama-3b": ("Meta Llama 3.2 3B", "general, fast"),
+    "llama-1b": ("Meta Llama 3.2 1B", "general, ultrafast"),
+    "llama-70b": ("Meta Llama 3.1 70B", "general, large"),
+    "phi-4": ("Microsoft Phi-4 14B", "reasoning"),
+    "phi-mini": ("Microsoft Phi-4 Mini 3.8B", "reasoning, fast"),
+    "gemma-12b": ("Google Gemma 3 12B", "multilingual"),
+    "gemma-4b": ("Google Gemma 3 4B", "multilingual, fast"),
+    "gemma-1b": ("Google Gemma 3 1B", "multilingual, tiny"),
+    "gemma-27b": ("Google Gemma 3 27B", "multilingual, large"),
+    "mistral-7b": ("Mistral 7B v0.3", "general"),
+    "codestral-22b": ("Codestral 22B", "coding, large"),
+    "smollm-360m": ("SmolLM2 360M", "ultra-light"),
+}
+
+
+def _params_to_float(params: str) -> float:
+    """Convert catalog params string like '7B' or '360M' to float billions."""
+    p = params.upper().strip()
+    if p.endswith("B"):
+        return float(p[:-1])
+    if p.endswith("M"):
+        return float(p[:-1]) / 1000
+    return 0.0
+
+
+def _estimate_size(params_b: float) -> str:
+    """Rough Q4 download size estimate."""
+    gb = params_b * 0.625
+    if gb < 1:
+        return f"{gb * 1000:.0f} MB"
+    return f"{gb:.1f} GB"
+
+
+def _params_to_float_from_key(key: str) -> float:
+    """Get param count in billions for a catalog key."""
+    try:
+        from ..models.catalog import get_model
+
+        entry = get_model(key)
+        if entry:
+            return _params_to_float(entry.params)
+    except Exception:
+        pass
+    return 0.0
+
+
+def _build_all_candidates() -> list[_Candidate]:
+    """Build candidate list from the live catalog, falling back to curated."""
+    try:
+        from ..models.catalog import CATALOG
+
+        candidates: list[_Candidate] = []
+        for key, entry in CATALOG.items():
+            if "whisper" in key:
+                continue
+            params_b = _params_to_float(entry.params)
+            info = _MODEL_INFO.get(key)
+            if info:
+                desc = info[0]
+            else:
+                desc = f"{entry.publisher} {key}"
+            size = _estimate_size(params_b)
+            candidates.append(_Candidate(key, params_b, desc, size))
+
+        candidates.sort(key=lambda c: c.params_b, reverse=True)
+        if candidates:
+            return candidates
+    except Exception:
+        pass
+    return list(_CURATED_CANDIDATES)
 
 
 # ---------------------------------------------------------------------------
@@ -117,44 +195,35 @@ class RecommendedModel:
 
 
 def _build_recommendations() -> list[RecommendedModel]:
-    """Build a device-filtered list of recommended models."""
+    """Build the full model list from catalog, sorted largest→smallest."""
     budget = _get_memory_budget_gb()
+    all_candidates = _build_all_candidates()
     models: list[RecommendedModel] = []
 
-    for c in _ALL_CANDIDATES:
-        if _model_fits(c.params_b, budget):
-            models.append(
-                RecommendedModel(
-                    key=c.key,
-                    label=c.key,
-                    description=c.description,
-                    size=c.size,
-                    downloaded=_is_model_downloaded(c.key),
-                )
-            )
-
-    if not models:
-        # Always offer the smallest model as a fallback
-        smallest = _ALL_CANDIDATES[-1]
+    for c in all_candidates:
+        fits = _model_fits(c.params_b, budget)
+        is_rec = c.key in _RECOMMENDED_KEYS and fits
         models.append(
             RecommendedModel(
-                key=smallest.key,
-                label=smallest.key,
-                description=smallest.description,
-                size=smallest.size,
-                downloaded=_is_model_downloaded(smallest.key),
+                key=c.key,
+                label=c.key,
+                description=c.description,
+                size=c.size,
+                recommended=is_rec,
+                downloaded=_is_model_downloaded(c.key),
             )
         )
 
-    # Mark the first (largest fitting) model as recommended
-    models[0] = RecommendedModel(
-        key=models[0].key,
-        label=models[0].label,
-        description=models[0].description,
-        size=models[0].size,
-        recommended=True,
-        downloaded=models[0].downloaded,
-    )
+    if not models:
+        models.append(
+            RecommendedModel(
+                key="smollm-360m",
+                label="smollm-360m",
+                description="Ultra-light, runs anywhere",
+                size="225 MB",
+            )
+        )
+
     return models
 
 
@@ -169,16 +238,19 @@ def _auto_select_model() -> str:
     recommendations = _build_recommendations()
     budget = _get_memory_budget_gb()
 
-    downloaded = [m for m in recommendations if m.downloaded]
+    # Prefer downloaded models that fit in memory
+    fitting = [m for m in recommendations if _model_fits(_params_to_float_from_key(m.key), budget)]
+    downloaded = [m for m in fitting if m.downloaded]
 
     if downloaded:
-        # Pick the largest downloaded model (first in the list — sorted
-        # largest-to-smallest from _ALL_CANDIDATES order).
         best = downloaded[0]
-        click.echo(f"Using {best.key} (already downloaded, best for {budget:.0f} GB). Use --select to choose.")
+        click.echo(f"Using {best.key} (already downloaded). Use --select to choose.")
+    elif fitting:
+        best = fitting[0]
+        click.echo(f"Using {best.key} (will download ~{best.size}). Use --select to choose.")
     else:
-        best = recommendations[0]
-        click.echo(f"Using {best.key} (best for {budget:.0f} GB, will download {best.size}). Use --select to choose.")
+        best = recommendations[-1]  # smallest
+        click.echo(f"Using {best.key} (will download ~{best.size}). Use --select to choose.")
     return best.key
 
 
@@ -223,18 +295,23 @@ def _run_model_tui(
     """Full prompt_toolkit TUI for model selection."""
     statuses = {m.key: _is_model_downloaded(m.key) for m in recommendations}
 
+    # Split into recommended and more
+    recommended = [m for m in recommendations if m.recommended]
+    more = [m for m in recommendations if not m.recommended]
+    all_items = recommended + more
+
     selected = [0]
     search_mode = [False]
     search_query = [""]
-    filtered: list[list[RecommendedModel]] = [list(recommendations)]
+    filtered: list[list[RecommendedModel]] = [list(all_items)]
     result: list[str | None] = [None]
 
     def _fuzzy_filter(query: str) -> list[RecommendedModel]:
         if not query:
-            return list(recommendations)
+            return list(all_items)
         q = query.lower()
         out: list[RecommendedModel] = []
-        for m in recommendations:
+        for m in all_items:
             target = f"{m.key} {m.description}".lower()
             qi = 0
             for ch in target:
@@ -244,26 +321,77 @@ def _run_model_tui(
                 out.append(m)
         return out
 
+    def _render_item(
+        m: RecommendedModel,
+        is_sel: bool,
+        lines: list[tuple[str, str]],
+    ) -> None:
+        downloaded = statuses.get(m.key, False)
+        info = _MODEL_INFO.get(m.key)
+        tag = info[1] if info else ""
+
+        if is_sel:
+            lines.append(("bold fg:ansicyan", "  \u25b8 "))
+            lines.append(("bold fg:ansiwhite", f"{m.key}"))
+        else:
+            lines.append(("", "    "))
+            lines.append(("fg:ansiwhite", f"{m.key}"))
+
+        # Size + param count
+        lines.append(("fg:ansibrightblack", f"  {m.size}"))
+
+        # Status indicators
+        if downloaded:
+            lines.append(("fg:ansigreen", "  \u2713 ready"))
+        # Best-for tag
+        if tag:
+            lines.append(("fg:ansimagenta", f"  [{tag}]"))
+        lines.append(("", "\n"))
+
+        # Description line
+        lines.append(("fg:ansibrightblack", f"      {m.description}\n"))
+
     def get_display_text():  # type: ignore[no-untyped-def]
         lines: list[tuple[str, str]] = []
-        lines.append(("bold", f"  Model Selection ({budget:.0f} GB available)\n"))
-        lines.append(
-            (
-                "",
-                "  Use \u2191\u2193 to navigate, Enter to select, / to search, Esc to cancel\n\n",
-            )
-        )
 
-        for i, m in enumerate(filtered[0]):
-            dl = "downloaded" if statuses.get(m.key) else "not downloaded"
-            tag = " \u2605 recommended" if m.recommended else ""
-            prefix = " \u25b8 " if i == selected[0] else "   "
-            style = "reverse" if i == selected[0] else ""
-            lines.append((style, f"{prefix}{m.key}{tag}\n"))
-            lines.append(("", f"     {m.description}  |  {m.size}  |  {dl}\n"))
-
+        # Header
+        lines.append(("bold fg:ansicyan", "\n  \u25c6 "))
         if search_mode[0]:
-            lines.append(("bold", f"\n  Search: {search_query[0]}\u2588\n"))
+            lines.append(("bold", "Select model: "))
+            lines.append(("fg:ansiyellow", f"{search_query[0]}"))
+            lines.append(("fg:ansibrightblack", "\u2588\n"))
+        else:
+            lines.append(("bold", "Select model  "))
+            lines.append(("fg:ansibrightblack", "type to filter\n"))
+
+        flat = filtered[0]
+        f_rec = [m for m in flat if m in recommended]
+        f_more = [m for m in flat if m in more]
+
+        idx = 0
+
+        if f_rec:
+            lines.append(("", "\n"))
+            lines.append(("bold fg:ansiyellow", "  \u2605 Recommended\n"))
+            for m in f_rec:
+                _render_item(m, idx == selected[0], lines)
+                idx += 1
+
+        if f_more:
+            lines.append(("", "\n"))
+            lines.append(("bold fg:ansibrightblack", "  \u2022 More\n"))
+            for m in f_more:
+                _render_item(m, idx == selected[0], lines)
+                idx += 1
+
+        # Footer
+        lines.append(("", "\n"))
+        lines.append(("fg:ansibrightblack", "  \u2191\u2193"))
+        lines.append(("fg:ansibrightblack", " navigate  "))
+        lines.append(("fg:ansibrightblack", "\u21b5"))
+        lines.append(("fg:ansibrightblack", " select  "))
+        lines.append(("fg:ansibrightblack", "esc"))
+        lines.append(("fg:ansibrightblack", " cancel\n"))
 
         return lines
 
@@ -295,7 +423,7 @@ def _run_model_tui(
         if search_mode[0]:
             search_mode[0] = False
             search_query[0] = ""
-            filtered[0] = list(recommendations)
+            filtered[0] = list(all_items)
             selected[0] = 0
         else:
             event.app.exit()
@@ -306,15 +434,19 @@ def _run_model_tui(
 
     @bindings.add("backspace")
     def _backspace(event):  # type: ignore[no-untyped-def]
-        if search_mode[0] and search_query[0]:
+        if search_query[0]:
             search_query[0] = search_query[0][:-1]
             filtered[0] = _fuzzy_filter(search_query[0])
             selected[0] = 0
+            if not search_query[0]:
+                search_mode[0] = False
 
     @bindings.add("<any>")
     def _any_key(event):  # type: ignore[no-untyped-def]
-        if search_mode[0]:
-            search_query[0] += event.data
+        ch = event.data
+        if ch.isprintable() and len(ch) == 1:
+            search_mode[0] = True
+            search_query[0] += ch
             filtered[0] = _fuzzy_filter(search_query[0])
             selected[0] = 0
 
@@ -336,26 +468,37 @@ def _select_model_fallback(
     budget: float,
 ) -> str:
     """Plain numbered list fallback when TUI is unavailable."""
-    click.echo(f"\nModel Selection ({budget:.0f} GB available)\n")
+    click.echo()
+    click.echo(click.style("  Select model", bold=True))
+    click.echo()
 
-    for i, m in enumerate(recommendations):
+    recommended = [m for m in recommendations if m.recommended]
+    more = [m for m in recommendations if not m.recommended]
+
+    def _print_item(num: int, m: RecommendedModel) -> None:
         downloaded = _is_model_downloaded(m.key)
-        status = "downloaded" if downloaded else "not downloaded"
-        marker = " (Recommended)" if m.recommended else ""
-        prefix = "  > " if i == 0 else "    "
-        click.echo(f"{prefix}{i + 1}. {m.label}{marker}")
-        click.echo(f"      {m.description}, {m.size}, ({status})")
+        info = _MODEL_INFO.get(m.key)
+        tag = f"  [{info[1]}]" if info else ""
+        status = click.style(" \u2713 ready", fg="green") if downloaded else ""
+        click.echo(f"    {num}. {click.style(m.key, bold=True)}  {m.size}{status}{tag}")
+        click.echo(click.style(f"       {m.description}", dim=True))
+
+    if recommended:
+        click.echo(click.style("  \u2605 Recommended", fg="yellow", bold=True))
+        for i, m in enumerate(recommended):
+            _print_item(i + 1, m)
+
+    if more:
+        click.echo()
+        click.echo(click.style("  \u2022 More", dim=True, bold=True))
+        for j, m in enumerate(more):
+            _print_item(len(recommended) + j + 1, m)
 
     click.echo()
 
     choices = {str(i + 1): m.key for i, m in enumerate(recommendations)}
-    labels = {str(i + 1): m.label for i, m in enumerate(recommendations)}
-
-    hint_parts = [f"{k}={labels[k]}" for k in sorted(choices)]
-    hint = ", ".join(hint_parts)
-
     selection: str = click.prompt(
-        f"Select model [{hint}] or enter a model name",
+        "  Select model (number or name)",
         default="1",
     )
 
@@ -445,6 +588,27 @@ def _build_serve_cmd(model: str, port: int) -> list[str]:
     return [sys.executable, "-m", "octomil", "serve", model, "--port", str(port)]
 
 
+def _extract_serve_error(log_path: str) -> str:
+    """Extract a human-readable error message from the serve log file."""
+    try:
+        with open(log_path) as f:
+            lines = f.readlines()
+    except Exception:
+        return "Server exited unexpectedly."
+
+    for line in reversed(lines):
+        stripped = line.strip()
+        for prefix in ("ValueError: ", "ModelResolutionError: "):
+            if stripped.startswith(prefix):
+                return stripped[len(prefix) :]
+        if "ERROR" in stripped and "Failed to" in stripped:
+            parts = stripped.split("Failed to", 1)
+            if len(parts) == 2:
+                return "Failed to" + parts[1]
+
+    return f"Server failed to start. See full log: {log_path}"
+
+
 def start_serve_background(model: str, port: int = 8080, timeout: int = 600) -> subprocess.Popen:
     """Start ``octomil serve`` in the background and wait until ready.
 
@@ -465,15 +629,8 @@ def start_serve_background(model: str, port: int = 8080, timeout: int = 600) -> 
     for i in range(timeout):
         if proc.poll() is not None:
             log_file.close()
-            try:
-                with open(log_path) as f:
-                    tail = f.readlines()[-20:]
-                click.echo("Server exited unexpectedly. Last log lines:", err=True)
-                for line in tail:
-                    click.echo(f"  {line.rstrip()}", err=True)
-            except Exception:
-                pass
-            raise RuntimeError(f"octomil serve exited with code {proc.returncode}")
+            error_msg = _extract_serve_error(log_path)
+            raise click.ClickException(f"{error_msg}\n\n  Full log: {log_path}")
         if is_serve_running(port=port):
             log_file.close()
             return proc
@@ -482,7 +639,7 @@ def start_serve_background(model: str, port: int = 8080, timeout: int = 600) -> 
         time.sleep(1)
     proc.terminate()
     log_file.close()
-    raise RuntimeError(f"octomil serve failed to start within {timeout}s")
+    raise click.ClickException(f"Model server failed to start within {timeout}s.\n\n  Full log: {log_path}")
 
 
 # ---------------------------------------------------------------------------
@@ -556,15 +713,35 @@ def _run_agent_tui(
 
     def get_display_text():  # type: ignore[no-untyped-def]
         lines: list[tuple[str, str]] = []
-        lines.append(("bold", "  Select a coding agent\n"))
-        lines.append(("", "  Use \u2191\u2193 to navigate, Enter to select, Esc to cancel\n\n"))
+        lines.append(("bold fg:ansicyan", "\n  \u25c6 "))
+        lines.append(("bold", "Select a coding agent\n"))
+        lines.append(("", "\n"))
 
         for i, a in enumerate(agents):
-            installed = "\u2713 installed" if statuses.get(a.name) else "not installed"
-            prefix = " \u25b8 " if i == selected[0] else "   "
-            style = "reverse" if i == selected[0] else ""
-            lines.append((style, f"{prefix}{a.name}\n"))
-            lines.append(("", f"     {a.description}  |  {installed}\n"))
+            installed = statuses.get(a.name, False)
+            is_sel = i == selected[0]
+            if is_sel:
+                lines.append(("bold fg:ansicyan", "  \u25b8 "))
+                lines.append(("bold fg:ansiwhite", f"{a.display_name}"))
+            else:
+                lines.append(("", "    "))
+                lines.append(("fg:ansiwhite", f"{a.display_name}"))
+            lines.append(("fg:ansibrightblack", f"  ({a.name})"))
+            if installed:
+                lines.append(("fg:ansigreen", "  \u2713"))
+            else:
+                lines.append(("fg:ansiyellow", "  \u2022 not installed"))
+            lines.append(("", "\n"))
+            lines.append(("fg:ansibrightblack", f"      {a.description}\n"))
+
+        # Footer
+        lines.append(("", "\n"))
+        lines.append(("fg:ansibrightblack", "  \u2191\u2193"))
+        lines.append(("fg:ansibrightblack", " navigate  "))
+        lines.append(("fg:ansibrightblack", "\u21b5"))
+        lines.append(("fg:ansibrightblack", " select  "))
+        lines.append(("fg:ansibrightblack", "esc"))
+        lines.append(("fg:ansibrightblack", " cancel\n"))
 
         return lines
 
@@ -667,23 +844,6 @@ def launch_agent(
         else:
             raise SystemExit(1)
 
-    # Agents that don't need a local model (e.g. Claude Code) are exec'd
-    # directly unless the user explicitly passed --model to proxy through
-    # the local server.
-    #
-    # However, some agents (Claude Code) use a non-OpenAI API format.
-    # octomil serve only exposes OpenAI-compatible endpoints, so we can't
-    # proxy local models to those agents.
-    if model is not None and not agent.needs_local_model and not agent.env_key.startswith("OPENAI"):
-        raise click.ClickException(
-            f"{agent.display_name} uses a proprietary API that is not compatible "
-            f"with local model serving.\n\n"
-            f"  To use a local model, try one of these agents instead:\n"
-            f"    octomil launch codex --model {model}\n"
-            f"    octomil launch aider --model {model}\n"
-            f"    octomil launch opencode --model {model}\n"
-        )
-
     use_local_server = agent.needs_local_model or model is not None
 
     serve_proc: Optional[subprocess.Popen] = None
@@ -694,7 +854,7 @@ def launch_agent(
         if not is_serve_running(port=port):
             _ensure_engine_ready()
             if model is None:
-                model = _select_model_tui() if select else _auto_select_model()
+                model = _select_model_tui() if (select or agent.needs_local_model) else _auto_select_model()
             click.echo(f"Starting octomil serve {model}...")
             serve_proc = start_serve_background(model, port=port)
             click.echo(f"Model ready at {base_url}")
@@ -710,11 +870,22 @@ def launch_agent(
             env[agent.env_key] = base_url
             if agent.env_key.startswith("OPENAI"):
                 env["OPENAI_API_KEY"] = "octomil-local"
+            if agent.env_key == "ANTHROPIC_BASE_URL":
+                env["ANTHROPIC_API_KEY"] = "octomil-local"
 
     try:
+        cmd = shlex.split(agent.exec_cmd)
+        if model is not None and agent.model_flag:
+            cmd += shlex.split(agent.model_flag.format(model=model))
         click.echo(f"Launching {agent.display_name}...\n")
-        result = subprocess.run(shlex.split(agent.exec_cmd), env=env)
-    finally:
+        result = subprocess.run(cmd, env=env)
+    except click.ClickException:
+        raise
+    except Exception as exc:
+        if serve_proc is not None:
+            serve_proc.terminate()
+        raise click.ClickException(str(exc))
+    else:
         if serve_proc is not None:
             serve_proc.terminate()
 

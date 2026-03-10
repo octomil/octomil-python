@@ -62,3 +62,4 @@ uv.lock
 *.whl
 *.tar.gz
 octomil/python/dist/
+.aider*
