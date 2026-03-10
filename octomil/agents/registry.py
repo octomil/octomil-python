@@ -117,7 +117,7 @@ AGENTS: dict[str, AgentDef] = {
         install_check="aider",
         install_cmd="pip install aider-chat",
         exec_cmd="aider",
-        model_flag="--model openai/{model}",
+        model_flag="--model openai/{model} --no-show-model-warnings",
     ),
 }
 
