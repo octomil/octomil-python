@@ -960,4 +960,17 @@ def create_http_app(config: Optional[HTTPServerConfig] = None) -> FastAPI:
         pref = _inference_preference(request)
         return _code_tool_response("general_task", messages, paid_amount=paid, cloud_price=cloud, preference=pref)
 
+    # ------------------------------------------------------------------
+    # MCP Streamable HTTP transport at /mcp
+    # ------------------------------------------------------------------
+
+    from .server import create_mcp_server
+
+    mcp_server = create_mcp_server(
+        model=config.model,
+        streamable_http_path="/",
+        stateless_http=True,
+    )
+    app.mount("/mcp", mcp_server.streamable_http_app())
+
     return app
