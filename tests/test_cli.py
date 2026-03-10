@@ -93,6 +93,24 @@ class TestMainGroup:
         assert "push" in result.output
         assert "pull" in result.output
 
+    def test_help_has_section_headers(self):
+        """--help groups commands under named section headers."""
+        runner = CliRunner()
+        result = runner.invoke(main, ["--help"])
+        assert result.exit_code == 0
+        for section in ["Get Started:", "Models:", "Deploy:", "Account:", "Advanced:"]:
+            assert section in result.output
+        # The flat "Commands:" header should not appear.
+        assert "Commands:" not in result.output
+
+    def test_help_section_order(self):
+        """Sections appear in the defined order."""
+        runner = CliRunner()
+        result = runner.invoke(main, ["--help"])
+        sections = ["Get Started:", "Models:", "Deploy:", "Account:", "Advanced:"]
+        positions = [result.output.index(s) for s in sections]
+        assert positions == sorted(positions)
+
 
 # ---------------------------------------------------------------------------
 # octomil serve
