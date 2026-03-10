@@ -232,7 +232,17 @@ octomil serve gemma-1b
 | 60+ models in catalog            | yes                  | yes (different catalog) | yes (manual download)  | varies     |
 | Python SDK                       | yes                  | yes                     | community              | yes        |
 
-## Python SDK
+## SDKs
+
+| SDK                                                   | Package                  | Status               | Inference Engine                                            |
+| ----------------------------------------------------- | ------------------------ | -------------------- | ----------------------------------------------------------- |
+| [Python](https://github.com/octomil/octomil-python)   | `octomil-sdk` (PyPI)     | Production (v2.10.1) | MLX, llama.cpp, ONNX, MLC, ExecuTorch, Whisper, MNN, Ollama |
+| [Browser](https://github.com/octomil/octomil-browser) | `@octomil/browser` (npm) | Production (v1.0.0)  | ONNX Runtime Web (WebGPU + WASM)                            |
+| [iOS](https://github.com/octomil/octomil-ios)         | Swift Package Manager    | Production (v1.1.0)  | CoreML + MLX                                                |
+| [Android](https://github.com/octomil/octomil-android) | Maven (GitHub Packages)  | Production (v1.2.0)  | TFLite + vendor NPU                                         |
+| [Node](https://github.com/octomil/octomil-node)       | `@octomil/sdk` (npm)     | WIP (v0.1.0)         | ONNX Runtime Node                                           |
+
+### Python SDK
 
 For fleet management, model registry, and A/B testing:
 
