@@ -388,32 +388,37 @@ else:
 
 def _log_setup_summary(state: SetupState, _log) -> None:  # noqa: ANN001
     """Print a summary of the current setup state."""
-    _log("")
-    _log("  Setup complete")
+    from octomil.cli_helpers import cli_header, cli_kv
+
+    cli_header("Setup")
     if state.engine:
-        _log(f"  Engine:  {state.engine}")
+        cli_kv("Engine", state.engine)
     if state.model_key:
         dl = "downloaded" if state.model_downloaded else "downloads on first use"
-        _log(f"  Model:   {state.model_key} ({dl})")
-    _log("")
+        cli_kv("Model", f"{state.model_key} ({dl})")
 
 
 def _register_mcp(model_key: str, _log) -> None:  # noqa: ANN001
     """Register MCP server across AI tools (non-fatal)."""
-    _log("  MCP servers")
+    import click
+
+    from octomil.cli_helpers import cli_section, cli_success
+
+    click.echo()
+    cli_section("MCP Servers")
     try:
         from octomil.mcp.registration import register_mcp_server
 
         results = register_mcp_server(model=model_key)
         for r in results:
             if r.success:
-                _log(f"    \u2713 {r.display}")
+                cli_success(r.display)
             else:
-                _log(f"    - {r.display} (skipped)")
+                click.echo(click.style(f"    - {r.display} (skipped)", dim=True))
     except Exception as e:
         logger.debug("MCP registration failed (non-fatal): %s", e)
-        _log(f"    MCP registration skipped: {e}")
-    _log("")
+        click.echo(click.style(f"    MCP registration skipped: {e}", dim=True))
+    click.echo()
 
 
 def run_setup(*, force: bool = False, foreground: bool = False) -> SetupState:
