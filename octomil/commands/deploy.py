@@ -104,22 +104,33 @@ def deploy(
 ) -> None:
     """Deploy a model to edge devices.
 
-    By default deploys to your phone via QR code pairing.
-    Use --fleet for full fleet rollouts, or --devices/--group
-    for targeted deployment.
-
-    Use the ollama:// URI scheme to deploy from your local Ollama cache.
+    \b
+    Deploy Modes
+    ─────────────────────────────────────────────
+    Phone (default)   Scan QR code, model lands on phone
+    Fleet (--fleet)   Rollout to your full device fleet
+    Targeted          Deploy to specific --devices or --group
 
     \b
-    Examples:
-        octomil deploy gemma-1b
-        octomil deploy ollama://llama3.2
-        octomil deploy gemma-1b --fleet --rollout 10
-        octomil deploy gemma-1b --fleet --strategy progressive-1h
-        octomil deploy gemma-1b --fleet --env staging
-        octomil deploy gemma-1b --fleet --schedule 2026-03-15T09:00:00Z
-        octomil deploy gemma-1b --devices device_1,device_2
-        octomil deploy gemma-1b --group production --dry-run
+    Fleet Options
+    ─────────────────────────────────────────────
+    --rollout          Percentage of devices (default: 10%)
+    --strategy         progressive-15m, progressive-1h,
+                       progressive-1m, instant
+    --env              Target environment (production, staging)
+    --sub-env          Sub-environment (us-west, eu-central)
+    --schedule         Scheduled start (ISO 8601 datetime)
+
+    \b
+    Examples
+    ─────────────────────────────────────────────
+    octomil deploy gemma-1b
+    octomil deploy ollama://llama3.2
+    octomil deploy gemma-1b --fleet --rollout 10
+    octomil deploy gemma-1b --fleet --strategy progressive-1h
+    octomil deploy gemma-1b --fleet --env staging
+    octomil deploy gemma-1b --devices d1,d2
+    octomil deploy gemma-1b --group production --dry-run
     """
     cli_header(f"Deploy — {name}")
 
