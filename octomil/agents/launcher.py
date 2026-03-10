@@ -825,7 +825,11 @@ def launch_agent(
     5. Sets the appropriate env var so the agent talks to the local server.
     6. Execs the agent and tears down the server on exit.
     """
+    from octomil.cli_helpers import cli_header
+
     from .registry import get_agent, is_agent_installed
+
+    cli_header("Launch")
 
     if agent_name is None:
         agent_name = _select_agent_tui()
