@@ -24,6 +24,7 @@ from octomil.models.catalog import (
     _resolve_alias,
     get_model,
     list_models,
+    resolve_ollama_tag,
     supports_engine,
 )
 from octomil.models.parser import normalize_variant, parse
@@ -618,3 +619,66 @@ class TestServerResolveFallback:
 
         # Clean up
         del cat_mod.CATALOG["test-empty2"]
+
+
+# =====================================================================
+# Ollama tag resolution tests
+# =====================================================================
+
+
+class TestOllamaTagResolution:
+    """Tests for resolving Ollama-native tags (e.g. qwen2.5:3b)."""
+
+    def test_resolve_ollama_tag_known(self) -> None:
+        """resolve_ollama_tag finds a matching catalog entry."""
+        result = resolve_ollama_tag("qwen2.5:3b")
+        assert result is not None
+        family, quant = result
+        assert family == "qwen-3b"
+        assert quant == "4bit"
+
+    def test_resolve_ollama_tag_unknown(self) -> None:
+        """resolve_ollama_tag returns None for unknown tags."""
+        assert resolve_ollama_tag("nonexistent:9b") is None
+
+    def test_resolve_ollama_tag_case_insensitive(self) -> None:
+        """Ollama tags should match case-insensitively."""
+        result = resolve_ollama_tag("Qwen2.5:3b")
+        assert result is not None
+        assert result[0] == "qwen-3b"
+
+    def test_resolve_ollama_tag_gemma(self) -> None:
+        """gemma3:4b Ollama tag resolves to gemma-4b."""
+        result = resolve_ollama_tag("gemma3:4b")
+        assert result is not None
+        assert result[0] == "gemma-4b"
+
+    def test_resolve_ollama_tag_llama(self) -> None:
+        """llama3.2:3b Ollama tag resolves to llama-3b."""
+        result = resolve_ollama_tag("llama3.2:3b")
+        assert result is not None
+        assert result[0] == "llama-3b"
+
+    def test_resolve_via_resolver_ollama_tag(self) -> None:
+        """resolve() should work with Ollama-native tags like qwen2.5:3b."""
+        r = resolve("qwen2.5:3b")
+        assert r.family == "qwen-3b"
+        assert r.quant == "4bit"
+
+    def test_resolve_via_resolver_ollama_tag_gemma(self) -> None:
+        """resolve() with gemma3:1b Ollama tag."""
+        r = resolve("gemma3:1b")
+        assert r.family == "gemma-1b"
+        assert r.quant == "4bit"
+
+    def test_resolve_via_resolver_ollama_tag_llama(self) -> None:
+        """resolve() with llama3.1:8b Ollama tag."""
+        r = resolve("llama3.1:8b")
+        assert r.family == "llama-8b"
+        assert r.quant == "4bit"
+
+    def test_resolve_via_resolver_ollama_tag_mistral(self) -> None:
+        """resolve() with mistral:7b Ollama tag."""
+        r = resolve("mistral:7b")
+        assert r.family == "mistral-7b"
+        assert r.quant == "4bit"

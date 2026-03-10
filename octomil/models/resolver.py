@@ -23,7 +23,7 @@ import os
 from dataclasses import dataclass
 from typing import Any, Optional
 
-from .catalog import CATALOG, ModelEntry, MoEMetadata, _resolve_alias
+from .catalog import CATALOG, ModelEntry, MoEMetadata, _resolve_alias, resolve_ollama_tag
 from .catalog_client import EnginePriorityClient
 from .parser import normalize_variant, parse
 
@@ -271,6 +271,17 @@ def resolve(
     assert parsed.family is not None
     canonical = _resolve_alias(parsed.family)
     entry = CATALOG.get(canonical)
+
+    # If not found directly, try reverse Ollama tag lookup.
+    # e.g. "qwen2.5:3b" → catalog entry "qwen-3b" at quant "4bit"
+    ollama_resolved_quant: str | None = None
+    if entry is None:
+        ollama_match = resolve_ollama_tag(name)
+        if ollama_match is not None:
+            canonical, ollama_resolved_quant = ollama_match
+            entry = CATALOG.get(canonical)
+            logger.info("Resolved Ollama tag '%s' to catalog '%s:%s'", name, canonical, ollama_resolved_quant)
+
     if entry is None:
         suggestions = _suggest_models(parsed.family)
         hint = f" Did you mean: {', '.join(suggestions)}?" if suggestions else ""
@@ -279,13 +290,29 @@ def resolve(
         )
 
     # Determine quant level
-    if parsed.variant is not None:
+    if ollama_resolved_quant is not None:
+        # Ollama tag already resolved to a specific variant
+        quant = ollama_resolved_quant
+    elif parsed.variant is not None:
         quant = normalize_variant(parsed.variant)
     else:
         quant = entry.default_quant
 
     # Check variant exists
     variant = entry.variants.get(quant)
+    if variant is None and ollama_resolved_quant is None:
+        # Before failing, try Ollama reverse lookup on the full raw name.
+        # Handles cases like "qwen-3b:3b" where the family exists but the
+        # variant is an Ollama tag component, not a quant level.
+        ollama_match = resolve_ollama_tag(name)
+        if ollama_match is not None:
+            canonical, quant = ollama_match
+            ollama_entry = CATALOG.get(canonical)
+            if ollama_entry is not None:
+                entry = ollama_entry
+                variant = entry.variants.get(quant)
+                logger.info("Resolved Ollama tag '%s' to '%s:%s' (variant fallback)", name, canonical, quant)
+
     if variant is None:
         available_quants = ", ".join(sorted(entry.variants.keys()))
         if available_quants:
