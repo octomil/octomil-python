@@ -264,6 +264,25 @@ def get_model(name: str) -> Optional[ModelEntry]:
     return CATALOG.get(key)
 
 
+def resolve_ollama_tag(tag: str) -> Optional[tuple[str, str]]:
+    """Reverse-lookup an Ollama tag to (catalog_name, quant).
+
+    Searches all catalog entries for a variant whose ``ollama`` field
+    matches *tag* (case-insensitive).  Returns ``None`` if no match.
+
+    Examples::
+
+        resolve_ollama_tag("qwen2.5:3b")  -> ("qwen-3b", "4bit")
+        resolve_ollama_tag("gemma3:1b")   -> ("gemma-1b", "4bit")
+    """
+    tag_lower = tag.lower()
+    for family, entry in CATALOG.items():
+        for quant, variant in entry.variants.items():
+            if variant.ollama and variant.ollama.lower() == tag_lower:
+                return (family, quant)
+    return None
+
+
 def supports_engine(name: str, engine: str) -> bool:
     """Check if a model family is known to work on a given engine."""
     entry = CATALOG.get(name.lower())

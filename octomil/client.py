@@ -1010,10 +1010,18 @@ class OctomilClient:
             pull_result = self.pull(name, version=version, format=format, destination=destination)
             engine_kwargs["model_path"] = pull_result.get("model_path")
 
-        model_id = self._registry.resolve_model_id(name)
-        resolved_version = version
-        if resolved_version is None:
-            resolved_version = self._registry.get_latest_version(model_id)
+        # When the engine manages its own downloads, resolve metadata locally
+        # instead of hitting the cloud registry (which requires an API key).
+        model_id: str
+        resolved_version: str | None
+        if selected_engine.manages_own_download:
+            model_id = name
+            resolved_version = version or "local"
+        else:
+            model_id = self._registry.resolve_model_id(name)
+            resolved_version = version
+            if resolved_version is None:
+                resolved_version = self._registry.get_latest_version(model_id)
 
         metadata = ModelMetadata(
             model_id=model_id,

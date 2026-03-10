@@ -7,8 +7,17 @@ from typing import Any
 
 import click
 
-from octomil.cli_helpers import _complete_model_name, _get_api_key, http_request
-
+from octomil.cli_helpers import (
+    _complete_model_name,
+    _get_api_key,
+    cli_header,
+    cli_kv,
+    cli_metric,
+    cli_section,
+    cli_success,
+    cli_table_header,
+    http_request,
+)
 
 # ---------------------------------------------------------------------------
 # Hardware helpers
@@ -108,17 +117,18 @@ def _benchmark_all_engines(model: str, iterations: int, max_tokens: int) -> None
     available = [d for d in detections if d.available and d.engine.name != "echo"]
 
     if not available:
-        click.echo("No inference engines available for this model.", err=True)
+        click.echo(click.style("  No inference engines available for this model.", fg="red"), err=True)
         return
 
-    click.echo(f"\nDetected {len(available)} engine(s):")
+    cli_section(f"Detected {len(available)} engine(s)")
     for d in available:
         info = f" ({d.info})" if d.info else ""
-        click.echo(f"  + {d.engine.display_name}{info}")
+        click.echo(f"    {click.style('+', fg='green')} {d.engine.display_name}{info}")
 
     results: list[dict[str, Any]] = []
     for d in available:
-        click.echo(f"\nBenchmarking {d.engine.display_name}...")
+        click.echo()
+        cli_section(f"Benchmarking {d.engine.display_name}")
         try:
             backend = d.engine.create_backend(model, cache_enabled=False)
             req = GenerationRequest(
@@ -135,10 +145,9 @@ def _benchmark_all_engines(model: str, iterations: int, max_tokens: int) -> None
                 elapsed = (time.monotonic() - start) * 1000
                 latencies.append(elapsed)
                 tps_list.append(metrics.tokens_per_second)
-                click.echo(
-                    f"  [{i + 1}/{iterations}] {elapsed:.1f}ms, "
-                    f"{metrics.tokens_per_second:.1f} tok/s"
-                )
+                progress = click.style(f"  [{i + 1}/{iterations}]", dim=True)
+                tps_str = click.style(f"{metrics.tokens_per_second:.1f} tok/s", fg="white", bold=True)
+                click.echo(f"{progress} {elapsed:.0f}ms  {tps_str}")
 
             avg_tps = sum(tps_list) / len(tps_list)
             avg_lat = sum(latencies) / len(latencies)
@@ -152,7 +161,7 @@ def _benchmark_all_engines(model: str, iterations: int, max_tokens: int) -> None
                 }
             )
         except Exception as exc:
-            click.echo(f"  Failed: {exc}")
+            click.echo(click.style(f"    Failed: {exc}", fg="red"))
             results.append(
                 {
                     "engine": d.engine.display_name,
@@ -164,11 +173,9 @@ def _benchmark_all_engines(model: str, iterations: int, max_tokens: int) -> None
             )
 
     # Print comparison table
-    click.echo("\n" + "=" * 65)
-    click.echo(
-        f"{'Engine':<30s} {'Avg tok/s':>10s} {'Avg latency':>12s} {'Status':>10s}"
-    )
-    click.echo("-" * 65)
+    click.echo()
+    cli_section("Comparison")
+    cli_table_header(("ENGINE", 30), ("AVG TOK/S", 12), ("AVG LATENCY", 14), ("", 12))
 
     # Sort by tok/s descending
     results.sort(key=lambda r: r["avg_tps"], reverse=True)
@@ -176,18 +183,20 @@ def _benchmark_all_engines(model: str, iterations: int, max_tokens: int) -> None
 
     for i, r in enumerate(results):
         if r["error"]:
-            status = "error"
-            click.echo(f"  {r['engine']:<28s} {'---':>10s} {'---':>12s} {status:>10s}")
-        else:
-            marker = " <-- fastest" if i == 0 and best else ""
             click.echo(
-                f"  {r['engine']:<28s} {r['avg_tps']:>10.1f} "
-                f"{r['avg_latency_ms']:>9.1f}ms {marker}"
+                f"    {r['engine']:<30s}"
+                f"{click.style('---', dim=True):>12s}"
+                f"{click.style('---', dim=True):>14s}"
+                f"{click.style('error', fg='red'):>12s}"
             )
+        else:
+            marker = click.style(" fastest", fg="cyan", bold=True) if i == 0 and best else ""
+            tps_val = click.style(f"{r['avg_tps']:.1f}", fg="white", bold=True) if i == 0 else f"{r['avg_tps']:.1f}"
+            click.echo(f"    {r['engine']:<30s}{tps_val:>12s}{r['avg_latency_ms']:>11.1f}ms {marker}")
 
-    click.echo("=" * 65)
+    click.echo()
     if best:
-        click.echo(f"\nFastest engine: {best['engine']} ({best['avg_tps']:.1f} tok/s)")
+        cli_success(f"Fastest: {best['engine']} ({best['avg_tps']:.1f} tok/s)")
 
 
 # ---------------------------------------------------------------------------
@@ -215,16 +224,15 @@ def _run_profile(model: str, engine_override: str | None) -> None:
         device_str = f" ({device})" if device and device != "unknown" else ""
         active_mem = result.metadata.get("active_memory_mb")
 
-        click.echo("\n  Hardware Profile:")
-        click.echo(
-            f"    Accelerator:   {result.accelerator_used}{device_str}"
-        )
-        click.echo(f"    Peak memory:   {result.memory_peak_mb:,.1f} MB")
+        click.echo()
+        cli_section("Hardware Profile")
+        cli_metric("Accelerator", f"{result.accelerator_used}{device_str}")
+        cli_metric("Peak memory", f"{result.memory_peak_mb:,.1f} MB")
         if active_mem is not None:
-            click.echo(f"    Active memory: {active_mem:,.1f} MB")
-        click.echo(
-            f"    Ops on GPU:    {result.ops_on_accelerator}/{result.ops_total} "
-            f"({result.utilization_pct:.1f}%)"
+            cli_metric("Active memory", f"{active_mem:,.1f} MB")
+        cli_metric(
+            "Ops on GPU",
+            f"{result.ops_on_accelerator}/{result.ops_total} ({result.utilization_pct:.1f}%)",
         )
         return  # Only show profile for the first engine that supports it
 
@@ -297,10 +305,10 @@ def benchmark(
 
     import psutil
 
-    click.echo(
-        f"Benchmarking {model} ({iterations} iterations, {max_tokens} max tokens)..."
-    )
-    click.echo(f"Platform: {_platform.system()} {_platform.machine()}")
+    cli_header(f"Benchmark — {model}")
+    cli_kv("Platform", f"{_platform.system()} {_platform.machine()}")
+    cli_kv("Iterations", str(iterations))
+    cli_kv("Max tokens", str(max_tokens))
 
     # Quick engine comparison if --all-engines
     if all_engines:
@@ -310,7 +318,8 @@ def benchmark(
     from octomil.serve import _detect_backend
 
     backend = _detect_backend(model, engine_override=engine)
-    click.echo(f"Backend: {backend.name}")
+    cli_kv("Engine", backend.name)
+    click.echo()
 
     from octomil.serve import GenerationRequest
 
@@ -341,11 +350,9 @@ def benchmark(
             prompt_tokens_list.append(metrics.prompt_tokens)
         if metrics.total_tokens > 0:
             completion_tokens_list.append(metrics.total_tokens)
-        click.echo(
-            f"  [{i + 1}/{iterations}] {elapsed:.1f}ms, "
-            f"{metrics.tokens_per_second:.1f} tok/s, "
-            f"{metrics.total_tokens} tokens"
-        )
+        progress = click.style(f"  [{i + 1}/{iterations}]", dim=True)
+        tps_str = click.style(f"{metrics.tokens_per_second:.1f} tok/s", fg="white", bold=True)
+        click.echo(f"{progress} {elapsed:.0f}ms  {tps_str}  {click.style(f'{metrics.total_tokens} tokens', dim=True)}")
 
     peak_mem = process.memory_info().rss
     peak_mem_delta = peak_mem - mem_before
@@ -365,49 +372,42 @@ def benchmark(
 
     # Token-level timing
     avg_ttft = sum(ttft_list) / len(ttft_list) if ttft_list else 0
-    avg_prompt = (
-        sum(prompt_tokens_list) // len(prompt_tokens_list) if prompt_tokens_list else 0
-    )
-    avg_completion = (
-        sum(completion_tokens_list) // len(completion_tokens_list)
-        if completion_tokens_list
-        else 0
-    )
+    avg_prompt = sum(prompt_tokens_list) // len(prompt_tokens_list) if prompt_tokens_list else 0
+    avg_completion = sum(completion_tokens_list) // len(completion_tokens_list) if completion_tokens_list else 0
     # TPOT = (total_latency - TTFT) / completion_tokens
-    tpot = (
-        (avg_latency - avg_ttft) / avg_completion
-        if avg_completion > 0 and avg_ttft > 0
-        else 0
-    )
+    tpot = (avg_latency - avg_ttft) / avg_completion if avg_completion > 0 and avg_ttft > 0 else 0
 
-    click.echo("\nResults:")
-    click.echo(f"  Backend:          {backend.name}")
-    click.echo(f"  Iterations:       {iterations}")
-    click.echo(f"  Avg prompt:       {avg_prompt} tokens")
-    click.echo(f"  Avg completion:   {avg_completion} tokens")
-    click.echo("")
-    click.echo(f"  TTFT (avg):       {avg_ttft:.1f}ms")
-    click.echo(f"  TPOT (avg):       {tpot:.2f}ms/token")
-    click.echo("")
-    click.echo(f"  Latency min:      {min_latency:.1f}ms")
-    click.echo(f"  Latency avg:      {avg_latency:.1f}ms")
-    click.echo(f"  Latency p50:      {p50:.1f}ms")
-    click.echo(f"  Latency p90:      {p90:.1f}ms")
-    click.echo(f"  Latency p95:      {p95:.1f}ms")
-    click.echo(f"  Latency p99:      {p99:.1f}ms")
-    click.echo(f"  Latency max:      {max_latency:.1f}ms")
-    click.echo("")
-    click.echo(f"  Throughput avg:   {avg_tps:.1f} tok/s")
-    click.echo(f"  Throughput peak:  {peak_tps:.1f} tok/s")
-    click.echo(
-        f"  Peak memory:      {peak_mem / 1024 / 1024:.0f} MB (+{peak_mem_delta / 1024 / 1024:.0f} MB)"
-    )
+    click.echo()
+    cli_section("Results")
+    cli_kv("Engine", backend.name)
+    cli_kv("Iterations", str(iterations))
+    cli_kv("Avg prompt", f"{avg_prompt} tokens")
+    cli_kv("Avg completion", f"{avg_completion} tokens")
+    click.echo()
+    cli_section("Timing")
+    cli_metric("TTFT (avg)", f"{avg_ttft:.1f}ms", highlight=True)
+    cli_metric("TPOT (avg)", f"{tpot:.2f}ms/token", highlight=True)
+    click.echo()
+    cli_section("Latency")
+    cli_metric("min", f"{min_latency:.1f}ms")
+    cli_metric("avg", f"{avg_latency:.1f}ms")
+    cli_metric("p50", f"{p50:.1f}ms")
+    cli_metric("p90", f"{p90:.1f}ms")
+    cli_metric("p95", f"{p95:.1f}ms")
+    cli_metric("p99", f"{p99:.1f}ms")
+    cli_metric("max", f"{max_latency:.1f}ms")
+    click.echo()
+    cli_section("Throughput")
+    cli_metric("avg", f"{avg_tps:.1f} tok/s", highlight=True)
+    cli_metric("peak", f"{peak_tps:.1f} tok/s", highlight=True)
+    cli_metric("Memory", f"{peak_mem / 1024 / 1024:.0f} MB (+{peak_mem_delta / 1024 / 1024:.0f} MB)")
 
     if profile:
         _run_profile(model, engine)
 
     if not local:
-        click.echo("\nSharing anonymous benchmark data...")
+        click.echo()
+        click.echo(click.style("  Sharing anonymous benchmark data...", dim=True))
         try:
             gpu_cores = _get_gpu_core_count()
             thermal = _get_thermal_state()
@@ -463,21 +463,26 @@ def benchmark(
                 chip = payload.get("accelerator", "CPU")
                 cores = payload.get("gpu_core_count")
 
-                click.echo(f"\nYour device: {chip}" + (f" ({cores} GPU cores)" if cores else ""))
-                click.echo(f"  {model}: {avg_tps:.1f} tok/s", nl=False)
+                click.echo()
+                cli_section("Leaderboard")
+                device_str = str(chip) + (f" ({cores} cores)" if cores else "")
+                cli_kv("Device", device_str)
+                tps_str = click.style(f"{avg_tps:.1f} tok/s", fg="white", bold=True)
+                rank_str = ""
                 if rank is not None:
-                    click.echo(f" — top {100 - rank:.0f}% worldwide")
-                else:
-                    click.echo()
-                click.echo("\n  Leaderboard: https://octomil.com/benchmarks")
+                    rank_str = click.style(f"  top {100 - rank:.0f}%", fg="cyan", bold=True)
+                cli_kv("Score", f"{tps_str}{rank_str}")
+                click.echo()
+                cli_kv("Leaderboard", "https://octomil.com/benchmarks")
                 if share_url:
-                    click.echo(f"  Share: {share_url}")
+                    cli_kv("Share", share_url)
             else:
-                click.echo(f"Failed to share: {resp.status_code}", err=True)
+                click.echo(click.style(f"  Failed to share: {resp.status_code}", fg="red"), err=True)
         except Exception as exc:
-            click.echo(f"Failed to share: {exc}", err=True)
+            click.echo(click.style(f"  Failed to share: {exc}", fg="red"), err=True)
     else:
-        click.echo("\nResults kept local (--local).")
+        click.echo()
+        click.echo(click.style("  Results kept local (--local).", dim=True))
 
 
 # ---------------------------------------------------------------------------

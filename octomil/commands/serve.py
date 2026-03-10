@@ -13,6 +13,10 @@ from octomil.cli_helpers import (
     _get_api_key,
     _get_telemetry_reporter,
     _has_explicit_quant,
+    cli_header,
+    cli_kv,
+    cli_section,
+    cli_warn,
 )
 
 
@@ -243,48 +247,52 @@ def serve(
     # Single-model mode (original behaviour)
     _print_engine_detection(model, engine)
 
-    click.echo(f"\nStarting Octomil serve on {host}:{port}")
+    cli_header(f"Serve — {model}")
     if is_whisper:
-        click.echo(f"Model: {model} (speech-to-text)")
-        click.echo(f"POST http://localhost:{port}/v1/audio/transcriptions")
+        cli_kv("Model", f"{model} (speech-to-text)")
+        cli_kv("Endpoint", f"POST http://localhost:{port}/v1/audio/transcriptions")
     else:
-        click.echo(f"Model: {model}")
+        cli_kv("Model", model)
         if engine:
-            click.echo(f"Engine: {engine} (manual override)")
+            cli_kv("Engine", f"{engine} (manual override)")
         if json_mode:
-            click.echo("JSON mode: enabled (all responses default to valid JSON)")
-        click.echo(f"OpenAI-compatible API: http://localhost:{port}/v1/chat/completions")
-        click.echo("")
-        click.echo(click.style("  Quick start:", bold=True))
-        click.echo("    octomil launch codex")
-        click.echo("    octomil launch claude")
-        click.echo("")
-        click.echo(click.style("  Or use any OpenAI-compatible client:", bold=True))
-        click.echo(f"    OPENAI_BASE_URL=http://localhost:{port}/v1 OPENAI_API_KEY=unused codex")
-        click.echo("")
-    click.echo(f"Engine info: http://localhost:{port}/v1/engines")
-    click.echo(f"Health check: http://localhost:{port}/health")
+            cli_kv("JSON mode", "enabled")
+        cli_kv("API", f"http://localhost:{port}/v1/chat/completions")
+        click.echo()
+        cli_section("Quick start")
+        click.echo(
+            f"    {click.style('octomil launch codex', fg='white')}          {click.style('launch Codex with local model', dim=True)}"
+        )
+        click.echo(
+            f"    {click.style('octomil launch claude', fg='white')}         {click.style('launch Claude Code with local model', dim=True)}"
+        )
+        click.echo()
+        cli_section("Or use any OpenAI-compatible client")
+        click.echo(
+            f"    {click.style(f'OPENAI_BASE_URL=http://localhost:{port}/v1 OPENAI_API_KEY=unused codex', dim=True)}"
+        )
+        click.echo()
+    cli_kv("Engine info", f"http://localhost:{port}/v1/engines")
+    cli_kv("Health", f"http://localhost:{port}/health")
     if not is_whisper:
         if cache_enabled:
-            click.echo(f"KV cache: enabled ({cache_size} MB)")
-            click.echo(f"Cache stats: http://localhost:{port}/v1/cache/stats")
+            cli_kv("KV cache", f"enabled ({cache_size} MB)")
+            cli_kv("Cache stats", f"http://localhost:{port}/v1/cache/stats")
         else:
-            click.echo("KV cache: disabled")
+            cli_kv("KV cache", "disabled")
         if max_queue > 0:
-            click.echo(f"Request queue: enabled (max_depth={max_queue})")
-            click.echo(f"Queue stats: http://localhost:{port}/v1/queue/stats")
+            cli_kv("Request queue", f"enabled (max_depth={max_queue})")
+            cli_kv("Queue stats", f"http://localhost:{port}/v1/queue/stats")
         else:
-            click.echo("Request queue: disabled")
+            cli_kv("Request queue", "disabled")
         if compress_context:
-            click.echo(
-                f"Context compression: enabled "
-                f"(strategy={compression_strategy}, "
-                f"ratio={compression_ratio}, "
-                f"threshold={compression_threshold} tokens)"
+            cli_kv(
+                "Compression",
+                f"{compression_strategy}, ratio={compression_ratio}, threshold={compression_threshold} tokens",
             )
         if tool_use:
-            click.echo("Tool-use mode: enabled (coding agent tool schemas loaded)")
-            click.echo(f"Tool schemas: http://localhost:{port}/v1/tool-schemas")
+            cli_kv("Tool-use mode", "enabled")
+            cli_kv("Tool schemas", f"http://localhost:{port}/v1/tool-schemas")
 
     # Build early exit config
     from octomil.early_exit import config_from_cli as _ee_config_from_cli
@@ -296,22 +304,19 @@ def serve(
 
     if not is_whisper and ee_config.enabled:
         preset_label = f" (preset: {ee_config.preset.value})" if ee_config.preset else ""
-        click.echo(
-            f"Early exit: enabled (threshold={ee_config.effective_threshold:.2f}"
+        cli_kv(
+            "Early exit",
+            f"threshold={ee_config.effective_threshold:.2f}"
             f", min_layers_frac={ee_config.effective_min_layers_fraction:.2f}"
-            f"{preset_label})"
+            f"{preset_label}",
         )
-        click.echo(f"Early exit stats: http://localhost:{port}/v1/early-exit/stats")
+        cli_kv("Early exit stats", f"http://localhost:{port}/v1/early-exit/stats")
 
     if benchmark:
-        click.echo("Benchmark mode: will run latency test after model loads.")
+        click.echo(click.style("  Benchmark mode: will run latency test after model loads.", dim=True))
 
     if share and not api_key:
-        click.echo(
-            "Warning: --share requires an API key to upload benchmark data. "
-            "Run `octomil login` or set OCTOMIL_API_KEY.",
-            err=True,
-        )
+        cli_warn("--share requires an API key. Run `octomil login` or set OCTOMIL_API_KEY.")
 
     from octomil.serve import run_server
 
@@ -358,19 +363,20 @@ def _serve_multi_model(
         "quality": ">0.7 complexity",
     }
 
-    click.echo(f"\nLoading {len(model_list)} models for auto-routing...")
+    cli_header(f"Multi-Model Serve — {len(model_list)} models")
+    cli_section("Models")
     for name in model_list:
         info = tiers[name]
         label = tier_labels.get(info.tier, info.tier)
-        click.echo(f"  {name}: tier={info.tier} ({label})")
+        click.echo(f"    {click.style(name, fg='white', bold=True)}  {click.style(f'{info.tier} ({label})', dim=True)}")
 
-    click.echo(f"\nRouting enabled (strategy: {route_strategy})")
-    click.echo(f"Serving on {host}:{port}")
-    click.echo(f"OpenAI-compatible API: http://localhost:{port}/v1/chat/completions")
-    click.echo(f"Routing stats: http://localhost:{port}/v1/routing/stats")
-    click.echo(f"Health check: http://localhost:{port}/health")
+    click.echo()
+    cli_kv("Routing", f"enabled (strategy: {route_strategy})")
+    cli_kv("API", f"http://localhost:{port}/v1/chat/completions")
+    cli_kv("Routing stats", f"http://localhost:{port}/v1/routing/stats")
+    cli_kv("Health", f"http://localhost:{port}/health")
     if json_mode:
-        click.echo("JSON mode: enabled (all responses default to valid JSON)")
+        cli_kv("JSON mode", "enabled")
 
     from octomil.serve import run_multi_model_server
 

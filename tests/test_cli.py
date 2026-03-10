@@ -105,7 +105,7 @@ class TestServeCommand:
         with patch("octomil.serve.run_server") as mock_run:
             result = runner.invoke(main, ["serve", "gemma-1b"])
         assert result.exit_code == 0
-        assert "Starting Octomil serve" in result.output
+        assert "Serve" in result.output
         assert "gemma-1b" in result.output
         mock_run.assert_called_once()
 
@@ -253,7 +253,7 @@ class TestStatusCommand:
         result = runner.invoke(main, ["status", "test-model"])
         assert result.exit_code == 0
         assert "test-model" in result.output
-        assert "Active rollouts: 1" in result.output
+        assert "Active Rollouts (1)" in result.output
         assert "v1.0.0" in result.output
 
     @patch("octomil.commands.deploy._get_client")

@@ -15,6 +15,12 @@ from octomil.cli_helpers import (
     _get_client,
     _get_org_id,
     _has_explicit_quant,
+    cli_header,
+    cli_kv,
+    cli_section,
+    cli_success,
+    cli_table_header,
+    cli_warn,
 )
 
 
@@ -85,7 +91,7 @@ def push(
             model_file = _find_model_file(path)
             if not model_file:
                 click.echo(
-                    f"Error: no model file found in {path}\n" "  Expected: .safetensors, .gguf, .pt, .pth, .bin, .onnx",
+                    f"Error: no model file found in {path}\n  Expected: .safetensors, .gguf, .pt, .pth, .bin, .onnx",
                     err=True,
                 )
                 sys.exit(1)
@@ -121,7 +127,7 @@ def push(
     if not hf_repo:
         click.echo(f"Error: unknown model '{model_name}'", err=True)
         click.echo(
-            "  Use a known model name (phi-4-mini, gemma-4b, llama-8b, ...)\n" "  or a HuggingFace repo: hf:org/model",
+            "  Use a known model name (phi-4-mini, gemma-4b, llama-8b, ...)\n  or a HuggingFace repo: hf:org/model",
             err=True,
         )
         sys.exit(1)
@@ -215,14 +221,15 @@ def pull(name: str, version: Optional[str], fmt: Optional[str], output: str) -> 
         best_quant = _auto_optimize(name)
         if best_quant:
             name = f"{name}:{best_quant.lower()}"
-            click.echo(f"    Pulling as: {name}")
+            click.echo(click.style(f"    Pulling as: {name}", dim=True))
 
     client = _get_client()
     ver_str = version or "latest"
-    click.echo(f"Pulling {name} v{ver_str}...")
+    cli_header("Pull — " + name)
+    click.echo(click.style(f"  Downloading v{ver_str}...", dim=True))
 
     result = client.pull(name, version=version, format=fmt, destination=output)
-    click.echo(f"Downloaded: {result['model_path']}")
+    cli_success("Downloaded: " + result["model_path"])
 
 
 @click.command()
@@ -242,8 +249,9 @@ def check(model_path: str, devices: Optional[str]) -> None:
     file_size = os.path.getsize(model_path)
     ext = os.path.splitext(model_path)[1].lower()
 
-    click.echo(f"Checking: {model_path}")
-    click.echo(f"Size: {file_size / 1024 / 1024:.1f} MB")
+    cli_header("Check — " + os.path.basename(model_path))
+    cli_kv("Path", model_path)
+    cli_kv("Size", f"{file_size / 1024 / 1024:.1f} MB")
 
     format_map = {
         ".pt": "PyTorch",
@@ -254,37 +262,60 @@ def check(model_path: str, devices: Optional[str]) -> None:
         ".tflite": "TFLite",
         ".gguf": "GGUF",
     }
-    fmt = format_map.get(ext, f"Unknown ({ext})")
-    click.echo(f"Format: {fmt}")
+    fmt = format_map.get(ext, "Unknown (" + ext + ")")
+    cli_kv("Format", fmt)
 
     size_mb = file_size / 1024 / 1024
-    click.echo("\nDevice compatibility:")
-    if size_mb < 50:
-        click.echo("  iPhone 15 Pro:  compatible (NPU)")
-        click.echo("  Pixel 8:        compatible (NNAPI)")
-        click.echo("  Raspberry Pi 4: compatible (CPU)")
-    elif size_mb < 500:
-        click.echo("  iPhone 15 Pro:  compatible (NPU)")
-        click.echo("  Pixel 8:        compatible (NNAPI)")
-        click.echo("  Raspberry Pi 4: may require quantization")
-    else:
-        click.echo("  iPhone 15 Pro:  may require quantization")
-        click.echo("  Pixel 8:        may require quantization")
-        click.echo("  Raspberry Pi 4: too large — quantize or prune")
+    click.echo()
+    cli_section("Device Compatibility")
 
-    click.echo("\nRecommendations:")
-    if ext in (".pt", ".pth"):
-        click.echo("  - Convert to ONNX: octomil convert model.pt --target onnx")
-        click.echo("  - Convert to CoreML (iOS): octomil convert model.pt --target coreml")
-        click.echo("  - Convert to TFLite (Android): octomil convert model.pt --target tflite")
-    elif ext == ".onnx":
-        click.echo("  - ONNX is cross-platform — ready for deployment")
-        click.echo("  - Convert to CoreML (iOS): octomil convert model.onnx --target coreml")
-    elif ext == ".gguf":
-        click.echo("  - GGUF models work with llama.cpp backend")
-        click.echo("  - Serve locally: octomil serve model.gguf")
+    def _compat(device: str, status: str, ok: bool) -> None:
+        icon = click.style("\u2713", fg="green") if ok else click.style("!", fg="yellow")
+        click.echo("    " + icon + " " + click.style(device.ljust(18), dim=True) + status)
+
+    if size_mb < 50:
+        _compat("iPhone 15 Pro", "compatible (NPU)", True)
+        _compat("Pixel 8", "compatible (NNAPI)", True)
+        _compat("Raspberry Pi 4", "compatible (CPU)", True)
+    elif size_mb < 500:
+        _compat("iPhone 15 Pro", "compatible (NPU)", True)
+        _compat("Pixel 8", "compatible (NNAPI)", True)
+        _compat("Raspberry Pi 4", "may require quantization", False)
     else:
-        click.echo("  - No specific recommendations for this format")
+        _compat("iPhone 15 Pro", "may require quantization", False)
+        _compat("Pixel 8", "may require quantization", False)
+        _compat("Raspberry Pi 4", "too large — quantize or prune", False)
+
+    click.echo()
+    cli_section("Recommendations")
+    if ext in (".pt", ".pth"):
+        click.echo(
+            "    " + click.style("octomil convert model.pt --target onnx", fg="white") + click.style("  ONNX", dim=True)
+        )
+        click.echo(
+            "    "
+            + click.style("octomil convert model.pt --target coreml", fg="white")
+            + click.style("  CoreML (iOS)", dim=True)
+        )
+        click.echo(
+            "    "
+            + click.style("octomil convert model.pt --target tflite", fg="white")
+            + click.style("  TFLite (Android)", dim=True)
+        )
+    elif ext == ".onnx":
+        click.echo("    " + click.style("ONNX is cross-platform — ready for deployment", dim=True))
+        click.echo(
+            "    "
+            + click.style("octomil convert model.onnx --target coreml", fg="white")
+            + click.style("  CoreML (iOS)", dim=True)
+        )
+    elif ext == ".gguf":
+        click.echo("    " + click.style("GGUF models work with llama.cpp backend", dim=True))
+        click.echo(
+            "    " + click.style("octomil serve model.gguf", fg="white") + click.style("  serve locally", dim=True)
+        )
+    else:
+        click.echo(click.style("    No specific recommendations for this format", dim=True))
 
 
 @click.command()
@@ -394,7 +425,7 @@ def convert(model_path: str, target: str, output: str, input_shape: str) -> None
             onnx_src = results.get("onnx")
             if not onnx_src:
                 click.echo(
-                    "  coreml: requires onnx conversion first — " "include onnx in --target",
+                    "  coreml: requires onnx conversion first — include onnx in --target",
                     err=True,
                 )
             else:
@@ -415,7 +446,7 @@ def convert(model_path: str, target: str, output: str, input_shape: str) -> None
             onnx_src = results.get("onnx")
             if not onnx_src:
                 click.echo(
-                    "  tflite: requires onnx conversion first — " "include onnx in --target",
+                    "  tflite: requires onnx conversion first — include onnx in --target",
                     err=True,
                 )
             else:
@@ -433,7 +464,7 @@ def convert(model_path: str, target: str, output: str, input_shape: str) -> None
                 results["tflite"] = tflite_path
         except ImportError:
             click.echo(
-                "  tflite: requires onnx, onnx-tf, tensorflow — " "pip install onnx onnx-tf tensorflow",
+                "  tflite: requires onnx, onnx-tf, tensorflow — pip install onnx onnx-tf tensorflow",
                 err=True,
             )
         except Exception as exc:
@@ -474,16 +505,30 @@ def list_models_cmd(model_family: Optional[str]) -> None:
     from octomil.models.catalog import CATALOG, get_model
 
     if model_family is None:
-        click.echo(f"{'Model':<18s} {'Publisher':<14s} {'Params':<8s} " f"{'Default':<10s} {'Variants'}")
-        click.echo("-" * 76)
+        cli_header("Model Catalog")
+        name_w = max((len(n) for n in CATALOG), default=16)
+        name_w = max(name_w + 2, 18)
+        cli_table_header(("MODEL", name_w), ("PUBLISHER", 14), ("PARAMS", 8), ("DEFAULT", 10), ("VARIANTS", 26))
         for name, entry in sorted(CATALOG.items()):
             variant_tags = ", ".join(sorted(entry.variants.keys()))
             click.echo(
-                f"  {name:<16s} {entry.publisher:<14s} {entry.params:<8s} " f"{entry.default_quant:<10s} {variant_tags}"
+                "    "
+                + click.style(name.ljust(name_w), fg="white", bold=True)
+                + f"{entry.publisher:<14s}{entry.params:<8s}"
+                + f"{entry.default_quant:<10s}"
+                + click.style(variant_tags, dim=True)
             )
-        click.echo(f"\n{len(CATALOG)} model families available.")
-        click.echo("Use `octomil list <model>` to see variants and engine artifacts.")
-        click.echo("Use `octomil serve <model>:<variant>` to serve a specific variant.")
+        click.echo()
+        click.echo(click.style(f"  {len(CATALOG)} model families available.", dim=True))
+        click.echo(
+            click.style("  octomil list <model>", fg="white")
+            + click.style("  view variants and engine artifacts", dim=True)
+        )
+        click.echo(
+            click.style("  octomil serve <model>:<variant>", fg="white")
+            + click.style("  serve a specific variant", dim=True)
+        )
+        click.echo()
     else:
         entry_or_none = get_model(model_family)
         if entry_or_none is None:
@@ -500,22 +545,24 @@ def list_models_cmd(model_family: Optional[str]) -> None:
             sys.exit(1)
 
         entry = entry_or_none
-        click.echo(f"{model_family} ({entry.publisher}, {entry.params})")
-        click.echo(f"Default variant: {entry.default_quant}")
-        engines_str = ", ".join(sorted(entry.engines))
-        click.echo(f"Engines: {engines_str}")
-        click.echo("")
+        cli_header(f"{model_family}")
+        cli_kv("Publisher", entry.publisher)
+        cli_kv("Parameters", entry.params)
+        cli_kv("Default", entry.default_quant)
+        cli_kv("Engines", ", ".join(sorted(entry.engines)))
+        click.echo()
 
+        cli_section("Variants")
         for quant, variant in sorted(entry.variants.items()):
-            default_marker = " (default)" if quant == entry.default_quant else ""
-            click.echo(f"  {model_family}:{quant}{default_marker}")
+            default_marker = click.style(" (default)", fg="cyan") if quant == entry.default_quant else ""
+            click.echo(f"    {click.style(f'{model_family}:{quant}', fg='white', bold=True)}{default_marker}")
             if variant.mlx:
-                click.echo(f"    mlx-lm:    {variant.mlx}")
+                click.echo(f"      {click.style('mlx-lm', dim=True)}    {variant.mlx}")
             if variant.gguf:
-                click.echo(f"    llama.cpp: {variant.gguf.repo} ({variant.gguf.filename})")
+                click.echo(f"      {click.style('llama.cpp', dim=True)} {variant.gguf.repo} ({variant.gguf.filename})")
             if variant.source_repo:
-                click.echo(f"    source:    {variant.source_repo}")
-            click.echo("")
+                click.echo(f"      {click.style('source', dim=True)}    {variant.source_repo}")
+            click.echo()
 
 
 @click.command()
@@ -533,23 +580,34 @@ def models(source: str) -> None:
         octomil deploy ollama://llama3.2 --phone
         octomil deploy ollama://gemma:2b --phone
     """
+    cli_header("Models")
+
     if source in ("all", "ollama"):
         from octomil.ollama import is_ollama_running, list_ollama_models
 
         if is_ollama_running():
             ollama_models = list_ollama_models()
             if ollama_models:
-                click.echo("Local (ollama):")
-                click.echo(f"  {'NAME':<20s}{'SIZE':>8s}   " f"{'QUANT':<9s}{'FAMILY':<12s}DEPLOY URI")
+                cli_section("Local (Ollama)")
+                # Dynamic column width based on longest name
+                name_w = max(len(m.name) for m in ollama_models)
+                name_w = max(name_w + 2, 20)  # minimum 20, +2 padding
+                cli_table_header(("NAME", name_w), ("SIZE", 10), ("QUANT", 9), ("FAMILY", 12), ("DEPLOY URI", 25))
                 for m in ollama_models:
-                    deploy_uri = f"ollama://{m.name}"
+                    deploy_uri = "ollama://" + m.name
+                    padded_name = m.name.ljust(name_w)
                     click.echo(
-                        f"  {m.name:<20s}{m.size_display:>8s}   " f"{m.quantization:<9s}{m.family:<12s}{deploy_uri}"
+                        "    "
+                        + click.style(padded_name, fg="white", bold=True)
+                        + f"{m.size_display:>8s}   "
+                        + f"{m.quantization:<9s}{m.family:<12s}"
+                        + click.style(deploy_uri, dim=True)
                     )
+                click.echo()
             else:
-                click.echo("Local (ollama): no models found")
+                cli_warn("Local (Ollama): no models found")
         else:
-            click.echo("Local (ollama): not running")
+            cli_warn("Local (Ollama): not running")
 
     if source in ("all", "registry"):
         api_key = _get_api_key()
@@ -559,17 +617,25 @@ def models(source: str) -> None:
                 registry_data = client.list_models()
                 registry_models: list[dict[str, Any]] = registry_data.get("models", [])
                 if registry_models:
-                    click.echo("Registry (octomil):")
+                    cli_section("Registry (Octomil)")
+                    rname_w = max((len(rm.get("name", "")) for rm in registry_models), default=16)
+                    rname_w = max(rname_w + 2, 20)
+                    cli_table_header(("NAME", rname_w), ("SIZE", 10), ("FORMAT", 9), ("FRAMEWORK", 14))
                     for rm in registry_models:
                         name_val = rm.get("name", "unknown")
                         size = rm.get("size", 0)
                         fmt = rm.get("format", "unknown")
                         framework = rm.get("framework", "unknown")
                         size_mb = size / (1024 * 1024) if size else 0
-                        click.echo(f"  {name_val:<20s}{size_mb:>5.0f} MB   {fmt:<9s}{framework}")
+                        click.echo(
+                            "    "
+                            + click.style(name_val.ljust(rname_w), fg="white", bold=True)
+                            + f"{size_mb:>5.0f} MB   {fmt:<9s}{framework}"
+                        )
+                    click.echo()
                 else:
-                    click.echo("Registry (octomil): no models found")
+                    cli_warn("Registry (Octomil): no models found")
             except Exception:
-                click.echo("Registry (octomil): unable to fetch", err=True)
+                cli_warn("Registry (Octomil): unable to fetch")
         elif source == "registry":
-            click.echo("Registry (octomil): no API key — run `octomil login` first")
+            cli_warn("No API key — run `octomil login` first")

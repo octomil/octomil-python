@@ -293,10 +293,8 @@ setup_engine_background() {
         return
     fi
 
-    info "Setting up native inference engine in background..."
-    echo "  This installs the best engine for your hardware and downloads a model."
+    info "Setting up inference engine in background..."
     echo "  Run 'octomil setup --status' to check progress."
-    echo ""
 
     mkdir -p "${HOME}/.octomil"
     nohup "$OCTOMIL_BIN" setup --foreground > "${HOME}/.octomil/setup.log" 2>&1 &
@@ -315,12 +313,29 @@ main() {
     setup_completions
     setup_engine_background
 
+    # --- Post-install banner ---
+    CYAN='\033[1;36m'
+    DIM='\033[2m'
+    WHITE='\033[1;37m'
+    GREEN='\033[1;32m'
+    YELLOW='\033[1;33m'
+    RESET='\033[0m'
+
     echo ""
-    info "Octomil ${VERSION} installed successfully."
+    printf "  ${CYAN}🐙 Octomil ${VERSION}${RESET}\n"
+    printf "  ${DIM}on-device AI inference${RESET}\n"
     echo ""
-    echo "  Get started:"
-    echo "    octomil serve gemma-1b"
-    echo "    octomil --help"
+    printf "  ${GREEN}✓${RESET} Installed successfully\n"
+    echo ""
+    printf "  ${YELLOW}Get started${RESET}\n"
+    printf "    ${WHITE}octomil serve qwen-7b${RESET}        ${DIM}Start a local model server${RESET}\n"
+    printf "    ${WHITE}octomil launch${RESET}               ${DIM}Launch a coding agent (Claude, Codex, …)${RESET}\n"
+    printf "    ${WHITE}octomil deploy phi-4-mini${RESET}    ${DIM}Deploy a model to devices${RESET}\n"
+    printf "    ${WHITE}octomil benchmark gemma-1b${RESET}   ${DIM}Benchmark inference performance${RESET}\n"
+    echo ""
+    printf "  ${YELLOW}More${RESET}\n"
+    printf "    ${WHITE}octomil --help${RESET}               ${DIM}All commands${RESET}\n"
+    printf "    ${DIM}https://docs.octomil.com${RESET}       ${DIM}Documentation${RESET}\n"
     echo ""
 }
 

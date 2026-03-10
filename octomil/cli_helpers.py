@@ -631,3 +631,52 @@ def _welcome_cmd(cmd: str, desc: str) -> None:
     """Print a single command row in the welcome screen."""
     padded = cmd.ljust(38)
     click.echo(f"    {click.style(padded, fg='white')}{click.style(desc, dim=True)}")
+
+
+# ---------------------------------------------------------------------------
+# Shared CLI styling helpers
+# ---------------------------------------------------------------------------
+
+
+def cli_header(title: str) -> None:
+    """Print a branded section header: 🐙 Title."""
+    click.echo()
+    click.echo(click.style("  \U0001f419 " + title, fg="cyan", bold=True))
+    click.echo()
+
+
+def cli_section(label: str) -> None:
+    """Print a section label (bold white)."""
+    click.echo(click.style(f"  {label}", bold=True))
+
+
+def cli_kv(key: str, value: str, indent: int = 4, key_width: int = 18) -> None:
+    """Print a key-value pair with aligned columns."""
+    padded_key = key.ljust(key_width)
+    click.echo(f"{' ' * indent}{click.style(padded_key, dim=True)}{value}")
+
+
+def cli_metric(label: str, value: str, highlight: bool = False) -> None:
+    """Print a metric row (dimmed label, bright value)."""
+    padded = label.ljust(18)
+    styled_val = click.style(value, fg="white", bold=True) if highlight else value
+    click.echo(f"    {click.style(padded, dim=True)}{styled_val}")
+
+
+def cli_success(msg: str) -> None:
+    """Print a green checkmark + message."""
+    check = click.style("\u2713", fg="green")
+    click.echo("  " + check + " " + msg)
+
+
+def cli_warn(msg: str) -> None:
+    """Print a yellow warning."""
+    click.echo(click.style(f"  ! {msg}", fg="yellow"))
+
+
+def cli_table_header(*cols: tuple[str, int]) -> None:
+    """Print a table header row with underline."""
+    parts = [f"{name:<{width}s}" for name, width in cols]
+    line = "    " + "".join(parts)
+    click.echo(click.style(line, dim=True))
+    click.echo(click.style("    " + "\u2500" * (sum(w for _, w in cols)), dim=True))

@@ -14,6 +14,11 @@ from octomil.cli_helpers import (
     _get_client,
     _get_telemetry_reporter,
     _require_api_key,
+    cli_header,
+    cli_kv,
+    cli_section,
+    cli_success,
+    cli_warn,
     http_request,
 )
 
@@ -33,9 +38,7 @@ def register(cli: click.Group) -> None:
 
 @click.command()
 @click.argument("name", shell_complete=_complete_model_name)
-@click.option(
-    "--version", "-v", default=None, help="Version to deploy. Defaults to latest."
-)
+@click.option("--version", "-v", default=None, help="Version to deploy. Defaults to latest.")
 @click.option("--phone", is_flag=True, help="Deploy to your connected phone.")
 @click.option("--rollout", "-r", default=100, help="Rollout percentage (1-100).")
 @click.option(
@@ -98,17 +101,19 @@ def deploy(
         octomil deploy gemma-1b --group production
         octomil deploy gemma-1b --group production --dry-run
     """
+    cli_header(f"Deploy — {name}")
+
     # Handle ollama:// URI scheme
     ollama_source_result = None
     if name.startswith("ollama://"):
         ollama_ref = name[len("ollama://") :]
         if not ollama_ref:
             click.echo(
-                "Error: ollama:// URI requires a model name, e.g. ollama://llama3.2",
+                click.style("  ollama:// URI requires a model name, e.g. ollama://llama3.2", fg="red"),
                 err=True,
             )
             sys.exit(1)
-        click.echo(f"Resolving ollama model: {ollama_ref}")
+        click.echo(click.style(f"  Resolving ollama model: {ollama_ref}", dim=True))
 
         from octomil.sources.ollama import OllamaSource
 
@@ -118,60 +123,49 @@ def deploy(
         except RuntimeError as exc:
             click.echo(click.style(f"  Error: {exc}", fg="red"), err=True)
             sys.exit(1)
-        click.echo(click.style(f"  Found: {ollama_source_result.path}", fg="green"))
+        cli_success(f"Found: {ollama_source_result.path}")
         # Use the base model name for display / API calls
         name = ollama_ref.split(":")[0]
 
     if phone:
-        from octomil.qr import build_deep_link, render_qr_terminal
-
         # Detect ollama models before deploying
         from octomil.ollama import get_ollama_model
+        from octomil.qr import build_deep_link, render_qr_terminal
 
         ollama_model = get_ollama_model(name)
         if ollama_model:
             click.echo(
-                f"Detected ollama model: {ollama_model.name} "
-                f"({ollama_model.size_display}, {ollama_model.quantization})"
+                f"Detected ollama model: {ollama_model.name} ({ollama_model.size_display}, {ollama_model.quantization})"
             )
 
         # Try mDNS network scan before falling back to QR code
         from octomil.discovery import scan_for_devices
 
-        click.echo("Scanning for Octomil devices on local network...")
+        click.echo(click.style("  Scanning for devices on local network...", dim=True))
         discovered = scan_for_devices(timeout=5.0)
 
         if discovered:
             if len(discovered) == 1:
                 dev = discovered[0]
-                click.echo(
-                    click.style(
-                        f"  \u2713 Found: {dev.name} ({dev.platform}, {dev.ip})",
-                        fg="green",
-                    )
-                )
-                if click.confirm(f"\nDeploy {name} to this device?", default=True):
+                cli_success(f"Found: {dev.name} ({dev.platform}, {dev.ip})")
+                if click.confirm(f"\n  Deploy {name} to this device?", default=True):
                     # Direct deployment — create pairing session targeting this device
                     pass
             else:
-                click.echo(f"  Found {len(discovered)} devices:")
+                cli_section(f"Found {len(discovered)} devices")
                 for i, dev in enumerate(discovered, 1):
-                    click.echo(f"    {i}. {dev.name} ({dev.platform}, {dev.ip})")
-                choice = click.prompt("Select device", type=int, default=1)
+                    click.echo(f"    {click.style(str(i), fg='cyan')}. {dev.name} ({dev.platform}, {dev.ip})")
+                choice = click.prompt("  Select device", type=int, default=1)
                 dev = discovered[choice - 1]
                 # Deploy to selected device (pairing session will target it)
         else:
-            click.echo("  No devices found. Falling back to QR code pairing.\n")
+            cli_warn("No devices found. Falling back to QR code pairing.")
 
         api_key = _require_api_key()
         api_base: str = (
-            os.environ.get("OCTOMIL_API_URL")
-            or os.environ.get("OCTOMIL_API_BASE")
-            or "https://api.octomil.com/api/v1"
+            os.environ.get("OCTOMIL_API_URL") or os.environ.get("OCTOMIL_API_BASE") or "https://api.octomil.com/api/v1"
         )
-        dashboard_url = os.environ.get(
-            "OCTOMIL_DASHBOARD_URL", "https://app.octomil.com"
-        )
+        dashboard_url = os.environ.get("OCTOMIL_DASHBOARD_URL", "https://app.octomil.com")
         headers = {"Authorization": f"Bearer {api_key}"}
 
         # Ensure model exists in registry — auto-download, convert, push if needed
@@ -204,27 +198,20 @@ def deploy(
                     name=resolved_name,
                     version=effective_version,
                 )
-                click.echo(
-                    click.style(
-                        f"  Pushed {resolved_name} v{effective_version}", fg="green"
-                    )
-                )
+                click.echo(click.style(f"  Pushed {resolved_name} v{effective_version}", fg="green"))
                 name = resolved_name
             except Exception as exc:
                 # 402 = plan limit
                 if "402" in str(exc) or "limit" in str(exc).lower():
                     click.echo(
                         click.style(
-                            "  Plan limit reached — upgrade at "
-                            "https://app.octomil.com/settings/billing",
+                            "  Plan limit reached — upgrade at https://app.octomil.com/settings/billing",
                             fg="red",
                         ),
                         err=True,
                     )
                 else:
-                    click.echo(
-                        click.style(f"  Push failed: {exc}", fg="red"), err=True
-                    )
+                    click.echo(click.style(f"  Push failed: {exc}", fg="red"), err=True)
                 sys.exit(1)
 
         click.echo(f"Creating pairing session for {name}...")
@@ -236,9 +223,7 @@ def deploy(
             timeout=10.0,
         )
         if resp.status_code >= 400:
-            click.echo(
-                f"Failed to create pairing session: {resp.status_code}", err=True
-            )
+            click.echo(f"Failed to create pairing session: {resp.status_code}", err=True)
             click.echo(resp.text, err=True)
             sys.exit(1)
 
@@ -259,19 +244,13 @@ def deploy(
 
         click.echo()
         click.echo("\u256d" + "\u2500" * box_inner + "\u256e")
-        click.echo(
-            "\u2502"
-            + "  Scan this QR code with your phone camera:".ljust(box_inner)
-            + "\u2502"
-        )
+        click.echo("\u2502" + "  Scan this QR code with your phone camera:".ljust(box_inner) + "\u2502")
         click.echo("\u2502" + " " * box_inner + "\u2502")
         for line in qr_lines:
             padded = ("  " + line).ljust(box_inner)
             click.echo("\u2502" + padded + "\u2502")
         click.echo("\u2502" + " " * box_inner + "\u2502")
-        click.echo(
-            "\u2502" + f"  Or open manually: {pair_url}".ljust(box_inner) + "\u2502"
-        )
+        click.echo("\u2502" + f"  Or open manually: {pair_url}".ljust(box_inner) + "\u2502")
         click.echo("\u2502" + "  Expires in 5 minutes".ljust(box_inner) + "\u2502")
         click.echo("\u2570" + "\u2500" * box_inner + "\u256f")
         click.echo()
@@ -306,15 +285,9 @@ def deploy(
                         )
                     )
                 elif status_val == "converting":
-                    click.echo(
-                        click.style(
-                            "  \u2713 Converting model for device...", fg="yellow"
-                        )
-                    )
+                    click.echo(click.style("  \u2713 Converting model for device...", fg="yellow"))
                 elif status_val == "deploying":
-                    click.echo(
-                        click.style("  \u2713 Deploying to device...", fg="yellow")
-                    )
+                    click.echo(click.style("  \u2713 Deploying to device...", fg="yellow"))
                 elif status_val == "done":
                     device = data.get("device_name") or data.get("device_id", "device")
                     click.echo(
@@ -359,23 +332,22 @@ def deploy(
 
     # Dry-run: preview deployment plan
     if dry_run:
-        click.echo(f"Preparing deployment plan for {name}...")
-        plan = client.deploy_prepare(
-            name, version=version, devices=device_list, group=group
-        )
-        click.echo(f"Model: {plan.model_name} v{plan.model_version}")
-        click.echo(f"Devices: {len(plan.deployments)}")
+        click.echo(click.style("  Preparing deployment plan...", dim=True))
+        plan = client.deploy_prepare(name, version=version, devices=device_list, group=group)
+        cli_section("Deployment Plan")
+        cli_kv("Model", f"{plan.model_name} v{plan.model_version}")
+        cli_kv("Devices", str(len(plan.deployments)))
         for d in plan.deployments:
-            conv = " (conversion needed)" if d.conversion_needed else ""
+            conv = click.style(" (conversion needed)", fg="yellow") if d.conversion_needed else ""
             click.echo(
-                f"  {d.device_id}: {d.format} via {d.executor} [{d.quantization}]{conv}"
+                f"    {click.style(d.device_id, fg='white')}  {d.format} via {d.executor} [{d.quantization}]{conv}"
             )
         return
 
     # Targeted deployment
     if device_list or group:
         target_desc = f"devices={devices}" if devices else f"group={group}"
-        click.echo(f"Deploying {name} to {target_desc} ({strategy})...")
+        click.echo(click.style(f"  Deploying {name} to {target_desc} ({strategy})...", dim=True))
         result = client.deploy(
             name,
             version=version,
@@ -388,23 +360,24 @@ def deploy(
         from octomil.models import DeploymentResult
 
         if isinstance(result, DeploymentResult):
-            click.echo(f"Deployment: {result.deployment_id}")
-            click.echo(f"Status: {result.status}")
+            cli_kv("Deployment", result.deployment_id)
+            cli_kv("Status", result.status)
             for ds in result.device_statuses:
-                err = f" — {ds.error}" if ds.error else ""
-                click.echo(f"  {ds.device_id}: {ds.status}{err}")
+                icon = click.style("\u2713", fg="green") if ds.status == "done" else click.style("\u2022", dim=True)
+                err = click.style(f" — {ds.error}", fg="red") if ds.error else ""
+                click.echo(f"    {icon} {ds.device_id}: {ds.status}{err}")
         return
 
     # Default: rollout-based deploy
-    click.echo(f"Deploying {name} at {rollout}% rollout ({strategy})...")
+    click.echo(click.style(f"  Deploying {name} at {rollout}% rollout ({strategy})...", dim=True))
     result = client.deploy(
         name,
         version=version,
         rollout=rollout,
         strategy=strategy,
     )
-    click.echo(f"Rollout created: {result.get('id', 'ok')}")
-    click.echo(f"Status: {result.get('status', 'started')}")
+    cli_success(f"Rollout created: {result.get('id', 'ok')}")
+    cli_kv("Status", result.get("status", "started"))
 
 
 # ---------------------------------------------------------------------------
@@ -432,17 +405,18 @@ def rollback(name: str, to_version: Optional[str]) -> None:
     """
     client = _get_client()
     target = to_version or "previous"
-    click.echo(f"Rolling back {name} to {target}...")
+    cli_header(f"Rollback — {name}")
+    click.echo(click.style(f"  Rolling back to {target}...", dim=True))
 
     try:
         result = client.rollback(name, to_version=to_version)
     except Exception as exc:
-        click.echo(f"Rollback failed: {exc}", err=True)
+        click.echo(click.style(f"  Rollback failed: {exc}", fg="red"), err=True)
         sys.exit(1)
 
-    click.echo(f"Rolled back: {result.from_version} -> {result.to_version}")
-    click.echo(f"Rollout ID: {result.rollout_id}")
-    click.echo(f"Status: {result.status}")
+    cli_success(f"{result.from_version} \u2192 {result.to_version}")
+    cli_kv("Rollout ID", result.rollout_id)
+    cli_kv("Status", result.status)
 
 
 # ---------------------------------------------------------------------------
@@ -452,9 +426,7 @@ def rollback(name: str, to_version: Optional[str]) -> None:
 
 @click.command()
 @click.argument("code")
-@click.option(
-    "--device-id", default=None, help="Device identifier. Auto-generated if omitted."
-)
+@click.option("--device-id", default=None, help="Device identifier. Auto-generated if omitted.")
 @click.option(
     "--platform",
     "-p",
@@ -481,9 +453,7 @@ def pair(
     import uuid
 
     api_base: str = (
-        os.environ.get("OCTOMIL_API_URL")
-        or os.environ.get("OCTOMIL_API_BASE")
-        or "https://api.octomil.com/api/v1"
+        os.environ.get("OCTOMIL_API_URL") or os.environ.get("OCTOMIL_API_BASE") or "https://api.octomil.com/api/v1"
     )
     device_id = device_id or f"device-{uuid.uuid4().hex[:8]}"
     platform = platform or f"python-{_platform.system().lower()}"
@@ -577,21 +547,23 @@ def status(name: str) -> None:
     info = client.status(name)
 
     model = info.get("model", {})
-    click.echo(f"Model: {model.get('name', name)}")
-    click.echo(f"ID: {model.get('id', 'unknown')}")
-    click.echo(f"Framework: {model.get('framework', 'unknown')}")
+    cli_header(f"Status — {model.get('name', name)}")
+    cli_kv("ID", model.get("id", "unknown"))
+    cli_kv("Framework", model.get("framework", "unknown"))
 
     rollouts = info.get("active_rollouts", [])
     if rollouts:
-        click.echo(f"\nActive rollouts: {len(rollouts)}")
+        click.echo()
+        cli_section(f"Active Rollouts ({len(rollouts)})")
         for r in rollouts:
-            click.echo(
-                f"  v{r.get('version', '?')} — "
-                f"{r.get('rollout_percentage', 0)}% — "
-                f"{r.get('status', 'unknown')}"
-            )
+            pct = r.get("rollout_percentage", 0)
+            st = r.get("status", "unknown")
+            ver = r.get("version", "?")
+            ver_styled = click.style("v" + ver, fg="white", bold=True)
+            click.echo("    " + ver_styled + "  " + str(pct) + "%  " + click.style(st, dim=True))
     else:
-        click.echo("\nNo active rollouts.")
+        click.echo()
+        click.echo(click.style("  No active rollouts.", dim=True))
 
 
 # ---------------------------------------------------------------------------
@@ -607,5 +579,5 @@ def dashboard() -> None:
     throughput, errors, model versions side-by-side.
     """
     dashboard_url = os.environ.get("OCTOMIL_DASHBOARD_URL", "https://app.octomil.com")
-    click.echo(f"Opening dashboard: {dashboard_url}")
+    cli_success(f"Opening dashboard: {dashboard_url}")
     webbrowser.open(dashboard_url)
