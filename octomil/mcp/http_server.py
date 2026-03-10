@@ -985,6 +985,19 @@ def create_http_app(config: Optional[HTTPServerConfig] = None) -> FastAPI:
     # MCP Streamable HTTP transport at /mcp
     # ------------------------------------------------------------------
 
-    app.add_route("/mcp", mcp_session_manager.handle_request, methods=["GET", "POST", "DELETE"])
+    from starlette.routing import Route
+
+    class _MCPTransport:
+        """Thin ASGI wrapper so Starlette treats this as an app, not a request handler."""
+
+        def __init__(self, session_manager: StreamableHTTPSessionManager) -> None:
+            self._sm = session_manager
+
+        async def __call__(self, scope: Any, receive: Any, send: Any) -> None:
+            await self._sm.handle_request(scope, receive, send)
+
+    app.router.routes.append(
+        Route("/mcp", endpoint=_MCPTransport(mcp_session_manager), methods=["GET", "POST", "DELETE"])
+    )
 
     return app
