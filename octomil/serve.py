@@ -564,16 +564,29 @@ class LlamaCppBackend(InferenceBackend):
         # Full HuggingFace repo ID (user/repo)
         if "/" in model_name:
             logger.info("Loading from HuggingFace: %s", model_name)
-            self._llm = Llama.from_pretrained(
-                repo_id=model_name,
-                filename="*Q4_K_M.gguf",
-                n_ctx=4096,
-                n_batch=256,
-                n_gpu_layers=-1,
-                flash_attn=True,
-                verbose=False,
-            )
-            self._attach_cache()
+            # Pick a sensible GGUF filename pattern.  For repos that are
+            # explicitly GGUF collections (name contains "GGUF"), try the
+            # most common quantization patterns in preference order.
+            filename_patterns = ["*Q4_K_M.gguf", "*Q4_K_S.gguf", "*q4_k_m.gguf", "*.gguf"]
+            last_err: Exception | None = None
+            for pattern in filename_patterns:
+                try:
+                    self._llm = Llama.from_pretrained(
+                        repo_id=model_name,
+                        filename=pattern,
+                        n_ctx=4096,
+                        n_batch=256,
+                        n_gpu_layers=-1,
+                        flash_attn=True,
+                        verbose=False,
+                    )
+                    self._attach_cache()
+                    return
+                except ValueError as exc:
+                    last_err = exc
+                    continue
+            if last_err is not None:
+                raise last_err
             return
 
         # Try the new resolver for model:variant syntax and catalog lookup
