@@ -394,8 +394,7 @@ def _log_setup_summary(state: SetupState, _log) -> None:  # noqa: ANN001
     if state.engine:
         cli_kv("Engine", state.engine)
     if state.model_key:
-        dl = "downloaded" if state.model_downloaded else "downloads on first use"
-        cli_kv("Model", f"{state.model_key} ({dl})")
+        cli_kv("Model", state.model_key)
 
 
 def _register_mcp(model_key: str, _log) -> None:  # noqa: ANN001
