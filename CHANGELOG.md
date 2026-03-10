@@ -5,6 +5,19 @@
 - Added `DeviceAuthClient` runtime auth helper for device token bootstrap, refresh, and revoke flows.
 - Added optional `auth` extra with `keyring` secure storage dependency.
 
+## 2.11.0 (2026-03-10)
+
+### Features
+
+- expand server instructions to guide AI clients on when to use Octomil (#244)
+- auto-trigger browser login when API key is missing
+- auto-trigger browser login when API key is missing (#246)
+
+### Fixes
+
+- add branded header and styled output (#240)
+- remove download status from model line (#241)
+
 ## 2.10.1 (2026-03-10)
 
 ### Fixes
