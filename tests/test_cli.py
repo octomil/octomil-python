@@ -186,7 +186,7 @@ class TestDashboardCommand:
 
 
 # ---------------------------------------------------------------------------
-# octomil deploy --phone
+# octomil deploy (default = phone)
 # ---------------------------------------------------------------------------
 
 
@@ -246,7 +246,9 @@ class TestDeployCommand:
         mock_get_client.return_value = mock_client
 
         runner = CliRunner()
-        result = runner.invoke(main, ["deploy", "sentiment-v1", "--rollout", "10", "--strategy", "canary"])
+        result = runner.invoke(
+            main, ["deploy", "sentiment-v1", "--fleet", "--rollout", "10", "--strategy", "progressive-15m"]
+        )
         assert result.exit_code == 0
         assert "Rollout created" in result.output
 
