@@ -39,14 +39,31 @@ def register(cli: click.Group) -> None:
 @click.command()
 @click.argument("name", shell_complete=_complete_model_name)
 @click.option("--version", "-v", default=None, help="Version to deploy. Defaults to latest.")
-@click.option("--phone", is_flag=True, help="Deploy to your connected phone.")
-@click.option("--rollout", "-r", default=100, help="Rollout percentage (1-100).")
+@click.option("--phone", is_flag=True, help="Deploy to your phone via QR code pairing.")
+@click.option("--fleet", is_flag=True, help="Deploy to your full device fleet.")
+@click.option("--rollout", "-r", default=None, type=int, help="Rollout percentage (1-100).")
 @click.option(
     "--strategy",
     "-s",
-    default="canary",
-    type=click.Choice(["canary", "immediate", "blue_green"]),
+    default=None,
+    type=click.Choice(["progressive-15m", "progressive-1h", "progressive-1m", "instant"]),
     help="Rollout strategy.",
+)
+@click.option(
+    "--env",
+    "-e",
+    default=None,
+    help="Target environment (e.g. production, staging, development).",
+)
+@click.option(
+    "--sub-env",
+    default=None,
+    help="Target sub-environment (e.g. us-west, eu-central).",
+)
+@click.option(
+    "--schedule",
+    default=None,
+    help="Scheduled start (ISO 8601, e.g. 2026-03-15T09:00:00Z).",
 )
 @click.option(
     "--target",
@@ -74,8 +91,12 @@ def deploy(
     name: str,
     version: Optional[str],
     phone: bool,
-    rollout: int,
-    strategy: str,
+    fleet: bool,
+    rollout: Optional[int],
+    strategy: Optional[str],
+    env: Optional[str],
+    sub_env: Optional[str],
+    schedule: Optional[str],
     target: Optional[str],
     devices: Optional[str],
     group: Optional[str],
@@ -83,22 +104,21 @@ def deploy(
 ) -> None:
     """Deploy a model to edge devices.
 
-    Deploys NAME at VERSION to devices. Use --phone for quick
-    phone deployment, --devices/--group for targeted deployment,
-    or --rollout for fleet percentage rollouts.
+    By default deploys to your phone via QR code pairing.
+    Use --fleet for full fleet rollouts, or --devices/--group
+    for targeted deployment.
 
-    Use the ollama:// URI scheme to deploy directly from your
-    local Ollama cache:
+    Use the ollama:// URI scheme to deploy from your local Ollama cache.
 
     \b
     Examples:
-
-        octomil deploy gemma-1b --phone
-        octomil deploy ollama://llama3.2 --phone
-        octomil deploy ollama://gemma:2b --phone
-        octomil deploy sentiment-v1 --rollout 10 --strategy canary
+        octomil deploy gemma-1b
+        octomil deploy ollama://llama3.2
+        octomil deploy gemma-1b --fleet --rollout 10
+        octomil deploy gemma-1b --fleet --strategy progressive-1h
+        octomil deploy gemma-1b --fleet --env staging
+        octomil deploy gemma-1b --fleet --schedule 2026-03-15T09:00:00Z
         octomil deploy gemma-1b --devices device_1,device_2
-        octomil deploy gemma-1b --group production
         octomil deploy gemma-1b --group production --dry-run
     """
     cli_header(f"Deploy — {name}")
@@ -127,7 +147,14 @@ def deploy(
         # Use the base model name for display / API calls
         name = ollama_ref.split(":")[0]
 
-    if phone:
+    # Determine deploy mode:
+    # - --devices/--group → targeted deploy (no flag needed)
+    # - --fleet → fleet-wide rollout
+    # - default (no flags, or --phone) → phone deploy via QR
+    is_targeted = bool(devices or group)
+    is_phone = not fleet and not is_targeted
+
+    if is_phone:
         # Detect ollama models before deploying
         from octomil.ollama import get_ollama_model
         from octomil.qr import build_deep_link, render_qr_terminal
@@ -327,8 +354,25 @@ def deploy(
                 pass  # Best-effort cancel
         return
 
+    # Fleet and targeted deployments share common setup.
+    effective_rollout = rollout if rollout is not None else 10
+    effective_strategy = strategy or "progressive-15m"
+
     client = _get_client()
     device_list = [d.strip() for d in devices.split(",")] if devices else None
+
+    # Show deployment summary before proceeding.
+    cli_section("Deployment Config")
+    cli_kv("Model", f"{name}" + (f" v{version}" if version else ""))
+    cli_kv("Strategy", effective_strategy)
+    cli_kv("Rollout", f"{effective_rollout}%")
+    if env:
+        cli_kv("Environment", env)
+    if sub_env:
+        cli_kv("Sub-environment", sub_env)
+    if schedule:
+        cli_kv("Scheduled", schedule)
+    click.echo()
 
     # Dry-run: preview deployment plan
     if dry_run:
@@ -344,19 +388,21 @@ def deploy(
             )
         return
 
-    # Targeted deployment
+    # Targeted deployment (--devices or --group)
     if device_list or group:
         target_desc = f"devices={devices}" if devices else f"group={group}"
-        click.echo(click.style(f"  Deploying {name} to {target_desc} ({strategy})...", dim=True))
+        click.echo(click.style(f"  Deploying {name} to {target_desc} ({effective_strategy})...", dim=True))
         result = client.deploy(
             name,
             version=version,
-            rollout=rollout,
-            strategy=strategy,
+            rollout=effective_rollout,
+            strategy=effective_strategy,
             devices=device_list,
             group=group,
+            env=env,
+            sub_env=sub_env,
+            schedule=schedule,
         )
-        # result is a DeploymentResult
         from octomil.models import DeploymentResult
 
         if isinstance(result, DeploymentResult):
@@ -368,13 +414,16 @@ def deploy(
                 click.echo(f"    {icon} {ds.device_id}: {ds.status}{err}")
         return
 
-    # Default: rollout-based deploy
-    click.echo(click.style(f"  Deploying {name} at {rollout}% rollout ({strategy})...", dim=True))
+    # Fleet-wide rollout (--fleet)
+    click.echo(click.style(f"  Deploying {name} at {effective_rollout}% ({effective_strategy})...", dim=True))
     result = client.deploy(
         name,
         version=version,
-        rollout=rollout,
-        strategy=strategy,
+        rollout=effective_rollout,
+        strategy=effective_strategy,
+        env=env,
+        sub_env=sub_env,
+        schedule=schedule,
     )
     cli_success(f"Rollout created: {result.get('id', 'ok')}")
     cli_kv("Status", result.get("status", "started"))
