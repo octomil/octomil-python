@@ -122,7 +122,7 @@ def _detect_language(file_path: str) -> str:
     return _EXT_TO_LANG.get(ext, "")
 
 
-def create_mcp_server(model: Optional[str] = None) -> Any:
+def create_mcp_server(model: Optional[str] = None, **fastmcp_kwargs: Any) -> Any:
     """Create and configure the FastMCP server with all tools."""
     from mcp.server.fastmcp import FastMCP  # type: ignore[import-untyped]
 
@@ -130,7 +130,9 @@ def create_mcp_server(model: Optional[str] = None) -> Any:
     from .platform_tools import register_platform_tools
     from .prompts import build_messages
 
-    mcp = FastMCP("octomil", description="Octomil on-device ML inference, model resolution, and deployment")
+    mcp = FastMCP(
+        "octomil", description="Octomil on-device ML inference, model resolution, and deployment", **fastmcp_kwargs
+    )
     backend = OctomilMCPBackend(model=model)
 
     @mcp.tool()
