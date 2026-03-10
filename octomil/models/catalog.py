@@ -74,6 +74,7 @@ class ModelEntry:
     engines: frozenset[str] = frozenset()  # engines this model is known to work on
     architecture: str = "dense"  # "dense" or "moe"
     moe: Optional[MoEMetadata] = None  # populated when architecture == "moe"
+    download_size: Optional[str] = None  # human-readable, e.g. "1.7 GB"
 
 
 # ---------------------------------------------------------------------------
@@ -129,6 +130,7 @@ def _entry_from_dict(d: dict[str, Any]) -> ModelEntry:
         engines=engines,
         architecture=d.get("architecture", "dense"),
         moe=_moe_from_dict(d.get("moe")),
+        download_size=d.get("download_size"),
     )
 
 

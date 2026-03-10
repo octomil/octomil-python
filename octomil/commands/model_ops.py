@@ -605,7 +605,7 @@ def models() -> None:
 
     rows: list[tuple[str, str, str, str]] = []
     for name, entry in sorted(CATALOG.items()):
-        size = _estimate_download_size(entry.params, entry.default_quant)
+        size = entry.download_size or _estimate_download_size(entry.params, entry.default_quant)
         rows.append((name, entry.publisher, entry.params, size))
 
     name_w = max(len(r[0]) for r in rows) + 2
