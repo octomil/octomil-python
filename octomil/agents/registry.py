@@ -109,6 +109,7 @@ AGENTS: dict[str, AgentDef] = {
         install_cmd="npm install -g @anthropic-ai/claude-code",
         exec_cmd="claude",
         needs_local_model=False,
+        model_flag="--model {model}",
     ),
     "codex": AgentDef(
         name="codex",
