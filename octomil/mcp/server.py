@@ -131,7 +131,9 @@ def create_mcp_server(model: Optional[str] = None, **fastmcp_kwargs: Any) -> Any
     from .prompts import build_messages
 
     mcp = FastMCP(
-        "octomil", description="Octomil on-device ML inference, model resolution, and deployment", **fastmcp_kwargs
+        "octomil",
+        instructions="Octomil on-device ML inference, model resolution, and deployment",
+        **fastmcp_kwargs,
     )
     backend = OctomilMCPBackend(model=model)
 
