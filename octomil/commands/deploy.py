@@ -214,43 +214,72 @@ def deploy(
             timeout=10.0,
         )
         if check_resp.status_code == 404:
-            click.echo(f"Model '{name}' not in registry — auto-importing...")
-            from octomil.sources.resolver import resolve_and_download
-
-            try:
-                resolved_path = resolve_and_download(name)
-            except Exception as exc:
-                click.echo(
-                    click.style(f"  Error resolving model: {exc}", fg="red"),
-                    err=True,
-                )
-                sys.exit(1)
-            click.echo(click.style(f"  Downloaded to {resolved_path}", fg="green"))
-
+            click.echo(f"Model '{name}' not in registry — importing...")
             client = _get_client()
             effective_version = version or "1.0.0"
             resolved_name = name.split("/")[-1].split(":")[-1]
-            try:
-                client.push(
-                    resolved_path,
-                    name=resolved_name,
-                    version=effective_version,
-                )
-                click.echo(click.style(f"  Pushed {resolved_name} v{effective_version}", fg="green"))
-                name = resolved_name
-            except Exception as exc:
-                # 402 = plan limit
-                if "402" in str(exc) or "limit" in str(exc).lower():
+
+            # Try server-side HF import first (no local download needed)
+            from octomil.sources.resolver import resolve_hf_repo
+
+            hf_repo = resolve_hf_repo(name)
+            if hf_repo:
+                try:
+                    client.import_from_hf(
+                        hf_repo,
+                        name=resolved_name,
+                        version=effective_version,
+                    )
+                    cli_success(f"Imported {resolved_name} from HuggingFace")
+                    name = resolved_name
+                except Exception as exc:
+                    if "402" in str(exc) or "limit" in str(exc).lower():
+                        click.echo(
+                            click.style(
+                                "  Plan limit reached — upgrade at https://app.octomil.com/settings/billing",
+                                fg="red",
+                            ),
+                            err=True,
+                        )
+                        sys.exit(1)
+                    # HF import failed — fall through to local download
+                    cli_warn(f"Server-side import failed ({exc}), trying local download...")
+                    hf_repo = None
+
+            # Fallback: download locally and upload
+            if not hf_repo:
+                from octomil.sources.resolver import resolve_and_download
+
+                try:
+                    resolved_path = resolve_and_download(name)
+                except Exception as exc:
                     click.echo(
-                        click.style(
-                            "  Plan limit reached — upgrade at https://app.octomil.com/settings/billing",
-                            fg="red",
-                        ),
+                        click.style(f"  Error resolving model: {exc}", fg="red"),
                         err=True,
                     )
-                else:
-                    click.echo(click.style(f"  Push failed: {exc}", fg="red"), err=True)
-                sys.exit(1)
+                    sys.exit(1)
+                click.echo(click.style(f"  Downloaded to {resolved_path}", fg="green"))
+
+                try:
+                    client.push(
+                        resolved_path,
+                        name=resolved_name,
+                        version=effective_version,
+                    )
+                    click.echo(click.style(f"  Pushed {resolved_name} v{effective_version}", fg="green"))
+                    name = resolved_name
+                except Exception as exc:
+                    if "402" in str(exc) or "limit" in str(exc).lower():
+                        click.echo(
+                            click.style(
+                                "  Plan limit reached — upgrade at https://app.octomil.com/settings/billing",
+                                fg="red",
+                            ),
+                            err=True,
+                        )
+                    else:
+                        click.echo(click.style(f"  Push failed: {exc}", fg="red"), err=True)
+                    sys.exit(1)
 
         click.echo(f"Creating pairing session for {name}...")
         resp = http_request(
