@@ -20,6 +20,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, AsyncIterator, Iterator, Optional
 
 if TYPE_CHECKING:
+    from .capabilities_client import CapabilitiesClient
+    from .chat_client import ChatClient
     from .control import OctomilControl
     from .embeddings import EmbeddingResult
     from .model import Model, Prediction
@@ -28,6 +30,7 @@ if TYPE_CHECKING:
     from .serve import GenerationChunk
     from .streaming import StreamToken
     from .telemetry import TelemetryReporter
+    from .telemetry_client import TelemetryClient
     from .workflows import WorkflowRunner
 
 logger = logging.getLogger(__name__)
@@ -107,6 +110,9 @@ class OctomilClient:
         self._workflows: WorkflowRunner | None = None
         self._control: OctomilControl | None = None
         self._models_ns: OctomilModels | None = None
+        self._chat_ns: ChatClient | None = None
+        self._capabilities_ns: CapabilitiesClient | None = None
+        self._telemetry_ns: TelemetryClient | None = None
 
         # Telemetry — best-effort, never blocks or raises
         self._reporter: TelemetryReporter | None = None
@@ -548,10 +554,32 @@ class OctomilClient:
             yield token
 
     # ------------------------------------------------------------------
-    # Chat — OpenAI-compatible chat completion interface
+    # Chat namespace — SDK Facade Contract chat API
     # ------------------------------------------------------------------
 
-    def chat(
+    @property
+    def chat(self) -> "ChatClient":
+        """Chat completions namespace (create, stream).
+
+        Also callable directly for backward compatibility::
+
+            # New API
+            result = client.chat.create(model="phi-4-mini", messages=[...])
+
+            # Legacy (still works)
+            result = client.chat("phi-4-mini", messages=[...])
+        """
+        if self._chat_ns is None:
+            from .chat_client import ChatClient
+
+            self._chat_ns = ChatClient(self)
+        return self._chat_ns
+
+    # ------------------------------------------------------------------
+    # Chat — internal implementation (called by ChatClient)
+    # ------------------------------------------------------------------
+
+    def _chat_create(
         self,
         model_id: str,
         messages: list[dict[str, str]],
@@ -606,7 +634,7 @@ class OctomilClient:
             "latency_ms": latency_ms,
         }
 
-    async def chat_stream(
+    async def _chat_stream(
         self,
         model_id: str,
         messages: list[dict[str, str]],
