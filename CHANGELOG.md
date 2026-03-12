@@ -5,6 +5,41 @@
 - Added `DeviceAuthClient` runtime auth helper for device token bootstrap, refresh, and revoke flows.
 - Added optional `auth` extra with `keyring` secure storage dependency.
 
+## 4.0.0 (2026-03-12)
+
+### Breaking Changes
+
+- Engine and runtime modules moved to octomil.runtime/
+
+- octomil/engines/\* -> octomil/runtime/engines/{name}/engine.py
+- octomil/responses/runtime/_ -> octomil/runtime/core/_
+- Stable engines: mlx, llamacpp, ort, ollama, whisper, echo
+- Experimental engines (gated by OCTOMIL_EXPERIMENTAL_ENGINES env var):
+  cactus, samsung_one, mlc, mnn, executorch
+- Backward-compatible shims at old import paths
+- Version bumped to 3.0.0
+
+### Features
+
+- wire EngineRegistry as default ModelRuntime factory
+- align SDK facade contract with Responses API
+- add Layer 4 router/policy for local vs cloud routing
+- add Layer 5 workflow orchestration
+- add control namespace with register/heartbeat
+- add canonical OctomilErrorCode enum with 19 codes
+- add models namespace with status/load/unload/list/clearCache
+- implement 5 contract directives (#266)
+- import generated contract code and add conformance tests (#267)
+- wire chat, capabilities, telemetry namespaces + model format/warmup + device_id (#268)
+- restructure engine/runtime layer into octomil.runtime — v3.0.0 (#270)
+
+### Fixes
+
+- move fallback URL below QR box to fix layout
+- move fallback URL below QR box to fix layout (#260)
+- map platform to canonical DevicePlatform values (#269)
+- sync octomil/python/pyproject.toml to v3.0.0 (#271)
+
 ## 2.11.0 (2026-03-10)
 
 ### Features

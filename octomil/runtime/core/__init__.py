@@ -1,4 +1,9 @@
-"""Runtime core — protocols, types, registries, and adapters."""
+"""Runtime core — protocols, types, registries, and adapters.
+
+This package is **internal**. Import from ``octomil.runtime`` for the public API.
+Direct imports from ``octomil.runtime.core`` are allowed within the SDK but
+are not part of the stable public API surface.
+"""
 
 from octomil.runtime.core.adapter import InferenceBackendAdapter
 from octomil.runtime.core.cloud_runtime import CloudModelRuntime
