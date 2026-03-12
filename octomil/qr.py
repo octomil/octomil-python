@@ -33,12 +33,12 @@ def build_custom_scheme_link(token: str, host: str) -> str:
         host: Server base URL (e.g. ``https://api.octomil.com/api/v1``).
 
     Returns:
-        A URL like ``octomil://pair?token=TOKEN&host=HOST`` with both
-        parameters properly URL-encoded.
+        A URL like ``octomil://pair?token=TOKEN&host=HOST``.
+        The host is kept readable (colons/slashes preserved) since this
+        is displayed in the terminal as a fallback link.
     """
     encoded_token = urllib.parse.quote(token, safe="")
-    encoded_host = urllib.parse.quote(host, safe="")
-    return f"octomil://pair?token={encoded_token}&host={encoded_host}"
+    return f"octomil://pair?token={encoded_token}&host={host}"
 
 
 def render_qr_terminal(url: str, *, border: int = 1) -> str:
