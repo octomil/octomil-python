@@ -1,4 +1,7 @@
-"""OctomilResponses — developer-facing Response API (Layer 2)."""
+"""OctomilResponses — developer-facing Response API (Layer 2).
+
+**Tier: Core Contract (MUST)**
+"""
 
 from __future__ import annotations
 

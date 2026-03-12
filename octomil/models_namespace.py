@@ -1,5 +1,7 @@
 """Models namespace -- model lifecycle operations (SDK Facade Contract).
 
+**Tier: Core Contract (MUST)**
+
 Provides the ``client.models`` sub-API with ``status()``, ``load()``,
 ``unload()``, ``list()``, and ``clear_cache()`` matching the facade
 contract across all Octomil SDKs.

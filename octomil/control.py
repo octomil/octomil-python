@@ -1,7 +1,9 @@
 """Control plane -- device registration and heartbeat (SDK Facade Contract namespace).
 
-Core Contract (MUST): This module is part of the core SDK facade that every
-Octomil SDK must implement.  See SDK_FACADE_CONTRACT.md for details.
+**Tier: Core Contract (MUST)**
+
+This module is part of the core SDK facade that every Octomil SDK must
+implement.  See SDK_FACADE_CONTRACT.md for details.
 """
 
 from __future__ import annotations

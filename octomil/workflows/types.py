@@ -1,4 +1,7 @@
-"""Workflow data types."""
+"""Workflow data types.
+
+**Tier: Advanced Contract (MAY)**
+"""
 
 from __future__ import annotations
 

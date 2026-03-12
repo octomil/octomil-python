@@ -1,4 +1,7 @@
-"""Workflow orchestration (Layer 5)."""
+"""Workflow orchestration (Layer 5).
+
+**Tier: Advanced Contract (MAY)**
+"""
 
 from .runner import WorkflowRunner
 from .types import InferenceStep, ToolRoundStep, TransformStep, Workflow, WorkflowResult

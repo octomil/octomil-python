@@ -1,4 +1,7 @@
-"""WorkflowRunner — executes multi-step workflows."""
+"""WorkflowRunner — executes multi-step workflows.
+
+**Tier: Advanced Contract (MAY)**
+"""
 
 from __future__ import annotations
 

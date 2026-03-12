@@ -1,6 +1,8 @@
 """
 Thin policy-based query routing client.
 
+**Tier: Advanced Contract (MAY)**
+
 Routes incoming queries to the most appropriate model tier by fetching
 a routing policy from the Octomil server and applying simple threshold
 comparisons locally.  Complex scoring logic lives server-side.
