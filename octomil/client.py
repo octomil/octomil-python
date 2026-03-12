@@ -20,6 +20,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, AsyncIterator, Iterator, Optional
 
 if TYPE_CHECKING:
+    from .capabilities_client import CapabilitiesClient
+    from .chat_client import ChatClient
     from .control import OctomilControl
     from .embeddings import EmbeddingResult
     from .model import Model, Prediction
@@ -28,6 +30,7 @@ if TYPE_CHECKING:
     from .serve import GenerationChunk
     from .streaming import StreamToken
     from .telemetry import TelemetryReporter
+    from .telemetry_client import TelemetryClient
     from .workflows import WorkflowRunner
 
 logger = logging.getLogger(__name__)
@@ -72,6 +75,8 @@ class OctomilClient:
         api_key: API key. Falls back to ``OCTOMIL_API_KEY`` env var.
         org_id: Organisation identifier. Falls back to ``OCTOMIL_ORG_ID`` env var.
         api_base: API base URL. Falls back to ``OCTOMIL_API_BASE`` env var.
+        device_id: Stable device identifier. When ``None``, one is derived
+            automatically from the host hardware (see :mod:`octomil.device_info`).
     """
 
     def __init__(
@@ -79,6 +84,7 @@ class OctomilClient:
         api_key: Optional[str] = None,
         org_id: Optional[str] = None,
         api_base: Optional[str] = None,
+        device_id: str | None = None,
     ) -> None:
         _key = api_key if api_key is not None else os.environ.get("OCTOMIL_API_KEY", "")
         _oid = org_id if org_id is not None else os.environ.get("OCTOMIL_ORG_ID", "default")
@@ -86,6 +92,7 @@ class OctomilClient:
         self._api_key: str = _key
         self._org_id: str = _oid
         self._api_base: str = _base
+        self._device_id: str | None = device_id
         self._models: dict[str, "Model"] = {}
 
         def _token_provider() -> str:
@@ -107,6 +114,9 @@ class OctomilClient:
         self._workflows: WorkflowRunner | None = None
         self._control: OctomilControl | None = None
         self._models_ns: OctomilModels | None = None
+        self._chat_ns: ChatClient | None = None
+        self._capabilities_ns: CapabilitiesClient | None = None
+        self._telemetry_ns: TelemetryClient | None = None
 
         # Telemetry — best-effort, never blocks or raises
         self._reporter: TelemetryReporter | None = None
@@ -118,9 +128,28 @@ class OctomilClient:
                     api_key=self._api_key,
                     api_base=self._api_base,
                     org_id=self._org_id,
+                    device_id=self._device_id,
                 )
             except Exception:
                 logger.debug("Failed to initialise telemetry reporter", exc_info=True)
+
+    # ------------------------------------------------------------------
+    # Device ID — stable identifier for this device
+    # ------------------------------------------------------------------
+
+    @property
+    def device_id(self) -> str:
+        """Stable device identifier.
+
+        Returns the explicitly configured ``device_id`` if one was
+        provided at construction time; otherwise derives one from the
+        host hardware.
+        """
+        if self._device_id is None:
+            from .device_info import get_stable_device_id
+
+            self._device_id = get_stable_device_id()
+        return self._device_id
 
     # ------------------------------------------------------------------
     # Models namespace — SDK Facade Contract lifecycle API
@@ -134,6 +163,19 @@ class OctomilClient:
 
             self._models_ns = OctomilModels(self)
         return self._models_ns
+
+    # ------------------------------------------------------------------
+    # Capabilities namespace — device profiling
+    # ------------------------------------------------------------------
+
+    @property
+    def capabilities(self) -> "CapabilitiesClient":
+        """Device capabilities (runtimes, memory, accelerators)."""
+        if self._capabilities_ns is None:
+            from .capabilities_client import CapabilitiesClient
+
+            self._capabilities_ns = CapabilitiesClient(self)
+        return self._capabilities_ns
 
     # ------------------------------------------------------------------
     # Responses API — structured on-device inference
@@ -548,10 +590,45 @@ class OctomilClient:
             yield token
 
     # ------------------------------------------------------------------
-    # Chat — OpenAI-compatible chat completion interface
+    # Telemetry namespace — custom events + flush
     # ------------------------------------------------------------------
 
-    def chat(
+    @property
+    def telemetry(self) -> "TelemetryClient":
+        """Telemetry operations (track, flush)."""
+        if self._telemetry_ns is None:
+            from .telemetry_client import TelemetryClient
+
+            self._telemetry_ns = TelemetryClient(self)
+        return self._telemetry_ns
+
+    # ------------------------------------------------------------------
+    # Chat namespace — SDK Facade Contract chat API
+    # ------------------------------------------------------------------
+
+    @property
+    def chat(self) -> "ChatClient":
+        """Chat completions namespace (create, stream).
+
+        Also callable directly for backward compatibility::
+
+            # New API
+            result = client.chat.create(model="phi-4-mini", messages=[...])
+
+            # Legacy (still works)
+            result = client.chat("phi-4-mini", messages=[...])
+        """
+        if self._chat_ns is None:
+            from .chat_client import ChatClient
+
+            self._chat_ns = ChatClient(self)
+        return self._chat_ns
+
+    # ------------------------------------------------------------------
+    # Chat — internal implementation (called by ChatClient)
+    # ------------------------------------------------------------------
+
+    def _chat_create(
         self,
         model_id: str,
         messages: list[dict[str, str]],
@@ -606,7 +683,7 @@ class OctomilClient:
             "latency_ms": latency_ms,
         }
 
-    async def chat_stream(
+    async def _chat_stream(
         self,
         model_id: str,
         messages: list[dict[str, str]],
@@ -1106,6 +1183,7 @@ class OctomilClient:
             model_id=model_id,
             name=name,
             version=resolved_version,
+            format=format,
         )
 
         t0 = time.monotonic()

@@ -30,6 +30,7 @@ class ModelMetadata:
     name: str
     version: str
     experiment_id: Optional[str] = None
+    format: Optional[str] = None
 
 
 @dataclass
@@ -56,6 +57,21 @@ class Model:
         the global reporter via ``octomil.init()`` instead.
     """
 
+    # Engine name -> model file format mapping
+    _ENGINE_FORMAT_MAP: dict[str, str] = {
+        "mlx-lm": "safetensors",
+        "llama.cpp": "gguf",
+        "cactus": "gguf",
+        "whisper.cpp": "gguf",
+        "ollama": "gguf",
+        "mnn": "mnn",
+        "ort": "onnx",
+        "executorch": "pte",
+        "samsung-one": "nnpackage",
+        "mlc": "mlc",
+        "echo": "echo",
+    }
+
     def __init__(
         self,
         metadata: ModelMetadata,
@@ -67,6 +83,45 @@ class Model:
         self._engine = engine
         self._backend = engine.create_backend(metadata.name, **(engine_kwargs or {}))
         self._reporter_override = _reporter
+        self._warmed_up = False
+
+    # ------------------------------------------------------------------
+    # Properties
+    # ------------------------------------------------------------------
+
+    @property
+    def format(self) -> str:
+        """Model file format (e.g. ``"gguf"``, ``"onnx"``, ``"safetensors"``).
+
+        Derived from the engine if not explicitly set on metadata.
+        """
+        if self.metadata.format:
+            return self.metadata.format
+        return self._ENGINE_FORMAT_MAP.get(self._engine.name, "unknown")
+
+    # ------------------------------------------------------------------
+    # warmup
+    # ------------------------------------------------------------------
+
+    def warmup(self) -> None:
+        """Pre-allocate runtime buffers by running a minimal inference.
+
+        Reduces latency of the first real ``predict()`` call.  Safe to
+        call multiple times — subsequent calls are no-ops.
+        """
+        if self._warmed_up:
+            return
+        try:
+            warmup_req = GenerationRequest(
+                model=self.metadata.name,
+                messages=[{"role": "user", "content": "warmup"}],
+                max_tokens=1,
+                temperature=0.0,
+            )
+            self._backend.generate(warmup_req)
+        except Exception:
+            logger.debug("Model warmup failed (non-fatal)", exc_info=True)
+        self._warmed_up = True
 
     # ------------------------------------------------------------------
     # Reporter resolution
@@ -124,11 +179,7 @@ class Model:
 
         if reporter:
             try:
-                throughput = (
-                    metrics.total_tokens / (gen_elapsed_ms / 1000)
-                    if gen_elapsed_ms > 0
-                    else 0.0
-                )
+                throughput = metrics.total_tokens / (gen_elapsed_ms / 1000) if gen_elapsed_ms > 0 else 0.0
                 reporter.report_inference_completed(
                     session_id=session_id,
                     model_id=model_id,
@@ -168,9 +219,7 @@ class Model:
     # predict_stream (async generator)
     # ------------------------------------------------------------------
 
-    async def predict_stream(
-        self, request: GenerationRequest
-    ) -> AsyncIterator[GenerationChunk]:
+    async def predict_stream(self, request: GenerationRequest) -> AsyncIterator[GenerationChunk]:
         """Stream inference results as an async generator.
 
         Reports ``inference_started`` before the first chunk,
@@ -236,16 +285,8 @@ class Model:
         if reporter:
             try:
                 total_duration_ms = (time.monotonic() - stream_start) * 1000
-                ttfc_ms = (
-                    (first_chunk_time - stream_start) * 1000
-                    if first_chunk_time is not None
-                    else 0.0
-                )
-                throughput = (
-                    chunk_index / (total_duration_ms / 1000)
-                    if total_duration_ms > 0
-                    else 0.0
-                )
+                ttfc_ms = (first_chunk_time - stream_start) * 1000 if first_chunk_time is not None else 0.0
+                throughput = chunk_index / (total_duration_ms / 1000) if total_duration_ms > 0 else 0.0
                 reporter.report_inference_completed(
                     session_id=session_id,
                     model_id=model_id,

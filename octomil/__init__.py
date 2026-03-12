@@ -19,6 +19,8 @@ from typing import Optional as _Optional
 
 from . import _generated as contracts  # noqa: F401
 from . import responses  # noqa: F401
+from .capabilities_client import CapabilitiesClient, CapabilityProfile
+from .chat_client import ChatChunk, ChatClient, ChatCompletion
 from .client import OctomilClient
 from .control import DeviceRegistration, HeartbeatResponse, OctomilControl
 from .decomposer import (
@@ -69,6 +71,7 @@ from .streaming import (
     stream_inference_async,
 )
 from .telemetry import TelemetryReporter
+from .telemetry_client import TelemetryClient
 
 # The inner SDK package has heavy optional deps (torch, cryptography, etc.)
 # that are not bundled in the standalone CLI binary (PyInstaller).
@@ -223,6 +226,12 @@ def get_reporter() -> _Optional[TelemetryReporter]:
 __all__ = [
     "__version__",
     "OctomilClient",
+    "CapabilitiesClient",
+    "CapabilityProfile",
+    "ChatClient",
+    "ChatCompletion",
+    "ChatChunk",
+    "TelemetryClient",
     "Model",
     "ModelMetadata",
     "Prediction",
