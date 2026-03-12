@@ -10,6 +10,18 @@ import socket
 import subprocess
 from typing import Any, Dict, Optional
 
+# Map platform.system().lower() → canonical DevicePlatform values.
+_PLATFORM_MAP = {
+    "darwin": "macos",
+    "linux": "linux",
+    "windows": "windows",
+}
+
+
+def _canonical_platform() -> str:
+    """Return canonical platform string for the current OS."""
+    return _PLATFORM_MAP.get(platform.system().lower(), "unknown")
+
 
 def get_stable_device_id() -> str:
     """
@@ -294,7 +306,7 @@ class DeviceInfo:
         """
         return {
             "device_identifier": self.device_id,
-            "platform": platform.system().lower(),
+            "platform": _canonical_platform(),
             "os_version": f"{platform.system()} {platform.release()}",
             "device_info": self.collect_device_info(),
             "locale": "en_US",  # Can be enhanced with locale detection
