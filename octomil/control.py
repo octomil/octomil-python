@@ -1,4 +1,8 @@
-"""Control plane -- device registration and heartbeat (SDK Facade Contract namespace)."""
+"""Control plane -- device registration and heartbeat (SDK Facade Contract namespace).
+
+Core Contract (MUST): This module is part of the core SDK facade that every
+Octomil SDK must implement.  See SDK_FACADE_CONTRACT.md for details.
+"""
 
 from __future__ import annotations
 
@@ -6,12 +10,28 @@ import logging
 import platform
 import threading
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Any, Optional
 
 from .device_info import DeviceInfo
 from .python.octomil.api_client import _ApiClient
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class ControlSyncResult:
+    """Result returned by ``control.refresh()``.
+
+    Communicates whether the server had updated configuration or
+    assignment changes since the last fetch.
+    """
+
+    updated: bool
+    config_version: str
+    assignments_changed: bool
+    rollouts_changed: bool
+    fetched_at: str  # ISO-8601 timestamp
 
 
 @dataclass
@@ -51,11 +71,32 @@ class OctomilControl:
         self._heartbeat_thread: Optional[threading.Thread] = None
         self._heartbeat_stop: threading.Event = threading.Event()
 
-    def refresh(self) -> None:
-        """Fetch latest assignments and rollout state from server."""
+    def refresh(self) -> ControlSyncResult:
+        """Fetch latest assignments and rollout state from server.
+
+        Returns a ``ControlSyncResult`` describing whether configuration,
+        assignments, or rollouts have changed since the previous fetch.
+        """
+        now = datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
         if not self._server_device_id:
-            return
-        self._api.get(f"/devices/{self._server_device_id}/assignments")
+            return ControlSyncResult(
+                updated=False,
+                config_version="",
+                assignments_changed=False,
+                rollouts_changed=False,
+                fetched_at=now,
+            )
+
+        data = self._api.get(f"/devices/{self._server_device_id}/assignments")
+        data = data if isinstance(data, dict) else {}
+
+        return ControlSyncResult(
+            updated=data.get("updated", True),
+            config_version=str(data.get("config_version", "")),
+            assignments_changed=data.get("assignments_changed", bool(data.get("assignments"))),
+            rollouts_changed=data.get("rollouts_changed", bool(data.get("rollouts"))),
+            fetched_at=now,
+        )
 
     def register(self, device_id: Optional[str] = None) -> DeviceRegistration:
         """Register device with server. Returns DeviceRegistration."""

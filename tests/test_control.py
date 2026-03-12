@@ -5,6 +5,7 @@ import unittest
 from unittest.mock import patch
 
 from octomil.control import (
+    ControlSyncResult,
     DeviceRegistration,
     HeartbeatResponse,
     OctomilControl,
@@ -133,29 +134,63 @@ class TestOctomilControlHeartbeat(unittest.TestCase):
 
 
 class TestOctomilControlRefresh(unittest.TestCase):
-    def test_refresh_does_nothing_when_not_registered(self):
+    def test_refresh_returns_sync_result_when_not_registered(self):
         api = _StubApi()
         ctrl = OctomilControl(api=api, org_id="org_test")
 
-        ctrl.refresh()  # should not raise
+        result = ctrl.refresh()
 
+        self.assertIsInstance(result, ControlSyncResult)
+        self.assertFalse(result.updated)
+        self.assertEqual(result.config_version, "")
+        self.assertFalse(result.assignments_changed)
+        self.assertFalse(result.rollouts_changed)
+        self.assertTrue(result.fetched_at.endswith("Z"))
         self.assertEqual(len(api.calls), 0)
 
     def test_refresh_calls_assignments_endpoint(self):
         api = _StubApi(
             responses={
                 ("post", "/devices/register"): {"id": "dev_ref"},
-                ("get", "/devices/dev_ref/assignments"): {"assignments": []},
+                ("get", "/devices/dev_ref/assignments"): {
+                    "updated": True,
+                    "config_version": "v3",
+                    "assignments_changed": True,
+                    "rollouts_changed": False,
+                },
             }
         )
         ctrl = OctomilControl(api=api, org_id="org_test")
         ctrl.register(device_id="dev")
 
-        ctrl.refresh()
+        result = ctrl.refresh()
 
         method, path, _ = api.calls[-1]
         self.assertEqual(method, "get")
         self.assertEqual(path, "/devices/dev_ref/assignments")
+
+        self.assertIsInstance(result, ControlSyncResult)
+        self.assertTrue(result.updated)
+        self.assertEqual(result.config_version, "v3")
+        self.assertTrue(result.assignments_changed)
+        self.assertFalse(result.rollouts_changed)
+        self.assertTrue(result.fetched_at.endswith("Z"))
+
+    def test_refresh_infers_assignments_changed_from_assignments_list(self):
+        api = _StubApi(
+            responses={
+                ("post", "/devices/register"): {"id": "dev_inf"},
+                ("get", "/devices/dev_inf/assignments"): {
+                    "assignments": [{"id": "a1"}],
+                },
+            }
+        )
+        ctrl = OctomilControl(api=api, org_id="org_test")
+        ctrl.register(device_id="dev")
+
+        result = ctrl.refresh()
+
+        self.assertTrue(result.assignments_changed)
 
 
 class TestOctomilControlHeartbeatLoop(unittest.TestCase):
@@ -266,6 +301,20 @@ class TestDataclasses(unittest.TestCase):
         self.assertEqual(hb.status, "ok")
         self.assertIsNone(hb.server_time)
         self.assertEqual(hb.metadata, {})
+
+    def test_control_sync_result_fields(self):
+        sr = ControlSyncResult(
+            updated=True,
+            config_version="v2",
+            assignments_changed=True,
+            rollouts_changed=False,
+            fetched_at="2026-03-12T12:00:00.000Z",
+        )
+        self.assertTrue(sr.updated)
+        self.assertEqual(sr.config_version, "v2")
+        self.assertTrue(sr.assignments_changed)
+        self.assertFalse(sr.rollouts_changed)
+        self.assertEqual(sr.fetched_at, "2026-03-12T12:00:00.000Z")
 
 
 if __name__ == "__main__":
