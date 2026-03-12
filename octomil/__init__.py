@@ -40,6 +40,7 @@ from .enterprise import (
     load_config,
     save_config,
 )
+from .errors import OctomilError, OctomilErrorCode
 from .model import Model, ModelMetadata, Prediction
 from .models import (
     DeploymentPlan,
@@ -289,4 +290,6 @@ __all__ = [
     "OctomilControl",
     "DeviceRegistration",
     "HeartbeatResponse",
+    "OctomilError",
+    "OctomilErrorCode",
 ]
