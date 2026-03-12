@@ -30,3 +30,16 @@ __all__ = [
     "RuntimeToolDef",
     "RuntimeUsage",
 ]
+
+
+def _connect_engines() -> None:
+    """Wire EngineRegistry as the default factory for ModelRuntimeRegistry."""
+    try:
+        from .engine_bridge import engine_registry_factory
+
+        ModelRuntimeRegistry.shared().default_factory = engine_registry_factory
+    except Exception:
+        pass  # engines module may not be available in all environments
+
+
+_connect_engines()
