@@ -567,6 +567,19 @@ class OctomilClient:
             yield token
 
     # ------------------------------------------------------------------
+    # Telemetry namespace — custom events + flush
+    # ------------------------------------------------------------------
+
+    @property
+    def telemetry(self) -> "TelemetryClient":
+        """Telemetry operations (track, flush)."""
+        if self._telemetry_ns is None:
+            from .telemetry_client import TelemetryClient
+
+            self._telemetry_ns = TelemetryClient(self)
+        return self._telemetry_ns
+
+    # ------------------------------------------------------------------
     # Chat namespace — SDK Facade Contract chat API
     # ------------------------------------------------------------------
 
