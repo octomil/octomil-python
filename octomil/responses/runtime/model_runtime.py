@@ -9,10 +9,29 @@ from .types import RuntimeCapabilities, RuntimeChunk, RuntimeRequest, RuntimeRes
 
 
 class ModelRuntime(abc.ABC):
-    """Typed interface for on-device model inference (Layer 1).
+    """Any execution backend that satisfies the run/stream interface -- local or remote.
 
-    Each concrete runtime wraps a specific engine and exposes
-    a uniform request/response API.
+    ModelRuntime is the foundational abstraction in the Octomil inference
+    stack (Layer 1).  It represents any execution backend -- a local
+    engine (MLX, llama.cpp, ONNX Runtime, Core ML, etc.), a remote cloud
+    API, or a custom user-provided backend -- as long as it implements
+    the ``run()`` and ``stream()`` methods with the prescribed
+    ``RuntimeRequest -> RuntimeResponse / AsyncIterator[RuntimeChunk]``
+    contract.
+
+    Concrete implementations are registered with ``ModelRuntimeRegistry``
+    and resolved at request time by model name.  The higher-level
+    ``OctomilResponses`` layer (Layer 2) consumes runtimes through this
+    interface, meaning new backends can be added without modifying any
+    orchestration code.
+
+    Subclasses MUST implement:
+        - ``capabilities`` property  -- advertise supported features
+        - ``run(request)``           -- single-shot inference
+        - ``stream(request)``        -- streaming token-by-token inference
+
+    Subclasses MAY override:
+        - ``close()``                -- release GPU memory / file handles
     """
 
     @property
