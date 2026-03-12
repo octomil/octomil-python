@@ -162,7 +162,7 @@ class TestClientLoadModelTelemetry:
         mock_model_instance = MagicMock()
 
         with (
-            patch("octomil.engines.get_registry", return_value=mock_engine_registry),
+            patch("octomil.runtime.engines.get_registry", return_value=mock_engine_registry),
             patch("octomil.model.Model", return_value=mock_model_instance) as mock_model_cls,
         ):
             c = OctomilClient(api_key="key")
@@ -193,7 +193,7 @@ class TestClientLoadModelTelemetry:
         mock_engine_registry.auto_select.return_value = (mock_engine, [])
 
         with (
-            patch("octomil.engines.get_registry", return_value=mock_engine_registry),
+            patch("octomil.runtime.engines.get_registry", return_value=mock_engine_registry),
             patch("octomil.model.Model"),
         ):
             c = OctomilClient(api_key="key")
@@ -233,7 +233,7 @@ class TestClientLoadModelTelemetry:
         mock_model_instance = MagicMock()
 
         with (
-            patch("octomil.engines.get_registry", return_value=mock_engine_registry),
+            patch("octomil.runtime.engines.get_registry", return_value=mock_engine_registry),
             patch("octomil.model.Model", return_value=mock_model_instance),
         ):
             c = OctomilClient(api_key="key")

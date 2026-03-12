@@ -9,7 +9,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from octomil.engines.whisper_engine import (
+from octomil.runtime.engines.whisper.engine import (
     _WHISPER_MODELS,
     WhisperCppEngine,
     _generate_silent_wav,
@@ -121,16 +121,16 @@ class TestWhisperCppEngine:
         assert self.engine.priority == 35
 
     def test_detect_with_pywhispercpp(self) -> None:
-        with patch("octomil.engines.whisper_engine._has_pywhispercpp", return_value=True):
+        with patch("octomil.runtime.engines.whisper.engine._has_pywhispercpp", return_value=True):
             assert self.engine.detect() is True
 
     def test_detect_without_pywhispercpp(self) -> None:
-        with patch("octomil.engines.whisper_engine._has_pywhispercpp", return_value=False):
+        with patch("octomil.runtime.engines.whisper.engine._has_pywhispercpp", return_value=False):
             assert self.engine.detect() is False
 
     def test_detect_info_with_version(self) -> None:
         with patch(
-            "octomil.engines.whisper_engine._get_whisper_version",
+            "octomil.runtime.engines.whisper.engine._get_whisper_version",
             return_value="1.2.0",
         ):
             info = self.engine.detect_info()
@@ -140,7 +140,7 @@ class TestWhisperCppEngine:
 
     def test_detect_info_empty_when_unavailable(self) -> None:
         with patch(
-            "octomil.engines.whisper_engine._get_whisper_version",
+            "octomil.runtime.engines.whisper.engine._get_whisper_version",
             return_value="",
         ):
             assert self.engine.detect_info() == ""
@@ -155,13 +155,13 @@ class TestWhisperCppEngine:
         assert self.engine.supports_model("phi-mini") is False
 
     def test_benchmark_unavailable(self) -> None:
-        with patch("octomil.engines.whisper_engine._has_pywhispercpp", return_value=False):
+        with patch("octomil.runtime.engines.whisper.engine._has_pywhispercpp", return_value=False):
             result = self.engine.benchmark("whisper-base")
             assert result.ok is False
             assert "not available" in result.error
 
     def test_benchmark_unsupported_model(self) -> None:
-        with patch("octomil.engines.whisper_engine._has_pywhispercpp", return_value=True):
+        with patch("octomil.runtime.engines.whisper.engine._has_pywhispercpp", return_value=True):
             result = self.engine.benchmark("gemma-1b")
             assert result.ok is False
             assert "Unsupported" in result.error
@@ -176,7 +176,7 @@ class TestWhisperCppEngine:
 
         with (
             patch(
-                "octomil.engines.whisper_engine._has_pywhispercpp",
+                "octomil.runtime.engines.whisper.engine._has_pywhispercpp",
                 return_value=True,
             ),
             patch.dict(
@@ -198,7 +198,7 @@ class TestWhisperCppEngine:
 
         with (
             patch(
-                "octomil.engines.whisper_engine._has_pywhispercpp",
+                "octomil.runtime.engines.whisper.engine._has_pywhispercpp",
                 return_value=True,
             ),
             patch.dict(
@@ -459,7 +459,7 @@ class TestTranscriptionEndpoint:
 
 class TestWhisperRegistry:
     def test_engine_registered(self) -> None:
-        from octomil.engines.registry import EngineRegistry
+        from octomil.runtime.engines.registry import EngineRegistry
 
         registry = EngineRegistry()
         engine = WhisperCppEngine()
@@ -467,14 +467,14 @@ class TestWhisperRegistry:
         assert registry.get_engine("whisper.cpp") is engine
 
     def test_auto_register_includes_whisper(self) -> None:
-        from octomil.engines.registry import EngineRegistry, _auto_register
+        from octomil.runtime.engines.registry import EngineRegistry, _auto_register
 
         registry = EngineRegistry()
         _auto_register(registry)
         assert registry.get_engine("whisper.cpp") is not None
 
     def test_global_registry_has_whisper(self) -> None:
-        from octomil.engines.registry import get_registry, reset_registry
+        from octomil.runtime.engines.registry import get_registry, reset_registry
 
         reset_registry()
         try:
@@ -486,7 +486,7 @@ class TestWhisperRegistry:
 
     def test_priority_ordering(self) -> None:
         """whisper.cpp (35) should be after onnxruntime (30) and before echo (999)."""
-        from octomil.engines.registry import EngineRegistry, _auto_register
+        from octomil.runtime.engines.registry import EngineRegistry, _auto_register
 
         registry = EngineRegistry()
         _auto_register(registry)

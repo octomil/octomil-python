@@ -88,7 +88,7 @@ class TestErrorFixtureDeserialization:
         for fixture in [MODEL_NOT_FOUND_FIXTURE, RATE_LIMITED_FIXTURE, INFERENCE_FAILED_FIXTURE]:
             err = _error_from_fixture(fixture)
             assert err.retryable is fixture["retryable"], (
-                f"retryable mismatch for {fixture['code']}: " f"SDK={err.retryable}, contract={fixture['retryable']}"
+                f"retryable mismatch for {fixture['code']}: SDK={err.retryable}, contract={fixture['retryable']}"
             )
 
 

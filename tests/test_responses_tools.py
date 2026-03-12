@@ -8,14 +8,6 @@ from typing import AsyncIterator
 import pytest
 
 from octomil.responses import OctomilResponses
-from octomil.responses.runtime import (
-    ModelRuntime,
-    RuntimeCapabilities,
-    RuntimeChunk,
-    RuntimeRequest,
-    RuntimeResponse,
-    RuntimeToolCall,
-)
 from octomil.responses.tools import ToolExecutor, ToolResult, ToolRunner
 from octomil.responses.types import (
     ResponseRequest,
@@ -24,6 +16,14 @@ from octomil.responses.types import (
 )
 from octomil.responses.types import (
     ResponseToolCall as RTC,
+)
+from octomil.runtime.core import (
+    ModelRuntime,
+    RuntimeCapabilities,
+    RuntimeChunk,
+    RuntimeRequest,
+    RuntimeResponse,
+    RuntimeToolCall,
 )
 
 

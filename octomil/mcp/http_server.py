@@ -455,7 +455,7 @@ def create_http_app(config: Optional[HTTPServerConfig] = None) -> FastAPI:
     async def api_detect_engines(req: DetectEnginesRequest) -> JSONResponse:
         """Detect available inference engines."""
         try:
-            from octomil.engines.registry import get_registry
+            from octomil.runtime.engines import get_registry
 
             registry = get_registry()
             results = registry.detect_all(req.model_name or None)
@@ -534,7 +534,7 @@ def create_http_app(config: Optional[HTTPServerConfig] = None) -> FastAPI:
 
         # Available engines
         try:
-            from octomil.engines.registry import get_registry
+            from octomil.runtime.engines import get_registry
 
             registry = get_registry()
             detections = registry.detect_all()
@@ -675,7 +675,7 @@ def create_http_app(config: Optional[HTTPServerConfig] = None) -> FastAPI:
     async def api_benchmark_model(req: BenchmarkModelRequest) -> JSONResponse:
         """Benchmark inference engines for a model."""
         try:
-            from octomil.engines.registry import get_registry
+            from octomil.runtime.engines import get_registry
 
             registry = get_registry()
             if req.engine:

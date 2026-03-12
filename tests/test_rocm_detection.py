@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from unittest.mock import patch
 
-from octomil.engines.llamacpp_engine import LlamaCppEngine
+from octomil.runtime.engines.llamacpp.engine import LlamaCppEngine
 
 # ---------------------------------------------------------------------------
 # _has_rocm() detection
@@ -61,7 +61,7 @@ class TestDetectInfoRocm:
     def test_rocm_on_linux(self) -> None:
         """Non-macOS with ROCm (and no CUDA) reports CPU + ROCm."""
         engine = LlamaCppEngine()
-        with patch("octomil.engines.llamacpp_engine.platform.system", return_value="Linux"):
+        with patch("octomil.runtime.engines.llamacpp.engine.platform.system", return_value="Linux"):
             with patch.object(LlamaCppEngine, "_has_cuda", return_value=False):
                 with patch.object(LlamaCppEngine, "_has_rocm", return_value=True):
                     assert engine.detect_info() == "CPU + ROCm"
@@ -69,7 +69,7 @@ class TestDetectInfoRocm:
     def test_cuda_takes_priority_over_rocm(self) -> None:
         """When both CUDA and ROCm are available, CUDA wins."""
         engine = LlamaCppEngine()
-        with patch("octomil.engines.llamacpp_engine.platform.system", return_value="Linux"):
+        with patch("octomil.runtime.engines.llamacpp.engine.platform.system", return_value="Linux"):
             with patch.object(LlamaCppEngine, "_has_cuda", return_value=True):
                 with patch.object(LlamaCppEngine, "_has_rocm", return_value=True):
                     assert engine.detect_info() == "CPU + CUDA"
@@ -77,13 +77,13 @@ class TestDetectInfoRocm:
     def test_metal_takes_priority_on_macos(self) -> None:
         """macOS always reports Metal regardless of ROCm."""
         engine = LlamaCppEngine()
-        with patch("octomil.engines.llamacpp_engine.platform.system", return_value="Darwin"):
+        with patch("octomil.runtime.engines.llamacpp.engine.platform.system", return_value="Darwin"):
             assert engine.detect_info() == "CPU + Metal"
 
     def test_cpu_fallback_no_gpu(self) -> None:
         """No GPU acceleration falls back to CPU only."""
         engine = LlamaCppEngine()
-        with patch("octomil.engines.llamacpp_engine.platform.system", return_value="Linux"):
+        with patch("octomil.runtime.engines.llamacpp.engine.platform.system", return_value="Linux"):
             with patch.object(LlamaCppEngine, "_has_cuda", return_value=False):
                 with patch.object(LlamaCppEngine, "_has_rocm", return_value=False):
                     assert engine.detect_info() == "CPU"
@@ -99,9 +99,9 @@ class TestDisplayNameRocm:
 
     def test_rocm_display_name(self) -> None:
         engine = LlamaCppEngine()
-        with patch("octomil.engines.llamacpp_engine.platform.system", return_value="Linux"):
+        with patch("octomil.runtime.engines.llamacpp.engine.platform.system", return_value="Linux"):
             with patch(
-                "octomil.engines.llamacpp_engine.platform.machine",
+                "octomil.runtime.engines.llamacpp.engine.platform.machine",
                 return_value="x86_64",
             ):
                 with patch.object(LlamaCppEngine, "_has_cuda", return_value=False):
@@ -110,9 +110,9 @@ class TestDisplayNameRocm:
 
     def test_cuda_display_name_over_rocm(self) -> None:
         engine = LlamaCppEngine()
-        with patch("octomil.engines.llamacpp_engine.platform.system", return_value="Linux"):
+        with patch("octomil.runtime.engines.llamacpp.engine.platform.system", return_value="Linux"):
             with patch(
-                "octomil.engines.llamacpp_engine.platform.machine",
+                "octomil.runtime.engines.llamacpp.engine.platform.machine",
                 return_value="x86_64",
             ):
                 with patch.object(LlamaCppEngine, "_has_cuda", return_value=True):
@@ -121,9 +121,9 @@ class TestDisplayNameRocm:
 
     def test_cpu_display_name_fallback(self) -> None:
         engine = LlamaCppEngine()
-        with patch("octomil.engines.llamacpp_engine.platform.system", return_value="Linux"):
+        with patch("octomil.runtime.engines.llamacpp.engine.platform.system", return_value="Linux"):
             with patch(
-                "octomil.engines.llamacpp_engine.platform.machine",
+                "octomil.runtime.engines.llamacpp.engine.platform.machine",
                 return_value="x86_64",
             ):
                 with patch.object(LlamaCppEngine, "_has_cuda", return_value=False):

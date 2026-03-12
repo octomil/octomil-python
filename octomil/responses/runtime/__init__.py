@@ -1,14 +1,12 @@
-"""Layer 1: ModelRuntime — typed per-engine inference interface."""
+"""Backward-compatible re-exports — use octomil.runtime.core instead."""
 
-from __future__ import annotations
-
-from .adapter import InferenceBackendAdapter
-from .cloud_runtime import CloudModelRuntime
-from .model_runtime import ModelRuntime, RuntimeFactory
-from .policy import RoutingPolicy
-from .registry import ModelRuntimeRegistry
-from .router import RouterModelRuntime
-from .types import (
+from octomil.runtime.core.adapter import InferenceBackendAdapter
+from octomil.runtime.core.cloud_runtime import CloudModelRuntime
+from octomil.runtime.core.model_runtime import ModelRuntime, RuntimeFactory
+from octomil.runtime.core.policy import RoutingPolicy
+from octomil.runtime.core.registry import ModelRuntimeRegistry
+from octomil.runtime.core.router import RouterModelRuntime
+from octomil.runtime.core.types import (
     RuntimeCapabilities,
     RuntimeChunk,
     RuntimeRequest,
@@ -21,16 +19,16 @@ from .types import (
 
 __all__ = [
     "CloudModelRuntime",
-    "ModelRuntime",
-    "RuntimeFactory",
-    "ModelRuntimeRegistry",
     "InferenceBackendAdapter",
+    "ModelRuntime",
+    "ModelRuntimeRegistry",
     "RouterModelRuntime",
     "RoutingPolicy",
     "RuntimeCapabilities",
+    "RuntimeChunk",
+    "RuntimeFactory",
     "RuntimeRequest",
     "RuntimeResponse",
-    "RuntimeChunk",
     "RuntimeToolCall",
     "RuntimeToolCallDelta",
     "RuntimeToolDef",
@@ -40,12 +38,6 @@ __all__ = [
 
 def _connect_engines() -> None:
     """Wire EngineRegistry as the default factory for ModelRuntimeRegistry."""
-    try:
-        from .engine_bridge import engine_registry_factory
+    from octomil.runtime import _connect_engines as _real_connect
 
-        ModelRuntimeRegistry.shared().default_factory = engine_registry_factory
-    except Exception:
-        pass  # engines module may not be available in all environments
-
-
-_connect_engines()
+    _real_connect()

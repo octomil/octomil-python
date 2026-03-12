@@ -7,15 +7,6 @@ from typing import AsyncIterator
 import pytest
 
 from octomil.responses import OctomilResponses
-from octomil.responses.runtime import (
-    ModelRuntime,
-    RuntimeCapabilities,
-    RuntimeChunk,
-    RuntimeRequest,
-    RuntimeResponse,
-    RuntimeToolCall,
-    RuntimeUsage,
-)
 from octomil.responses.types import (
     DoneEvent,
     ResponseRequest,
@@ -23,6 +14,15 @@ from octomil.responses.types import (
     TextOutput,
     ToolCallOutput,
     text_input,
+)
+from octomil.runtime.core import (
+    ModelRuntime,
+    RuntimeCapabilities,
+    RuntimeChunk,
+    RuntimeRequest,
+    RuntimeResponse,
+    RuntimeToolCall,
+    RuntimeUsage,
 )
 
 

@@ -7,11 +7,11 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from octomil.engines.base import BenchmarkResult, EnginePlugin
-from octomil.engines.echo_engine import EchoEngine
-from octomil.engines.llamacpp_engine import LlamaCppEngine
-from octomil.engines.mlx_engine import MLXEngine
-from octomil.engines.registry import (
+from octomil.runtime.core.base import BenchmarkResult, EnginePlugin
+from octomil.runtime.engines.echo.engine import EchoEngine
+from octomil.runtime.engines.llamacpp.engine import LlamaCppEngine
+from octomil.runtime.engines.mlx.engine import MLXEngine
+from octomil.runtime.engines.registry import (
     EngineRegistry,
     RankedEngine,
     get_registry,
@@ -351,14 +351,14 @@ class TestEchoEngine:
 class TestMLXEngine:
     def test_detect_returns_false_on_non_darwin(self):
         e = MLXEngine()
-        with patch("octomil.engines.mlx_engine.platform") as mock_platform:
+        with patch("octomil.runtime.engines.mlx.engine.platform") as mock_platform:
             mock_platform.system.return_value = "Linux"
             mock_platform.machine.return_value = "x86_64"
             assert e.detect() is False
 
     def test_detect_returns_false_on_intel_mac(self):
         e = MLXEngine()
-        with patch("octomil.engines.mlx_engine.platform") as mock_platform:
+        with patch("octomil.runtime.engines.mlx.engine.platform") as mock_platform:
             mock_platform.system.return_value = "Darwin"
             mock_platform.machine.return_value = "x86_64"
             assert e.detect() is False

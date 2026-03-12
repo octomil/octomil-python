@@ -123,7 +123,7 @@ async def _collect_stream(gen):
 class TestDetectBackend:
     def test_falls_back_to_echo_when_no_backends(self):
         """With no real engines installed, _detect_backend returns echo."""
-        from octomil.engines.registry import EngineRegistry
+        from octomil.runtime.engines.registry import EngineRegistry
 
         with patch.object(EngineRegistry, "detect_all", return_value=[]):
             backend = _detect_backend("gemma-1b")
@@ -131,7 +131,7 @@ class TestDetectBackend:
 
     def test_echo_for_unknown_model_name(self):
         """Unknown model name still gets a backend (echo fallback)."""
-        from octomil.engines.registry import EngineRegistry
+        from octomil.runtime.engines.registry import EngineRegistry
 
         with patch.object(EngineRegistry, "detect_all", return_value=[]):
             backend = _detect_backend("totally-unknown-model")

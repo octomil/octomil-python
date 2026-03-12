@@ -595,25 +595,25 @@ class TestLlamaCppMoEDetection:
     """Test MoE model detection in LlamaCppEngine."""
 
     def test_is_moe_model_mixtral(self) -> None:
-        from octomil.engines.llamacpp_engine import LlamaCppEngine
+        from octomil.runtime.engines.llamacpp.engine import LlamaCppEngine
 
         engine = LlamaCppEngine()
         assert engine.is_moe_model("mixtral-8x7b") is True
 
     def test_is_moe_model_dbrx(self) -> None:
-        from octomil.engines.llamacpp_engine import LlamaCppEngine
+        from octomil.runtime.engines.llamacpp.engine import LlamaCppEngine
 
         engine = LlamaCppEngine()
         assert engine.is_moe_model("dbrx") is True
 
     def test_is_moe_model_dense(self) -> None:
-        from octomil.engines.llamacpp_engine import LlamaCppEngine
+        from octomil.runtime.engines.llamacpp.engine import LlamaCppEngine
 
         engine = LlamaCppEngine()
         assert engine.is_moe_model("gemma-1b") is False
 
     def test_is_moe_model_unknown(self) -> None:
-        from octomil.engines.llamacpp_engine import LlamaCppEngine
+        from octomil.runtime.engines.llamacpp.engine import LlamaCppEngine
 
         engine = LlamaCppEngine()
         assert engine.is_moe_model("not-a-model") is False
@@ -623,19 +623,19 @@ class TestMLXMoEDetection:
     """Test MoE model detection in MLXEngine."""
 
     def test_is_moe_model_mixtral(self) -> None:
-        from octomil.engines.mlx_engine import MLXEngine
+        from octomil.runtime.engines.mlx.engine import MLXEngine
 
         engine = MLXEngine()
         assert engine.is_moe_model("mixtral-8x7b") is True
 
     def test_is_moe_model_dbrx(self) -> None:
-        from octomil.engines.mlx_engine import MLXEngine
+        from octomil.runtime.engines.mlx.engine import MLXEngine
 
         engine = MLXEngine()
         assert engine.is_moe_model("dbrx") is True
 
     def test_is_moe_model_dense(self) -> None:
-        from octomil.engines.mlx_engine import MLXEngine
+        from octomil.runtime.engines.mlx.engine import MLXEngine
 
         engine = MLXEngine()
         assert engine.is_moe_model("llama-8b") is False

@@ -1069,7 +1069,7 @@ def _mock_model_routing_clients(monkeypatch):
     cat_mod.CATALOG._ensure_loaded()  # type: ignore[attr-defined]
 
     # Recompute _ORT_CATALOG (set computed at import time from CATALOG).
-    import octomil.engines.ort_engine as ort_mod
+    import octomil.runtime.engines.ort.engine as ort_mod
 
     ort_mod._ORT_CATALOG.clear()
     ort_mod._ORT_CATALOG.update(name for name, entry in cat_mod.CATALOG.items() if "onnxruntime" in entry.engines)
@@ -1086,10 +1086,10 @@ def _mock_model_routing_clients(monkeypatch):
             serve_mod._GGUF_MODELS[_name] = (_variant.gguf.repo, _variant.gguf.filename)
 
     # Recompute _MOE_MODELS and _MLX_CATALOG/_GGUF_CATALOG in engine plugins.
-    import octomil.engines.cactus_engine as cactus_mod
-    import octomil.engines.executorch_engine as et_mod
-    import octomil.engines.llamacpp_engine as llama_mod
-    import octomil.engines.mlx_engine as mlx_mod
+    import octomil.runtime.engines.experimental.cactus.engine as cactus_mod
+    import octomil.runtime.engines.experimental.executorch.engine as et_mod
+    import octomil.runtime.engines.llamacpp.engine as llama_mod
+    import octomil.runtime.engines.mlx.engine as mlx_mod
 
     llama_mod._MOE_MODELS.clear()
     llama_mod._MOE_MODELS.update(
@@ -1114,13 +1114,13 @@ def _mock_model_routing_clients(monkeypatch):
     et_mod._ET_CATALOG.update(name for name, entry in cat_mod.CATALOG.items() if "executorch" in entry.engines)
 
     # Recompute _MLC_CATALOG (set computed at import time from CATALOG).
-    import octomil.engines.mlc_engine as mlc_mod
+    import octomil.runtime.engines.experimental.mlc.engine as mlc_mod
 
     mlc_mod._MLC_CATALOG.clear()
     mlc_mod._MLC_CATALOG.update(name for name, entry in cat_mod.CATALOG.items() if "mlc-llm" in entry.engines)
 
     # Recompute _MNN_CATALOG (set computed at import time from CATALOG).
-    import octomil.engines.mnn_engine as mnn_mod
+    import octomil.runtime.engines.experimental.mnn.engine as mnn_mod
 
     mnn_mod._MNN_CATALOG.clear()
     mnn_mod._MNN_CATALOG.update(name for name, entry in cat_mod.CATALOG.items() if "mnn" in entry.engines)

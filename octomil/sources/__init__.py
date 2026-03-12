@@ -10,8 +10,8 @@ from __future__ import annotations
 
 from .base import SourceBackend, SourceResult
 from .huggingface import HuggingFaceSource
-from .ollama import OllamaSource
 from .kaggle import KaggleSource
+from .ollama import OllamaSource
 
 __all__ = [
     "SourceBackend",

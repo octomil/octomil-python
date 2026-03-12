@@ -102,7 +102,7 @@ class SmartRouter(InferenceBackend):
         Each engine's own ``load_model`` resolves the canonical name to the
         appropriate format (HF repo for MLX, GGUF repo for llama.cpp, etc.).
         """
-        from .engines import get_registry
+        from .runtime.engines import get_registry
 
         self._model_name = model_name
         registry = get_registry()

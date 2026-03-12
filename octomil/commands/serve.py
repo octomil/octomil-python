@@ -233,7 +233,7 @@ def serve(
         return
 
     # Check if this is a whisper (speech-to-text) model
-    from octomil.engines.whisper_engine import is_whisper_model
+    from octomil.runtime.engines.whisper import is_whisper_model
 
     is_whisper = is_whisper_model(model)
 
@@ -528,7 +528,7 @@ def _print_engine_detection(model: str, engine_override: str | None) -> None:
         click.echo(f"\n  Engine: {engine_override} (manual override)")
         return
 
-    from octomil.engines import get_registry
+    from octomil.runtime.engines import get_registry
 
     registry = get_registry()
     detections = registry.detect_all(model)

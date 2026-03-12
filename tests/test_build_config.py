@@ -52,13 +52,14 @@ class TestPyInstallerSpec:
     def test_spec_hidden_imports_engines(self, spec_content: str) -> None:
         """All engine modules must be listed as hidden imports."""
         expected_engines = [
-            "octomil.engines.mlx_engine",
-            "octomil.engines.llamacpp_engine",
-            "octomil.engines.mnn_engine",
-            "octomil.engines.executorch_engine",
-            "octomil.engines.ort_engine",
-            "octomil.engines.whisper_engine",
-            "octomil.engines.echo_engine",
+            "octomil.runtime.engines.mlx.engine",
+            "octomil.runtime.engines.llamacpp.engine",
+            "octomil.runtime.engines.ort.engine",
+            "octomil.runtime.engines.whisper.engine",
+            "octomil.runtime.engines.ollama.engine",
+            "octomil.runtime.engines.echo.engine",
+            "octomil.runtime.engines.experimental.mnn.engine",
+            "octomil.runtime.engines.experimental.executorch.engine",
         ]
         for engine in expected_engines:
             assert engine in spec_content, f"Missing hidden import: {engine}"
@@ -293,14 +294,19 @@ class TestConsistency:
         assert "octomil/__main__.py" in spec_content
 
     def test_all_engines_in_spec(self) -> None:
-        """Every engine in the engines directory should be a hidden import."""
-        spec_content = (ROOT / "octomil.spec").read_text()
-        engines_dir = ROOT / "octomil" / "engines"
-        for py_file in engines_dir.glob("*.py"):
-            if py_file.name.startswith("_") or py_file.name == "base.py":
+        """Every engine in the runtime/engines directory should be a hidden import."""
+        spec_content = (ROOT / "packaging" / "octomil.spec").read_text()
+        # Check stable engines
+        engines_dir = ROOT / "octomil" / "runtime" / "engines"
+        for engine_dir in engines_dir.iterdir():
+            if not engine_dir.is_dir() or engine_dir.name.startswith("_"):
                 continue
-            module = f"octomil.engines.{py_file.stem}"
-            assert module in spec_content, f"Engine {module} not in hidden imports"
+            if engine_dir.name == "experimental":
+                continue
+            engine_file = engine_dir / "engine.py"
+            if engine_file.exists():
+                module = f"octomil.runtime.engines.{engine_dir.name}.engine"
+                assert module in spec_content, f"Engine {module} not in hidden imports"
 
     def test_github_repo_consistent(self) -> None:
         """All files should reference the same GitHub repo."""

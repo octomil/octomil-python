@@ -50,7 +50,7 @@ def _browser_login() -> None:
 
     dashboard_url = os.environ.get("OCTOMIL_DASHBOARD_URL", "https://app.octomil.com")
     callback_url = f"http://127.0.0.1:{port}"
-    auth_url = f"{dashboard_url}/cli/auth" f"?callback={urllib.parse.quote(callback_url, safe='')}" f"&state={state}"
+    auth_url = f"{dashboard_url}/cli/auth?callback={urllib.parse.quote(callback_url, safe='')}&state={state}"
 
     received_key: str | None = None
     received_org: str | None = None

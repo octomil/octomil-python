@@ -769,7 +769,7 @@ def _detect_backend(
 
     If engine_override is set, skip benchmarking and use that engine directly.
     """
-    from .engines import get_registry
+    from .runtime.engines import get_registry
 
     registry = get_registry()
 
@@ -1088,10 +1088,10 @@ def create_app(
             )
 
         # Check if this is a whisper (speech-to-text) model
-        from .engines.whisper_engine import is_whisper_model
+        from .runtime.engines.whisper import is_whisper_model
 
         if is_whisper_model(model_name):
-            from .engines.whisper_engine import WhisperCppEngine
+            from .runtime.engines.whisper import WhisperCppEngine
 
             whisper_engine = WhisperCppEngine()
             whisper_backend = whisper_engine.create_backend(model_name)
@@ -1552,7 +1552,7 @@ def create_app(
     @app.get("/v1/engines")
     async def list_engines() -> dict[str, Any]:
         """List detected engines and their benchmark results."""
-        from .engines import get_registry
+        from .runtime.engines import get_registry
 
         registry = get_registry()
         detections = registry.detect_all(state.model_name)

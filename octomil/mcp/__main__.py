@@ -10,7 +10,7 @@ def main() -> None:
         import mcp  # noqa: F401
     except ImportError:
         print(
-            "Error: the 'mcp' package is required.\n" "Install with: pip install 'mcp[cli]>=1.2.0'",
+            "Error: the 'mcp' package is required.\nInstall with: pip install 'mcp[cli]>=1.2.0'",
             file=sys.stderr,
         )
         sys.exit(1)

@@ -123,7 +123,7 @@ class CapabilitiesClient:
         # Detect available engines
         available_runtimes: list[str] = []
         try:
-            from .engines import get_registry
+            from .runtime.engines import get_registry
 
             registry = get_registry()
             for det in registry.detect_all():

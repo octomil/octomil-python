@@ -122,7 +122,7 @@ def register_platform_tools(mcp: Any, backend: Any) -> None:
     ) -> str:
         """Detect which inference engines are available on this machine."""
         try:
-            from octomil.engines.registry import get_registry
+            from octomil.runtime.engines import get_registry
 
             registry = get_registry()
             results = registry.detect_all(model_name or None)
@@ -209,7 +209,7 @@ def register_platform_tools(mcp: Any, backend: Any) -> None:
                     pass
 
                 try:
-                    from octomil.engines.registry import get_registry
+                    from octomil.runtime.engines import get_registry
 
                     registry = get_registry()
                     detections = registry.detect_all()
@@ -473,7 +473,7 @@ def register_platform_tools(mcp: Any, backend: Any) -> None:
     ) -> str:
         """Benchmark inference engines for a specific model, measuring tokens/second and latency."""
         try:
-            from octomil.engines.registry import get_registry
+            from octomil.runtime.engines import get_registry
 
             registry = get_registry()
 

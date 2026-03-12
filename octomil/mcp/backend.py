@@ -146,7 +146,7 @@ class OctomilMCPBackend:
         """Build an agent-friendly warmup error with available engines and suggestions."""
         available_engines: list[str] = []
         try:
-            from octomil.engines.registry import get_registry
+            from octomil.runtime.engines import get_registry
 
             registry = get_registry()
             detections = registry.detect_all()

@@ -16,7 +16,7 @@ from typing import TYPE_CHECKING, Any, AsyncIterator, Optional
 if TYPE_CHECKING:
     from .telemetry import TelemetryReporter
 
-from .engines.base import EnginePlugin
+from .runtime.core.base import EnginePlugin
 from .serve import GenerationChunk, GenerationRequest, InferenceMetrics
 
 logger = logging.getLogger(__name__)

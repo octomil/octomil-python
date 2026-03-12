@@ -109,7 +109,7 @@ def _benchmark_all_engines(model: str, iterations: int, max_tokens: int) -> None
     """Benchmark all available engines and print a comparison table."""
     import time
 
-    from octomil.engines import get_registry
+    from octomil.runtime.engines import get_registry
     from octomil.serve import GenerationRequest
 
     registry = get_registry()
@@ -206,7 +206,7 @@ def _benchmark_all_engines(model: str, iterations: int, max_tokens: int) -> None
 
 def _run_profile(model: str, engine_override: str | None) -> None:
     """Run hardware profiling and print accelerator stats."""
-    from octomil.engines import get_registry
+    from octomil.runtime.engines import get_registry
 
     registry = get_registry()
     detections = registry.detect_all(model)

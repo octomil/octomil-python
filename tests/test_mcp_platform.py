@@ -203,7 +203,7 @@ class TestDetectEngines:
         mock_registry.detect_all.return_value = fake_results
 
         tools = _get_tool_funcs()
-        with patch("octomil.engines.registry.get_registry", return_value=mock_registry):
+        with patch("octomil.runtime.engines.registry.get_registry", return_value=mock_registry):
             result = json.loads(tools["detect_engines"]())
 
         assert result["available_count"] == 1
@@ -218,7 +218,7 @@ class TestDetectEngines:
         mock_registry.detect_all.return_value = fake_results
 
         tools = _get_tool_funcs()
-        with patch("octomil.engines.registry.get_registry", return_value=mock_registry):
+        with patch("octomil.runtime.engines.registry.get_registry", return_value=mock_registry):
             result = json.loads(tools["detect_engines"]("gemma-3b"))
 
         assert result["model_filter"] == "gemma-3b"
@@ -615,7 +615,7 @@ class TestBenchmarkModel:
         mock_registry.benchmark_all.return_value = ranked
 
         tools = _get_tool_funcs()
-        with patch("octomil.engines.registry.get_registry", return_value=mock_registry):
+        with patch("octomil.runtime.engines.registry.get_registry", return_value=mock_registry):
             result = json.loads(tools["benchmark_model"]("gemma-3b"))
 
         assert result["best_engine"] == "mlx-lm"
@@ -630,7 +630,7 @@ class TestBenchmarkModel:
         mock_registry.benchmark_all.return_value = ranked
 
         tools = _get_tool_funcs()
-        with patch("octomil.engines.registry.get_registry", return_value=mock_registry):
+        with patch("octomil.runtime.engines.registry.get_registry", return_value=mock_registry):
             result = json.loads(tools["benchmark_model"]("gemma-3b", engine="mlx-lm"))
 
         assert result["best_engine"] == "mlx-lm"
@@ -642,7 +642,7 @@ class TestBenchmarkModel:
         mock_registry.engines = [FakeEnginePlugin("mlx-lm")]
 
         tools = _get_tool_funcs()
-        with patch("octomil.engines.registry.get_registry", return_value=mock_registry):
+        with patch("octomil.runtime.engines.registry.get_registry", return_value=mock_registry):
             result = json.loads(tools["benchmark_model"]("gemma-3b", engine="nope"))
 
         assert result["error"] == "unknown_engine"

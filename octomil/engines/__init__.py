@@ -1,19 +1,12 @@
-"""Octomil engine plugin system — detect, benchmark, pick fastest runtime.
+"""Backward-compatible re-exports — use octomil.runtime.engines instead."""
 
-Usage::
-
-    from octomil.engines import get_registry
-
-    registry = get_registry()
-    engine, results = registry.auto_select("gemma-2b")
-    backend = engine.create_backend("gemma-2b")
-"""
-
-from .base import BenchmarkResult, EnginePlugin
-from .registry import (
+from octomil.runtime.core.base import BenchmarkResult, EnginePlugin
+from octomil.runtime.engines.registry import (
     DetectionResult,
     EngineRegistry,
     RankedEngine,
+    _auto_register,
+    _register_experimental,
     get_registry,
     reset_registry,
 )
@@ -24,6 +17,8 @@ __all__ = [
     "EnginePlugin",
     "EngineRegistry",
     "RankedEngine",
+    "_auto_register",
+    "_register_experimental",
     "get_registry",
     "reset_registry",
 ]

@@ -46,7 +46,7 @@ SYSTEM_PROMPTS: dict[str, str] = {
         "framework and follow its conventions."
     ),
     "general_task": (
-        "You are a helpful AI assistant specialising in software engineering. " "Answer clearly and concisely."
+        "You are a helpful AI assistant specialising in software engineering. Answer clearly and concisely."
     ),
     "review_file": (
         "You are a senior code reviewer. The user has provided the full "

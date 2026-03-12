@@ -1136,9 +1136,9 @@ class OctomilClient:
         Returns:
             A ``Model`` instance backed by the best available engine.
         """
-        from .engines import get_registry
         from .model import Model as _Model
         from .model import ModelMetadata
+        from .runtime.engines import get_registry
 
         eng_registry = get_registry()
         selected_engine, _ = eng_registry.auto_select(name, engine_override=engine)
