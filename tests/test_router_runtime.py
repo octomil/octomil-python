@@ -4,10 +4,10 @@ from __future__ import annotations
 
 import pytest
 
-from octomil.responses.runtime.model_runtime import ModelRuntime
-from octomil.responses.runtime.policy import RoutingPolicy
-from octomil.responses.runtime.router import RouterModelRuntime
-from octomil.responses.runtime.types import (
+from octomil.runtime.core.model_runtime import ModelRuntime
+from octomil.runtime.core.policy import RoutingPolicy
+from octomil.runtime.core.router import RouterModelRuntime
+from octomil.runtime.core.types import (
     RuntimeCapabilities,
     RuntimeChunk,
     RuntimeRequest,

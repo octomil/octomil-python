@@ -14,6 +14,15 @@ Usage::
     resolved = resolve("gemma-3b:4bit", available_engines=["mlx-lm", "llama.cpp"])
 """
 
+# Re-export legacy data classes from the old models.py
+from ._types import (
+    DeploymentPlan,
+    DeploymentResult,
+    DeviceDeployment,
+    DeviceDeploymentStatus,
+    RollbackResult,
+    TrainingSession,
+)
 from .catalog import (
     CATALOG,
     MoEMetadata,
@@ -24,16 +33,6 @@ from .catalog import (
 )
 from .parser import ParsedModel, parse
 from .resolver import ResolvedModel, resolve
-
-# Re-export legacy data classes from the old models.py
-from ._types import (
-    DeploymentPlan,
-    DeploymentResult,
-    DeviceDeployment,
-    DeviceDeploymentStatus,
-    RollbackResult,
-    TrainingSession,
-)
 
 __all__ = [
     # New model resolution API

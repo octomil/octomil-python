@@ -78,9 +78,9 @@ class TestLlamaCppFlashAttn:
 
         mock_llama_cls.assert_called_once()
         call_kwargs = mock_llama_cls.call_args
-        assert (
-            call_kwargs.kwargs.get("flash_attn") is True
-        ), "Llama() constructor must receive flash_attn=True for local .gguf files"
+        assert call_kwargs.kwargs.get("flash_attn") is True, (
+            "Llama() constructor must receive flash_attn=True for local .gguf files"
+        )
         assert call_kwargs.kwargs.get("model_path") == "model.gguf"
 
     def test_load_model_hf_repo_passes_flash_attn(self):
@@ -96,9 +96,9 @@ class TestLlamaCppFlashAttn:
 
         mock_from_pretrained.assert_called_once()
         call_kwargs = mock_from_pretrained.call_args
-        assert (
-            call_kwargs.kwargs.get("flash_attn") is True
-        ), "Llama.from_pretrained() must receive flash_attn=True for HF repo IDs"
+        assert call_kwargs.kwargs.get("flash_attn") is True, (
+            "Llama.from_pretrained() must receive flash_attn=True for HF repo IDs"
+        )
         assert call_kwargs.kwargs.get("repo_id") == "user/some-model"
 
     def test_load_model_resolved_gguf_passes_flash_attn(self):
@@ -122,9 +122,9 @@ class TestLlamaCppFlashAttn:
 
         mock_from_pretrained.assert_called_once()
         call_kwargs = mock_from_pretrained.call_args
-        assert (
-            call_kwargs.kwargs.get("flash_attn") is True
-        ), "Llama.from_pretrained() must receive flash_attn=True for resolver-resolved models"
+        assert call_kwargs.kwargs.get("flash_attn") is True, (
+            "Llama.from_pretrained() must receive flash_attn=True for resolver-resolved models"
+        )
 
     def test_load_model_legacy_catalog_passes_flash_attn(self):
         """Llama.from_pretrained() should receive flash_attn=True for legacy catalog models."""
@@ -148,9 +148,9 @@ class TestLlamaCppFlashAttn:
 
         mock_from_pretrained.assert_called_once()
         call_kwargs = mock_from_pretrained.call_args
-        assert (
-            call_kwargs.kwargs.get("flash_attn") is True
-        ), "Llama.from_pretrained() must receive flash_attn=True for legacy catalog models"
+        assert call_kwargs.kwargs.get("flash_attn") is True, (
+            "Llama.from_pretrained() must receive flash_attn=True for legacy catalog models"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -161,7 +161,7 @@ class TestLlamaCppFlashAttn:
 class TestMLXAttentionBackend:
     def test_mlx_engine_module_docstring_mentions_metal_fused(self):
         """The mlx_engine module docstring should document Metal fused attention."""
-        from octomil.engines import mlx_engine
+        from octomil.runtime.engines.mlx import engine as mlx_engine
 
         assert "Metal fused attention" in mlx_engine.__doc__
 
@@ -176,7 +176,7 @@ class TestMLXAttentionBackend:
 
 class TestORTAttentionBackend:
     def test_ort_backend_attention_backend_is_sdpa(self):
-        from octomil.engines.ort_engine import _ORTBackend
+        from octomil.runtime.engines.ort.engine import _ORTBackend
 
         backend = _ORTBackend("test-model")
         assert backend.attention_backend == "sdpa"
@@ -185,7 +185,7 @@ class TestORTAttentionBackend:
         """ORT session generate should set attention_backend='sdpa' in metrics."""
         import numpy as np
 
-        from octomil.engines.ort_engine import _ORTBackend
+        from octomil.runtime.engines.ort.engine import _ORTBackend
 
         mock_input = MagicMock()
         mock_input.name = "input_ids"
@@ -211,7 +211,7 @@ class TestORTAttentionBackend:
 
     def test_ort_generate_genai_returns_sdpa(self):
         """ORT GenAI generate should set attention_backend='sdpa' in metrics."""
-        from octomil.engines.ort_engine import _ORTBackend
+        from octomil.runtime.engines.ort.engine import _ORTBackend
 
         mock_og = MagicMock()
         mock_model = MagicMock()
@@ -392,7 +392,7 @@ class TestTelemetryAttentionBackend:
 class TestEnginePluginAttentionBackend:
     def test_llamacpp_engine_creates_backend_with_flash_attention(self):
         """LlamaCppEngine.create_backend should return a backend with flash_attention."""
-        from octomil.engines.llamacpp_engine import LlamaCppEngine
+        from octomil.runtime.engines.llamacpp.engine import LlamaCppEngine
 
         engine = LlamaCppEngine()
         with patch("octomil.serve.LlamaCppBackend") as MockBackend:
@@ -404,7 +404,7 @@ class TestEnginePluginAttentionBackend:
 
     def test_mlx_engine_creates_backend_with_metal_fused(self):
         """MLXEngine.create_backend should return a backend with metal_fused."""
-        from octomil.engines.mlx_engine import MLXEngine
+        from octomil.runtime.engines.mlx.engine import MLXEngine
 
         engine = MLXEngine()
         with patch("octomil.serve.MLXBackend") as MockBackend:
@@ -416,7 +416,7 @@ class TestEnginePluginAttentionBackend:
 
     def test_ort_engine_creates_backend_with_sdpa(self):
         """ONNXRuntimeEngine.create_backend should return a backend with sdpa."""
-        from octomil.engines.ort_engine import ONNXRuntimeEngine
+        from octomil.runtime.engines.ort.engine import ONNXRuntimeEngine
 
         engine = ONNXRuntimeEngine()
         backend = engine.create_backend("test-model")

@@ -5,17 +5,17 @@ from __future__ import annotations
 import pytest
 
 from octomil.responses.responses import OctomilResponses
-from octomil.responses.runtime.model_runtime import ModelRuntime
-from octomil.responses.runtime.registry import ModelRuntimeRegistry
-from octomil.responses.runtime.types import (
-    RuntimeCapabilities,
-    RuntimeChunk,
-    RuntimeResponse,
-)
 from octomil.responses.types import (
     ResponseRequest,
     TextOutput,
     text_input,
+)
+from octomil.runtime.core.model_runtime import ModelRuntime
+from octomil.runtime.core.registry import ModelRuntimeRegistry
+from octomil.runtime.core.types import (
+    RuntimeCapabilities,
+    RuntimeChunk,
+    RuntimeResponse,
 )
 
 

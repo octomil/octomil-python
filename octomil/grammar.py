@@ -33,7 +33,6 @@ import json
 import re
 from typing import Any, Optional
 
-
 # ---------------------------------------------------------------------------
 # Generic JSON GBNF grammar
 # ---------------------------------------------------------------------------
@@ -81,9 +80,7 @@ class _GBNFBuilder:
         self._rules["boolean"] = '("true" | "false") ws'
         self._rules["null"] = '"null" ws'
         self._rules["value"] = "object | array | string | number | boolean | null"
-        self._rules["object"] = (
-            '"{" ws (string ":" ws value ("," ws string ":" ws value)*)? "}" ws'
-        )
+        self._rules["object"] = '"{" ws (string ":" ws value ("," ws string ":" ws value)*)? "}" ws'
         self._rules["array"] = '"[" ws (value ("," ws value)*)? "]" ws'
 
     def _fresh_name(self, hint: str = "rule") -> str:
@@ -364,7 +361,5 @@ def json_system_prompt(schema: Optional[dict[str, Any]] = None) -> str:
     constrained decoding (e.g. MLX).
     """
     if schema:
-        return _JSON_SCHEMA_SYSTEM_PROMPT_TEMPLATE.format(
-            schema=json.dumps(schema, indent=2)
-        )
+        return _JSON_SCHEMA_SYSTEM_PROMPT_TEMPLATE.format(schema=json.dumps(schema, indent=2))
     return _JSON_SYSTEM_PROMPT

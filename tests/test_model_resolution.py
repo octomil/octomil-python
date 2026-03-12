@@ -154,9 +154,9 @@ class TestCatalog:
     def test_all_families_have_default_variant(self) -> None:
         """Every family must have its default_quant variant."""
         for name, entry in CATALOG.items():
-            assert (
-                entry.default_quant in entry.variants
-            ), f"{name} has default_quant '{entry.default_quant}' but no matching variant"
+            assert entry.default_quant in entry.variants, (
+                f"{name} has default_quant '{entry.default_quant}' but no matching variant"
+            )
 
     def test_all_families_have_publisher(self) -> None:
         """Every family must have a publisher."""

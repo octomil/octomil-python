@@ -81,7 +81,7 @@ class TestControlSyncResultSchema:
         dc_fields = {f.name for f in dataclasses.fields(ControlSyncResult)}
         for json_key, python_key in _FIELD_MAP.items():
             assert python_key in dc_fields, (
-                f"ControlSyncResult missing field '{python_key}' " f"(contract key: '{json_key}')"
+                f"ControlSyncResult missing field '{python_key}' (contract key: '{json_key}')"
             )
 
     def test_field_count(self) -> None:

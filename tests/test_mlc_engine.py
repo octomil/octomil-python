@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
-from octomil.engines.base import BenchmarkResult
-from octomil.engines.mlc_engine import (
+from octomil.runtime.core.base import BenchmarkResult
+from octomil.runtime.engines.experimental.mlc.engine import (
     _MLC_CATALOG,
     _MLC_QUANT_SUFFIXES,
     MLCBackend,
@@ -159,23 +159,23 @@ class TestMLCEngine:
         assert self.engine.name == "mlc-llm"
 
     def test_display_name_with_gpu(self) -> None:
-        with patch("octomil.engines.mlc_engine._detect_gpu", return_value="cuda"):
+        with patch("octomil.runtime.engines.experimental.mlc.engine._detect_gpu", return_value="cuda"):
             assert "CUDA" in self.engine.display_name
 
     def test_display_name_with_metal(self) -> None:
-        with patch("octomil.engines.mlc_engine._detect_gpu", return_value="metal"):
+        with patch("octomil.runtime.engines.experimental.mlc.engine._detect_gpu", return_value="metal"):
             assert "METAL" in self.engine.display_name
 
     def test_display_name_without_gpu(self) -> None:
-        with patch("octomil.engines.mlc_engine._detect_gpu", return_value=None):
+        with patch("octomil.runtime.engines.experimental.mlc.engine._detect_gpu", return_value=None):
             assert "GPU" in self.engine.display_name
 
     def test_priority(self) -> None:
         assert self.engine.priority == 18
 
     def test_priority_between_mnn_and_llamacpp(self) -> None:
-        from octomil.engines.llamacpp_engine import LlamaCppEngine
-        from octomil.engines.mnn_engine import MNNEngine
+        from octomil.runtime.engines.experimental.mnn.engine import MNNEngine
+        from octomil.runtime.engines.llamacpp.engine import LlamaCppEngine
 
         mnn = MNNEngine()
         llama = LlamaCppEngine()
@@ -183,38 +183,38 @@ class TestMLCEngine:
 
     def test_detect_with_mlc_and_gpu(self) -> None:
         with (
-            patch("octomil.engines.mlc_engine._has_mlc_llm", return_value=True),
-            patch("octomil.engines.mlc_engine._detect_gpu", return_value="cuda"),
+            patch("octomil.runtime.engines.experimental.mlc.engine._has_mlc_llm", return_value=True),
+            patch("octomil.runtime.engines.experimental.mlc.engine._detect_gpu", return_value="cuda"),
         ):
             assert self.engine.detect() is True
 
     def test_detect_without_mlc(self) -> None:
         with (
-            patch("octomil.engines.mlc_engine._has_mlc_llm", return_value=False),
+            patch("octomil.runtime.engines.experimental.mlc.engine._has_mlc_llm", return_value=False),
         ):
             assert self.engine.detect() is False
 
     def test_detect_without_gpu(self) -> None:
         with (
-            patch("octomil.engines.mlc_engine._has_mlc_llm", return_value=True),
-            patch("octomil.engines.mlc_engine._detect_gpu", return_value=None),
+            patch("octomil.runtime.engines.experimental.mlc.engine._has_mlc_llm", return_value=True),
+            patch("octomil.runtime.engines.experimental.mlc.engine._detect_gpu", return_value=None),
         ):
             assert self.engine.detect() is False
 
     def test_detect_info_with_mlc(self) -> None:
         with (
             patch(
-                "octomil.engines.mlc_engine._get_mlc_version",
+                "octomil.runtime.engines.experimental.mlc.engine._get_mlc_version",
                 return_value="0.1.0",
             ),
-            patch("octomil.engines.mlc_engine._detect_gpu", return_value="cuda"),
+            patch("octomil.runtime.engines.experimental.mlc.engine._detect_gpu", return_value="cuda"),
         ):
             info = self.engine.detect_info()
             assert "mlc_llm 0.1.0" in info
             assert "cuda" in info
 
     def test_detect_info_empty_when_unavailable(self) -> None:
-        with patch("octomil.engines.mlc_engine._get_mlc_version", return_value=""):
+        with patch("octomil.runtime.engines.experimental.mlc.engine._get_mlc_version", return_value=""):
             assert self.engine.detect_info() == ""
 
     def test_supports_catalog_models(self) -> None:
@@ -235,15 +235,15 @@ class TestMLCEngine:
         assert self.engine.supports_model("totally-fake-model-xyz") is False
 
     def test_benchmark_unavailable(self) -> None:
-        with patch("octomil.engines.mlc_engine._has_mlc_llm", return_value=False):
+        with patch("octomil.runtime.engines.experimental.mlc.engine._has_mlc_llm", return_value=False):
             result = self.engine.benchmark("gemma-1b")
             assert result.ok is False
             assert "not available" in result.error  # type: ignore[operator]
 
     def test_benchmark_no_gpu(self) -> None:
         with (
-            patch("octomil.engines.mlc_engine._has_mlc_llm", return_value=True),
-            patch("octomil.engines.mlc_engine._detect_gpu", return_value=None),
+            patch("octomil.runtime.engines.experimental.mlc.engine._has_mlc_llm", return_value=True),
+            patch("octomil.runtime.engines.experimental.mlc.engine._detect_gpu", return_value=None),
         ):
             result = self.engine.benchmark("gemma-1b")
             assert result.ok is False
@@ -269,8 +269,8 @@ class TestMLCEngine:
         mock_mlc.MLCEngine = mock_mlc_engine_cls
 
         with (
-            patch("octomil.engines.mlc_engine._has_mlc_llm", return_value=True),
-            patch("octomil.engines.mlc_engine._detect_gpu", return_value="cuda"),
+            patch("octomil.runtime.engines.experimental.mlc.engine._has_mlc_llm", return_value=True),
+            patch("octomil.runtime.engines.experimental.mlc.engine._detect_gpu", return_value="cuda"),
             patch.dict("sys.modules", {"mlc_llm": mock_mlc}),
         ):
             result = self.engine.benchmark("REDACTED")
@@ -285,8 +285,8 @@ class TestMLCEngine:
         mock_mlc.MLCEngine.side_effect = RuntimeError("CUDA OOM")
 
         with (
-            patch("octomil.engines.mlc_engine._has_mlc_llm", return_value=True),
-            patch("octomil.engines.mlc_engine._detect_gpu", return_value="cuda"),
+            patch("octomil.runtime.engines.experimental.mlc.engine._has_mlc_llm", return_value=True),
+            patch("octomil.runtime.engines.experimental.mlc.engine._detect_gpu", return_value="cuda"),
             patch.dict("sys.modules", {"mlc_llm": mock_mlc}),
         ):
             result = self.engine.benchmark("gemma-1b")
@@ -348,7 +348,7 @@ class TestMLCBackend:
 
         with (
             patch.dict("sys.modules", {"mlc_llm": mock_mlc}),
-            patch("octomil.engines.mlc_engine._detect_gpu", return_value="cuda"),
+            patch("octomil.runtime.engines.experimental.mlc.engine._detect_gpu", return_value="cuda"),
         ):
             backend = MLCBackend("mlc-ai/test-model-MLC")
             backend.load_model("mlc-ai/test-model-MLC")
@@ -364,7 +364,7 @@ class TestMLCBackend:
 
         with (
             patch.dict("sys.modules", {"mlc_llm": mock_mlc}),
-            patch("octomil.engines.mlc_engine._detect_gpu", return_value="metal"),
+            patch("octomil.runtime.engines.experimental.mlc.engine._detect_gpu", return_value="metal"),
         ):
             backend = MLCBackend("mlc-ai/test-model-MLC")
             backend.load_model("mlc-ai/test-model-MLC")
@@ -712,7 +712,7 @@ class TestMLCResolver:
 
 class TestMLCRegistry:
     def test_engine_registered(self) -> None:
-        from octomil.engines.registry import EngineRegistry
+        from octomil.runtime.engines.registry import EngineRegistry
 
         registry = EngineRegistry()
         engine = MLCEngine()
@@ -720,14 +720,14 @@ class TestMLCRegistry:
         assert registry.get_engine("mlc-llm") is engine
 
     def test_auto_register_includes_mlc(self) -> None:
-        from octomil.engines.registry import EngineRegistry, _auto_register
+        from octomil.runtime.engines.registry import EngineRegistry, _auto_register
 
         registry = EngineRegistry()
         _auto_register(registry)
         assert registry.get_engine("mlc-llm") is not None
 
     def test_global_registry_has_mlc(self) -> None:
-        from octomil.engines.registry import get_registry, reset_registry
+        from octomil.runtime.engines.registry import get_registry, reset_registry
 
         reset_registry()
         try:
@@ -739,7 +739,7 @@ class TestMLCRegistry:
 
     def test_priority_ordering(self) -> None:
         """mlc-llm (18) should be after mnn (15) and before llama.cpp (20)."""
-        from octomil.engines.registry import EngineRegistry, _auto_register
+        from octomil.runtime.engines.registry import EngineRegistry, _auto_register
 
         registry = EngineRegistry()
         _auto_register(registry)
@@ -754,7 +754,7 @@ class TestMLCRegistry:
         assert mnn.priority < mlc.priority < llama.priority
 
     def test_no_duplicate_registration(self) -> None:
-        from octomil.engines.registry import EngineRegistry
+        from octomil.runtime.engines.registry import EngineRegistry
 
         registry = EngineRegistry()
         registry.register(MLCEngine())
@@ -763,7 +763,7 @@ class TestMLCRegistry:
         assert mlc_count == 1
 
     def test_detect_all_includes_mlc(self) -> None:
-        from octomil.engines.registry import EngineRegistry, _auto_register
+        from octomil.runtime.engines.registry import EngineRegistry, _auto_register
 
         registry = EngineRegistry()
         _auto_register(registry)
@@ -781,7 +781,7 @@ class TestMLCEdgeCases:
     def test_benchmark_returns_benchmark_result(self) -> None:
         engine = MLCEngine()
         with (
-            patch("octomil.engines.mlc_engine._has_mlc_llm", return_value=False),
+            patch("octomil.runtime.engines.experimental.mlc.engine._has_mlc_llm", return_value=False),
         ):
             result = engine.benchmark("gemma-1b")
             assert isinstance(result, BenchmarkResult)
@@ -789,7 +789,7 @@ class TestMLCEdgeCases:
     def test_benchmark_result_engine_name(self) -> None:
         engine = MLCEngine()
         with (
-            patch("octomil.engines.mlc_engine._has_mlc_llm", return_value=False),
+            patch("octomil.runtime.engines.experimental.mlc.engine._has_mlc_llm", return_value=False),
         ):
             result = engine.benchmark("gemma-1b")
             assert result.engine_name == "mlc-llm"
@@ -799,12 +799,12 @@ class TestMLCEdgeCases:
         assert backend._kwargs == {"some_param": "value"}
 
     def test_engine_is_subclass(self) -> None:
-        from octomil.engines.base import EnginePlugin
+        from octomil.runtime.core.base import EnginePlugin
 
         assert issubclass(MLCEngine, EnginePlugin)
 
     def test_engine_instance_check(self) -> None:
-        from octomil.engines.base import EnginePlugin
+        from octomil.runtime.core.base import EnginePlugin
 
         engine = MLCEngine()
         assert isinstance(engine, EnginePlugin)

@@ -269,7 +269,7 @@ class TestClientLoadModel:
         fake_engine = _make_engine()
         fake_engine.name = "mlx-lm"
 
-        with patch("octomil.engines.get_registry") as mock_get_reg:
+        with patch("octomil.runtime.engines.get_registry") as mock_get_reg:
             mock_reg_instance = MagicMock()
             mock_reg_instance.auto_select.return_value = (fake_engine, [])
             mock_get_reg.return_value = mock_reg_instance
@@ -295,7 +295,7 @@ class TestClientLoadModel:
         fake_engine = _make_engine()
         fake_engine.name = "llama.cpp"
 
-        with patch("octomil.engines.get_registry") as mock_get_reg:
+        with patch("octomil.runtime.engines.get_registry") as mock_get_reg:
             mock_reg_instance = MagicMock()
             mock_reg_instance.auto_select.return_value = (fake_engine, [])
             mock_get_reg.return_value = mock_reg_instance
@@ -324,7 +324,7 @@ class TestClientLoadModel:
 
         fake_engine = _make_engine()
 
-        with patch("octomil.engines.get_registry") as mock_get_reg:
+        with patch("octomil.runtime.engines.get_registry") as mock_get_reg:
             mock_reg_instance = MagicMock()
             mock_reg_instance.auto_select.return_value = (fake_engine, [])
             mock_get_reg.return_value = mock_reg_instance
@@ -362,7 +362,7 @@ class TestClientPredict:
         backend.generate.return_value = ("Four.", metrics)
         fake_engine = _make_engine(backend)
 
-        with patch("octomil.engines.get_registry") as mock_get_reg:
+        with patch("octomil.runtime.engines.get_registry") as mock_get_reg:
             mock_reg_instance = MagicMock()
             mock_reg_instance.auto_select.return_value = (fake_engine, [])
             mock_get_reg.return_value = mock_reg_instance
@@ -392,7 +392,7 @@ class TestClientPredict:
         backend.generate.return_value = ("ok", InferenceMetrics())
         fake_engine = _make_engine(backend)
 
-        with patch("octomil.engines.get_registry") as mock_get_reg:
+        with patch("octomil.runtime.engines.get_registry") as mock_get_reg:
             mock_reg_instance = MagicMock()
             mock_reg_instance.auto_select.return_value = (fake_engine, [])
             mock_get_reg.return_value = mock_reg_instance
@@ -420,7 +420,7 @@ class TestClientPredict:
         backend.generate.return_value = ("ok", InferenceMetrics())
         fake_engine = _make_engine(backend)
 
-        with patch("octomil.engines.get_registry") as mock_get_reg:
+        with patch("octomil.runtime.engines.get_registry") as mock_get_reg:
             mock_reg_instance = MagicMock()
             mock_reg_instance.auto_select.return_value = (fake_engine, [])
             mock_get_reg.return_value = mock_reg_instance
@@ -452,7 +452,7 @@ class TestClientPredict:
         backend.generate.return_value = ("ok", InferenceMetrics())
         fake_engine = _make_engine(backend)
 
-        with patch("octomil.engines.get_registry") as mock_get_reg:
+        with patch("octomil.runtime.engines.get_registry") as mock_get_reg:
             mock_reg_instance = MagicMock()
             mock_reg_instance.auto_select.return_value = (fake_engine, [])
             mock_get_reg.return_value = mock_reg_instance

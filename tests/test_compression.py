@@ -619,7 +619,7 @@ class TestCompressionCLI:
         from octomil.cli import main
 
         runner = CliRunner()
-        with patch("octomil.engines.get_registry") as mock_registry:
+        with patch("octomil.runtime.engines.get_registry") as mock_registry:
             # Set up a minimal mock registry
             mock_reg = MagicMock()
             mock_detection = MagicMock()

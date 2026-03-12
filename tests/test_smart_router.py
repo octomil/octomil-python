@@ -221,7 +221,7 @@ class TestLifecycle:
         router = _make_router()
         assert router.list_models() == ["test-model"]
 
-    @patch("octomil.engines.get_registry")
+    @patch("octomil.runtime.engines.get_registry")
     def test_load_model_with_registry(self, mock_get_registry):
         """Test that load_model uses the engine registry."""
         mock_engine_mlx = MagicMock()
@@ -256,7 +256,7 @@ class TestLifecycle:
 
     def test_load_model_raises_when_nothing_loads(self):
         router = SmartRouter()
-        with patch("octomil.engines.get_registry") as mock:
+        with patch("octomil.runtime.engines.get_registry") as mock:
             mock.return_value.detect_all.return_value = []
             with pytest.raises(RuntimeError, match="no backend could load"):
                 router.load_model("nonexistent")

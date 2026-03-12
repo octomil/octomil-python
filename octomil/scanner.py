@@ -22,7 +22,6 @@ import re
 from dataclasses import asdict, dataclass
 from typing import Optional
 
-
 # ---------------------------------------------------------------------------
 # Data model
 # ---------------------------------------------------------------------------
@@ -579,9 +578,7 @@ def format_text(points: list[InferencePoint]) -> str:
 
     # Summary
     files = {pt.file for pt in points}
-    lines.append(
-        f"Summary: {len(points)} inference point(s) found across {len(files)} file(s)"
-    )
+    lines.append(f"Summary: {len(points)} inference point(s) found across {len(files)} file(s)")
 
     # Per-platform breakdown
     platform_counts: dict[str, int] = {}

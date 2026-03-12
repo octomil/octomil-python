@@ -6,7 +6,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from octomil.engines.samsung_one_engine import (
+from octomil.runtime.engines.experimental.samsung_one.engine import (
     SamsungOneEngine,
     _get_onert_version,
     _has_onert,
@@ -41,18 +41,18 @@ class TestSamsungOneEngine:
         assert engine.backend == "npu"
 
     def test_detect_with_onert(self) -> None:
-        with patch("octomil.engines.samsung_one_engine._has_onert", return_value=True):
+        with patch("octomil.runtime.engines.experimental.samsung_one.engine._has_onert", return_value=True):
             assert self.engine.detect() is True
 
     def test_detect_without_onert(self) -> None:
-        with patch("octomil.engines.samsung_one_engine._has_onert", return_value=False):
+        with patch("octomil.runtime.engines.experimental.samsung_one.engine._has_onert", return_value=False):
             assert self.engine.detect() is False
 
     def test_detect_info_available(self) -> None:
         with (
-            patch("octomil.engines.samsung_one_engine._has_onert", return_value=True),
+            patch("octomil.runtime.engines.experimental.samsung_one.engine._has_onert", return_value=True),
             patch(
-                "octomil.engines.samsung_one_engine._get_onert_version",
+                "octomil.runtime.engines.experimental.samsung_one.engine._get_onert_version",
                 return_value="1.31.0",
             ),
         ):
@@ -62,9 +62,9 @@ class TestSamsungOneEngine:
 
     def test_detect_info_no_version(self) -> None:
         with (
-            patch("octomil.engines.samsung_one_engine._has_onert", return_value=True),
+            patch("octomil.runtime.engines.experimental.samsung_one.engine._has_onert", return_value=True),
             patch(
-                "octomil.engines.samsung_one_engine._get_onert_version",
+                "octomil.runtime.engines.experimental.samsung_one.engine._get_onert_version",
                 return_value=None,
             ),
         ):
@@ -73,7 +73,7 @@ class TestSamsungOneEngine:
             assert "v" not in info
 
     def test_detect_info_unavailable(self) -> None:
-        with patch("octomil.engines.samsung_one_engine._has_onert", return_value=False):
+        with patch("octomil.runtime.engines.experimental.samsung_one.engine._has_onert", return_value=False):
             assert self.engine.detect_info() == ""
 
     def test_supports_nnpackage(self) -> None:
@@ -98,7 +98,7 @@ class TestSamsungOneEngine:
             assert self.engine.supports_model("model.gguf") is False
 
     def test_benchmark_unavailable(self) -> None:
-        with patch("octomil.engines.samsung_one_engine._has_onert", return_value=False):
+        with patch("octomil.runtime.engines.experimental.samsung_one.engine._has_onert", return_value=False):
             result = self.engine.benchmark("model.nnpackage")
             assert result.ok is False
             assert "not available" in result.error
@@ -120,9 +120,9 @@ class TestSamsungOneEngine:
         mock_onert.infer = mock_infer
 
         with (
-            patch("octomil.engines.samsung_one_engine._has_onert", return_value=True),
+            patch("octomil.runtime.engines.experimental.samsung_one.engine._has_onert", return_value=True),
             patch(
-                "octomil.engines.samsung_one_engine.SamsungOneEngine._resolve_model_path",
+                "octomil.runtime.engines.experimental.samsung_one.engine.SamsungOneEngine._resolve_model_path",
                 return_value="/tmp/model.nnpackage",
             ),
             patch.dict(
@@ -142,9 +142,9 @@ class TestSamsungOneEngine:
         mock_onert.infer = mock_infer
 
         with (
-            patch("octomil.engines.samsung_one_engine._has_onert", return_value=True),
+            patch("octomil.runtime.engines.experimental.samsung_one.engine._has_onert", return_value=True),
             patch(
-                "octomil.engines.samsung_one_engine.SamsungOneEngine._resolve_model_path",
+                "octomil.runtime.engines.experimental.samsung_one.engine.SamsungOneEngine._resolve_model_path",
                 side_effect=FileNotFoundError("not found"),
             ),
             patch.dict(
@@ -157,17 +157,17 @@ class TestSamsungOneEngine:
             assert "not found" in result.error
 
     def test_create_backend_without_onert(self) -> None:
-        with patch("octomil.engines.samsung_one_engine._has_onert", return_value=False):
+        with patch("octomil.runtime.engines.experimental.samsung_one.engine._has_onert", return_value=False):
             with pytest.raises(RuntimeError, match="onert package is required"):
                 self.engine.create_backend("model.nnpackage")
 
     def test_create_backend_with_onert(self) -> None:
-        with patch("octomil.engines.samsung_one_engine._has_onert", return_value=True):
+        with patch("octomil.runtime.engines.experimental.samsung_one.engine._has_onert", return_value=True):
             backend = self.engine.create_backend("model.nnpackage")
             assert backend.model_name == "model.nnpackage"
 
     def test_create_backend_custom_backend(self) -> None:
-        with patch("octomil.engines.samsung_one_engine._has_onert", return_value=True):
+        with patch("octomil.runtime.engines.experimental.samsung_one.engine._has_onert", return_value=True):
             backend = self.engine.create_backend("model.nnpackage", backend="npu")
             assert backend._backend == "npu"
 
@@ -239,7 +239,7 @@ class TestGetOnertVersion:
 
 class TestSamsungOneRegistry:
     def test_engine_registered(self) -> None:
-        from octomil.engines.registry import EngineRegistry
+        from octomil.runtime.engines.registry import EngineRegistry
 
         registry = EngineRegistry()
         engine = SamsungOneEngine()
@@ -247,7 +247,7 @@ class TestSamsungOneRegistry:
         assert registry.get_engine("samsung-one") is engine
 
     def test_auto_register_includes_samsung_one(self) -> None:
-        from octomil.engines.registry import EngineRegistry, _auto_register
+        from octomil.runtime.engines.registry import EngineRegistry, _auto_register
 
         registry = EngineRegistry()
         _auto_register(registry)
@@ -256,11 +256,11 @@ class TestSamsungOneRegistry:
 
 class TestSamsungOneBackend:
     def test_list_models(self) -> None:
-        with patch("octomil.engines.samsung_one_engine._has_onert", return_value=True):
+        with patch("octomil.runtime.engines.experimental.samsung_one.engine._has_onert", return_value=True):
             backend = SamsungOneEngine(backend="cpu").create_backend("model.nnpackage")
             assert backend.list_models() == ["model.nnpackage"]
 
     def test_list_models_empty(self) -> None:
-        with patch("octomil.engines.samsung_one_engine._has_onert", return_value=True):
+        with patch("octomil.runtime.engines.experimental.samsung_one.engine._has_onert", return_value=True):
             backend = SamsungOneEngine(backend="cpu").create_backend("")
             assert backend.list_models() == []

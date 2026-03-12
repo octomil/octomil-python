@@ -6,7 +6,7 @@ from typing import AsyncIterator
 
 import pytest
 
-from octomil.responses.runtime import (
+from octomil.runtime.core import (
     ModelRuntime,
     ModelRuntimeRegistry,
     RuntimeCapabilities,

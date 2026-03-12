@@ -6,7 +6,7 @@ import types
 import unittest
 from unittest.mock import MagicMock, patch
 
-from octomil.engines.cactus_engine import CactusEngine, _try_import_cactus
+from octomil.runtime.engines.experimental.cactus.engine import CactusEngine, _try_import_cactus
 
 
 class TestCactusEngineProperties(unittest.TestCase):
@@ -47,7 +47,7 @@ class TestCactusEngineDetection(unittest.TestCase):
         with patch.dict(sys.modules, {"cactus": None, "cactus.cactus": None}):
             # _try_import_cactus should return None when imports fail
             with patch(
-                "octomil.engines.cactus_engine._try_import_cactus",
+                "octomil.runtime.engines.experimental.cactus.engine._try_import_cactus",
                 return_value=None,
             ):
                 result = engine.detect()
@@ -108,7 +108,7 @@ class TestCactusEngineBenchmark(unittest.TestCase):
         )
 
         with patch(
-            "octomil.engines.cactus_engine._try_import_cactus",
+            "octomil.runtime.engines.experimental.cactus.engine._try_import_cactus",
             return_value=mock_cactus,
         ):
             result = engine.benchmark("gemma-1b", n_tokens=32)
@@ -127,7 +127,7 @@ class TestCactusEngineBenchmark(unittest.TestCase):
         mock_cactus.cactus_get_last_error.return_value = "model not found"
 
         with patch(
-            "octomil.engines.cactus_engine._try_import_cactus",
+            "octomil.runtime.engines.experimental.cactus.engine._try_import_cactus",
             return_value=mock_cactus,
         ):
             result = engine.benchmark("bad-model", n_tokens=32)
@@ -139,7 +139,7 @@ class TestCactusEngineBenchmark(unittest.TestCase):
         engine = CactusEngine()
 
         with patch(
-            "octomil.engines.cactus_engine._try_import_cactus",
+            "octomil.runtime.engines.experimental.cactus.engine._try_import_cactus",
             return_value=None,
         ):
             result = engine.benchmark("gemma-1b", n_tokens=32)
@@ -178,7 +178,7 @@ class TestCactusEngineInRegistry(unittest.TestCase):
     """Test that CactusEngine is registered in the global registry."""
 
     def test_registry_contains_cactus(self):
-        from octomil.engines.registry import EngineRegistry, _auto_register
+        from octomil.runtime.engines.registry import EngineRegistry, _auto_register
 
         registry = EngineRegistry()
         _auto_register(registry)
@@ -186,7 +186,7 @@ class TestCactusEngineInRegistry(unittest.TestCase):
         self.assertIn("cactus", names)
 
     def test_cactus_after_llamacpp_in_registry(self):
-        from octomil.engines.registry import EngineRegistry, _auto_register
+        from octomil.runtime.engines.registry import EngineRegistry, _auto_register
 
         registry = EngineRegistry()
         _auto_register(registry)

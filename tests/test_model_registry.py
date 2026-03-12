@@ -137,9 +137,9 @@ class TestResolveModel:
     def test_all_families_have_default_variant(self) -> None:
         """Every family's default_tag must exist in its variants."""
         for name, family in MODEL_FAMILIES.items():
-            assert (
-                family.default_tag in family.variants
-            ), f"{name} has default_tag '{family.default_tag}' but no matching variant"
+            assert family.default_tag in family.variants, (
+                f"{name} has default_tag '{family.default_tag}' but no matching variant"
+            )
 
 
 # =====================================================================
