@@ -473,7 +473,7 @@ class TestDeviceInfo(unittest.TestCase):
         }
         self.assertEqual(set(result.keys()), expected_top_keys)
         self.assertEqual(result["device_identifier"], "test-device-id")
-        self.assertEqual(result["platform"], "darwin")
+        self.assertEqual(result["platform"], "macos")
         self.assertEqual(result["os_version"], "Darwin 23.1.0")
         self.assertEqual(result["locale"], "en_US")
         self.assertEqual(result["region"], "US")
