@@ -22,9 +22,11 @@ from typing import TYPE_CHECKING, Any, AsyncIterator, Iterator, Optional
 if TYPE_CHECKING:
     from .embeddings import EmbeddingResult
     from .model import Model, Prediction
+    from .responses.responses import OctomilResponses
     from .serve import GenerationChunk
     from .streaming import StreamToken
     from .telemetry import TelemetryReporter
+    from .workflows import WorkflowRunner
 
 logger = logging.getLogger(__name__)
 
@@ -98,6 +100,10 @@ class OctomilClient:
         )
         self._rollouts = RolloutsAPI(self._api)
 
+        # Lazy-initialised response and workflow APIs
+        self._responses: OctomilResponses | None = None
+        self._workflows: WorkflowRunner | None = None
+
         # Telemetry — best-effort, never blocks or raises
         self._reporter: TelemetryReporter | None = None
         if self._api_key:
@@ -111,6 +117,32 @@ class OctomilClient:
                 )
             except Exception:
                 logger.debug("Failed to initialise telemetry reporter", exc_info=True)
+
+    # ------------------------------------------------------------------
+    # Responses API — structured on-device inference
+    # ------------------------------------------------------------------
+
+    @property
+    def responses(self) -> OctomilResponses:
+        """Structured response API for on-device inference."""
+        if self._responses is None:
+            from .responses import OctomilResponses
+
+            self._responses = OctomilResponses()
+        return self._responses
+
+    # ------------------------------------------------------------------
+    # Workflows — multi-step orchestration
+    # ------------------------------------------------------------------
+
+    @property
+    def workflows(self) -> WorkflowRunner:
+        """Workflow orchestration for multi-step pipelines."""
+        if self._workflows is None:
+            from .workflows import WorkflowRunner
+
+            self._workflows = WorkflowRunner(self.responses)
+        return self._workflows
 
     # ------------------------------------------------------------------
     # Push — upload a model file + trigger server-side conversion

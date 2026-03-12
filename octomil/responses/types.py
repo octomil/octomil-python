@@ -110,7 +110,7 @@ class JsonSchemaFormat:
 @dataclass
 class ResponseRequest:
     model: str
-    input: list[InputItem]
+    input: list[InputItem] | str
     tools: list[dict[str, Any]] = field(default_factory=list)
     tool_choice: ToolChoice | SpecificToolChoice = ToolChoice.AUTO
     response_format: ResponseFormat | JsonSchemaFormat = ResponseFormat.TEXT
@@ -120,6 +120,13 @@ class ResponseRequest:
     top_p: Optional[float] = None
     stop: Optional[list[str]] = None
     metadata: Optional[dict[str, str]] = None
+    instructions: Optional[str] = None
+    previous_response_id: Optional[str] = None
+
+    @staticmethod
+    def text(model: str, text: str, **kwargs: Any) -> ResponseRequest:
+        """Create a ResponseRequest with a single text input."""
+        return ResponseRequest(model=model, input=[text_input(text)], **kwargs)
 
 
 # -- Output Items --

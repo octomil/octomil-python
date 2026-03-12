@@ -17,6 +17,7 @@ import os as _os
 import sys as _sys
 from typing import Optional as _Optional
 
+from . import responses  # noqa: F401
 from .client import OctomilClient
 from .decomposer import (
     DecompositionResult,
@@ -201,7 +202,7 @@ def init(
         )
     else:
         if resp.status_code in (401, 403):
-            raise ValueError(f"Invalid Octomil API key (HTTP {resp.status_code}). " "Check your OCTOMIL_API_KEY.")
+            raise ValueError(f"Invalid Octomil API key (HTTP {resp.status_code}). Check your OCTOMIL_API_KEY.")
 
     _reporter = TelemetryReporter(
         api_key=resolved_key,

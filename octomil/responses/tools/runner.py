@@ -5,10 +5,12 @@ from __future__ import annotations
 from ..responses import OctomilResponses
 from ..types import (
     AssistantInput,
+    InputItem,
     Response,
     ResponseRequest,
     ToolCallOutput,
     ToolResultInput,
+    text_input,
 )
 from .executor import ToolExecutor, ToolResult
 
@@ -31,7 +33,9 @@ class ToolRunner:
         self._max_iterations = max_iterations
 
     async def run(self, request: ResponseRequest) -> Response:
-        current_input = list(request.input)
+        current_input: list[InputItem] = (
+            [text_input(request.input)] if isinstance(request.input, str) else list(request.input)
+        )
         iteration = 0
 
         while iteration < self._max_iterations:

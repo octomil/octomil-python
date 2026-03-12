@@ -17,7 +17,9 @@ from .runtime.types import (
     RuntimeResponse as _RuntimeResponse,
 )
 from .types import (
+    AssistantInput,
     DoneEvent,
+    InputItem,
     JsonSchemaFormat,
     OutputItem,
     Response,
@@ -26,10 +28,13 @@ from .types import (
     ResponseStreamEvent,
     ResponseToolCall,
     ResponseUsage,
+    TextContent,
     TextDeltaEvent,
     TextOutput,
     ToolCallDeltaEvent,
     ToolCallOutput,
+    system_input,
+    text_input,
 )
 
 
@@ -45,12 +50,16 @@ class OctomilResponses:
         runtime_resolver: Optional[Callable[[str], Optional[ModelRuntime]]] = None,
     ) -> None:
         self._runtime_resolver = runtime_resolver
+        self._response_cache: dict[str, Response] = {}
 
     async def create(self, request: ResponseRequest) -> Response:
         runtime = self._resolve_runtime(request.model)
-        runtime_request = self._build_runtime_request(request)
+        effective_request = self._apply_previous_response(request)
+        runtime_request = self._build_runtime_request(effective_request)
         runtime_response = await runtime.run(runtime_request)
-        return self._build_response(request.model, runtime_response)
+        response = self._build_response(request.model, runtime_response)
+        self._response_cache[response.id] = response
+        return response
 
     async def stream(self, request: ResponseRequest) -> AsyncIterator[ResponseStreamEvent]:
         runtime = self._resolve_runtime(request.model)
@@ -132,9 +141,54 @@ class OctomilResponses:
             return runtime
         raise RuntimeError(f"No ModelRuntime registered for model: {model}")
 
+    def _apply_previous_response(self, request: ResponseRequest) -> ResponseRequest:
+        """Prepend previous response output as assistant context when previous_response_id is set."""
+        if not request.previous_response_id:
+            return request
+        prev = self._response_cache.get(request.previous_response_id)
+        if prev is None:
+            return request
+
+        # Build assistant input from previous response output
+        assistant_text = "".join(item.text for item in prev.output if isinstance(item, TextOutput))
+        assistant_item = AssistantInput(content=[TextContent(text=assistant_text)] if assistant_text else None)
+
+        # Normalize current input
+        input_items: list[InputItem]
+        if isinstance(request.input, str):
+            input_items = [text_input(request.input)]
+        else:
+            input_items = list(request.input)
+
+        return ResponseRequest(
+            model=request.model,
+            input=[assistant_item] + input_items,
+            tools=request.tools,
+            tool_choice=request.tool_choice,
+            response_format=request.response_format,
+            stream=request.stream,
+            max_output_tokens=request.max_output_tokens,
+            temperature=request.temperature,
+            top_p=request.top_p,
+            stop=request.stop,
+            metadata=request.metadata,
+            instructions=request.instructions,
+        )
+
     def _build_runtime_request(self, request: ResponseRequest) -> RuntimeRequest:
+        # Normalize string input
+        input_items: list[InputItem]
+        if isinstance(request.input, str):
+            input_items = [text_input(request.input)]
+        else:
+            input_items = list(request.input)
+
+        # Prepend instructions as system input
+        if request.instructions:
+            input_items = [system_input(request.instructions)] + input_items
+
         prompt = PromptFormatter.format(
-            request.input,
+            input_items,
             request.tools if request.tools else None,
             request.tool_choice,
         )
