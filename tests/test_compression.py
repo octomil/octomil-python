@@ -494,9 +494,15 @@ class TestCompressionTelemetry:
             reporter.close()
 
         assert len(sent) == 1
-        event = sent[0]["events"][0]
-        assert event["name"] == "inference.prompt_compressed"
-        attrs = event["attributes"]
+        # Extract LogRecord from OTLP envelope
+        records = []
+        for rl in sent[0].get("resourceLogs", []):
+            for sl in rl.get("scopeLogs", []):
+                records.extend(sl.get("logRecords", []))
+        assert len(records) >= 1
+        record = records[0]
+        assert record["body"]["stringValue"] == "inference.prompt_compressed"
+        attrs = {kv["key"]: list(kv["value"].values())[0] for kv in record["attributes"]}
         assert attrs["inference.compression.original_tokens"] == 500
         assert attrs["inference.compression.compressed_tokens"] == 250
         assert attrs["inference.compression.tokens_saved"] == 250

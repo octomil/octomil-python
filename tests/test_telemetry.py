@@ -11,7 +11,44 @@ from unittest.mock import MagicMock, patch
 import pytest
 from httpx import ASGITransport, AsyncClient
 
-from octomil.telemetry import TelemetryReporter, _generate_device_id, _v2_url
+from octomil.telemetry import (
+    TelemetryReporter,
+    _generate_device_id,
+    _v2_url,
+)
+
+
+def _extract_records(envelope: dict) -> list[dict]:
+    """Flatten all LogRecords from an OTLP ExportLogsServiceRequest."""
+    records = []
+    for rl in envelope.get("resourceLogs", []):
+        for sl in rl.get("scopeLogs", []):
+            for lr in sl.get("logRecords", []):
+                records.append(lr)
+    return records
+
+
+def _record_name(record: dict) -> str:
+    """Extract the event name from a LogRecord body."""
+    return record.get("body", {}).get("stringValue", "")
+
+
+def _record_attrs(record: dict) -> dict:
+    """Convert a LogRecord's OTLP KeyValue attributes back to a flat dict."""
+    result = {}
+    for kv in record.get("attributes", []):
+        key = kv["key"]
+        val = kv["value"]
+        if "stringValue" in val:
+            result[key] = val["stringValue"]
+        elif "intValue" in val:
+            result[key] = int(val["intValue"])
+        elif "doubleValue" in val:
+            result[key] = val["doubleValue"]
+        elif "boolValue" in val:
+            result[key] = val["boolValue"]
+    return result
+
 
 # ---------------------------------------------------------------------------
 # _generate_device_id
@@ -57,10 +94,10 @@ class TestV2Url:
 
 
 class TestTelemetryV2Envelope:
-    """Verify that dispatched payloads use the OTLP envelope format."""
+    """Verify that dispatched payloads use the OTLP ExportLogsServiceRequest format."""
 
     def test_envelope_structure(self):
-        """Every POST should contain resource + events list."""
+        """Every POST should contain resourceLogs with scopeLogs and logRecords."""
         sent = []
 
         def mock_send(client, url, headers, payload):
@@ -83,13 +120,18 @@ class TestTelemetryV2Envelope:
 
         assert len(sent) >= 1
         envelope = sent[0]
-        assert "resource" in envelope
-        assert "events" in envelope
-        assert isinstance(envelope["events"], list)
-        assert len(envelope["events"]) >= 1
+        assert "resourceLogs" in envelope
+        rl = envelope["resourceLogs"][0]
+        assert "resource" in rl
+        assert "scopeLogs" in rl
+        assert len(rl["scopeLogs"]) >= 1
+        sl = rl["scopeLogs"][0]
+        assert "scope" in sl
+        assert "logRecords" in sl
+        assert len(sl["logRecords"]) >= 1
 
     def test_resource_fields(self):
-        """Resource block should contain sdk, sdk_version, device_id, platform, org_id."""
+        """Resource block should contain OTLP KeyValue attributes."""
         sent = []
 
         def mock_send(client, url, headers, payload):
@@ -110,12 +152,16 @@ class TestTelemetryV2Envelope:
             time.sleep(0.15)
             reporter.close()
 
-        resource = sent[0]["resource"]
-        assert resource["sdk"] == "python"
-        assert resource["device_id"] == "dev-abc"
-        assert resource["platform"] == sys.platform
-        assert resource["org_id"] == "test-org"
-        assert "sdk_version" in resource
+        resource = sent[0]["resourceLogs"][0]["resource"]
+        assert "attributes" in resource
+        # Convert OTLP KV list to dict for easier assertion
+        attrs = {kv["key"]: list(kv["value"].values())[0] for kv in resource["attributes"]}
+        assert attrs["service.name"] == "octomil-sdk"
+        assert attrs["sdk.language"] == "python"
+        assert attrs["device.id"] == "dev-abc"
+        assert attrs["os.type"] == sys.platform
+        assert attrs["org.id"] == "test-org"
+        assert "sdk.version" in attrs
 
     def test_v2_endpoint_used(self):
         """Dispatch should POST to the v2 telemetry endpoint."""
@@ -177,7 +223,7 @@ class TestTelemetryV2Envelope:
 
 
 class TestEventNameDotNotation:
-    """Verify event names use dot notation."""
+    """Verify event names use dot notation in OTLP LogRecord body."""
 
     def _capture_events(self):
         """Helper: returns (reporter, sent_list) with _send patched."""
@@ -196,9 +242,9 @@ class TestEventNameDotNotation:
         )
         return reporter, sent, patcher
 
-    def _get_event(self, sent, index=0):
-        """Extract the first event from the first envelope."""
-        return sent[index]["events"][0]
+    def _get_record(self, sent, index=0):
+        """Extract the first LogRecord from the first envelope."""
+        return _extract_records(sent[index])[0]
 
     def test_inference_started(self):
         reporter, sent, patcher = self._capture_events()
@@ -210,8 +256,8 @@ class TestEventNameDotNotation:
         time.sleep(0.15)
         reporter.close()
         patcher.stop()
-        event = self._get_event(sent)
-        assert event["name"] == "inference.started"
+        record = self._get_record(sent)
+        assert _record_name(record) == "inference.started"
 
     def test_inference_completed(self):
         reporter, sent, patcher = self._capture_events()
@@ -227,8 +273,8 @@ class TestEventNameDotNotation:
         time.sleep(0.15)
         reporter.close()
         patcher.stop()
-        event = self._get_event(sent)
-        assert event["name"] == "inference.completed"
+        record = self._get_record(sent)
+        assert _record_name(record) == "inference.completed"
 
     def test_inference_failed(self):
         reporter, sent, patcher = self._capture_events()
@@ -240,8 +286,8 @@ class TestEventNameDotNotation:
         time.sleep(0.15)
         reporter.close()
         patcher.stop()
-        event = self._get_event(sent)
-        assert event["name"] == "inference.failed"
+        record = self._get_record(sent)
+        assert _record_name(record) == "inference.failed"
 
     def test_inference_chunk(self):
         reporter, sent, patcher = self._capture_events()
@@ -254,8 +300,8 @@ class TestEventNameDotNotation:
         time.sleep(0.15)
         reporter.close()
         patcher.stop()
-        event = self._get_event(sent)
-        assert event["name"] == "inference.chunk_produced"
+        record = self._get_record(sent)
+        assert _record_name(record) == "inference.chunk_produced"
 
     def test_funnel_event(self):
         reporter, sent, patcher = self._capture_events()
@@ -263,8 +309,8 @@ class TestEventNameDotNotation:
         time.sleep(0.15)
         reporter.close()
         patcher.stop()
-        event = self._get_event(sent)
-        assert event["name"] == "funnel.download"
+        record = self._get_record(sent)
+        assert _record_name(record) == "funnel.download"
 
 
 # ---------------------------------------------------------------------------
@@ -273,7 +319,7 @@ class TestEventNameDotNotation:
 
 
 class TestAttributeMapping:
-    """Verify correct attribute keys for each event type."""
+    """Verify correct attribute keys for each event type (OTLP KV format)."""
 
     def test_inference_started_attributes(self):
         sent = []
@@ -298,8 +344,8 @@ class TestAttributeMapping:
             time.sleep(0.15)
             reporter.close()
 
-        event = sent[0]["events"][0]
-        attrs = event["attributes"]
+        record = _extract_records(sent[0])[0]
+        attrs = _record_attrs(record)
         assert attrs["model.id"] == "gemma-1b"
         assert attrs["model.version"] == "1.0"
         assert attrs["inference.session_id"] == "sess-001"
@@ -327,7 +373,7 @@ class TestAttributeMapping:
             time.sleep(0.15)
             reporter.close()
 
-        attrs = sent[0]["events"][0]["attributes"]
+        attrs = _record_attrs(_extract_records(sent[0])[0])
         assert "inference.attention_backend" not in attrs
 
     def test_inference_chunk_attributes(self):
@@ -354,9 +400,9 @@ class TestAttributeMapping:
             time.sleep(0.15)
             reporter.close()
 
-        event = sent[0]["events"][0]
-        assert event["name"] == "inference.chunk_produced"
-        attrs = event["attributes"]
+        record = _extract_records(sent[0])[0]
+        assert _record_name(record) == "inference.chunk_produced"
+        attrs = _record_attrs(record)
         assert attrs["inference.chunk_index"] == 0
         assert attrs["inference.ttfc_ms"] == 42.5
         assert attrs["inference.chunk_latency_ms"] == 3.1
@@ -389,9 +435,9 @@ class TestAttributeMapping:
             time.sleep(0.15)
             reporter.close()
 
-        event = sent[0]["events"][0]
-        assert event["name"] == "inference.completed"
-        attrs = event["attributes"]
+        record = _extract_records(sent[0])[0]
+        assert _record_name(record) == "inference.completed"
+        attrs = _record_attrs(record)
         assert attrs["inference.duration_ms"] == 500.0
         assert attrs["inference.ttft_ms"] == 30.0
         assert attrs["inference.total_tokens"] == 10
@@ -420,9 +466,9 @@ class TestAttributeMapping:
             time.sleep(0.15)
             reporter.close()
 
-        event = sent[0]["events"][0]
-        assert event["name"] == "inference.failed"
-        attrs = event["attributes"]
+        record = _extract_records(sent[0])[0]
+        assert _record_name(record) == "inference.failed"
+        attrs = _record_attrs(record)
         assert attrs["error.type"] == "generation_failed"
         assert attrs["model.id"] == "model-a"
         assert attrs["inference.session_id"] == "s1"
@@ -451,9 +497,9 @@ class TestAttributeMapping:
             time.sleep(0.15)
             reporter.close()
 
-        event = sent[0]["events"][0]
-        assert event["name"] == "funnel.deploy"
-        attrs = event["attributes"]
+        record = _extract_records(sent[0])[0]
+        assert _record_name(record) == "funnel.deploy"
+        attrs = _record_attrs(record)
         assert attrs["funnel.success"] is False
         assert attrs["model.id"] == "model-a"
         assert attrs["inference.session_id"] == "s1"
@@ -495,7 +541,7 @@ class TestTPOTCalculation:
             time.sleep(0.15)
             reporter.close()
 
-        attrs = sent[0]["events"][0]["attributes"]
+        attrs = _record_attrs(_extract_records(sent[0])[0])
         # (500 - 50) / (10 - 1) = 450 / 9 = 50.0
         assert attrs["inference.tpot_ms"] == pytest.approx(50.0)
 
@@ -525,7 +571,7 @@ class TestTPOTCalculation:
             time.sleep(0.15)
             reporter.close()
 
-        attrs = sent[0]["events"][0]["attributes"]
+        attrs = _record_attrs(_extract_records(sent[0])[0])
         assert "inference.tpot_ms" not in attrs
 
     def test_tpot_not_present_when_zero_duration(self):
@@ -554,7 +600,7 @@ class TestTPOTCalculation:
             time.sleep(0.15)
             reporter.close()
 
-        attrs = sent[0]["events"][0]["attributes"]
+        attrs = _record_attrs(_extract_records(sent[0])[0])
         assert "inference.tpot_ms" not in attrs
 
     def test_tpot_with_two_tokens(self):
@@ -583,7 +629,7 @@ class TestTPOTCalculation:
             time.sleep(0.15)
             reporter.close()
 
-        attrs = sent[0]["events"][0]["attributes"]
+        attrs = _record_attrs(_extract_records(sent[0])[0])
         # (200 - 50) / (2 - 1) = 150.0
         assert attrs["inference.tpot_ms"] == pytest.approx(150.0)
 
@@ -618,7 +664,7 @@ class TestModalityPropagation:
             time.sleep(0.15)
             reporter.close()
 
-        attrs = sent[0]["events"][0]["attributes"]
+        attrs = _record_attrs(_extract_records(sent[0])[0])
         assert attrs["inference.modality"] == "audio"
 
     def test_default_modality_is_text(self):
@@ -642,7 +688,7 @@ class TestModalityPropagation:
             time.sleep(0.15)
             reporter.close()
 
-        attrs = sent[0]["events"][0]["attributes"]
+        attrs = _record_attrs(_extract_records(sent[0])[0])
         assert attrs["inference.modality"] == "text"
 
     def test_modality_in_completed(self):
@@ -671,7 +717,7 @@ class TestModalityPropagation:
             time.sleep(0.15)
             reporter.close()
 
-        attrs = sent[0]["events"][0]["attributes"]
+        attrs = _record_attrs(_extract_records(sent[0])[0])
         assert attrs["inference.modality"] == "image"
 
 
@@ -986,11 +1032,11 @@ async def test_serve_telemetry_reports_on_non_streaming(echo_app_with_telemetry)
 
         time.sleep(0.3)
 
-    # Collect event names from envelopes
+    # Collect event names from OTLP envelopes
     event_names = []
     for envelope in sent:
-        for event in envelope.get("events", []):
-            event_names.append(event.get("name"))
+        for record in _extract_records(envelope):
+            event_names.append(_record_name(record))
     assert "inference.started" in event_names
     assert "inference.completed" in event_names
 
@@ -1026,8 +1072,8 @@ async def test_serve_telemetry_reports_on_streaming(echo_app_with_telemetry):
 
     event_names = []
     for envelope in sent:
-        for event in envelope.get("events", []):
-            event_names.append(event.get("name"))
+        for record in _extract_records(envelope):
+            event_names.append(_record_name(record))
     assert "inference.started" in event_names
     # Should have inference_chunk events and an inference_completed
     assert "inference.chunk_produced" in event_names
@@ -1253,19 +1299,14 @@ class TestTimestampISO8601:
             time.sleep(0.15)
             reporter.close()
 
-        event = sent[0]["events"][0]
-        assert "timestamp" in event
-        assert "timestamp_ms" not in event
-        # Verify it's a valid ISO 8601 string ending in Z
-        ts = event["timestamp"]
+        record = _extract_records(sent[0])[0]
+        assert "timeUnixNano" in record
+        # Verify it's a string of nanoseconds
+        ts = record["timeUnixNano"]
         assert isinstance(ts, str)
-        assert ts.endswith("Z")
-        # Should parse without error
-        from datetime import datetime
+        assert int(ts) > 0
 
-        datetime.fromisoformat(ts.replace("Z", "+00:00"))
-
-    def test_timestamp_ms_not_present(self):
+    def test_log_record_has_severity(self):
         sent = []
 
         def mock_send(client, url, headers, payload):
@@ -1282,9 +1323,9 @@ class TestTimestampISO8601:
             time.sleep(0.15)
             reporter.close()
 
-        event = sent[0]["events"][0]
-        assert "timestamp_ms" not in event
-        assert "timestamp" in event
+        record = _extract_records(sent[0])[0]
+        assert record["severityNumber"] == 9
+        assert record["severityText"] == "INFO"
 
 
 # ---------------------------------------------------------------------------
@@ -1322,9 +1363,9 @@ class TestDeployEvents:
         reporter.close()
         patcher.stop()
 
-        event = sent[0]["events"][0]
-        assert event["name"] == "deploy.started"
-        attrs = event["attributes"]
+        record = _extract_records(sent[0])[0]
+        assert _record_name(record) == "deploy.started"
+        attrs = _record_attrs(record)
         assert attrs["model.id"] == "sentiment-v1"
         assert attrs["model.version"] == "2.0.0"
         assert attrs["deploy.target_platform"] == "canary"
@@ -1340,9 +1381,9 @@ class TestDeployEvents:
         reporter.close()
         patcher.stop()
 
-        event = sent[0]["events"][0]
-        assert event["name"] == "deploy.completed"
-        attrs = event["attributes"]
+        record = _extract_records(sent[0])[0]
+        assert _record_name(record) == "deploy.completed"
+        attrs = _record_attrs(record)
         assert attrs["model.id"] == "sentiment-v1"
         assert attrs["model.version"] == "2.0.0"
         assert attrs["deploy.duration_ms"] == 1500.0
@@ -1359,9 +1400,9 @@ class TestDeployEvents:
         reporter.close()
         patcher.stop()
 
-        event = sent[0]["events"][0]
-        assert event["name"] == "deploy.rollback"
-        attrs = event["attributes"]
+        record = _extract_records(sent[0])[0]
+        assert _record_name(record) == "deploy.rollback"
+        attrs = _record_attrs(record)
         assert attrs["model.id"] == "sentiment-v1"
         assert attrs["deploy.from_version"] == "2.0.0"
         assert attrs["deploy.to_version"] == "1.0.0"
@@ -1403,9 +1444,9 @@ class TestExperimentEvents:
         reporter.close()
         patcher.stop()
 
-        event = sent[0]["events"][0]
-        assert event["name"] == "experiment.assigned"
-        attrs = event["attributes"]
+        record = _extract_records(sent[0])[0]
+        assert _record_name(record) == "experiment.assigned"
+        attrs = _record_attrs(record)
         assert attrs["model.id"] == "sentiment-v1"
         assert attrs["experiment.id"] == "exp-abc"
         assert attrs["experiment.variant"] == "treatment-a"
@@ -1421,9 +1462,9 @@ class TestExperimentEvents:
         reporter.close()
         patcher.stop()
 
-        event = sent[0]["events"][0]
-        assert event["name"] == "experiment.metric_recorded"
-        attrs = event["attributes"]
+        record = _extract_records(sent[0])[0]
+        assert _record_name(record) == "experiment.metric_recorded"
+        attrs = _record_attrs(record)
         assert attrs["experiment.id"] == "exp-abc"
         assert attrs["experiment.metric_name"] == "latency_p99"
         assert attrs["experiment.metric_value"] == 42.5

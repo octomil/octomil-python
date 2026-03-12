@@ -92,6 +92,60 @@ def _v2_url(api_base: str) -> str:
     return base + "/v2/telemetry/events"
 
 
+def _to_kv_list(attrs: dict[str, Any]) -> list[dict[str, Any]]:
+    """Convert a flat dict into OTLP KeyValue array format."""
+    result: list[dict[str, Any]] = []
+    for key, value in attrs.items():
+        if isinstance(value, bool):
+            result.append({"key": key, "value": {"boolValue": value}})
+        elif isinstance(value, int):
+            result.append({"key": key, "value": {"intValue": str(value)}})
+        elif isinstance(value, float):
+            result.append({"key": key, "value": {"doubleValue": value}})
+        else:
+            result.append({"key": key, "value": {"stringValue": str(value)}})
+    return result
+
+
+def _scope_for_event(event_name: str) -> str:
+    """Determine the instrumentation scope name from an event name."""
+    if event_name.startswith("deploy."):
+        return "octomil.deploy"
+    if event_name.startswith("funnel."):
+        return "octomil.funnel"
+    return "octomil.inference"
+
+
+def _build_otlp_envelope(
+    resource: dict[str, Any],
+    log_records: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Build an OTLP ExportLogsServiceRequest grouping records by scope."""
+    scopes: dict[str, list[dict[str, Any]]] = {}
+    for record in log_records:
+        event_name = record.get("body", {}).get("stringValue", "")
+        scope_name = _scope_for_event(event_name)
+        scopes.setdefault(scope_name, []).append(record)
+
+    scope_logs: list[dict[str, Any]] = []
+    for scope_name, records in scopes.items():
+        scope_logs.append(
+            {
+                "scope": {"name": scope_name, "version": "1.0.0"},
+                "logRecords": records,
+            }
+        )
+
+    return {
+        "resourceLogs": [
+            {
+                "resource": resource,
+                "scopeLogs": scope_logs,
+            }
+        ]
+    }
+
+
 class TelemetryReporter:
     """Best-effort telemetry reporter for inference events.
 
@@ -129,17 +183,22 @@ class TelemetryReporter:
         self._worker.start()
 
     # ------------------------------------------------------------------
-    # Resource envelope
+    # Resource envelope (OTLP format)
     # ------------------------------------------------------------------
 
     def _resource(self) -> dict[str, Any]:
-        """Build the OTLP resource block."""
+        """Build the OTLP Resource with KeyValue attributes."""
         return {
-            "sdk": "python",
-            "sdk_version": _get_sdk_version(),
-            "device_id": self.device_id,
-            "platform": sys.platform,
-            "org_id": self.org_id,
+            "attributes": _to_kv_list(
+                {
+                    "service.name": "octomil-sdk",
+                    "sdk.language": "python",
+                    "sdk.version": _get_sdk_version(),
+                    "device.id": self.device_id,
+                    "os.type": sys.platform,
+                    "org.id": self.org_id,
+                }
+            ),
         }
 
     # ------------------------------------------------------------------
@@ -465,38 +524,43 @@ class TelemetryReporter:
         name: str,
         attributes: dict[str, Any],
     ) -> None:
-        """Build a v2 event and place it on the queue (non-blocking)."""
-        event: dict[str, Any] = {
-            "name": name,
-            "timestamp": datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z"),
-            "attributes": attributes,
+        """Build an OTLP LogRecord and place it on the queue (non-blocking)."""
+        now_ns = str(int(datetime.now(timezone.utc).timestamp() * 1_000_000_000))
+        log_record: dict[str, Any] = {
+            "timeUnixNano": now_ns,
+            "severityNumber": 9,  # INFO
+            "severityText": "INFO",
+            "body": {"stringValue": name},
+            "attributes": _to_kv_list(attributes),
+            "traceId": uuid.uuid4().hex,
+            "spanId": uuid.uuid4().hex[:16],
         }
         try:
-            self._queue.put_nowait(event)
+            self._queue.put_nowait(log_record)
         except queue.Full:
             logger.debug("Telemetry queue full — dropping event %s", name)
 
     def _dispatch_loop(self) -> None:
-        """Background thread: pull events from the queue and POST them as OTLP envelopes."""
+        """Background thread: pull LogRecords from the queue and POST them as OTLP ExportLogsServiceRequest."""
         client = httpx.Client(timeout=5.0)
         url = _v2_url(self.api_base)
         headers = {"Authorization": f"Bearer {self.api_key}"}
         resource = self._resource()
         try:
             while True:
-                event = self._queue.get()
-                if event is None:
+                record = self._queue.get()
+                if record is None:
                     # Drain remaining items before exiting
-                    remaining_events: list[dict[str, Any]] = []
+                    remaining: list[dict[str, Any]] = []
                     while not self._queue.empty():
-                        remaining = self._queue.get_nowait()
-                        if remaining is not None:
-                            remaining_events.append(remaining)
-                    if remaining_events:
-                        envelope = {"resource": resource, "events": remaining_events}
+                        item = self._queue.get_nowait()
+                        if item is not None:
+                            remaining.append(item)
+                    if remaining:
+                        envelope = _build_otlp_envelope(resource, remaining)
                         self._send(client, url, headers, envelope)
                     break
-                envelope = {"resource": resource, "events": [event]}
+                envelope = _build_otlp_envelope(resource, [record])
                 self._send(client, url, headers, envelope)
         finally:
             client.close()

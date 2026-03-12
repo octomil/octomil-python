@@ -432,13 +432,19 @@ class TestTelemetryMoERouting:
         )
         self._wait_for_events()
         assert len(self.sent) >= 1
-        event = self.sent[0]["events"][0]
-        assert event["name"] == "inference.moe_routing"
-        # Resource carries device_id and org_id
-        resource = self.sent[0]["resource"]
-        assert resource["device_id"] == "dev-moe"
-        assert resource["org_id"] == "test-org"
-        attrs = event["attributes"]
+        # Extract from OTLP envelope
+        records = []
+        for rl in self.sent[0].get("resourceLogs", []):
+            for sl in rl.get("scopeLogs", []):
+                records.extend(sl.get("logRecords", []))
+        record = records[0]
+        assert record["body"]["stringValue"] == "inference.moe_routing"
+        # Resource carries device_id and org_id in OTLP KeyValue format
+        resource = self.sent[0]["resourceLogs"][0]["resource"]
+        res_attrs = {kv["key"]: list(kv["value"].values())[0] for kv in resource["attributes"]}
+        assert res_attrs["device.id"] == "dev-moe"
+        assert res_attrs["org.id"] == "test-org"
+        attrs = {kv["key"]: list(kv["value"].values())[0] for kv in record["attributes"]}
         assert attrs["model.id"] == "mixtral-8x7b"
         assert attrs["inference.session_id"] == "sess-1"
         assert attrs["inference.moe.num_experts"] == 8
