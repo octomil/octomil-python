@@ -318,9 +318,9 @@ def deploy(
             padded = ("  " + line).ljust(box_inner)
             click.echo("\u2502" + padded + "\u2502")
         click.echo("\u2502" + " " * box_inner + "\u2502")
-        click.echo("\u2502" + f"  Or open manually: {fallback_url}".ljust(box_inner) + "\u2502")
         click.echo("\u2502" + "  Expires in 5 minutes".ljust(box_inner) + "\u2502")
         click.echo("\u2570" + "\u2500" * box_inner + "\u256f")
+        click.echo(f"  Or open manually: {fallback_url}")
         click.echo()
 
         webbrowser.open(pair_url)
