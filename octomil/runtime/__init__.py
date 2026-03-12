@@ -2,49 +2,22 @@
 
 Public API::
 
-    from octomil.runtime.engines import get_registry
-    from octomil.runtime.core import ModelRuntime, ModelRuntimeRegistry
+    from octomil.runtime import ModelRuntime, RuntimeFactory
+    from octomil.runtime.engines import EnginePlugin, get_registry
+
+For internal types (RuntimeRequest, RuntimeChunk, etc.) import directly
+from ``octomil.runtime.core``.
 """
 
 from __future__ import annotations
 
 import os
 
-from octomil.runtime.core import (
-    CloudModelRuntime,
-    InferenceBackendAdapter,
-    ModelRuntime,
-    ModelRuntimeRegistry,
-    RouterModelRuntime,
-    RoutingPolicy,
-    RuntimeCapabilities,
-    RuntimeChunk,
-    RuntimeFactory,
-    RuntimeRequest,
-    RuntimeResponse,
-    RuntimeToolCall,
-    RuntimeToolCallDelta,
-    RuntimeToolDef,
-    RuntimeUsage,
-)
+from octomil.runtime.core.model_runtime import ModelRuntime, RuntimeFactory
 
 __all__ = [
-    "CloudModelRuntime",
-    "InferenceBackendAdapter",
     "ModelRuntime",
-    "ModelRuntimeRegistry",
-    "RouterModelRuntime",
-    "RoutingPolicy",
-    "RuntimeCapabilities",
-    "RuntimeChunk",
     "RuntimeFactory",
-    "RuntimeRequest",
-    "RuntimeResponse",
-    "RuntimeToolCall",
-    "RuntimeToolCallDelta",
-    "RuntimeToolDef",
-    "RuntimeUsage",
-    "_connect_engines",
 ]
 
 
@@ -52,6 +25,7 @@ def _connect_engines() -> None:
     """Wire EngineRegistry as the default factory for ModelRuntimeRegistry."""
     try:
         from octomil.runtime.core.engine_bridge import engine_registry_factory
+        from octomil.runtime.core.registry import ModelRuntimeRegistry
         from octomil.runtime.engines.registry import (
             _register_experimental,
             get_registry,
