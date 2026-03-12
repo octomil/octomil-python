@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from enum import Enum
 
+from octomil._generated.error_code import ErrorCode as _ContractErrorCode
+
 
 class OctomilErrorCode(str, Enum):
     """All 19 canonical error codes from the SDK Facade Contract."""
@@ -104,3 +106,20 @@ class OctomilError(Exception):
 
     def __repr__(self) -> str:
         return f"OctomilError(code={self.code.value}, retryable={self.retryable}, message={self.error_message!r})"
+
+
+# ---------------------------------------------------------------------------
+# Contract parity assertion
+# ---------------------------------------------------------------------------
+# Verify at import time that every value in the contract-generated ErrorCode
+# enum has a corresponding member in the SDK's OctomilErrorCode.  This catches
+# drift between the contract repo and the SDK.
+
+_sdk_values = {m.value for m in OctomilErrorCode}
+_contract_values = {m.value for m in _ContractErrorCode}
+_missing = _contract_values - _sdk_values
+if _missing:
+    raise ImportError(
+        f"OctomilErrorCode is missing contract error codes: {sorted(_missing)}. "
+        "Update the enum to match octomil-contracts."
+    )

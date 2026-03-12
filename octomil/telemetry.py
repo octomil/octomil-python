@@ -24,6 +24,8 @@ from typing import Any, Optional
 
 import httpx
 
+from octomil._generated import telemetry_events as _contract_events
+
 logger = logging.getLogger(__name__)
 
 _DEFAULT_API_BASE = "https://api.octomil.com/api/v1"
@@ -577,3 +579,26 @@ class TelemetryReporter:
             client.post(url, json=payload, headers=headers)
         except Exception as exc:  # noqa: BLE001
             logger.warning("Telemetry event dispatch failed: %s", exc)
+
+
+# ---------------------------------------------------------------------------
+# Contract parity assertion
+# ---------------------------------------------------------------------------
+# Verify that all contract-defined telemetry event names are referenced in
+# TelemetryReporter methods.  This catches drift between the contract and SDK.
+
+_REPORTER_EVENT_NAMES = {
+    _contract_events.INFERENCE_STARTED,
+    _contract_events.INFERENCE_COMPLETED,
+    _contract_events.INFERENCE_FAILED,
+    _contract_events.INFERENCE_CHUNK_PRODUCED,
+    _contract_events.DEPLOY_STARTED,
+    _contract_events.DEPLOY_COMPLETED,
+}
+_contract_event_names = set(_contract_events.EVENT_REQUIRED_ATTRIBUTES.keys())
+_missing_events = _contract_event_names - _REPORTER_EVENT_NAMES
+if _missing_events:
+    raise ImportError(
+        f"TelemetryReporter is missing contract event types: {sorted(_missing_events)}. "
+        "Update telemetry.py to match octomil-contracts."
+    )

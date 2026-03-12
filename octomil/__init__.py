@@ -17,6 +17,7 @@ import os as _os
 import sys as _sys
 from typing import Optional as _Optional
 
+from . import _generated as contracts  # noqa: F401
 from . import responses  # noqa: F401
 from .client import OctomilClient
 from .control import DeviceRegistration, HeartbeatResponse, OctomilControl
