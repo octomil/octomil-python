@@ -420,8 +420,12 @@ class TestTelemetryMoERouting:
             time.sleep(0.05)
 
     def _get_event_attrs(self, index: int = 0) -> dict:
-        """Extract event attributes from the sent envelope at given index."""
-        return self.sent[index]["events"][0]["attributes"]
+        """Extract event attributes from the sent OTLP envelope at given index."""
+        records = []
+        for rl in self.sent[index].get("resourceLogs", []):
+            for sl in rl.get("scopeLogs", []):
+                records.extend(sl.get("logRecords", []))
+        return parse_otlp_kv(records[0]["attributes"])
 
     def test_moe_routing_event_structure(self) -> None:
         self.reporter.report_moe_routing(
@@ -467,7 +471,8 @@ class TestTelemetryMoERouting:
         self._wait_for_events()
         assert len(self.sent) >= 1
         attrs = self._get_event_attrs()
-        assert attrs["inference.moe.expert_activation_counts"] == counts
+        # Dict is stringified in OTLP format
+        assert attrs["inference.moe.expert_activation_counts"] == str(counts)
         # Load balance score should be auto-computed
         assert "inference.moe.load_balance_score" in attrs
         assert 0.0 <= attrs["inference.moe.load_balance_score"] <= 1.0
