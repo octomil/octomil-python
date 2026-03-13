@@ -43,13 +43,16 @@ ALL_CODES = [
     "assignment_not_found",
     "cancelled",
     "app_backgrounded",
+    "training_failed",
+    "training_not_supported",
+    "weight_upload_failed",
     "unknown",
 ]
 
 
 class TestOctomilErrorCodeEnum:
-    def test_has_exactly_33_members(self) -> None:
-        assert len(OctomilErrorCode) == 33
+    def test_has_exactly_36_members(self) -> None:
+        assert len(OctomilErrorCode) == 36
 
     @pytest.mark.parametrize("value", ALL_CODES)
     def test_all_canonical_codes_exist(self, value: str) -> None:
@@ -78,6 +81,8 @@ RETRYABLE_CODES = {
     OctomilErrorCode.STREAM_INTERRUPTED,
     OctomilErrorCode.CONTROL_SYNC_FAILED,
     OctomilErrorCode.APP_BACKGROUNDED,
+    OctomilErrorCode.TRAINING_FAILED,
+    OctomilErrorCode.WEIGHT_UPLOAD_FAILED,
 }
 
 NON_RETRYABLE_CODES = set(OctomilErrorCode) - RETRYABLE_CODES
