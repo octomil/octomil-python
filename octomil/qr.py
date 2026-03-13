@@ -41,7 +41,7 @@ def build_custom_scheme_link(token: str, host: str) -> str:
     return f"octomil://pair?token={encoded_token}&host={host}"
 
 
-def render_qr_terminal(url: str, *, border: int = 1) -> str:
+def render_qr_terminal(url: str, *, border: int = 2) -> str:
     """Render a QR code as ASCII art for terminal display.
 
     Uses unicode block characters for compact rendering.
@@ -54,7 +54,7 @@ def render_qr_terminal(url: str, *, border: int = 1) -> str:
 
     qr = qrcode.QRCode(
         version=None,
-        error_correction=qrcode.constants.ERROR_CORRECT_M,
+        error_correction=qrcode.constants.ERROR_CORRECT_H,
         box_size=1,
         border=border,
     )
