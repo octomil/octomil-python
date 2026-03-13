@@ -787,14 +787,15 @@ class TestTelemetryBestEffort:
 
 class TestOctomilInit:
     def test_init_raises_without_api_key(self):
-        """init() should raise ValueError when no API key is provided."""
+        """init() should raise OctomilError when no API key is provided."""
         import octomil
+        from octomil.errors import OctomilError
 
         with patch.dict(os.environ, {}, clear=True):
             # Clear any existing env vars
             for key in ("OCTOMIL_API_KEY", "OCTOMIL_ORG_ID", "OCTOMIL_API_BASE"):
                 os.environ.pop(key, None)
-            with pytest.raises(ValueError, match="API key required"):
+            with pytest.raises(OctomilError, match="API key required"):
                 octomil.init()
 
     def test_init_uses_env_vars(self):
@@ -859,8 +860,9 @@ class TestOctomilInit:
             octomil._config = {}
 
     def test_init_invalid_key_raises(self):
-        """init() should raise ValueError on 401/403 from the health check."""
+        """init() should raise OctomilError on 401/403 from the health check."""
         import octomil
+        from octomil.errors import OctomilError
 
         mock_response = MagicMock()
         mock_response.status_code = 401
@@ -872,7 +874,7 @@ class TestOctomilInit:
             mock_client_instance.get.return_value = mock_response
             MockClient.return_value = mock_client_instance
 
-            with pytest.raises(ValueError, match="Invalid Octomil API key"):
+            with pytest.raises(OctomilError, match="Invalid Octomil API key"):
                 octomil.init(api_key="bad-key")
 
     def test_init_unreachable_api_still_creates_reporter(self):

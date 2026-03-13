@@ -43,11 +43,15 @@ class EmbeddingResultTests(unittest.TestCase):
 
 class EmbedValidationTests(unittest.TestCase):
     def test_empty_server_url_raises(self):
-        with self.assertRaises(ValueError, msg="server_url"):
+        from octomil.errors import OctomilError
+
+        with self.assertRaises(OctomilError):
             embed(server_url="", api_key="key", model_id="m", input="hi")
 
     def test_empty_api_key_raises(self):
-        with self.assertRaises(ValueError, msg="api_key"):
+        from octomil.errors import OctomilError
+
+        with self.assertRaises(OctomilError):
             embed(
                 server_url="https://api.test.com/api/v1",
                 api_key="",

@@ -361,11 +361,15 @@ def _make_router(**kwargs) -> QueryRouter:
 
 class TestQueryRouter:
     def test_requires_at_least_one_model(self):
-        with pytest.raises(ValueError, match="At least one model"):
+        from octomil.errors import OctomilError
+
+        with pytest.raises(OctomilError, match="At least one model"):
             QueryRouter({})
 
     def test_rejects_unknown_strategy(self):
-        with pytest.raises(ValueError, match="Unknown routing strategy"):
+        from octomil.errors import OctomilError
+
+        with pytest.raises(OctomilError, match="Unknown routing strategy"):
             QueryRouter(_MODELS, strategy="random")
 
     def test_short_query_routes_to_fast(self):
