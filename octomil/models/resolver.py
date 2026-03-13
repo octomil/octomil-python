@@ -3,9 +3,8 @@
 Takes a parsed model specifier and resolves it to a concrete HuggingFace
 repo ID (and optional filename) for a given engine.
 
-Now powered by the v2 manifest: resolution first tries a direct manifest
-lookup, selecting the best package for the requested engine and platform.
-Falls back to the legacy CATALOG-based resolution for backward compat.
+Powered by the v2 manifest: resolution selects the best package for the
+requested engine and platform from the catalog manifest.
 
 Usage::
 
@@ -19,9 +18,8 @@ from __future__ import annotations
 
 import difflib
 import logging
-import os
 from dataclasses import dataclass
-from typing import Any, Optional
+from typing import Optional
 
 from .catalog import (
     _EXECUTOR_TO_ENGINE,
@@ -342,56 +340,6 @@ def _resolve_from_manifest(
     )
 
 
-# ---------------------------------------------------------------------------
-# Legacy catalog-based resolution (fallback)
-# ---------------------------------------------------------------------------
-
-
-def _resolve_via_server(name: str, engine: str = "") -> Optional[ResolvedModel]:
-    """Resolve a model via the Octomil API when local catalog has no variants.
-
-    Calls ``POST /api/v1/resolve_model`` on the server, which has the full
-    unscrubbed catalog. Returns None on any failure (network, auth, etc.).
-    """
-    try:
-        import httpx
-    except ImportError:
-        return None
-
-    api_base = os.environ.get("OCTOMIL_API_BASE", "https://api.octomil.com/api/v1")
-    headers: dict[str, str] = {}
-    api_key = os.environ.get("OCTOMIL_API_KEY", "")
-    if api_key:
-        headers["Authorization"] = f"Bearer {api_key}"
-
-    try:
-        with httpx.Client(timeout=10.0) as client:
-            resp = client.post(
-                f"{api_base.rstrip('/')}/resolve_model",
-                json={"name": name, "engine": engine},
-                headers=headers,
-            )
-        if resp.status_code != 200:
-            logger.debug("Server resolve returned HTTP %d for '%s'", resp.status_code, name)
-            return None
-
-        data: dict[str, Any] = resp.json()
-        return ResolvedModel(
-            family=data.get("family"),
-            quant=data.get("quant", "unknown"),
-            engine=data.get("engine"),
-            hf_repo=data.get("hf_repo", ""),
-            filename=data.get("filename"),
-            mlx_repo=data.get("mlx_repo"),
-            source_repo=data.get("source_repo"),
-            raw=name,
-            architecture=data.get("architecture", "dense"),
-        )
-    except Exception:
-        logger.debug("Server resolve failed for '%s'", name, exc_info=True)
-        return None
-
-
 def _suggest_models(name: str, n: int = 3) -> list[str]:
     """Return close matches for typo suggestions."""
     return list(difflib.get_close_matches(name, CATALOG.keys(), n=n, cutoff=0.4))
@@ -402,34 +350,21 @@ def _pick_engine(
     quant: str,
     available_engines: list[str],
 ) -> Optional[str]:
-    """Pick the best available engine for a model + quant combination.
-
-    Prefers engines in priority order that both:
-    1. Are in the model's ``engines`` set
-    2. Are in the ``available_engines`` list
-    3. Have an artifact for the requested quant
-    """
+    """Pick the best available engine for a model + quant combination."""
     variant = entry.variants.get(quant)
     if variant is None:
         return None
 
     normalized_available = [_normalize_engine(e) for e in available_engines]
-
-    # Use available_engines order directly — let the caller's ordering decide.
     engine_priority = list(dict.fromkeys(normalized_available))
 
     for engine_name in engine_priority:
         if engine_name not in normalized_available:
             continue
-
-        # Ollama support is derived from catalog tags, not entry.engines
         if engine_name == "ollama" and variant.ollama:
             return engine_name
-
         if engine_name not in entry.engines:
             continue
-
-        # Check that this engine has an artifact for this quant
         if engine_name == "mlx-lm" and variant.mlx:
             return engine_name
         if engine_name == "mlc-llm" and (variant.mlc or variant.source_repo):
@@ -457,9 +392,8 @@ def resolve(
     Resolution strategy:
     1. Parse the model specifier
     2. If passthrough (local file or full repo ID), return directly
-    3. Try v2 manifest-based resolution (preferred)
-    4. Fall back to legacy CATALOG-based resolution
-    5. Fall back to server-side resolution as last resort
+    3. Try direct v2 manifest lookup (raw manifest packages)
+    4. Fall back to CATALOG lookup (hydrated from same v2 manifest)
 
     Parameters
     ----------
@@ -510,11 +444,11 @@ def resolve(
     if manifest_result is not None:
         return manifest_result
 
-    # --- Legacy catalog lookup (fallback for models not yet in v2) ---
+    # --- CATALOG lookup (hydrated from the same v2 manifest) ---
     canonical = _resolve_alias(parsed.family)
     entry = CATALOG.get(canonical)
 
-    # If not found directly, try reverse Ollama tag lookup.
+    # Try reverse Ollama tag lookup.
     # e.g. "qwen2.5:3b" -> catalog entry "qwen-3b" at quant "4bit"
     ollama_resolved_quant: str | None = None
     if entry is None:
@@ -533,7 +467,6 @@ def resolve(
 
     # Determine quant level
     if ollama_resolved_quant is not None:
-        # Ollama tag already resolved to a specific variant
         quant = ollama_resolved_quant
     elif parsed.variant is not None:
         quant = normalize_variant(parsed.variant)
@@ -543,9 +476,6 @@ def resolve(
     # Check variant exists
     variant = entry.variants.get(quant)
     if variant is None and ollama_resolved_quant is None:
-        # Before failing, try Ollama reverse lookup on the full raw name.
-        # Handles cases like "qwen-3b:3b" where the family exists but the
-        # variant is an Ollama tag component, not a quant level.
         ollama_match = resolve_ollama_tag(name)
         if ollama_match is not None:
             canonical, quant = ollama_match
@@ -553,22 +483,13 @@ def resolve(
             if ollama_entry is not None:
                 entry = ollama_entry
                 variant = entry.variants.get(quant)
-                logger.info("Resolved Ollama tag '%s' to '%s:%s' (variant fallback)", name, canonical, quant)
 
     if variant is None:
         available_quants = ", ".join(sorted(entry.variants.keys()))
-        if available_quants:
-            raise ModelResolutionError(
-                f"Unknown variant '{parsed.variant or quant}' for model '{parsed.family}'. "
-                f"Available: {available_quants}"
-            )
-        # No variants in local catalog — try server-side resolution
-        server_result = _resolve_via_server(name, engine=engine or "")
-        if server_result is not None:
-            logger.info("Resolved '%s' via server (local catalog has no variants)", name)
-            return server_result
         raise ModelResolutionError(
-            f"Model '{parsed.family}' has no downloadable variants. "
+            f"Unknown variant '{parsed.variant or quant}' for model '{parsed.family}'. Available: {available_quants}"
+            if available_quants
+            else f"Model '{parsed.family}' has no downloadable variants. "
             f"Try a full HuggingFace repo ID (e.g. 'mlx-community/gemma-2-2b-it-4bit')."
         )
 
@@ -578,7 +499,6 @@ def resolve(
     elif available_engines:
         resolved_engine = _pick_engine(entry, quant, available_engines)
     else:
-        # No engine info — pick based on artifact availability
         resolved_engine = _pick_engine(entry, quant, list(_ENGINE_ALIASES.values()))
 
     # Build result based on engine
@@ -596,10 +516,8 @@ def resolve(
     elif resolved_engine == "onnxruntime" and variant.ort:
         hf_repo = variant.ort
     elif resolved_engine == "ollama" and variant.ollama:
-        # For Ollama, hf_repo stores the ollama tag
         hf_repo = variant.ollama
     elif variant.gguf:
-        # Fallback to GGUF for engines that can consume GGUF (mnn, etc.)
         hf_repo = variant.gguf.repo
         filename = variant.gguf.filename
     elif variant.mlx:
@@ -607,11 +525,6 @@ def resolve(
     elif variant.source_repo:
         hf_repo = variant.source_repo
     else:
-        # No local artifact — try server-side resolution
-        server_result = _resolve_via_server(name, engine=engine or "")
-        if server_result is not None:
-            logger.info("Resolved '%s' via server (no local artifact for engine '%s')", name, resolved_engine)
-            return server_result
         raise ModelResolutionError(
             f"No artifact found for '{parsed.family}:{quant}' "
             f"on engine '{resolved_engine}'. "

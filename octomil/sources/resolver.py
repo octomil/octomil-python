@@ -3,9 +3,8 @@
 Resolves human-friendly model names to local file paths, downloading
 from the best available source if needed.
 
-Model alias data is fetched from the Octomil server at runtime and
-cached locally. An empty fallback is used when the server is
-unreachable — explicit source prefixes and direct repo IDs still work.
+Source aliases are derived from the v2 catalog manifest via
+:class:`~octomil.models.catalog_client.CatalogClientV2`.
 
 Supports:
 - Explicit sources: ``hf:org/model``, ``ollama:name:tag``, ``kaggle:org/model``
@@ -20,7 +19,8 @@ from typing import Dict, Optional
 
 import click
 
-from ..models.catalog_client import SourceAliasesClient
+from ..models.catalog import _parse_hf_uri
+from ..models.catalog_client import CatalogClientV2
 from .base import SourceResult
 from .huggingface import HuggingFaceSource
 from .kaggle import KaggleSource
@@ -29,28 +29,72 @@ from .ollama import OllamaSource
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# Server-fetched model aliases (singleton)
+# V2 manifest → source aliases
 # ---------------------------------------------------------------------------
 
-_aliases_client: Optional[SourceAliasesClient] = None
+_v2_client: Optional[CatalogClientV2] = None
 
 
-def _get_aliases_client() -> SourceAliasesClient:
-    """Return the module-level SourceAliasesClient singleton."""
-    global _aliases_client
-    if _aliases_client is None:
-        _aliases_client = SourceAliasesClient()
-    return _aliases_client
+def _get_v2_client() -> CatalogClientV2:
+    """Return the module-level CatalogClientV2 singleton."""
+    global _v2_client
+    if _v2_client is None:
+        _v2_client = CatalogClientV2()
+    return _v2_client
+
+
+def _manifest_to_aliases(manifest: dict) -> Dict[str, Dict[str, str]]:
+    """Convert a v2 manifest to source alias mappings.
+
+    For each model, extracts download sources from packages:
+    - Packages with ``runtime_executor=ollama`` → ``ollama`` alias
+    - Packages with ``hf://`` URIs → ``hf`` alias
+    - Packages with ``runtime_executor in (onnxruntime, ort)`` and ``hf://`` → ``hf_onnx`` alias
+    """
+    aliases: Dict[str, Dict[str, str]] = {}
+
+    for model in manifest.get("models", []):
+        model_id: str = model.get("id", "")
+        if not model_id:
+            continue
+
+        model_aliases: Dict[str, str] = {}
+
+        for pkg in model.get("packages", []):
+            executor: str = pkg.get("runtime_executor", "")
+
+            # Find weights resource
+            weights = None
+            for res in pkg.get("resources", []):
+                if res.get("kind") == "weights":
+                    weights = res
+                    break
+            if weights is None:
+                continue
+
+            uri: str = weights.get("uri", "")
+
+            if executor == "ollama" and "ollama" not in model_aliases:
+                model_aliases["ollama"] = uri
+            elif executor in ("onnxruntime", "ort") and uri.startswith("hf://"):
+                repo, _ = _parse_hf_uri(uri)
+                if "hf_onnx" not in model_aliases:
+                    model_aliases["hf_onnx"] = repo
+            elif uri.startswith("hf://") and "hf" not in model_aliases:
+                repo, _ = _parse_hf_uri(uri)
+                model_aliases["hf"] = repo
+
+        if model_aliases:
+            aliases[model_id] = model_aliases
+
+    return aliases
 
 
 def _get_model_aliases() -> Dict[str, Dict[str, str]]:
-    """Fetch source-level model aliases from the server (cached) or fallback."""
-    return _get_aliases_client().get_aliases()
+    """Fetch source-level model aliases from the v2 manifest (cached)."""
+    manifest = _get_v2_client().get_manifest()
+    return _manifest_to_aliases(manifest)
 
-
-# Backward-compatible module-level name — always empty at import time.
-# Runtime code should call _get_model_aliases() instead.
-_MODEL_ALIASES: Dict[str, Dict[str, str]] = {}
 
 _ollama = OllamaSource()
 _hf = HuggingFaceSource()
@@ -128,7 +172,7 @@ def resolve_and_download(name: str) -> str:
 
     canonical = _resolve_alias(name)
 
-    # ── Alias lookup (server-fetched) ────────────────────────────────────
+    # ── Alias lookup (manifest-derived) ─────────────────────────────────
     model_aliases = _get_model_aliases()
     aliases = model_aliases.get(canonical) or model_aliases.get(name)
     if aliases:

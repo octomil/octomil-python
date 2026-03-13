@@ -937,6 +937,127 @@ _MOCK_SOURCE_ALIASES: dict[str, dict[str, str]] = {
 
 
 # ---------------------------------------------------------------------------
+# Test-only hydration helpers (moved from catalog.py during v1 removal)
+# ---------------------------------------------------------------------------
+
+
+def _gguf_from_dict(d: Any) -> Any:
+    """Hydrate a GGUFSource from a server dict or None."""
+    from octomil.models.catalog import GGUFSource
+
+    if d is None:
+        return None
+    if isinstance(d, dict):
+        return GGUFSource(repo=d.get("repo", ""), filename=d.get("filename", ""))
+    return None
+
+
+def _variant_from_dict(d: dict) -> Any:
+    """Hydrate a VariantSpec from a test fixture dict."""
+    from octomil.models.catalog import VariantSpec
+
+    return VariantSpec(
+        mlx=d.get("mlx"),
+        gguf=_gguf_from_dict(d.get("gguf")),
+        ort=d.get("ort"),
+        mlc=d.get("mlc"),
+        ollama=d.get("ollama"),
+        source_repo=d.get("source_repo"),
+    )
+
+
+def _moe_from_dict(d: Any) -> Any:
+    """Hydrate MoEMetadata from a test fixture dict or None."""
+    from octomil.models.catalog import MoEMetadata
+
+    if d is None or not isinstance(d, dict):
+        return None
+    return MoEMetadata(
+        num_experts=d.get("num_experts", 0),
+        active_experts=d.get("active_experts", 0),
+        expert_size=d.get("expert_size", ""),
+        total_params=d.get("total_params", ""),
+        active_params=d.get("active_params", ""),
+    )
+
+
+def _entry_from_dict(d: dict) -> Any:
+    """Hydrate a ModelEntry from a test fixture dict."""
+    from octomil.models.catalog import ModelEntry
+
+    variants_raw = d.get("variants", {})
+    variants = {k: _variant_from_dict(v) for k, v in variants_raw.items()}
+    engines_raw = d.get("engines", [])
+    engines = frozenset(engines_raw) if isinstance(engines_raw, list) else frozenset()
+    return ModelEntry(
+        publisher=d.get("publisher", ""),
+        params=d.get("params", ""),
+        default_quant=d.get("default_quant", "4bit"),
+        variants=variants,
+        engines=engines,
+        architecture=d.get("architecture", "dense"),
+        moe=_moe_from_dict(d.get("moe")),
+        download_size=d.get("download_size"),
+    )
+
+
+def _hydrate_test_catalog(raw: dict) -> dict:
+    """Convert v1-format test fixture data to typed ModelEntry dict."""
+    from octomil.models.catalog import ModelEntry
+
+    result = {}
+    for name, entry_data in raw.items():
+        if isinstance(entry_data, ModelEntry):
+            result[name] = entry_data
+        elif isinstance(entry_data, dict):
+            result[name] = _entry_from_dict(entry_data)
+    return result
+
+
+def _source_from_dict(d: dict) -> Any:
+    """Hydrate a model_registry.ModelSource from a test fixture dict."""
+    from octomil.model_registry import ModelSource
+
+    return ModelSource(
+        type=d.get("type", "huggingface"),
+        ref=d.get("ref", ""),
+        file=d.get("file"),
+        trust=d.get("trust", "community"),
+    )
+
+
+def _registry_variant_from_dict(d: dict) -> Any:
+    """Hydrate a model_registry.ModelVariant from a test fixture dict."""
+    from octomil.model_registry import ModelVariant
+
+    sources_raw = d.get("sources", [])
+    sources = [_source_from_dict(s) for s in sources_raw if isinstance(s, dict)]
+    return ModelVariant(
+        quantization_family=d.get("quantization_family", "4bit"),
+        sources=sources,
+        mlx=d.get("mlx"),
+    )
+
+
+def _hydrate_test_families(raw: dict) -> dict:
+    """Convert test fixture data to typed model_registry.ModelFamily dict."""
+    from octomil.model_registry import DEFAULT_TAG, ModelFamily
+
+    result = {}
+    for name, family_data in raw.items():
+        if isinstance(family_data, dict):
+            variants_raw = family_data.get("variants", {})
+            variants = {k: _registry_variant_from_dict(v) for k, v in variants_raw.items() if isinstance(v, dict)}
+            result[name] = ModelFamily(
+                default_tag=family_data.get("default_tag", DEFAULT_TAG),
+                publisher=family_data.get("publisher", ""),
+                params=family_data.get("params", ""),
+                variants=variants,
+            )
+    return result
+
+
+# ---------------------------------------------------------------------------
 # Auto-use fixture: patch all server-fetched singletons
 # ---------------------------------------------------------------------------
 
@@ -948,16 +1069,11 @@ def _mock_model_routing_clients(monkeypatch):
     This ensures tests never hit the real Octomil API and always get
     deterministic, known-good test data.
     """
-
-    # Patch CatalogClientV2 — mock get_manifest() to return a v2 manifest
-    # that produces the same catalog when hydrated. We patch the loader
-    # functions directly so the v1 mock data flows through _hydrate_catalog.
-    from octomil.models.catalog import _hydrate_catalog
-
-    _hydrated_mock_catalog = _hydrate_catalog(_MOCK_CATALOG)
+    _hydrated_mock_catalog = _hydrate_test_catalog(_MOCK_CATALOG)
+    _hydrated_mock_families = _hydrate_test_families(_MOCK_MODEL_FAMILIES)
 
     class _MockCatalogClientV2:
-        """Mock v2 client — intercepts get_manifest() and get_models()."""
+        """Mock v2 client — prevents real HTTP requests."""
 
         def get_manifest(self, platform=None):
             return {"version": "mock-v1", "generated_at": "2026-01-01T00:00:00Z", "models": []}
@@ -967,16 +1083,6 @@ def _mock_model_routing_clients(monkeypatch):
 
         def invalidate_cache(self):
             pass
-
-    # Patch ModelFamiliesClient
-    class _MockModelFamiliesClient:
-        def get_families(self):
-            return _MOCK_MODEL_FAMILIES
-
-    # Patch SourceAliasesClient
-    class _MockSourceAliasesClient:
-        def get_aliases(self):
-            return _MOCK_SOURCE_ALIASES
 
     # Patch DeviceConfigClient — inject the original hardcoded values
     # so existing tests continue to pass without hitting the server.
@@ -1053,21 +1159,20 @@ def _mock_model_routing_clients(monkeypatch):
     import octomil.models.resolver as res_mod
     import octomil.sources.resolver as src_mod
 
-    # Inject mock v2 client into catalog and resolver modules to prevent
-    # real server requests.
+    # Inject mock v2 client into all modules to prevent real server requests.
     _mock_v2 = _MockCatalogClientV2()
     monkeypatch.setattr(cat_mod, "_client", _mock_v2)
     monkeypatch.setattr(res_mod, "_v2_client", _mock_v2)
-    monkeypatch.setattr(reg_mod, "_families_client", _MockModelFamiliesClient())
-    monkeypatch.setattr(src_mod, "_aliases_client", _MockSourceAliasesClient())
+    monkeypatch.setattr(reg_mod, "_v2_client", _mock_v2)
+    monkeypatch.setattr(src_mod, "_v2_client", _mock_v2)
 
     # Reset the existing lazy dicts so they re-load from mocked loaders.
     # We must mutate the existing objects rather than replacing them, because
     # test modules import CATALOG/MODEL_ALIASES/MODEL_FAMILIES at module level
     # and hold direct references to the original dict objects.
     #
-    # Swap the _loader callable to return v1-hydrated mock data directly,
-    # bypassing the v2 manifest conversion (avoids rewriting all test fixtures).
+    # Inject pre-hydrated test data directly via _loader callables,
+    # bypassing the v2 manifest conversion path.
     cat_mod.CATALOG.clear()
     cat_mod.CATALOG._loaded = False  # type: ignore[attr-defined]
     cat_mod.CATALOG._loader = lambda: _hydrated_mock_catalog  # type: ignore[attr-defined]
@@ -1076,6 +1181,7 @@ def _mock_model_routing_clients(monkeypatch):
     cat_mod.MODEL_ALIASES._loader = lambda: _MOCK_CATALOG_ALIASES  # type: ignore[attr-defined]
     reg_mod.MODEL_FAMILIES.clear()
     reg_mod.MODEL_FAMILIES._loaded = False  # type: ignore[attr-defined]
+    reg_mod.MODEL_FAMILIES._loader = lambda: _hydrated_mock_families  # type: ignore[attr-defined]
 
     # Force CATALOG to reload so we can recompute derived module-level globals.
     cat_mod.CATALOG._ensure_loaded()  # type: ignore[attr-defined]
