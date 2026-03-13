@@ -106,9 +106,12 @@ datas = []
 # ---------------------------------------------------------------------------
 # Analysis
 # ---------------------------------------------------------------------------
+import os
+REPO_ROOT = os.path.abspath(os.path.join(SPECPATH, ".."))
+
 a = Analysis(
-    ["octomil/__main__.py"],
-    pathex=[],
+    [os.path.join(REPO_ROOT, "octomil", "__main__.py")],
+    pathex=[REPO_ROOT],
     binaries=[],
     datas=datas,
     hiddenimports=hidden_imports,
