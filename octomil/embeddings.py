@@ -12,6 +12,8 @@ from typing import Any, Union
 
 import httpx
 
+from .errors import OctomilError, OctomilErrorCode
+
 logger = logging.getLogger(__name__)
 
 
@@ -53,12 +55,12 @@ def embed(
 
     Raises:
         httpx.HTTPStatusError: On non-2xx responses.
-        ValueError: If *server_url* or *api_key* is empty.
+        OctomilError: If *server_url* or *api_key* is empty.
     """
     if not server_url:
-        raise ValueError("server_url is required for embed()")
+        raise OctomilError(code=OctomilErrorCode.INVALID_INPUT, message="server_url is required for embed()")
     if not api_key:
-        raise ValueError("api_key is required for embed()")
+        raise OctomilError(code=OctomilErrorCode.INVALID_API_KEY, message="api_key is required for embed()")
 
     url = f"{server_url.rstrip('/')}/embeddings"
     headers = {

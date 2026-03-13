@@ -30,6 +30,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional, Union
 
+from .errors import OctomilError, OctomilErrorCode
+
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -532,9 +534,12 @@ class QueryRouter:
         api_key: Optional[str] = None,
     ) -> None:
         if not models:
-            raise ValueError("At least one model must be provided")
+            raise OctomilError(code=OctomilErrorCode.INVALID_INPUT, message="At least one model must be provided")
         if strategy != "complexity":
-            raise ValueError(f"Unknown routing strategy '{strategy}'. Supported strategies: complexity")
+            raise OctomilError(
+                code=OctomilErrorCode.INVALID_INPUT,
+                message=f"Unknown routing strategy '{strategy}'. Supported strategies: complexity",
+            )
 
         self.models = models
         self.strategy = strategy

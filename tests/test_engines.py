@@ -259,17 +259,21 @@ class TestEngineRegistry:
         assert ranked == []  # no benchmarking when override
 
     def test_auto_select_raises_for_unknown_override(self):
+        from octomil.errors import OctomilError
+
         reg = EngineRegistry()
         reg.register(_FakeEngine())
 
-        with pytest.raises(ValueError, match="Unknown engine"):
+        with pytest.raises(OctomilError, match="Unknown engine"):
             reg.auto_select("model", engine_override="nonexistent")
 
     def test_auto_select_raises_for_unavailable_override(self):
+        from octomil.errors import OctomilError
+
         reg = EngineRegistry()
         reg.register(_UnavailableEngine())
 
-        with pytest.raises(ValueError, match="not available"):
+        with pytest.raises(OctomilError, match="not available"):
             reg.auto_select("model", engine_override="unavailable")
 
     def test_auto_select_benchmarks_and_picks_best(self):

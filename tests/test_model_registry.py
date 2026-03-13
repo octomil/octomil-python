@@ -137,9 +137,9 @@ class TestResolveModel:
     def test_all_families_have_default_variant(self) -> None:
         """Every family's default_tag must exist in its variants."""
         for name, family in MODEL_FAMILIES.items():
-            assert family.default_tag in family.variants, (
-                f"{name} has default_tag '{family.default_tag}' but no matching variant"
-            )
+            assert (
+                family.default_tag in family.variants
+            ), f"{name} has default_tag '{family.default_tag}' but no matching variant"
 
 
 # =====================================================================
@@ -269,9 +269,10 @@ class TestResolveModelName:
         assert result == "user/custom-model"
 
     def test_unknown_model_raises(self) -> None:
+        from octomil.errors import OctomilError
         from octomil.serve import resolve_model_name
 
-        with pytest.raises(ValueError, match="Unknown model"):
+        with pytest.raises(OctomilError, match="Unknown model"):
             resolve_model_name("fake-model", "mlx")
 
 

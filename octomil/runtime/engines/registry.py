@@ -19,6 +19,7 @@ import time
 from dataclasses import dataclass
 from typing import Optional
 
+from octomil.errors import OctomilError, OctomilErrorCode
 from octomil.runtime.core.base import BenchmarkResult, EnginePlugin
 
 logger = logging.getLogger(__name__)
@@ -174,26 +175,34 @@ class EngineRegistry:
             engine = self.get_engine(engine_override)
             if engine is None:
                 available = [e.name for e in self._engines]
-                raise ValueError(f"Unknown engine '{engine_override}'. Available: {', '.join(available)}")
+                raise OctomilError(
+                    code=OctomilErrorCode.RUNTIME_UNAVAILABLE,
+                    message=f"Unknown engine '{engine_override}'. Available: {', '.join(available)}",
+                )
             if not engine.detect():
-                raise ValueError(
-                    f"Engine '{engine_override}' is not available on this system. "
-                    f"Check that the required libraries are installed."
+                raise OctomilError(
+                    code=OctomilErrorCode.RUNTIME_UNAVAILABLE,
+                    message=f"Engine '{engine_override}' is not available on this system. "
+                    f"Check that the required libraries are installed.",
                 )
             return engine, []
 
         ranked = self.benchmark_all(model_name, n_tokens=n_tokens)
         if not ranked:
-            raise ValueError(
-                "No inference engines available. Install one of:\n"
+            raise OctomilError(
+                code=OctomilErrorCode.RUNTIME_UNAVAILABLE,
+                message="No inference engines available. Install one of:\n"
                 "  pip install 'octomil-sdk[mlx]'     # Apple Silicon\n"
                 "  pip install 'octomil-sdk[llama]'    # Cross-platform\n"
-                "  pip install 'octomil-sdk[onnx]'     # ONNX Runtime"
+                "  pip install 'octomil-sdk[onnx]'     # ONNX Runtime",
             )
 
         best = self.select_best(ranked)
         if best is None:
-            raise ValueError("All engine benchmarks failed.")
+            raise OctomilError(
+                code=OctomilErrorCode.RUNTIME_UNAVAILABLE,
+                message="All engine benchmarks failed.",
+            )
 
         return best.engine, ranked
 

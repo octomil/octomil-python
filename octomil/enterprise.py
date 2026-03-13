@@ -238,7 +238,7 @@ class EnterpriseClient:
         """
         if preset not in COMPLIANCE_PRESETS:
             raise EnterpriseClientError(
-                f"Unknown compliance preset '{preset}'. " f"Valid options: {', '.join(sorted(COMPLIANCE_PRESETS))}"
+                f"Unknown compliance preset '{preset}'. Valid options: {', '.join(sorted(COMPLIANCE_PRESETS))}"
             )
 
         settings = self._fetch_compliance_preset(preset)

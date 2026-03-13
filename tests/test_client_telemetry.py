@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
+from octomil.auth import OrgApiKeyAuth
+
 # Standard decorator stack for OctomilClient construction — suppresses real
 # _ApiClient / ModelRegistry / RolloutsAPI creation.
 _PATCH_ROLLOUTS = patch("octomil.client.RolloutsAPI")
@@ -24,7 +26,7 @@ class TestClientTelemetryInit:
 
             from octomil.client import OctomilClient
 
-            c = OctomilClient(api_key="test-key", org_id="org1", api_base="https://api.test")
+            c = OctomilClient(auth=OrgApiKeyAuth(api_key="test-key", org_id="org1", api_base="https://api.test"))
             assert c._reporter is not None
 
     @_PATCH_ROLLOUTS
@@ -35,7 +37,7 @@ class TestClientTelemetryInit:
 
         from octomil.client import OctomilClient
 
-        c = OctomilClient(api_key="")
+        c = OctomilClient(auth=OrgApiKeyAuth(api_key="", org_id="default"))
         assert c._reporter is None
 
     @_PATCH_ROLLOUTS
@@ -46,7 +48,7 @@ class TestClientTelemetryInit:
 
         from octomil.client import OctomilClient
 
-        c = OctomilClient()
+        c = OctomilClient(auth=OrgApiKeyAuth(api_key="", org_id="default"))
         assert c._reporter is None
 
     @_PATCH_ROLLOUTS
@@ -59,7 +61,7 @@ class TestClientTelemetryInit:
             "octomil.telemetry.TelemetryReporter",
             side_effect=RuntimeError("init boom"),
         ):
-            c = OctomilClient(api_key="test-key")
+            c = OctomilClient(auth=OrgApiKeyAuth(api_key="test-key", org_id="default"))
             assert c._reporter is None
 
 
@@ -79,7 +81,7 @@ class TestClientPullTelemetry:
 
         mock_reporter = MagicMock()
 
-        c = OctomilClient(api_key="key")
+        c = OctomilClient(auth=OrgApiKeyAuth(api_key="key", org_id="default"))
         c._reporter = mock_reporter
 
         result = c.pull("my-model")
@@ -107,7 +109,7 @@ class TestClientPullTelemetry:
 
         mock_reporter = MagicMock()
 
-        c = OctomilClient(api_key="key")
+        c = OctomilClient(auth=OrgApiKeyAuth(api_key="key", org_id="default"))
         c._reporter = mock_reporter
 
         with pytest.raises(RuntimeError, match="download failed"):
@@ -133,7 +135,7 @@ class TestClientPullTelemetry:
         mock_registry.get_latest_version.return_value = "1.0.0"
         mock_registry.download.return_value = {"model_path": "/tmp/m.onnx"}
 
-        c = OctomilClient(api_key="key")
+        c = OctomilClient(auth=OrgApiKeyAuth(api_key="key", org_id="default"))
         c._reporter = None
 
         result = c.pull("my-model")
@@ -165,7 +167,7 @@ class TestClientLoadModelTelemetry:
             patch("octomil.runtime.engines.get_registry", return_value=mock_engine_registry),
             patch("octomil.model.Model", return_value=mock_model_instance) as mock_model_cls,
         ):
-            c = OctomilClient(api_key="key")
+            c = OctomilClient(auth=OrgApiKeyAuth(api_key="key", org_id="default"))
             c._reporter = mock_reporter
 
             model = c.load_model("my-model")
@@ -196,7 +198,7 @@ class TestClientLoadModelTelemetry:
             patch("octomil.runtime.engines.get_registry", return_value=mock_engine_registry),
             patch("octomil.model.Model"),
         ):
-            c = OctomilClient(api_key="key")
+            c = OctomilClient(auth=OrgApiKeyAuth(api_key="key", org_id="default"))
             c._reporter = mock_reporter
 
             c.load_model("my-model")
@@ -236,7 +238,7 @@ class TestClientLoadModelTelemetry:
             patch("octomil.runtime.engines.get_registry", return_value=mock_engine_registry),
             patch("octomil.model.Model", return_value=mock_model_instance),
         ):
-            c = OctomilClient(api_key="key")
+            c = OctomilClient(auth=OrgApiKeyAuth(api_key="key", org_id="default"))
             c._reporter = None
 
             c.load_model("my-model")
@@ -254,7 +256,7 @@ class TestClientCloseTelemetry:
 
         mock_reporter = MagicMock()
 
-        c = OctomilClient(api_key="key")
+        c = OctomilClient(auth=OrgApiKeyAuth(api_key="key", org_id="default"))
         c._reporter = mock_reporter
 
         c.close()
@@ -269,7 +271,7 @@ class TestClientCloseTelemetry:
     def test_close_without_reporter(self, mock_api, mock_registry, mock_rollouts):
         from octomil.client import OctomilClient
 
-        c = OctomilClient(api_key="key")
+        c = OctomilClient(auth=OrgApiKeyAuth(api_key="key", org_id="default"))
         c._reporter = None
 
         # Should not raise
@@ -285,7 +287,7 @@ class TestClientCloseTelemetry:
         mock_reporter = MagicMock()
         mock_reporter.close.side_effect = RuntimeError("close boom")
 
-        c = OctomilClient(api_key="key")
+        c = OctomilClient(auth=OrgApiKeyAuth(api_key="key", org_id="default"))
         c._reporter = mock_reporter
 
         # Should not raise
@@ -301,7 +303,7 @@ class TestClientCloseTelemetry:
 
         from octomil.client import OctomilClient
 
-        c = OctomilClient(api_key="key")
+        c = OctomilClient(auth=OrgApiKeyAuth(api_key="key", org_id="default"))
         c._reporter = None
 
         with warnings.catch_warnings(record=True) as w:

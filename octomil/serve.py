@@ -37,6 +37,7 @@ if TYPE_CHECKING:
 
 from pydantic import BaseModel, Field
 
+from .errors import OctomilError, OctomilErrorCode
 from .models.catalog import CATALOG as _UNIFIED_CATALOG
 from .models.resolver import ModelResolutionError as _NewResolutionError
 from .models.resolver import resolve as _resolve_new
@@ -109,15 +110,16 @@ def resolve_model_name(name: str, backend: str) -> str:
     try:
         resolved = _resolve_new(name, engine=engine)
     except _NewResolutionError as exc:
-        raise ValueError(str(exc)) from exc
+        raise OctomilError(code=OctomilErrorCode.MODEL_NOT_FOUND, message=str(exc)) from exc
 
     if backend == "mlx":
         if resolved.mlx_repo:
             return resolved.mlx_repo
         if resolved.hf_repo:
             return resolved.hf_repo
-        raise ValueError(
-            f"No MLX source found for '{name}'. Pass a full HuggingFace repo ID (e.g. 'mlx-community/model-4bit')."
+        raise OctomilError(
+            code=OctomilErrorCode.MODEL_NOT_FOUND,
+            message=f"No MLX source found for '{name}'. Pass a full HuggingFace repo ID (e.g. 'mlx-community/model-4bit').",
         )
 
     if backend == "gguf":
@@ -128,8 +130,9 @@ def resolve_model_name(name: str, backend: str) -> str:
         # If the resolver found a GGUF artifact, return the family name
         if resolved.is_gguf and family:
             return family
-        raise ValueError(
-            f"No GGUF source found for '{name}'. Pass a path to a local .gguf file or a HuggingFace repo ID."
+        raise OctomilError(
+            code=OctomilErrorCode.MODEL_NOT_FOUND,
+            message=f"No GGUF source found for '{name}'. Pass a path to a local .gguf file or a HuggingFace repo ID.",
         )
 
     return name
@@ -176,13 +179,37 @@ class InferenceMetrics:
 
 
 class InferenceBackend:
-    """Base class for inference backends."""
+    """Base class for inference backends.
+
+    Provides a shared ``ThreadPoolExecutor`` for sync→async bridging and
+    a ``warmup()`` hook that subclasses can override to pre-compile GPU
+    kernels and prime caches at model load time.
+    """
 
     name: str = "base"
     attention_backend: str = "standard"
 
+    def __init__(self) -> None:
+        from concurrent.futures import ThreadPoolExecutor
+
+        self._executor = ThreadPoolExecutor(
+            max_workers=1,
+            thread_name_prefix=f"{self.name}-inference",
+        )
+        # Pre-spawn the executor thread so the first streaming request
+        # doesn't pay OS thread creation cost (~50ms measured).
+        self._executor.submit(lambda: None).result()
+
     def load_model(self, model_name: str) -> None:
         raise NotImplementedError
+
+    def warmup(self) -> None:
+        """Override to run a cheap prefill after model load.
+
+        This compiles GPU shaders/kernels and primes caches so the first
+        real request doesn't pay cold-start cost.  Called automatically
+        at the end of ``load_model`` in subclasses that opt in.
+        """
 
     def generate(self, request: GenerationRequest) -> tuple[str, InferenceMetrics]:
         raise NotImplementedError
@@ -229,6 +256,7 @@ class MLXBackend(InferenceBackend):
         cache_size_mb: int = 2048,
         cache_enabled: bool = True,
     ) -> None:
+        super().__init__()
         self._model: Any = None
         self._tokenizer: Any = None
         self._draft_model: Any = None
@@ -241,6 +269,7 @@ class MLXBackend(InferenceBackend):
         self._cache_mgr = KVCacheManager(max_cache_size_mb=cache_size_mb, max_entries=4)
         self._cache_hits: int = 0
         self._cache_misses: int = 0
+        self._last_timings: dict[str, Any] = {}
 
     def load_model(self, model_name: str) -> None:
         import mlx_lm  # type: ignore[import-untyped]
@@ -277,6 +306,38 @@ class MLXBackend(InferenceBackend):
         # Common chat model turn markers
         for marker in ("<end_of_turn>", "<|eot_id|>", "<|im_end|>", "</s>"):
             self._stop_strings.add(marker)
+
+        # Warmup: prefill a short prompt to compile Metal shaders and prime
+        # the KV cache so the first real request doesn't pay cold-start cost.
+        self.warmup()
+
+    def warmup(self) -> None:
+        """Run a single prefill+decode to compile Metal shaders and prime KV cache."""
+        import mlx_lm  # type: ignore[import-untyped]
+        from mlx_lm.models.cache import make_prompt_cache  # type: ignore[import-untyped]
+
+        warmup_start = time.perf_counter()
+        prompt = self._apply_chat_template([{"role": "user", "content": "hi"}])
+        token_ids = self._tokenizer.encode(prompt)
+        cache = make_prompt_cache(self._model)
+        sampler = self._make_sampler(0.0, 1.0)
+
+        # Generate 1 token — forces Metal shader compilation and prefill
+        for response in mlx_lm.stream_generate(
+            self._model,
+            self._tokenizer,
+            prompt=token_ids,
+            max_tokens=1,
+            sampler=sampler,
+            prompt_cache=cache,
+        ):
+            break  # only need the first token
+
+        # Store in cache so first real request gets a partial hit
+        self._store_cache(token_ids, cache)
+
+        elapsed = (time.perf_counter() - warmup_start) * 1000
+        logger.info("MLX warmup complete: %.0fms (Metal shaders compiled, KV cache primed)", elapsed)
 
     def _apply_chat_template(self, messages: list[dict[str, str]]) -> str:
         """Format messages using the model's chat template."""
@@ -427,12 +488,20 @@ class MLXBackend(InferenceBackend):
 
         import mlx_lm  # type: ignore[import-untyped]
 
+        t_start = time.perf_counter()
+
         prompt = self._apply_chat_template(request.messages)
+        t_template = time.perf_counter()
+
         prompt_token_ids = self._tokenizer.encode(prompt)
+        t_tokenize = time.perf_counter()
+
         sampler = self._make_sampler(request.temperature, request.top_p)
+        t_sampler = time.perf_counter()
 
         # Fetch reusable prompt cache or create fresh
         cache, remaining_tokens, _cache_hit = self._fetch_or_create_cache(prompt_token_ids)
+        t_cache = time.perf_counter()
 
         extra_kwargs: dict[str, Any] = {
             "prompt_cache": cache,
@@ -448,8 +517,10 @@ class MLXBackend(InferenceBackend):
         cancelled = threading.Event()
         done = threading.Event()
         loop = asyncio.get_event_loop()
+        t_first_token: Optional[float] = None
 
         def _produce() -> None:
+            nonlocal t_first_token
             try:
                 for response in mlx_lm.stream_generate(
                     self._model,
@@ -459,6 +530,8 @@ class MLXBackend(InferenceBackend):
                     sampler=sampler,
                     **extra_kwargs,
                 ):
+                    if t_first_token is None:
+                        t_first_token = time.perf_counter()
                     if cancelled.is_set():
                         break
                     loop.call_soon_threadsafe(queue.put_nowait, response)
@@ -466,7 +539,27 @@ class MLXBackend(InferenceBackend):
                 loop.call_soon_threadsafe(queue.put_nowait, None)  # sentinel
                 done.set()
 
-        threading.Thread(target=_produce, daemon=True).start()
+        t_pre_submit = time.perf_counter()
+        self._executor.submit(_produce)
+        t_post_submit = time.perf_counter()
+
+        # Log pre-generation timing breakdown
+        timings = {
+            "chat_template_ms": (t_template - t_start) * 1000,
+            "tokenize_ms": (t_tokenize - t_template) * 1000,
+            "sampler_ms": (t_sampler - t_tokenize) * 1000,
+            "cache_lookup_ms": (t_cache - t_sampler) * 1000,
+            "queue_setup_ms": (t_pre_submit - t_cache) * 1000,
+            "executor_submit_ms": (t_post_submit - t_pre_submit) * 1000,
+            "total_pre_gen_ms": (t_post_submit - t_start) * 1000,
+            "cache_hit": _cache_hit,
+            "prompt_tokens": len(prompt_token_ids),
+            "remaining_tokens": len(remaining_tokens),
+        }
+        logger.info("MLX pre-generation timings: %s", timings)
+
+        # Store latest timings for the debug endpoint
+        self._last_timings = timings
 
         try:
             while True:
@@ -486,14 +579,25 @@ class MLXBackend(InferenceBackend):
                 )
         finally:
             cancelled.set()
+            t_done_wait_start = time.perf_counter()
             # Wait for producer to fully exit before reusing the model/cache.
             # Without this, Metal command buffers from the dying producer
             # collide with the next request's Metal operations → SIGABRT.
             done.wait(timeout=5.0)
+            t_done_wait_end = time.perf_counter()
             # Store cache for next request. The done.wait() above guarantees
             # the producer has fully stopped and all Metal ops are complete,
             # so the cache is in a consistent (if partially filled) state.
             self._store_cache(prompt_token_ids, cache)
+            t_store = time.perf_counter()
+
+            # Update timings with post-generation metrics
+            self._last_timings["done_wait_ms"] = (t_done_wait_end - t_done_wait_start) * 1000
+            self._last_timings["cache_store_ms"] = (t_store - t_done_wait_end) * 1000
+            if t_first_token is not None:
+                self._last_timings["prefill_ms"] = (t_first_token - t_post_submit) * 1000
+                self._last_timings["total_ttft_ms"] = (t_first_token - t_start) * 1000
+            logger.info("MLX full timings: %s", self._last_timings)
 
     @property
     def kv_cache(self) -> Any:
@@ -522,6 +626,7 @@ class LlamaCppBackend(InferenceBackend):
         cache_size_mb: int = 2048,
         cache_enabled: bool = True,
     ) -> None:
+        super().__init__()
         self._llm: Any = None
         self._model_name: str = ""
         self._cache_size_mb = cache_size_mb
@@ -617,10 +722,11 @@ class LlamaCppBackend(InferenceBackend):
 
         # Fallback: short name → legacy catalog lookup
         if model_name not in _GGUF_MODELS:
-            raise ValueError(
-                f"Unknown model '{model_name}'. "
+            raise OctomilError(
+                code=OctomilErrorCode.MODEL_NOT_FOUND,
+                message=f"Unknown model '{model_name}'. "
                 f"Available: {', '.join(sorted(_GGUF_MODELS))}\n"
-                f"Or pass a local .gguf path or HuggingFace repo ID."
+                f"Or pass a local .gguf path or HuggingFace repo ID.",
             )
 
         repo_id, filename = _GGUF_MODELS[model_name]
@@ -698,7 +804,7 @@ class LlamaCppBackend(InferenceBackend):
                 return None
 
         while True:
-            chunk = await loop.run_in_executor(None, _next_chunk)
+            chunk = await loop.run_in_executor(self._executor, _next_chunk)
             if chunk is None:
                 break
             delta = chunk["choices"][0].get("delta", {})
@@ -717,6 +823,7 @@ class EchoBackend(InferenceBackend):
     name = "echo"
 
     def __init__(self) -> None:
+        super().__init__()
         self._model_name: str = ""
 
     def load_model(self, model_name: str) -> None:
@@ -782,7 +889,10 @@ def _detect_backend(
         engine = registry.get_engine(engine_override)
         if engine is None:
             available = [e.name for e in registry.engines]
-            raise ValueError(f"Unknown engine '{engine_override}'. Available: {', '.join(available)}")
+            raise OctomilError(
+                code=OctomilErrorCode.RUNTIME_UNAVAILABLE,
+                message=f"Unknown engine '{engine_override}'. Available: {', '.join(available)}",
+            )
         backend: InferenceBackend = engine.create_backend(model_name, **backend_kwargs)
         return backend
 
@@ -1031,9 +1141,11 @@ def create_app(
     """
     from contextlib import asynccontextmanager
 
-    from fastapi import FastAPI, HTTPException
+    from fastapi import FastAPI, Request
     from fastapi.middleware.cors import CORSMiddleware
-    from fastapi.responses import StreamingResponse
+    from fastapi.responses import JSONResponse, StreamingResponse
+
+    from .errors import OctomilError, OctomilErrorCode  # noqa: F811
 
     # Detect MoE model from catalog
     from .models.catalog import get_moe_metadata
@@ -1162,6 +1274,35 @@ def create_app(
 
     app = FastAPI(title="Octomil Serve", version="1.0.0", lifespan=lifespan)
 
+    @app.exception_handler(OctomilError)
+    async def octomil_error_handler(request: Request, exc: OctomilError) -> JSONResponse:
+        from ._generated.error_code import ERROR_CLASSIFICATION, RetryClass
+
+        classification = ERROR_CLASSIFICATION.get(exc.code)
+        status_map = {
+            OctomilErrorCode.INVALID_INPUT: 400,
+            OctomilErrorCode.AUTHENTICATION_FAILED: 401,
+            OctomilErrorCode.INVALID_API_KEY: 401,
+            OctomilErrorCode.FORBIDDEN: 403,
+            OctomilErrorCode.MODEL_NOT_FOUND: 404,
+            OctomilErrorCode.RATE_LIMITED: 429,
+            OctomilErrorCode.MODEL_LOAD_FAILED: 503,
+            OctomilErrorCode.RUNTIME_UNAVAILABLE: 503,
+            OctomilErrorCode.INFERENCE_FAILED: 503,
+            OctomilErrorCode.SERVER_ERROR: 500,
+            OctomilErrorCode.REQUEST_TIMEOUT: 504,
+        }
+        status_code = status_map.get(exc.code, 500)
+        return JSONResponse(
+            status_code=status_code,
+            content={
+                "code": exc.code.value,
+                "message": str(exc),
+                "retryable": classification.retry_class != RetryClass.NEVER if classification else False,
+                "category": classification.category.value if classification else "unknown",
+            },
+        )
+
     app.add_middleware(
         CORSMiddleware,
         allow_origins=["*"],
@@ -1232,7 +1373,7 @@ def create_app(
     @app.post("/v1/chat/completions")
     async def chat_completions(body: ChatCompletionBody) -> Any:
         if state.backend is None:
-            raise HTTPException(status_code=503, detail="Model not loaded")
+            raise OctomilError(code=OctomilErrorCode.MODEL_LOAD_FAILED, message="Model not loaded")
 
         # --- Tier-0: deterministic routing (arithmetic, etc.) ---
         # Check the last user message for a query that can be answered
@@ -1361,18 +1502,18 @@ def create_app(
                 try:
                     text, metrics = await _queue.submit_generate(gen_req, state.backend.generate)
                 except QueueFullError:
-                    raise HTTPException(
-                        status_code=503,
-                        detail="Server busy — request queue full. Try again later.",
+                    raise OctomilError(
+                        code=OctomilErrorCode.RATE_LIMITED,
+                        message="Server busy — request queue full. Try again later.",
                     )
                 except QueueTimeoutError:
-                    raise HTTPException(
-                        status_code=504,
-                        detail="Request timed out waiting in queue.",
+                    raise OctomilError(
+                        code=OctomilErrorCode.REQUEST_TIMEOUT,
+                        message="Request timed out waiting in queue.",
                     )
             else:
                 text, metrics = state.backend.generate(gen_req)
-        except HTTPException:
+        except OctomilError:
             raise
         except Exception:
             if _reporter is not None:
@@ -1488,7 +1629,7 @@ def create_app(
     async def cache_stats() -> dict[str, Any]:
         """Return KV cache statistics."""
         if state.backend is None:
-            raise HTTPException(status_code=503, detail="Model not loaded")
+            raise OctomilError(code=OctomilErrorCode.MODEL_LOAD_FAILED, message="Model not loaded")
 
         cache_mgr = _get_cache_manager(state.backend)
         if cache_mgr is None:
@@ -1512,6 +1653,15 @@ def create_app(
             "memory_mb": round(stats.memory_mb, 2),
             "max_memory_mb": state.cache_size_mb,
         }
+
+    @app.get("/v1/debug/timings")
+    async def debug_timings() -> dict[str, Any]:
+        """Return the latest MLX pre-generation timing breakdown."""
+        if state.backend is None:
+            raise OctomilError(code=OctomilErrorCode.MODEL_LOAD_FAILED, message="Model not loaded")
+        if hasattr(state.backend, "_last_timings"):
+            return state.backend._last_timings
+        return {"error": "No timings available (not an MLX backend or no requests yet)"}
 
     @app.get("/v1/queue/stats")
     async def queue_stats() -> dict[str, Any]:
@@ -1617,13 +1767,13 @@ def create_app(
         with segment-level timestamps.
         """
         if state.whisper_backend is None:
-            raise HTTPException(
-                status_code=503,
-                detail="No whisper model loaded. Start server with a whisper model: octomil serve whisper-base",
+            raise OctomilError(
+                code=OctomilErrorCode.MODEL_LOAD_FAILED,
+                message="No whisper model loaded. Start server with a whisper model: octomil serve whisper-base",
             )
 
         if file is None:
-            raise HTTPException(status_code=400, detail="No audio file provided")
+            raise OctomilError(code=OctomilErrorCode.INVALID_INPUT, message="No audio file provided")
 
         # Save uploaded file to a temp location
         import tempfile
@@ -1957,11 +2107,12 @@ def create_multi_model_app(
     """
     from contextlib import asynccontextmanager
 
-    from fastapi import FastAPI, HTTPException
+    from fastapi import FastAPI, Request  # noqa: F811
     from fastapi.middleware.cors import CORSMiddleware
     from fastapi.responses import JSONResponse, StreamingResponse
 
     from .decomposer import ResultMerger, SubTaskResult
+    from .errors import OctomilError, OctomilErrorCode  # noqa: F811
     from .routing import (
         DecomposedRoutingDecision,
         QueryRouter,
@@ -2027,6 +2178,35 @@ def create_multi_model_app(
 
     app = FastAPI(title="Octomil Serve (Multi-Model)", version="1.0.0", lifespan=lifespan)
 
+    @app.exception_handler(OctomilError)
+    async def octomil_error_handler(request: Request, exc: OctomilError) -> JSONResponse:  # type: ignore[misc]
+        from ._generated.error_code import ERROR_CLASSIFICATION, RetryClass
+
+        classification = ERROR_CLASSIFICATION.get(exc.code)
+        status_map = {
+            OctomilErrorCode.INVALID_INPUT: 400,
+            OctomilErrorCode.AUTHENTICATION_FAILED: 401,
+            OctomilErrorCode.INVALID_API_KEY: 401,
+            OctomilErrorCode.FORBIDDEN: 403,
+            OctomilErrorCode.MODEL_NOT_FOUND: 404,
+            OctomilErrorCode.RATE_LIMITED: 429,
+            OctomilErrorCode.MODEL_LOAD_FAILED: 503,
+            OctomilErrorCode.RUNTIME_UNAVAILABLE: 503,
+            OctomilErrorCode.INFERENCE_FAILED: 503,
+            OctomilErrorCode.SERVER_ERROR: 500,
+            OctomilErrorCode.REQUEST_TIMEOUT: 504,
+        }
+        status_code = status_map.get(exc.code, 500)
+        return JSONResponse(
+            status_code=status_code,
+            content={
+                "code": exc.code.value,
+                "message": str(exc),
+                "retryable": classification.retry_class != RetryClass.NEVER if classification else False,
+                "category": classification.category.value if classification else "unknown",
+            },
+        )
+
     app.add_middleware(
         CORSMiddleware,
         allow_origins=["*"],
@@ -2055,7 +2235,7 @@ def create_multi_model_app(
     @app.post("/v1/chat/completions")
     async def chat_completions(body: ChatCompletionBody) -> Any:
         if not state.backends:
-            raise HTTPException(status_code=503, detail="No models loaded")
+            raise OctomilError(code=OctomilErrorCode.MODEL_LOAD_FAILED, message="No models loaded")
 
         messages = [{"role": m.role, "content": m.content} for m in body.messages]
 
@@ -2235,9 +2415,9 @@ def create_multi_model_app(
             return resp
 
         # All models failed
-        raise HTTPException(
-            status_code=503,
-            detail=f"All models failed. Last error: {last_error}",
+        raise OctomilError(
+            code=OctomilErrorCode.INFERENCE_FAILED,
+            message=f"All models failed. Last error: {last_error}",
         )
 
     @app.get("/v1/routing/stats")

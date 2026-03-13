@@ -107,6 +107,7 @@ def _percentile(data: list[float], pct: float) -> float:
 
 def _benchmark_all_engines(model: str, iterations: int, max_tokens: int) -> None:
     """Benchmark all available engines and print a comparison table."""
+    import sys
     import time
 
     from octomil.runtime.engines import get_registry
@@ -115,6 +116,14 @@ def _benchmark_all_engines(model: str, iterations: int, max_tokens: int) -> None
     registry = get_registry()
     detections = registry.detect_all(model)
     available = [d for d in detections if d.available and d.engine.name != "echo"]
+
+    # Frozen binary with no native engines: try managed venv
+    if getattr(sys, "frozen", False):
+        native = [d for d in available if d.engine.name != "ollama"]
+        if not native:
+            from octomil.venv_reexec import try_venv_reexec
+
+            try_venv_reexec()  # replaces process via os.execv if venv ready
 
     if not available:
         click.echo(click.style("  No inference engines available for this model.", fg="red"), err=True)
@@ -301,9 +310,23 @@ def benchmark(
         octomil benchmark gemma-1b --local
     """
     import platform as _platform
+    import sys
     import time
 
     import psutil
+
+    # Frozen binary: re-exec into managed venv if no native engines available
+    if getattr(sys, "frozen", False):
+        from octomil.runtime.engines import get_registry
+
+        registry = get_registry()
+        detections = registry.detect_all(model)
+        available = [d for d in detections if d.available and d.engine.name != "echo"]
+        native = [d for d in available if d.engine.name != "ollama"]
+        if not native:
+            from octomil.venv_reexec import try_venv_reexec
+
+            try_venv_reexec()  # replaces process via os.execv if venv ready
 
     cli_header(f"Benchmark — {model}")
     cli_kv("Platform", f"{_platform.system()} {_platform.machine()}")

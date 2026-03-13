@@ -653,6 +653,13 @@ class TestLauncherIntegration:
 
 
 class TestServeReexec:
+    """Re-exec tests now delegate to octomil.venv_reexec.
+
+    See tests/test_venv_reexec.py for comprehensive tests.
+    These remain as integration smoke tests verifying the serve command
+    still reaches the shared helper.
+    """
+
     @patch("octomil.setup.load_state")
     @patch("octomil.setup.run_setup")
     @patch("octomil.setup.is_setup_in_progress", return_value=False)
@@ -661,14 +668,14 @@ class TestServeReexec:
     def test_try_venv_reexec_no_venv_runs_setup(
         self, mock_venv, mock_ready, mock_progress, mock_run_setup, mock_load_state
     ):
-        """When no venv exists, _try_venv_reexec runs setup inline."""
-        from octomil.commands.serve import _try_venv_reexec
+        """When no venv exists, try_venv_reexec runs setup inline."""
         from octomil.setup import SetupState
+        from octomil.venv_reexec import try_venv_reexec
 
         mock_load_state.return_value = SetupState()  # phase="pending"
         mock_run_setup.return_value = SetupState(phase="failed", error="test")
 
-        result = _try_venv_reexec()
+        result = try_venv_reexec()
         assert result is False
         mock_run_setup.assert_called_once()
 
@@ -678,12 +685,12 @@ class TestServeReexec:
     @patch("octomil.setup.get_venv_python", return_value=None)
     def test_try_venv_reexec_skips_if_already_failed(self, mock_venv, mock_ready, mock_progress, mock_load_state):
         """When previous setup failed, don't retry — fall through."""
-        from octomil.commands.serve import _try_venv_reexec
         from octomil.setup import SetupState
+        from octomil.venv_reexec import try_venv_reexec
 
         mock_load_state.return_value = SetupState(phase="failed", error="no python")
 
-        result = _try_venv_reexec()
+        result = try_venv_reexec()
         assert result is False
 
     @patch("os.execv")
@@ -691,10 +698,10 @@ class TestServeReexec:
     @patch("octomil.setup.is_engine_ready", return_value=True)
     @patch("octomil.setup.get_venv_python", return_value="/venv/bin/python")
     def test_try_venv_reexec_success(self, mock_venv, mock_ready, mock_progress, mock_execv):
-        from octomil.commands.serve import _try_venv_reexec
+        from octomil.venv_reexec import try_venv_reexec
 
         with patch.object(sys, "argv", ["octomil", "serve", "qwen-coder-7b", "--port", "8080"]):
-            _try_venv_reexec()
+            try_venv_reexec()
 
         mock_execv.assert_called_once()
         call_args = mock_execv.call_args[0]

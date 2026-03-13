@@ -6,6 +6,7 @@ import asyncio
 from typing import Any
 from unittest.mock import MagicMock, patch
 
+from octomil.auth import OrgApiKeyAuth
 from octomil.model import Model, ModelMetadata, Prediction
 from octomil.serve import GenerationChunk, GenerationRequest, InferenceMetrics
 
@@ -274,7 +275,7 @@ class TestClientLoadModel:
             mock_reg_instance.auto_select.return_value = (fake_engine, [])
             mock_get_reg.return_value = mock_reg_instance
 
-            c = OctomilClient(api_key="key")
+            c = OctomilClient(auth=OrgApiKeyAuth(api_key="key", org_id="default"))
             model = c.load_model("my-model")
 
         assert isinstance(model, Model)
@@ -300,7 +301,7 @@ class TestClientLoadModel:
             mock_reg_instance.auto_select.return_value = (fake_engine, [])
             mock_get_reg.return_value = mock_reg_instance
 
-            c = OctomilClient(api_key="key")
+            c = OctomilClient(auth=OrgApiKeyAuth(api_key="key", org_id="default"))
             model = c.load_model(
                 "my-model",
                 version="3.0.0",
@@ -329,7 +330,7 @@ class TestClientLoadModel:
             mock_reg_instance.auto_select.return_value = (fake_engine, [])
             mock_get_reg.return_value = mock_reg_instance
 
-            c = OctomilClient(api_key="key")
+            c = OctomilClient(auth=OrgApiKeyAuth(api_key="key", org_id="default"))
             c.load_model("my-model", destination="/opt/models")
 
         mock_registry.download.assert_called_once_with(
@@ -367,7 +368,7 @@ class TestClientPredict:
             mock_reg_instance.auto_select.return_value = (fake_engine, [])
             mock_get_reg.return_value = mock_reg_instance
 
-            c = OctomilClient(api_key="key")
+            c = OctomilClient(auth=OrgApiKeyAuth(api_key="key", org_id="default"))
             result = c.predict(
                 "my-model",
                 [{"role": "user", "content": "What is 2+2?"}],
@@ -397,7 +398,7 @@ class TestClientPredict:
             mock_reg_instance.auto_select.return_value = (fake_engine, [])
             mock_get_reg.return_value = mock_reg_instance
 
-            c = OctomilClient(api_key="key")
+            c = OctomilClient(auth=OrgApiKeyAuth(api_key="key", org_id="default"))
             c.predict("my-model", [{"role": "user", "content": "a"}])
             c.predict("my-model", [{"role": "user", "content": "b"}])
 
@@ -425,7 +426,7 @@ class TestClientPredict:
             mock_reg_instance.auto_select.return_value = (fake_engine, [])
             mock_get_reg.return_value = mock_reg_instance
 
-            c = OctomilClient(api_key="key")
+            c = OctomilClient(auth=OrgApiKeyAuth(api_key="key", org_id="default"))
             c.predict(
                 "my-model",
                 [{"role": "user", "content": "test"}],
@@ -457,7 +458,7 @@ class TestClientPredict:
             mock_reg_instance.auto_select.return_value = (fake_engine, [])
             mock_get_reg.return_value = mock_reg_instance
 
-            c = OctomilClient(api_key="key")
+            c = OctomilClient(auth=OrgApiKeyAuth(api_key="key", org_id="default"))
             c.predict("my-model", [{"role": "user", "content": "a"}])
             assert len(c._models) == 1
 

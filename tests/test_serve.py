@@ -36,7 +36,9 @@ class TestResolveModelName:
         assert result == "mlx-community/REDACTED"
 
     def test_mlx_unknown_name_raises(self):
-        with pytest.raises(ValueError, match="Unknown model 'nonexistent'"):
+        from octomil.errors import OctomilError
+
+        with pytest.raises(OctomilError, match="Unknown model 'nonexistent'"):
             resolve_model_name("nonexistent", "mlx")
 
     def test_gguf_short_name(self):
@@ -44,13 +46,17 @@ class TestResolveModelName:
         assert result == "gemma-1b"  # gguf resolves at download time
 
     def test_gguf_unknown_name_raises(self):
-        with pytest.raises(ValueError, match="Unknown model 'nonexistent'"):
+        from octomil.errors import OctomilError
+
+        with pytest.raises(OctomilError, match="Unknown model 'nonexistent'"):
             resolve_model_name("nonexistent", "gguf")
 
     def test_unknown_backend_unknown_model_raises(self):
+        from octomil.errors import OctomilError
+
         # With the model registry, unknown model names raise even with
         # unknown backends (stricter validation than before).
-        with pytest.raises(ValueError, match="Unknown model 'anything'"):
+        with pytest.raises(OctomilError, match="Unknown model 'anything'"):
             resolve_model_name("anything", "other")
 
     def test_unknown_backend_known_model_passthrough(self):

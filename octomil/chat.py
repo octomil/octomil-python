@@ -53,7 +53,7 @@ def stream_chat(
         ) as response:
             if response.status_code != 200:
                 raise RuntimeError(
-                    f"Server returned {response.status_code}: " f"{response.read().decode(errors='replace')}"
+                    f"Server returned {response.status_code}: {response.read().decode(errors='replace')}"
                 )
             for line in response.iter_lines():
                 if not line.startswith("data: "):

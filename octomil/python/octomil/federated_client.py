@@ -231,7 +231,7 @@ class FederatedClient:
         if target_col not in df.columns:
             available = sorted(df.columns)
             raise OctomilClientError(
-                f"Target column '{target_col}' not found. " f"Available columns: {available}"
+                f"Target column '{target_col}' not found. Available columns: {available}"
             )
 
         if architecture:

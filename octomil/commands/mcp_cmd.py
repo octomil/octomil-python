@@ -155,6 +155,21 @@ def serve(
 
         OCTOMIL_X402_ADDRESS=0x... OCTOMIL_SETTLER_TOKEN=s402_... octomil mcp serve --x402
     """
+    import sys
+
+    # Frozen binary: re-exec into managed venv if no native engines available
+    if getattr(sys, "frozen", False):
+        from octomil.runtime.engines import get_registry
+
+        registry = get_registry()
+        detections = registry.detect_all(model or "qwen-coder-7b")
+        available = [d for d in detections if d.available and d.engine.name != "echo"]
+        native = [d for d in available if d.engine.name != "ollama"]
+        if not native:
+            from octomil.venv_reexec import try_venv_reexec
+
+            try_venv_reexec()  # replaces process via os.execv if venv ready
+
     cli_header("MCP — Serve")
 
     try:

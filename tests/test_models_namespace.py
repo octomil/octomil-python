@@ -6,6 +6,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from octomil.auth import OrgApiKeyAuth
 from octomil.models_namespace import ModelStatus, OctomilModels
 
 # ---------------------------------------------------------------------------
@@ -302,7 +303,7 @@ class TestClientModelsProperty:
     def test_models_property_returns_namespace(self, mock_api, mock_reg, mock_roll):
         from octomil.client import OctomilClient
 
-        client = OctomilClient(api_key="test")
+        client = OctomilClient(auth=OrgApiKeyAuth(api_key="test", org_id="default"))
         ns = client.models
         assert isinstance(ns, OctomilModels)
 
@@ -312,7 +313,7 @@ class TestClientModelsProperty:
     def test_models_property_is_cached(self, mock_api, mock_reg, mock_roll):
         from octomil.client import OctomilClient
 
-        client = OctomilClient(api_key="test")
+        client = OctomilClient(auth=OrgApiKeyAuth(api_key="test", org_id="default"))
         ns1 = client.models
         ns2 = client.models
         assert ns1 is ns2

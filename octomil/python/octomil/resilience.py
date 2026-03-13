@@ -14,6 +14,7 @@ logger = logging.getLogger(__name__)
 @dataclass
 class EligibilityResult:
     """Result of a training eligibility check."""
+
     eligible: bool
     reason: Optional[str] = None
 
@@ -21,6 +22,7 @@ class EligibilityResult:
 @dataclass
 class NetworkQuality:
     """Result of a network quality probe."""
+
     reachable: bool
     latency_ms: Optional[float] = None
 
@@ -69,6 +71,7 @@ def check_network_quality(
     """
     try:
         import time
+
         start = time.monotonic()
         response = httpx.get(f"{api_base.rstrip('/')}/health", timeout=timeout)
         latency = (time.monotonic() - start) * 1000

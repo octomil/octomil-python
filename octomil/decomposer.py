@@ -96,9 +96,7 @@ _DEPENDENCY_PATTERNS: list[re.Pattern[str]] = [
         r"\b(the\s+summary|the\s+translation|the\s+output|the\s+result)\b",
         re.IGNORECASE,
     ),
-    re.compile(
-        r"\b(format|rewrite|edit|revise)\s+(it|that|the\s+result)\b", re.IGNORECASE
-    ),
+    re.compile(r"\b(format|rewrite|edit|revise)\s+(it|that|the\s+result)\b", re.IGNORECASE),
 ]
 
 # Common imperative verbs that start independent tasks
@@ -399,17 +397,12 @@ class QueryDecomposer:
         # Build dependency DAG
         dep_lists = _detect_dependencies(parts)
 
-        tasks = [
-            SubTask(text=part, index=i, depends_on=dep_lists[i])
-            for i, part in enumerate(parts)
-        ]
+        tasks = [SubTask(text=part, index=i, depends_on=dep_lists[i]) for i, part in enumerate(parts)]
 
         # Check if decomposition overhead > benefit: need at least 2 independent
         # tasks (tasks with no dependencies) to justify parallelism
         independent_count = sum(1 for t in tasks if not t.depends_on)
-        if independent_count < 2 and len(tasks) == len(
-            [t for t in tasks if t.depends_on]
-        ):
+        if independent_count < 2 and len(tasks) == len([t for t in tasks if t.depends_on]):
             # All tasks are sequential -- still decompose for per-task routing
             # but log that parallelism isn't available
             logger.debug(

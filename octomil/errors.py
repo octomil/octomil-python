@@ -25,10 +25,10 @@ __all__ = [
 
 
 _HTTP_STATUS_MAP: dict[int, OctomilErrorCode] = {
-    401: OctomilErrorCode.INVALID_API_KEY,
+    400: OctomilErrorCode.INVALID_INPUT,
+    401: OctomilErrorCode.AUTHENTICATION_FAILED,
     403: OctomilErrorCode.FORBIDDEN,
     404: OctomilErrorCode.MODEL_NOT_FOUND,
-    408: OctomilErrorCode.REQUEST_TIMEOUT,
     429: OctomilErrorCode.RATE_LIMITED,
     500: OctomilErrorCode.SERVER_ERROR,
     502: OctomilErrorCode.SERVER_ERROR,

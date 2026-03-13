@@ -87,9 +87,7 @@ def apply_fp16_scaling(
             scaled[name] = alpha
 
     # Store scale factors in metadata
-    model.metadata_props.append(
-        onnx.StringStringEntryProto(key="octomil.fp16_scale.alpha", value=str(alpha))
-    )
+    model.metadata_props.append(onnx.StringStringEntryProto(key="octomil.fp16_scale.alpha", value=str(alpha)))
     model.metadata_props.append(
         onnx.StringStringEntryProto(
             key="octomil.fp16_scale.scaled_weights",

@@ -490,10 +490,11 @@ class TestBackwardCompat:
         assert result == "model.gguf"
 
     def test_resolve_model_name_unknown_raises(self) -> None:
-        """Unknown model raises ValueError."""
+        """Unknown model raises OctomilError."""
+        from octomil.errors import OctomilError
         from octomil.serve import resolve_model_name
 
-        with pytest.raises(ValueError, match="Unknown model"):
+        with pytest.raises(OctomilError, match="Unknown model"):
             resolve_model_name("fake-model", "mlx")
 
     def test_data_classes_importable(self) -> None:

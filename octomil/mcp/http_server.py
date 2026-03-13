@@ -558,9 +558,10 @@ def create_http_app(config: Optional[HTTPServerConfig] = None) -> FastAPI:
             )
 
         try:
+            from octomil.auth import OrgApiKeyAuth
             from octomil.client import OctomilClient
 
-            client = OctomilClient(api_key=api_key)
+            client = OctomilClient(auth=OrgApiKeyAuth(api_key=api_key, org_id=os.getenv("OCTOMIL_ORG_ID", "default")))
             kwargs: dict[str, Any] = {"strategy": req.strategy, "rollout": req.rollout}
             if req.version:
                 kwargs["version"] = req.version
@@ -625,9 +626,10 @@ def create_http_app(config: Optional[HTTPServerConfig] = None) -> FastAPI:
                 content={"error": "auth_required", "message": "OCTOMIL_API_KEY required."},
             )
         try:
+            from octomil.auth import OrgApiKeyAuth
             from octomil.client import OctomilClient
 
-            client = OctomilClient(api_key=api_key)
+            client = OctomilClient(auth=OrgApiKeyAuth(api_key=api_key, org_id=os.getenv("OCTOMIL_ORG_ID", "default")))
             devices = [d.strip() for d in req.target_devices.split(",") if d.strip()] if req.target_devices else None
             model_id = client._registry.resolve_model_id(req.name)
             kwargs: dict[str, Any] = {"accuracy_threshold": req.accuracy_threshold}
@@ -784,9 +786,10 @@ def create_http_app(config: Optional[HTTPServerConfig] = None) -> FastAPI:
                 content={"error": "auth_required", "message": "OCTOMIL_API_KEY required."},
             )
         try:
+            from octomil.auth import OrgApiKeyAuth
             from octomil.client import OctomilClient
 
-            client = OctomilClient(api_key=api_key)
+            client = OctomilClient(auth=OrgApiKeyAuth(api_key=api_key, org_id=os.getenv("OCTOMIL_ORG_ID", "default")))
             kwargs: dict[str, Any] = {}
             if req.version:
                 kwargs["version"] = req.version
@@ -820,9 +823,10 @@ def create_http_app(config: Optional[HTTPServerConfig] = None) -> FastAPI:
         try:
             import json as _json
 
+            from octomil.auth import OrgApiKeyAuth
             from octomil.client import OctomilClient
 
-            client = OctomilClient(api_key=api_key)
+            client = OctomilClient(auth=OrgApiKeyAuth(api_key=api_key, org_id=os.getenv("OCTOMIL_ORG_ID", "default")))
             input_text: str | list[str] = req.text
             try:
                 parsed = _json.loads(req.text)
@@ -888,9 +892,12 @@ def create_http_app(config: Optional[HTTPServerConfig] = None) -> FastAPI:
         api_key = os.environ.get("OCTOMIL_API_KEY")
         if allow_cloud and api_key:
             try:
+                from octomil.auth import OrgApiKeyAuth
                 from octomil.client import OctomilClient
 
-                client = OctomilClient(api_key=api_key)
+                client = OctomilClient(
+                    auth=OrgApiKeyAuth(api_key=api_key, org_id=os.getenv("OCTOMIL_ORG_ID", "default"))
+                )
                 result = client.chat(backend.model_name, messages)
                 text = result.get("message", {}).get("content", str(result))
                 return JSONResponse(

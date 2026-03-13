@@ -5,10 +5,14 @@ Wraps the existing SDK classes (ModelRegistry, RolloutsAPI) behind a
 simpler interface designed for CLI and script usage::
 
     import octomil
+    from octomil.auth import OrgApiKeyAuth
 
-    client = octomil.OctomilClient()  # reads OCTOMIL_API_KEY from env
+    client = octomil.OctomilClient(auth=OrgApiKeyAuth(api_key="edg_...", org_id="org_123"))
     client.push("model.pt", name="sentiment-v1", version="1.0.0")
     client.deploy("sentiment-v1", version="1.0.0", rollout=10)
+
+    # Or from environment variables:
+    client = octomil.OctomilClient.from_env()
 """
 
 from __future__ import annotations
@@ -35,6 +39,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+from .auth import AuthConfig, DeviceTokenAuth, OrgApiKeyAuth  # noqa: E402
 from .models import (  # noqa: E402
     DeploymentPlan,
     DeploymentResult,
@@ -72,26 +77,40 @@ class OctomilClient:
     """High-level OctomilClient for push/pull/deploy workflows.
 
     Args:
-        api_key: API key. Falls back to ``OCTOMIL_API_KEY`` env var.
-        org_id: Organisation identifier. Falls back to ``OCTOMIL_ORG_ID`` env var.
-        api_base: API base URL. Falls back to ``OCTOMIL_API_BASE`` env var.
+        auth: Authentication configuration. Use :class:`OrgApiKeyAuth` for
+            API key authentication or :class:`DeviceTokenAuth` for device
+            token authentication.
         device_id: Stable device identifier. When ``None``, one is derived
             automatically from the host hardware (see :mod:`octomil.device_info`).
+
+    Example::
+
+        from octomil import OctomilClient
+        from octomil.auth import OrgApiKeyAuth
+
+        client = OctomilClient(auth=OrgApiKeyAuth(api_key="edg_...", org_id="org_123"))
+
+        # Or from environment variables:
+        client = OctomilClient.from_env()
     """
 
     def __init__(
         self,
-        api_key: Optional[str] = None,
-        org_id: Optional[str] = None,
-        api_base: Optional[str] = None,
+        auth: AuthConfig,
         device_id: str | None = None,
     ) -> None:
-        _key = api_key if api_key is not None else os.environ.get("OCTOMIL_API_KEY", "")
-        _oid = org_id if org_id is not None else os.environ.get("OCTOMIL_ORG_ID", "default")
-        _base = api_base if api_base is not None else os.environ.get("OCTOMIL_API_BASE", _DEFAULT_API_BASE)
-        self._api_key: str = _key
-        self._org_id: str = _oid
-        self._api_base: str = _base
+        if isinstance(auth, OrgApiKeyAuth):
+            self._api_key: str = auth.api_key
+            self._org_id: str = auth.org_id
+            self._api_base: str = auth.api_base
+        elif isinstance(auth, DeviceTokenAuth):
+            self._api_key = auth.bootstrap_token
+            self._org_id = ""
+            self._api_base = auth.api_base
+        else:
+            raise TypeError(f"auth must be OrgApiKeyAuth or DeviceTokenAuth, got {type(auth).__name__}")
+
+        self._auth = auth
         self._device_id: str | None = device_id
         self._models: dict[str, "Model"] = {}
 
@@ -132,6 +151,26 @@ class OctomilClient:
                 )
             except Exception:
                 logger.debug("Failed to initialise telemetry reporter", exc_info=True)
+
+    @classmethod
+    def from_env(
+        cls,
+        *,
+        device_id: str | None = None,
+    ) -> OctomilClient:
+        """Construct an OctomilClient from environment variables.
+
+        Reads ``OCTOMIL_API_KEY``, ``OCTOMIL_ORG_ID``, and optionally
+        ``OCTOMIL_API_BASE`` from the environment.
+
+        Args:
+            device_id: Stable device identifier. When ``None``, one is
+                derived automatically from the host hardware.
+
+        Raises:
+            ValueError: If ``OCTOMIL_API_KEY`` is not set.
+        """
+        return cls(auth=OrgApiKeyAuth.from_env(), device_id=device_id)
 
     # ------------------------------------------------------------------
     # Device ID — stable identifier for this device

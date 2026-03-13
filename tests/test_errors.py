@@ -11,31 +11,48 @@ from octomil.errors import OctomilError, OctomilErrorCode
 # ---------------------------------------------------------------------------
 
 ALL_CODES = [
-    "network_unavailable",
-    "request_timeout",
-    "server_error",
     "invalid_api_key",
     "authentication_failed",
     "forbidden",
+    "device_not_registered",
+    "token_expired",
+    "device_revoked",
+    "network_unavailable",
+    "request_timeout",
+    "server_error",
+    "rate_limited",
+    "invalid_input",
+    "unsupported_modality",
+    "context_too_large",
     "model_not_found",
     "model_disabled",
+    "version_not_found",
     "download_failed",
     "checksum_mismatch",
     "insufficient_storage",
+    "insufficient_memory",
     "runtime_unavailable",
+    "accelerator_unavailable",
     "model_load_failed",
     "inference_failed",
-    "insufficient_memory",
-    "rate_limited",
-    "invalid_input",
+    "stream_interrupted",
+    "policy_denied",
+    "cloud_fallback_disallowed",
+    "max_tool_rounds_exceeded",
+    "control_sync_failed",
+    "assignment_not_found",
     "cancelled",
+    "app_backgrounded",
+    "training_failed",
+    "training_not_supported",
+    "weight_upload_failed",
     "unknown",
 ]
 
 
 class TestOctomilErrorCodeEnum:
-    def test_has_exactly_19_members(self) -> None:
-        assert len(OctomilErrorCode) == 19
+    def test_has_exactly_36_members(self) -> None:
+        assert len(OctomilErrorCode) == 36
 
     @pytest.mark.parametrize("value", ALL_CODES)
     def test_all_canonical_codes_exist(self, value: str) -> None:
@@ -56,10 +73,16 @@ RETRYABLE_CODES = {
     OctomilErrorCode.NETWORK_UNAVAILABLE,
     OctomilErrorCode.REQUEST_TIMEOUT,
     OctomilErrorCode.SERVER_ERROR,
+    OctomilErrorCode.RATE_LIMITED,
     OctomilErrorCode.DOWNLOAD_FAILED,
     OctomilErrorCode.CHECKSUM_MISMATCH,
+    OctomilErrorCode.MODEL_LOAD_FAILED,
     OctomilErrorCode.INFERENCE_FAILED,
-    OctomilErrorCode.RATE_LIMITED,
+    OctomilErrorCode.STREAM_INTERRUPTED,
+    OctomilErrorCode.CONTROL_SYNC_FAILED,
+    OctomilErrorCode.APP_BACKGROUNDED,
+    OctomilErrorCode.TRAINING_FAILED,
+    OctomilErrorCode.WEIGHT_UPLOAD_FAILED,
 }
 
 NON_RETRYABLE_CODES = set(OctomilErrorCode) - RETRYABLE_CODES
@@ -68,11 +91,13 @@ NON_RETRYABLE_CODES = set(OctomilErrorCode) - RETRYABLE_CODES
 class TestRetryableProperty:
     @pytest.mark.parametrize("code", sorted(RETRYABLE_CODES, key=lambda c: c.value))
     def test_retryable_codes(self, code: OctomilErrorCode) -> None:
-        assert code.retryable is True
+        err = OctomilError(code=code, message="test")
+        assert err.retryable is True
 
     @pytest.mark.parametrize("code", sorted(NON_RETRYABLE_CODES, key=lambda c: c.value))
     def test_non_retryable_codes(self, code: OctomilErrorCode) -> None:
-        assert code.retryable is False
+        err = OctomilError(code=code, message="test")
+        assert err.retryable is False
 
 
 # ---------------------------------------------------------------------------
@@ -84,10 +109,10 @@ class TestFromHttpStatus:
     @pytest.mark.parametrize(
         ("status", "expected"),
         [
-            (401, OctomilErrorCode.INVALID_API_KEY),
+            (400, OctomilErrorCode.INVALID_INPUT),
+            (401, OctomilErrorCode.AUTHENTICATION_FAILED),
             (403, OctomilErrorCode.FORBIDDEN),
             (404, OctomilErrorCode.MODEL_NOT_FOUND),
-            (408, OctomilErrorCode.REQUEST_TIMEOUT),
             (429, OctomilErrorCode.RATE_LIMITED),
             (500, OctomilErrorCode.SERVER_ERROR),
             (502, OctomilErrorCode.SERVER_ERROR),
@@ -95,11 +120,13 @@ class TestFromHttpStatus:
         ],
     )
     def test_mapped_status_codes(self, status: int, expected: OctomilErrorCode) -> None:
-        assert OctomilErrorCode.from_http_status(status) is expected
+        err = OctomilError.from_http_status(status)
+        assert err.code is expected
 
-    @pytest.mark.parametrize("status", [200, 201, 204, 301, 400, 418, 504])
+    @pytest.mark.parametrize("status", [200, 201, 204, 301, 408, 418, 504])
     def test_unmapped_status_returns_unknown(self, status: int) -> None:
-        assert OctomilErrorCode.from_http_status(status) is OctomilErrorCode.UNKNOWN
+        err = OctomilError.from_http_status(status)
+        assert err.code is OctomilErrorCode.UNKNOWN
 
 
 # ---------------------------------------------------------------------------
@@ -160,7 +187,7 @@ class TestOctomilError:
 class TestOctomilErrorFromHttpStatus:
     def test_with_explicit_message(self) -> None:
         err = OctomilError.from_http_status(401, "Invalid token")
-        assert err.code is OctomilErrorCode.INVALID_API_KEY
+        assert err.code is OctomilErrorCode.AUTHENTICATION_FAILED
         assert err.error_message == "Invalid token"
 
     def test_without_message_uses_default(self) -> None:

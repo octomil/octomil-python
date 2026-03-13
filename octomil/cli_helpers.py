@@ -156,9 +156,10 @@ def _get_org_id() -> str | None:
 
 
 def _get_client():  # type: ignore[no-untyped-def]
+    from .auth import OrgApiKeyAuth
     from .client import OctomilClient
 
-    return OctomilClient(api_key=_require_api_key(), org_id=_get_org_id())
+    return OctomilClient(auth=OrgApiKeyAuth(api_key=_require_api_key(), org_id=_get_org_id() or "default"))
 
 
 def _get_telemetry_reporter():  # type: ignore[no-untyped-def]
@@ -527,6 +528,9 @@ def _complete_model_name(ctx, param, incomplete):
 
 def _has_explicit_quant(model_tag: str) -> bool:
     """Check if the model tag already specifies a quantization variant."""
+    # Local file paths and HF repo IDs should not get a variant appended
+    if "/" in model_tag or model_tag.endswith((".gguf", ".pte", ".mnn")):
+        return True
     if ":" not in model_tag:
         return False
     variant = model_tag.rsplit(":", 1)[1].lower().replace("-", "_")

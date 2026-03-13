@@ -154,9 +154,7 @@ class OllamaSource(SourceBackend):
                 text=True,
             )
         except subprocess.CalledProcessError as exc:
-            raise RuntimeError(
-                f"Failed to pull '{ref}' via ollama: {exc.stderr.strip()}"
-            ) from exc
+            raise RuntimeError(f"Failed to pull '{ref}' via ollama: {exc.stderr.strip()}") from exc
 
         # Check cache again after pull
         cached = self.check_cache(ref)
