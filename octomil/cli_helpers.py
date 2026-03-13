@@ -156,8 +156,8 @@ def _get_org_id() -> str | None:
 
 
 def _get_client():  # type: ignore[no-untyped-def]
-    from .auth import OrgApiKeyAuth
-    from .client import OctomilClient
+    from octomil.auth import OrgApiKeyAuth
+    from octomil.client import OctomilClient
 
     return OctomilClient(auth=OrgApiKeyAuth(api_key=_require_api_key(), org_id=_get_org_id() or "default"))
 
