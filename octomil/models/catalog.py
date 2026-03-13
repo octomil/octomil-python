@@ -80,6 +80,82 @@ class ModelEntry:
 
 
 # ---------------------------------------------------------------------------
+# V1 server JSON -> dataclass hydration (kept for test fixtures)
+# ---------------------------------------------------------------------------
+
+
+def _gguf_from_dict(d: Any) -> Optional[GGUFSource]:
+    """Hydrate a GGUFSource from a server dict or None."""
+    if d is None:
+        return None
+    if isinstance(d, dict):
+        return GGUFSource(repo=d.get("repo", ""), filename=d.get("filename", ""))
+    return None
+
+
+def _variant_from_dict(d: dict[str, Any]) -> VariantSpec:
+    """Hydrate a VariantSpec from a server dict."""
+    return VariantSpec(
+        mlx=d.get("mlx"),
+        gguf=_gguf_from_dict(d.get("gguf")),
+        ort=d.get("ort"),
+        mlc=d.get("mlc"),
+        ollama=d.get("ollama"),
+        source_repo=d.get("source_repo"),
+    )
+
+
+def _moe_from_dict(d: Any) -> Optional[MoEMetadata]:
+    """Hydrate MoEMetadata from a server dict or None."""
+    if d is None or not isinstance(d, dict):
+        return None
+    return MoEMetadata(
+        num_experts=d.get("num_experts", 0),
+        active_experts=d.get("active_experts", 0),
+        expert_size=d.get("expert_size", ""),
+        total_params=d.get("total_params", ""),
+        active_params=d.get("active_params", ""),
+    )
+
+
+def _entry_from_dict(d: dict[str, Any]) -> ModelEntry:
+    """Hydrate a ModelEntry from a v1 server dict."""
+    variants_raw = d.get("variants", {})
+    variants = {k: _variant_from_dict(v) for k, v in variants_raw.items()}
+    engines_raw = d.get("engines", [])
+    engines = frozenset(engines_raw) if isinstance(engines_raw, list) else frozenset()
+    return ModelEntry(
+        publisher=d.get("publisher", ""),
+        params=d.get("params", ""),
+        default_quant=d.get("default_quant", "4bit"),
+        variants=variants,
+        engines=engines,
+        architecture=d.get("architecture", "dense"),
+        moe=_moe_from_dict(d.get("moe")),
+        download_size=d.get("download_size"),
+    )
+
+
+def _hydrate_catalog(raw: dict[str, Any]) -> dict[str, ModelEntry]:
+    """Convert a v1-format catalog dict to typed ModelEntry dict.
+
+    Used by test fixtures that still provide data in the old server format.
+    """
+    result: dict[str, ModelEntry] = {}
+    for name, entry_data in raw.items():
+        if isinstance(entry_data, ModelEntry):
+            result[name] = entry_data
+        elif isinstance(entry_data, dict):
+            try:
+                result[name] = _entry_from_dict(entry_data)
+            except Exception:
+                logger.debug("Failed to hydrate catalog entry %s", name, exc_info=True)
+        else:
+            logger.debug("Skipping invalid catalog entry %s (type=%s)", name, type(entry_data))
+    return result
+
+
+# ---------------------------------------------------------------------------
 # Manifest-to-legacy conversion helpers
 # ---------------------------------------------------------------------------
 

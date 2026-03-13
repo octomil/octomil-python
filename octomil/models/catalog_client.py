@@ -328,3 +328,64 @@ class CatalogClientV2:
     def invalidate_cache(self) -> None:
         """Force re-fetch on next access."""
         self._fetcher.invalidate()
+
+
+# ---------------------------------------------------------------------------
+# Supporting v1 clients — used by model_registry and sources.resolver
+# ---------------------------------------------------------------------------
+# These fetch from v1 endpoints that are not yet unified into the v2
+# manifest. They will be retired once model families and source aliases
+# are folded into the v2 manifest response.
+
+
+class ModelFamiliesClient:
+    """Fetches model families from ``GET /api/v1/models/families``.
+
+    Falls back to an empty dict.
+    """
+
+    _FALLBACK_FAMILIES: dict[str, Any] = {}
+
+    def __init__(
+        self,
+        api_base: str = "",
+        api_key: str = "",
+    ) -> None:
+        self._fetcher = _ServerFetcher(
+            endpoint="models/families",
+            cache_filename="model_families.json",
+            default_data=self._FALLBACK_FAMILIES,
+            api_base=api_base,
+            api_key=api_key,
+        )
+
+    def get_families(self) -> dict[str, Any]:
+        """Return model families dict (server-fetched or fallback)."""
+        return self._fetcher.get()
+
+
+class SourceAliasesClient:
+    """Fetches source-level model aliases from ``GET /api/v1/models/aliases``.
+
+    These are the ``hf``/``ollama``/``kaggle`` source mappings used by
+    ``octomil.sources.resolver``. Falls back to an empty dict.
+    """
+
+    _FALLBACK_ALIASES: dict[str, dict[str, str]] = {}
+
+    def __init__(
+        self,
+        api_base: str = "",
+        api_key: str = "",
+    ) -> None:
+        self._fetcher = _ServerFetcher(
+            endpoint="models/source-aliases",
+            cache_filename="source_aliases.json",
+            default_data=self._FALLBACK_ALIASES,
+            api_base=api_base,
+            api_key=api_key,
+        )
+
+    def get_aliases(self) -> dict[str, dict[str, str]]:
+        """Return source-level alias mapping (server-fetched or fallback)."""
+        return self._fetcher.get()

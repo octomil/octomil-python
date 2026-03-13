@@ -949,18 +949,24 @@ def _mock_model_routing_clients(monkeypatch):
     deterministic, known-good test data.
     """
 
-    # Patch CatalogClient
-    class _MockCatalogClient:
-        def get_catalog(self):
-            return _MOCK_CATALOG
+    # Patch CatalogClientV2 — mock get_manifest() to return a v2 manifest
+    # that produces the same catalog when hydrated. We patch the loader
+    # functions directly so the v1 mock data flows through _hydrate_catalog.
+    from octomil.models.catalog import _hydrate_catalog
 
-        def get_aliases(self):
-            return _MOCK_CATALOG_ALIASES
+    _hydrated_mock_catalog = _hydrate_catalog(_MOCK_CATALOG)
 
-    # Patch EnginePriorityClient
-    class _MockEnginePriorityClient:
-        def get_priority(self):
-            return _MOCK_ENGINE_PRIORITY
+    class _MockCatalogClientV2:
+        """Mock v2 client — intercepts get_manifest() and get_models()."""
+
+        def get_manifest(self, platform=None):
+            return {"version": "mock-v1", "generated_at": "2026-01-01T00:00:00Z", "models": []}
+
+        def get_models(self, platform=None):
+            return []
+
+        def invalidate_cache(self):
+            pass
 
     # Patch ModelFamiliesClient
     class _MockModelFamiliesClient:
@@ -1047,21 +1053,27 @@ def _mock_model_routing_clients(monkeypatch):
     import octomil.models.resolver as res_mod
     import octomil.sources.resolver as src_mod
 
-    # Directly inject mock client instances into the module-level singletons.
-    # This bypasses the CatalogClient() constructor which was already imported.
-    monkeypatch.setattr(cat_mod, "_client", _MockCatalogClient())
-    monkeypatch.setattr(res_mod, "_priority_client", _MockEnginePriorityClient())
+    # Inject mock v2 client into catalog and resolver modules to prevent
+    # real server requests.
+    _mock_v2 = _MockCatalogClientV2()
+    monkeypatch.setattr(cat_mod, "_client", _mock_v2)
+    monkeypatch.setattr(res_mod, "_v2_client", _mock_v2)
     monkeypatch.setattr(reg_mod, "_families_client", _MockModelFamiliesClient())
     monkeypatch.setattr(src_mod, "_aliases_client", _MockSourceAliasesClient())
 
-    # Reset the existing lazy dicts so they re-load from the mocked clients.
+    # Reset the existing lazy dicts so they re-load from mocked loaders.
     # We must mutate the existing objects rather than replacing them, because
     # test modules import CATALOG/MODEL_ALIASES/MODEL_FAMILIES at module level
     # and hold direct references to the original dict objects.
+    #
+    # Swap the _loader callable to return v1-hydrated mock data directly,
+    # bypassing the v2 manifest conversion (avoids rewriting all test fixtures).
     cat_mod.CATALOG.clear()
     cat_mod.CATALOG._loaded = False  # type: ignore[attr-defined]
+    cat_mod.CATALOG._loader = lambda: _hydrated_mock_catalog  # type: ignore[attr-defined]
     cat_mod.MODEL_ALIASES.clear()
     cat_mod.MODEL_ALIASES._loaded = False  # type: ignore[attr-defined]
+    cat_mod.MODEL_ALIASES._loader = lambda: _MOCK_CATALOG_ALIASES  # type: ignore[attr-defined]
     reg_mod.MODEL_FAMILIES.clear()
     reg_mod.MODEL_FAMILIES._loaded = False  # type: ignore[attr-defined]
 

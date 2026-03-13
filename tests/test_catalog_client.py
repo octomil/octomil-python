@@ -1,9 +1,10 @@
-"""Tests for the server-side model routing client (catalog_client.py).
+"""Tests for the v2 catalog client and infrastructure (catalog_client.py).
 
 Covers:
 - CachedData TTL and serialization
-- _ServerFetcher fallback behavior
-- CatalogClient, EnginePriorityClient, ModelFamiliesClient
+- _ServerFetcher fallback behavior, params support, invalidate
+- CatalogClientV2 manifest fetching
+- _detect_platform
 - Disk cache persistence and ETag-based conditional requests
 """
 
@@ -17,12 +18,11 @@ from unittest.mock import patch
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
+from octomil.models._embedded_catalog import EMBEDDED_MANIFEST
 from octomil.models.catalog_client import (
     CachedData,
-    CatalogClient,
-    EnginePriorityClient,
-    ModelFamiliesClient,
-    SourceAliasesClient,
+    CatalogClientV2,
+    _detect_platform,
     _ServerFetcher,
 )
 
@@ -136,48 +136,129 @@ class TestServerFetcher:
         result = fetcher.get()
         assert result == {"cached": True}
 
+    def test_fetch_with_params_returns_data(self) -> None:
+        """fetch() with params should behave like get() for cached data."""
+        fetcher = _ServerFetcher(
+            endpoint="test/endpoint",
+            cache_filename="test_params.json",
+            default_data={"default": True},
+            api_base="https://api.example.com",
+        )
+
+        fetcher._cached = CachedData(
+            data={"cached": True},
+            fetched_at=time.time(),
+            ttl_seconds=3600,
+        )
+
+        result = fetcher.fetch(params={"platform": "macos"})
+        assert result == {"cached": True}
+
+    def test_invalidate_clears_cache(self) -> None:
+        """invalidate() should force re-fetch on next access."""
+        fetcher = _ServerFetcher(
+            endpoint="test/endpoint",
+            cache_filename="test_invalidate.json",
+            default_data={"default": True},
+            api_base="https://api.example.com",
+        )
+
+        fetcher._cached = CachedData(
+            data={"cached": True},
+            fetched_at=time.time(),
+            ttl_seconds=3600,
+        )
+
+        fetcher.invalidate()
+        assert fetcher._cached is None
+
+        # Next get() should fall through to default (no server, no disk cache)
+        with patch.dict("sys.modules", {"httpx": None}):
+            result = fetcher.get()
+        assert result == {"default": True}
+
 
 # =====================================================================
-# CatalogClient tests
+# CatalogClientV2 tests
 # =====================================================================
 
 
-class TestCatalogClient:
-    """Tests for the CatalogClient."""
+class TestCatalogClientV2:
+    """Tests for the v2 catalog client."""
 
-    def test_fallback_catalog_has_minimal_models(self) -> None:
-        """Fallback catalog should have a few generic model IDs."""
-        assert "gemma-1b" in CatalogClient._FALLBACK_CATALOG
-        assert "llama-1b" in CatalogClient._FALLBACK_CATALOG
-        assert "phi-mini" in CatalogClient._FALLBACK_CATALOG
-        # Should NOT have engine-specific variants
-        for entry in CatalogClient._FALLBACK_CATALOG.values():
-            assert entry["variants"] == {}
+    def test_get_manifest_returns_embedded_fallback(self) -> None:
+        """When server unreachable, should return embedded manifest."""
+        client = CatalogClientV2(base_url="https://api.example.com")
 
-    def test_fallback_aliases_empty(self) -> None:
-        """Fallback aliases should be empty."""
-        assert CatalogClient._FALLBACK_ALIASES == {}
+        with patch.dict("sys.modules", {"httpx": None}):
+            manifest = client.get_manifest(platform="all")
+
+        assert manifest["version"] == "embedded-v1"
+        assert len(manifest["models"]) == 3
+
+    def test_get_models_returns_list(self) -> None:
+        """get_models() should return the models list from manifest."""
+        client = CatalogClientV2(base_url="https://api.example.com")
+
+        with patch.dict("sys.modules", {"httpx": None}):
+            models = client.get_models(platform="all")
+
+        assert isinstance(models, list)
+        assert len(models) == 3
+        model_ids = {m["id"] for m in models}
+        assert "gemma-2-2b" in model_ids
+        assert "qwen2.5-3b" in model_ids
+        assert "whisper-large-v3" in model_ids
+
+    def test_invalidate_cache(self) -> None:
+        """invalidate_cache() should clear the fetcher cache."""
+        client = CatalogClientV2(base_url="https://api.example.com")
+        # Prime the cache
+        with patch.dict("sys.modules", {"httpx": None}):
+            client.get_manifest(platform="all")
+
+        client.invalidate_cache()
+        assert client._fetcher._cached is None
+
+    def test_embedded_manifest_has_blessed_models(self) -> None:
+        """Embedded manifest should contain the 3 blessed models."""
+        assert EMBEDDED_MANIFEST["version"] == "embedded-v1"
+        model_ids = [m["id"] for m in EMBEDDED_MANIFEST["models"]]
+        assert "gemma-2-2b" in model_ids
+        assert "qwen2.5-3b" in model_ids
+        assert "whisper-large-v3" in model_ids
+
+    def test_embedded_manifest_models_have_packages(self) -> None:
+        """Each embedded model should have at least one package."""
+        for model in EMBEDDED_MANIFEST["models"]:
+            assert len(model["packages"]) >= 1, f"Model {model['id']} has no packages"
+
+    def test_base_url_strips_api_v1_suffix(self) -> None:
+        """CatalogClientV2 should strip /api/v1 from OCTOMIL_API_BASE."""
+        with patch.dict(os.environ, {"OCTOMIL_API_BASE": "https://api.octomil.com/api/v1"}):
+            client = CatalogClientV2()
+            assert "/api/v1/api/v1" not in client._fetcher.api_base
 
 
-class TestEnginePriorityClient:
-    """Tests for the EnginePriorityClient."""
-
-    def test_fallback_priority_is_auto(self) -> None:
-        """Fallback engine priority should be ["auto"]."""
-        assert EnginePriorityClient._FALLBACK_PRIORITY == ["auto"]
+# =====================================================================
+# Platform detection tests
+# =====================================================================
 
 
-class TestModelFamiliesClient:
-    """Tests for the ModelFamiliesClient."""
+class TestDetectPlatform:
+    """Tests for _detect_platform."""
 
-    def test_fallback_families_empty(self) -> None:
-        """Fallback model families should be empty."""
-        assert ModelFamiliesClient._FALLBACK_FAMILIES == {}
+    def test_macos(self) -> None:
+        with patch("octomil.models.catalog_client.sys") as mock_sys:
+            mock_sys.platform = "darwin"
+            assert _detect_platform() == "macos"
 
+    def test_linux(self) -> None:
+        with patch("octomil.models.catalog_client.sys") as mock_sys:
+            mock_sys.platform = "linux"
+            assert _detect_platform() == "linux"
 
-class TestSourceAliasesClient:
-    """Tests for the SourceAliasesClient."""
-
-    def test_fallback_aliases_empty(self) -> None:
-        """Fallback source aliases should be empty."""
-        assert SourceAliasesClient._FALLBACK_ALIASES == {}
+    def test_windows(self) -> None:
+        with patch("octomil.models.catalog_client.sys") as mock_sys:
+            mock_sys.platform = "win32"
+            assert _detect_platform() == "windows"
