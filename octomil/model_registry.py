@@ -3,9 +3,8 @@
 Provides structured model metadata, tag-based resolution (``name:tag``),
 and multi-source download paths for HuggingFace, Ollama, and Kaggle.
 
-Model family data is fetched from the Octomil server at runtime and
-cached locally. An empty fallback is used when the server is
-unreachable — full repo paths still work as passthrough.
+Model data is derived from the v2 catalog manifest via
+:class:`~octomil.models.catalog_client.CatalogClientV2`.
 
 Usage::
 
@@ -21,7 +20,8 @@ import difflib
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
-from .models.catalog_client import ModelFamiliesClient
+from .models.catalog import _FAMILY_TO_PUBLISHER, _QUANT_TO_CANONICAL, _parse_hf_uri
+from .models.catalog_client import CatalogClientV2
 
 # ---------------------------------------------------------------------------
 # Data structures
@@ -116,89 +116,126 @@ def _sort_sources_by_trust(sources: list[ModelSource]) -> list[ModelSource]:
 
 
 # ---------------------------------------------------------------------------
-# Server-fetched model families (singleton + hydration)
+# V2 manifest → ModelFamily conversion
 # ---------------------------------------------------------------------------
 
-_families_client: Optional[ModelFamiliesClient] = None
+_v2_client: Optional[CatalogClientV2] = None
 
 
-def _get_families_client() -> ModelFamiliesClient:
-    """Return the module-level ModelFamiliesClient singleton."""
-    global _families_client
-    if _families_client is None:
-        _families_client = ModelFamiliesClient()
-    return _families_client
+def _get_v2_client() -> CatalogClientV2:
+    """Return the module-level CatalogClientV2 singleton."""
+    global _v2_client
+    if _v2_client is None:
+        _v2_client = CatalogClientV2()
+    return _v2_client
 
 
-def _source_from_dict(d: dict[str, Any]) -> ModelSource:
-    """Hydrate a ModelSource from a server dict."""
-    return ModelSource(
-        type=d.get("type", "huggingface"),
-        ref=d.get("ref", ""),
-        file=d.get("file"),
-        trust=d.get("trust", "community"),
-    )
+def _manifest_to_families(manifest: dict) -> dict[str, ModelFamily]:
+    """Convert a v2 manifest to a dict of ModelFamily objects.
 
-
-def _variant_from_dict(d: dict[str, Any]) -> ModelVariant:
-    """Hydrate a ModelVariant from a server dict."""
-    sources_raw = d.get("sources", [])
-    sources = [_source_from_dict(s) for s in sources_raw if isinstance(s, dict)]
-    return ModelVariant(
-        quantization_family=d.get("quantization_family", "4bit"),
-        sources=sources,
-        mlx=d.get("mlx"),
-    )
-
-
-def _family_from_dict(d: dict[str, Any]) -> ModelFamily:
-    """Hydrate a ModelFamily from a server dict."""
-    variants_raw = d.get("variants", {})
-    variants = {k: _variant_from_dict(v) for k, v in variants_raw.items() if isinstance(v, dict)}
-    return ModelFamily(
-        default_tag=d.get("default_tag", DEFAULT_TAG),
-        publisher=d.get("publisher", ""),
-        params=d.get("params", ""),
-        variants=variants,
-    )
-
-
-def _hydrate_families(raw: dict[str, Any]) -> dict[str, ModelFamily]:
-    """Convert a server-returned families dict to typed ModelFamily dict."""
+    Each manifest model becomes a ModelFamily keyed by model ID.
+    Packages are grouped by quantization into ModelVariant objects,
+    with each package contributing a ModelSource.
+    """
     result: dict[str, ModelFamily] = {}
-    for name, family_data in raw.items():
-        if isinstance(family_data, ModelFamily):
-            result[name] = family_data
-        elif isinstance(family_data, dict):
-            try:
-                result[name] = _family_from_dict(family_data)
-            except Exception:
-                pass
+
+    for model in manifest.get("models", []):
+        model_id: str = model.get("id", "")
+        family_name: str = model.get("family", "")
+        params: str = model.get("parameter_count", "")
+        default_quant_raw: str = model.get("default_quantization", "q4_k_m")
+        publisher = _FAMILY_TO_PUBLISHER.get(family_name, "Unknown")
+
+        # Group packages by raw quantization tag
+        tag_variants: dict[str, ModelVariant] = {}
+
+        for pkg in model.get("packages", []):
+            quant_raw: str = pkg.get("quantization", default_quant_raw)
+            executor: str = pkg.get("runtime_executor", "")
+
+            # Find weights resource
+            weights = None
+            for res in pkg.get("resources", []):
+                if res.get("kind") == "weights":
+                    weights = res
+                    break
+            if weights is None:
+                continue
+
+            uri: str = weights.get("uri", "")
+            path: str = weights.get("path", "")
+
+            # Build ModelSource from package
+            if executor == "ollama":
+                source = ModelSource(type="ollama", ref=uri, trust="curated")
+            elif uri.startswith("hf://"):
+                repo, filename = _parse_hf_uri(uri)
+                source = ModelSource(
+                    type="huggingface",
+                    ref=repo,
+                    file=path or filename or None,
+                    trust="official",
+                )
+            else:
+                source = ModelSource(type="huggingface", ref=uri, trust="community")
+
+            # Determine MLX repo
+            mlx_repo: Optional[str] = None
+            if executor in ("mlx", "mlx-lm"):
+                repo, _ = _parse_hf_uri(uri)
+                mlx_repo = repo
+
+            # Map quant to canonical form for quantization_family
+            quant_canonical = _QUANT_TO_CANONICAL.get(quant_raw, quant_raw)
+
+            if quant_raw not in tag_variants:
+                tag_variants[quant_raw] = ModelVariant(
+                    quantization_family=quant_canonical,
+                    sources=[source],
+                    mlx=mlx_repo,
+                )
+            else:
+                existing = tag_variants[quant_raw]
+                existing.sources.append(source)
+                if mlx_repo and not existing.mlx:
+                    existing.mlx = mlx_repo
+
+        if not tag_variants:
+            continue
+
+        result[model_id] = ModelFamily(
+            default_tag=default_quant_raw,
+            publisher=publisher,
+            params=params,
+            variants=tag_variants,
+        )
+
     return result
 
 
 def _get_model_families() -> dict[str, ModelFamily]:
-    """Fetch and hydrate model families from the server (cached)."""
-    raw = _get_families_client().get_families()
-    return _hydrate_families(raw)
+    """Fetch and convert model families from the v2 manifest (cached)."""
+    manifest = _get_v2_client().get_manifest()
+    return _manifest_to_families(manifest)
 
 
 # ---------------------------------------------------------------------------
-# Lazy-loading MODEL_FAMILIES for backward compatibility
+# Lazy-loading MODEL_FAMILIES
 # ---------------------------------------------------------------------------
 
 
 class _LazyFamiliesDict(dict):  # type: ignore[type-arg]
-    """Dict that populates itself on first access from the server."""
+    """Dict that populates itself on first access via a loader callable."""
 
-    def __init__(self) -> None:
+    def __init__(self, loader: Any = None) -> None:
         super().__init__()
+        self._loader = loader or _get_model_families
         self._loaded = False
 
     def _ensure_loaded(self) -> None:
         if not self._loaded:
             self._loaded = True
-            data = _get_model_families()
+            data = self._loader()
             super().update(data)
 
     def __getitem__(self, key: Any) -> Any:
@@ -268,7 +305,7 @@ def resolve_model(
     ----------
     name:
         Model specifier. Can be ``"gemma-4b"``, ``"gemma-4b:q8_0"``,
-        or a full repo path like ``"REDACTED"``.
+        or a full repo path like ``"org/model"``.
     backend:
         Target backend: ``"mlx"``, ``"gguf"``, or ``"auto"``.
     prefer_local:

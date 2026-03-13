@@ -6,18 +6,20 @@ Model entries map quant variants to engine-specific artifacts:
 - ``gguf``: Tuple of (HF repo, filename)
 - ``source``: Original model HF repo (for engines that download and convert)
 
-The catalog and alias data are fetched from the Octomil server at
-runtime and cached locally. A minimal fallback catalog (with no
-engine-specific variants) is embedded for offline bootstrap only.
+Powered by the v2 manifest endpoint via
+:class:`~octomil.models.catalog_client.CatalogClientV2`. Manifest
+models and packages are converted to ``ModelEntry`` / ``VariantSpec``
+dataclasses consumed by the engine layer.
 """
 
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
-from .catalog_client import CatalogClient
+from .catalog_client import CatalogClientV2
 
 logger = logging.getLogger(__name__)
 
@@ -78,103 +80,325 @@ class ModelEntry:
 
 
 # ---------------------------------------------------------------------------
-# Server JSON -> dataclass hydration
+# Manifest-to-legacy conversion helpers
 # ---------------------------------------------------------------------------
 
+# Maps v2 manifest quantization names to the canonical quant labels
+# used in the v1 catalog (4bit, 8bit, fp16).
+_QUANT_TO_CANONICAL: dict[str, str] = {
+    "q4_k_m": "4bit",
+    "q4_k_s": "4bit",
+    "q4_0": "4bit",
+    "4bit": "4bit",
+    "q8_0": "8bit",
+    "q8_1": "8bit",
+    "8bit": "8bit",
+    "fp16": "fp16",
+    "f16": "fp16",
+    "float16": "fp16",
+}
 
-def _gguf_from_dict(d: Any) -> Optional[GGUFSource]:
-    """Hydrate a GGUFSource from a server dict or None."""
-    if d is None:
-        return None
-    if isinstance(d, dict):
-        return GGUFSource(repo=d.get("repo", ""), filename=d.get("filename", ""))
+# Maps v2 runtime_executor names to the canonical engine names
+# used by the resolver and engine registry.
+_EXECUTOR_TO_ENGINE: dict[str, str] = {
+    "llamacpp": "llama.cpp",
+    "llama.cpp": "llama.cpp",
+    "mlx": "mlx-lm",
+    "mlx-lm": "mlx-lm",
+    "whisper": "whisper.cpp",
+    "whisper.cpp": "whisper.cpp",
+    "onnxruntime": "onnxruntime",
+    "ort": "onnxruntime",
+    "mlc": "mlc-llm",
+    "mlc-llm": "mlc-llm",
+    "ollama": "ollama",
+    "echo": "echo",
+    "mnn": "mnn",
+    "executorch": "executorch",
+    "cactus": "cactus",
+}
+
+# Maps v2 manifest family names to publisher names for ModelEntry.
+# Families not listed here will get "Unknown" as publisher.
+_FAMILY_TO_PUBLISHER: dict[str, str] = {
+    "gemma": "Google",
+    "gemma-2": "Google",
+    "gemma-3": "Google",
+    "qwen": "Alibaba",
+    "qwen2": "Alibaba",
+    "qwen2.5": "Alibaba",
+    "llama": "Meta",
+    "llama-2": "Meta",
+    "llama-3": "Meta",
+    "llama-3.1": "Meta",
+    "llama-3.2": "Meta",
+    "phi": "Microsoft",
+    "phi-2": "Microsoft",
+    "phi-3": "Microsoft",
+    "phi-4": "Microsoft",
+    "whisper": "OpenAI",
+    "mistral": "Mistral AI",
+    "mixtral": "Mistral AI",
+    "deepseek": "DeepSeek",
+    "deepseek-r1": "DeepSeek",
+    "starcoder": "BigCode",
+    "starcoder2": "BigCode",
+}
+
+
+def _parse_hf_uri(uri: str) -> tuple[str, str]:
+    """Parse a ``hf://org/repo/filename`` URI into (repo, filename).
+
+    Returns (full_path_without_prefix, "") if no filename part is found.
+
+    Examples::
+
+        >>> _parse_hf_uri("hf://bartowski/gemma-2-2b-it-GGUF/gemma-2-2b-it-Q4_K_M.gguf")
+        ("bartowski/gemma-2-2b-it-GGUF", "gemma-2-2b-it-Q4_K_M.gguf")
+
+        >>> _parse_hf_uri("hf://mlx-community/gemma-2-2b-it-4bit")
+        ("mlx-community/gemma-2-2b-it-4bit", "")
+    """
+    path = uri
+    if path.startswith("hf://"):
+        path = path[len("hf://") :]
+
+    # Split into org/repo and optional filename
+    # Pattern: org/repo/file.ext or org/repo
+    parts = path.split("/", 2)
+    if len(parts) == 3:
+        repo = f"{parts[0]}/{parts[1]}"
+        filename = parts[2]
+        return repo, filename
+    if len(parts) == 2:
+        return path, ""
+    return path, ""
+
+
+def _get_weights_resource(pkg: dict) -> Optional[dict]:
+    """Extract the first weights resource from a package."""
+    for res in pkg.get("resources", []):
+        if res.get("kind") == "weights":
+            return res
     return None
 
 
-def _variant_from_dict(d: dict[str, Any]) -> VariantSpec:
-    """Hydrate a VariantSpec from a server dict."""
-    return VariantSpec(
-        mlx=d.get("mlx"),
-        gguf=_gguf_from_dict(d.get("gguf")),
-        ort=d.get("ort"),
-        mlc=d.get("mlc"),
-        ollama=d.get("ollama"),
-        source_repo=d.get("source_repo"),
-    )
+def _package_to_variant_field(
+    pkg: dict,
+) -> tuple[Optional[str], Optional[GGUFSource], Optional[str], Optional[str], Optional[str], Optional[str]]:
+    """Convert a v2 package dict to VariantSpec field values.
+
+    Returns (mlx, gguf, ort, mlc, ollama, source_repo).
+    """
+    executor = pkg.get("runtime_executor", "")
+    fmt = pkg.get("artifact_format", "")
+    weights = _get_weights_resource(pkg)
+
+    mlx: Optional[str] = None
+    gguf: Optional[GGUFSource] = None
+    ort: Optional[str] = None
+    mlc: Optional[str] = None
+    ollama: Optional[str] = None
+    source_repo: Optional[str] = None
+
+    if weights is None:
+        return mlx, gguf, ort, mlc, ollama, source_repo
+
+    uri = weights.get("uri", "")
+    path = weights.get("path", "")
+
+    if executor == "mlx" or fmt == "mlx":
+        # MLX repos: strip hf:// prefix, use full path as repo ID
+        repo, _ = _parse_hf_uri(uri)
+        mlx = repo
+    elif executor in ("llamacpp", "llama.cpp") and fmt == "gguf":
+        repo, filename = _parse_hf_uri(uri)
+        # Prefer the explicit path field over parsed filename
+        gguf = GGUFSource(repo=repo, filename=path or filename)
+    elif executor == "whisper" or executor == "whisper.cpp":
+        # Whisper models use GGUF-like download pattern
+        repo, filename = _parse_hf_uri(uri)
+        gguf = GGUFSource(repo=repo, filename=path or filename)
+    elif executor in ("onnxruntime", "ort"):
+        repo, _ = _parse_hf_uri(uri)
+        ort = repo
+    elif executor in ("mlc", "mlc-llm"):
+        repo, _ = _parse_hf_uri(uri)
+        mlc = repo
+    elif executor == "ollama":
+        # Ollama tags are stored directly in the URI (not hf://)
+        ollama = uri
+    else:
+        # Unknown executor — store as source_repo for fallback
+        repo, _ = _parse_hf_uri(uri)
+        source_repo = repo
+
+    return mlx, gguf, ort, mlc, ollama, source_repo
 
 
-def _moe_from_dict(d: Any) -> Optional[MoEMetadata]:
-    """Hydrate MoEMetadata from a server dict or None."""
-    if d is None or not isinstance(d, dict):
-        return None
-    return MoEMetadata(
-        num_experts=d.get("num_experts", 0),
-        active_experts=d.get("active_experts", 0),
-        expert_size=d.get("expert_size", ""),
-        total_params=d.get("total_params", ""),
-        active_params=d.get("active_params", ""),
-    )
+def _manifest_model_to_entry(model: dict) -> tuple[str, ModelEntry]:
+    """Convert a single v2 manifest model dict to (catalog_key, ModelEntry).
 
+    The catalog key is the model ``id`` field (e.g. ``"gemma-2-2b"``).
+    """
+    model_id: str = model.get("id", "")
+    family: str = model.get("family", "")
+    param_count: str = model.get("parameter_count", "")
+    default_quant_raw: str = model.get("default_quantization", "4bit")
 
-def _entry_from_dict(d: dict[str, Any]) -> ModelEntry:
-    """Hydrate a ModelEntry from a server dict."""
-    variants_raw = d.get("variants", {})
-    variants = {k: _variant_from_dict(v) for k, v in variants_raw.items()}
-    engines_raw = d.get("engines", [])
-    engines = frozenset(engines_raw) if isinstance(engines_raw, list) else frozenset()
-    return ModelEntry(
-        publisher=d.get("publisher", ""),
-        params=d.get("params", ""),
-        default_quant=d.get("default_quant", "4bit"),
+    # Map the default quant to canonical form
+    default_quant = _QUANT_TO_CANONICAL.get(default_quant_raw, default_quant_raw)
+
+    # Determine publisher from family
+    publisher = _FAMILY_TO_PUBLISHER.get(family, "Unknown")
+
+    # Build variants and engines from packages
+    packages = model.get("packages", [])
+    engine_names: set[str] = set()
+
+    # Group packages by canonical quant to build VariantSpec per quant
+    quant_packages: dict[str, list[dict]] = {}
+    for pkg in packages:
+        pkg_quant_raw = pkg.get("quantization", default_quant_raw)
+        pkg_quant = _QUANT_TO_CANONICAL.get(pkg_quant_raw, pkg_quant_raw)
+        quant_packages.setdefault(pkg_quant, []).append(pkg)
+
+        # Collect engine names
+        executor = pkg.get("runtime_executor", "")
+        engine = _EXECUTOR_TO_ENGINE.get(executor, executor)
+        if engine:
+            engine_names.add(engine)
+
+    # Build VariantSpec for each quant level by merging all packages
+    variants: dict[str, VariantSpec] = {}
+    for quant, pkgs in quant_packages.items():
+        merged_mlx: Optional[str] = None
+        merged_gguf: Optional[GGUFSource] = None
+        merged_ort: Optional[str] = None
+        merged_mlc: Optional[str] = None
+        merged_ollama: Optional[str] = None
+        merged_source: Optional[str] = None
+
+        for pkg in pkgs:
+            mlx, gguf, ort_val, mlc_val, ollama_val, source = _package_to_variant_field(pkg)
+            if mlx and not merged_mlx:
+                merged_mlx = mlx
+            if gguf and not merged_gguf:
+                merged_gguf = gguf
+            if ort_val and not merged_ort:
+                merged_ort = ort_val
+            if mlc_val and not merged_mlc:
+                merged_mlc = mlc_val
+            if ollama_val and not merged_ollama:
+                merged_ollama = ollama_val
+            if source and not merged_source:
+                merged_source = source
+
+        variants[quant] = VariantSpec(
+            mlx=merged_mlx,
+            gguf=merged_gguf,
+            ort=merged_ort,
+            mlc=merged_mlc,
+            ollama=merged_ollama,
+            source_repo=merged_source,
+        )
+
+    return model_id, ModelEntry(
+        publisher=publisher,
+        params=param_count,
+        default_quant=default_quant,
         variants=variants,
-        engines=engines,
-        architecture=d.get("architecture", "dense"),
-        moe=_moe_from_dict(d.get("moe")),
-        download_size=d.get("download_size"),
+        engines=frozenset(engine_names),
     )
 
 
-def _hydrate_catalog(raw: dict[str, Any]) -> dict[str, ModelEntry]:
-    """Convert a server-returned catalog dict to typed ModelEntry dict."""
+def _hydrate_manifest(manifest: dict) -> dict[str, ModelEntry]:
+    """Convert a v2 manifest dict to the legacy catalog dict format.
+
+    Each manifest model becomes a ``ModelEntry`` keyed by model ID.
+    """
     result: dict[str, ModelEntry] = {}
-    for name, entry_data in raw.items():
-        if isinstance(entry_data, ModelEntry):
-            # Already hydrated (from fallback)
-            result[name] = entry_data
-        elif isinstance(entry_data, dict):
-            try:
-                result[name] = _entry_from_dict(entry_data)
-            except Exception:
-                logger.debug("Failed to hydrate catalog entry %s", name, exc_info=True)
-        else:
-            logger.debug("Skipping invalid catalog entry %s (type=%s)", name, type(entry_data))
+    for model in manifest.get("models", []):
+        try:
+            key, entry = _manifest_model_to_entry(model)
+            if key:
+                result[key] = entry
+        except Exception:
+            logger.debug(
+                "Failed to hydrate manifest model %s",
+                model.get("id", "<unknown>"),
+                exc_info=True,
+            )
     return result
+
+
+def _build_aliases(manifest: dict) -> dict[str, str]:
+    """Build alias map from v2 manifest model names and families.
+
+    Maps common name variations to canonical model IDs:
+    - family name -> model ID (e.g. "gemma-2" -> "gemma-2-2b")
+    - lowercase model name -> model ID
+    - name with spaces/hyphens normalized -> model ID
+    """
+    aliases: dict[str, str] = {}
+    # Track which families we've seen to handle multiple models per family
+    family_models: dict[str, list[str]] = {}
+
+    for model in manifest.get("models", []):
+        model_id = model.get("id", "")
+        family = model.get("family", "")
+        name = model.get("name", "")
+
+        if not model_id:
+            continue
+
+        # Name-based aliases (lowercase, normalized)
+        if name:
+            name_lower = name.lower()
+            # "Gemma 2 2B" -> "gemma 2 2b" -> "gemma-2-2b"
+            name_hyphen = re.sub(r"\s+", "-", name_lower)
+            if name_hyphen != model_id:
+                aliases[name_hyphen] = model_id
+            # Also store the space-separated version
+            aliases[name_lower] = model_id
+
+        # Track family -> model IDs
+        if family:
+            family_models.setdefault(family, []).append(model_id)
+
+    # For families with only one model, alias the family to the model
+    for family, model_ids in family_models.items():
+        if len(model_ids) == 1:
+            aliases[family] = model_ids[0]
+
+    return aliases
 
 
 # ---------------------------------------------------------------------------
 # Singleton client — lazily initialized
 # ---------------------------------------------------------------------------
 
-_client: Optional[CatalogClient] = None
+_client: Optional[CatalogClientV2] = None
 
 
-def _get_client() -> CatalogClient:
-    """Return the module-level CatalogClient singleton."""
+def _get_client() -> CatalogClientV2:
+    """Return the module-level CatalogClientV2 singleton."""
     global _client
     if _client is None:
-        _client = CatalogClient()
+        _client = CatalogClientV2()
     return _client
 
 
 def _get_catalog() -> dict[str, ModelEntry]:
-    """Fetch and hydrate the catalog from the server (cached)."""
-    raw = _get_client().get_catalog()
-    return _hydrate_catalog(raw)
+    """Fetch and hydrate the catalog from the v2 manifest (cached)."""
+    manifest = _get_client().get_manifest()
+    return _hydrate_manifest(manifest)
 
 
 def _get_aliases() -> dict[str, str]:
-    """Fetch catalog aliases from the server (cached)."""
-    return _get_client().get_aliases()
+    """Build aliases from the v2 manifest (cached)."""
+    manifest = _get_client().get_manifest()
+    return _build_aliases(manifest)
 
 
 # ---------------------------------------------------------------------------

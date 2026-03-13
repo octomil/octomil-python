@@ -1,7 +1,10 @@
-"""Server-side model catalog, aliases, engine priority, and registry client.
+"""Unified v2 catalog client — fetches the manifest from a single endpoint.
 
-Fetches model routing intelligence from the Octomil API and caches locally.
-Falls back to minimal embedded defaults when the server is unreachable.
+Provides ``CatalogClientV2`` which fetches the complete manifest from
+``GET /api/v2/catalog/manifest``.
+
+Infrastructure classes (``CachedData``, ``_ServerFetcher``) are preserved
+and enhanced: ``_ServerFetcher`` now supports query params via ``fetch()``.
 
 Pattern follows ``PolicyClient`` in ``octomil.routing``:
 - ETag-based conditional requests for bandwidth efficiency
@@ -14,9 +17,12 @@ from __future__ import annotations
 import json
 import logging
 import os
+import sys
 import time
 from pathlib import Path
 from typing import Any, Optional
+
+from ._embedded_catalog import EMBEDDED_MANIFEST
 
 logger = logging.getLogger(__name__)
 
@@ -69,12 +75,17 @@ class CachedData:
 
 
 # ---------------------------------------------------------------------------
-# Generic fetcher — reused by all endpoint-specific clients
+# Generic fetcher — reused by CatalogClientV2 and device_config
 # ---------------------------------------------------------------------------
 
 
 class _ServerFetcher:
-    """Generic fetch + cache helper for a single API endpoint."""
+    """Generic fetch + cache helper for a single API endpoint.
+
+    Supports two calling conventions:
+    - ``get()`` — no params, used by existing consumers (device_config, etc.)
+    - ``fetch(params=...)`` — with optional query params for the v2 manifest
+    """
 
     def __init__(
         self,
@@ -99,7 +110,19 @@ class _ServerFetcher:
         return os.environ.get("OCTOMIL_API_BASE", "https://api.octomil.com/api/v1")
 
     def get(self) -> Any:
-        """Return cached data, refreshing from server if expired."""
+        """Return cached data, refreshing from server if expired (no params)."""
+        return self.fetch()
+
+    def fetch(self, params: Optional[dict[str, str]] = None) -> Any:
+        """Return cached data, refreshing from server if expired.
+
+        Parameters
+        ----------
+        params:
+            Optional query parameters appended to the request URL.
+            Note: caching is keyed by endpoint only (not params), so
+            callers should use a consistent param set per fetcher instance.
+        """
         if self._cached is not None and not self._cached.is_expired:
             return self._cached.data
 
@@ -112,7 +135,7 @@ class _ServerFetcher:
             return self._cached.data
 
         # Try fetching from server
-        fetched = self._fetch_from_server()
+        fetched = self._fetch_from_server(params=params)
         if fetched is not None:
             self._cached = fetched
             self._save_to_disk(fetched)
@@ -138,7 +161,11 @@ class _ServerFetcher:
         )
         return self._cached.data
 
-    def _fetch_from_server(self) -> Optional[CachedData]:
+    def invalidate(self) -> None:
+        """Force re-fetch on next access by clearing in-memory cache."""
+        self._cached = None
+
+    def _fetch_from_server(self, params: Optional[dict[str, str]] = None) -> Optional[CachedData]:
         """Fetch from the API endpoint with ETag-based conditional requests."""
         try:
             import httpx
@@ -158,6 +185,7 @@ class _ServerFetcher:
                 resp = client.get(
                     f"{self.api_base}/{self._endpoint.lstrip('/')}",
                     headers=headers,
+                    params=params,
                 )
 
             if resp.status_code == 304:
@@ -218,148 +246,84 @@ class _ServerFetcher:
 
 
 # ---------------------------------------------------------------------------
-# Endpoint-specific clients
+# Platform auto-detection
 # ---------------------------------------------------------------------------
 
 
-class CatalogClient:
-    """Fetches model catalog from ``GET /api/v1/models/catalog``.
+def _detect_platform() -> str:
+    """Detect the current platform for manifest filtering.
 
-    The server returns a dict of model entries keyed by family name.
-    Falls back to a minimal catalog with generic model IDs.
+    Returns one of: ``macos``, ``linux``, ``windows``, ``ios``, ``android``.
+    """
+    if sys.platform == "darwin":
+        return "macos"
+    if sys.platform == "linux":
+        return "linux"
+    if sys.platform == "win32":
+        return "windows"
+    return sys.platform
+
+
+# ---------------------------------------------------------------------------
+# V2 catalog client — single endpoint replaces 5 v1 clients
+# ---------------------------------------------------------------------------
+
+
+class CatalogClientV2:
+    """Client for the v2 unified catalog manifest endpoint.
+
+    Fetches the complete model manifest from ``GET /api/v2/catalog/manifest``.
+    The manifest contains all models, packages, engine mappings, and aliases
+    in a single response, replacing the 5 separate v1 endpoints.
+
+    Falls back to :data:`EMBEDDED_MANIFEST` when the server is unreachable
+    and no disk cache exists.
     """
 
-    # Minimal fallback — just enough to not crash. No engine-specific
-    # variants, no sizes, no quantization info, no proprietary mappings.
-    _FALLBACK_CATALOG: dict[str, Any] = {
-        "gemma-1b": {
-            "publisher": "Google",
-            "params": "1B",
-            "default_quant": "4bit",
-            "variants": {},
-            "engines": [],
-        },
-        "llama-1b": {
-            "publisher": "Meta",
-            "params": "1B",
-            "default_quant": "4bit",
-            "variants": {},
-            "engines": [],
-        },
-        "phi-mini": {
-            "publisher": "Microsoft",
-            "params": "3.8B",
-            "default_quant": "4bit",
-            "variants": {},
-            "engines": [],
-        },
-    }
+    _MANIFEST_ENDPOINT = "/api/v2/catalog/manifest"
+    _CACHE_FILENAME = "catalog_manifest_v2.json"
 
-    _FALLBACK_ALIASES: dict[str, str] = {}
+    def __init__(self, base_url: str | None = None) -> None:
+        api_base = base_url.rstrip("/") if base_url else ""
+        # Override the default api_base to use v2 path prefix.
+        # _ServerFetcher.api_base defaults to .../api/v1 but our endpoint
+        # includes the full path already, so we set the base to the root.
+        if api_base:
+            fetcher_base = api_base
+        else:
+            fetcher_base = os.environ.get("OCTOMIL_API_BASE", "https://api.octomil.com").rstrip("/")
+            # Strip trailing /api/v1 if present — the endpoint has its own path.
+            if fetcher_base.endswith("/api/v1"):
+                fetcher_base = fetcher_base[: -len("/api/v1")]
 
-    def __init__(
-        self,
-        api_base: str = "",
-        api_key: str = "",
-    ) -> None:
-        self._catalog_fetcher = _ServerFetcher(
-            endpoint="models/catalog",
-            cache_filename="model_catalog.json",
-            default_data=self._FALLBACK_CATALOG,
-            api_base=api_base,
-            api_key=api_key,
-        )
-        self._aliases_fetcher = _ServerFetcher(
-            endpoint="models/aliases",
-            cache_filename="model_aliases.json",
-            default_data=self._FALLBACK_ALIASES,
-            api_base=api_base,
-            api_key=api_key,
-        )
-
-    def get_catalog(self) -> dict[str, Any]:
-        """Return the model catalog dict (server-fetched or fallback)."""
-        return self._catalog_fetcher.get()
-
-    def get_aliases(self) -> dict[str, str]:
-        """Return the model alias mapping (server-fetched or fallback)."""
-        return self._aliases_fetcher.get()
-
-
-class EnginePriorityClient:
-    """Fetches engine priority from ``GET /api/v1/models/engine-priority``.
-
-    Falls back to a single generic ``["auto"]`` priority.
-    """
-
-    _FALLBACK_PRIORITY: list[str] = ["auto"]
-
-    def __init__(
-        self,
-        api_base: str = "",
-        api_key: str = "",
-    ) -> None:
         self._fetcher = _ServerFetcher(
-            endpoint="models/engine-priority",
-            cache_filename="engine_priority.json",
-            default_data=self._FALLBACK_PRIORITY,
-            api_base=api_base,
-            api_key=api_key,
+            endpoint=self._MANIFEST_ENDPOINT,
+            cache_filename=self._CACHE_FILENAME,
+            default_data=EMBEDDED_MANIFEST,
+            api_base=fetcher_base,
         )
 
-    def get_priority(self) -> list[str]:
-        """Return engine priority list (server-fetched or fallback)."""
-        return self._fetcher.get()
+    def get_manifest(self, platform: str | None = None) -> dict:
+        """Get the full catalog manifest, optionally filtered by platform.
 
+        Parameters
+        ----------
+        platform:
+            Filter packages to a specific platform (e.g. ``"macos"``).
+            If ``None``, auto-detects from the current system.
+            Pass ``"all"`` to skip filtering.
+        """
+        resolved_platform = platform if platform else _detect_platform()
+        params: dict[str, str] | None = None
+        if resolved_platform and resolved_platform != "all":
+            params = {"platform": resolved_platform}
+        return self._fetcher.fetch(params=params)
 
-class ModelFamiliesClient:
-    """Fetches model families from ``GET /api/v1/models/families``.
+    def get_models(self, platform: str | None = None) -> list[dict]:
+        """Get just the models list from the manifest."""
+        manifest = self.get_manifest(platform=platform)
+        return manifest.get("models", [])
 
-    Falls back to an empty dict.
-    """
-
-    _FALLBACK_FAMILIES: dict[str, Any] = {}
-
-    def __init__(
-        self,
-        api_base: str = "",
-        api_key: str = "",
-    ) -> None:
-        self._fetcher = _ServerFetcher(
-            endpoint="models/families",
-            cache_filename="model_families.json",
-            default_data=self._FALLBACK_FAMILIES,
-            api_base=api_base,
-            api_key=api_key,
-        )
-
-    def get_families(self) -> dict[str, Any]:
-        """Return model families dict (server-fetched or fallback)."""
-        return self._fetcher.get()
-
-
-class SourceAliasesClient:
-    """Fetches source-level model aliases from ``GET /api/v1/models/aliases``.
-
-    These are the ``hf``/``ollama``/``kaggle`` source mappings used by
-    ``octomil.sources.resolver``. Falls back to an empty dict.
-    """
-
-    _FALLBACK_ALIASES: dict[str, dict[str, str]] = {}
-
-    def __init__(
-        self,
-        api_base: str = "",
-        api_key: str = "",
-    ) -> None:
-        self._fetcher = _ServerFetcher(
-            endpoint="models/source-aliases",
-            cache_filename="source_aliases.json",
-            default_data=self._FALLBACK_ALIASES,
-            api_base=api_base,
-            api_key=api_key,
-        )
-
-    def get_aliases(self) -> dict[str, dict[str, str]]:
-        """Return source-level alias mapping (server-fetched or fallback)."""
-        return self._fetcher.get()
+    def invalidate_cache(self) -> None:
+        """Force re-fetch on next access."""
+        self._fetcher.invalidate()
