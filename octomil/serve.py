@@ -1141,9 +1141,11 @@ def create_app(
     """
     from contextlib import asynccontextmanager
 
-    from fastapi import FastAPI, HTTPException
+    from fastapi import FastAPI, Request
     from fastapi.middleware.cors import CORSMiddleware
-    from fastapi.responses import StreamingResponse
+    from fastapi.responses import JSONResponse, StreamingResponse
+
+    from .errors import OctomilError, OctomilErrorCode  # noqa: F811
 
     # Detect MoE model from catalog
     from .models.catalog import get_moe_metadata
@@ -1272,6 +1274,33 @@ def create_app(
 
     app = FastAPI(title="Octomil Serve", version="1.0.0", lifespan=lifespan)
 
+    @app.exception_handler(OctomilError)
+    async def octomil_error_handler(request: Request, exc: OctomilError) -> JSONResponse:
+        from ._generated.error_code import ERROR_CLASSIFICATION, RetryClass
+
+        classification = ERROR_CLASSIFICATION.get(exc.code)
+        status_map = {
+            OctomilErrorCode.MODEL_LOAD_FAILED: 503,
+            OctomilErrorCode.RUNTIME_UNAVAILABLE: 503,
+            OctomilErrorCode.MODEL_NOT_FOUND: 404,
+            OctomilErrorCode.INVALID_INPUT: 400,
+            OctomilErrorCode.INVALID_API_KEY: 401,
+            OctomilErrorCode.RATE_LIMITED: 429,
+            OctomilErrorCode.REQUEST_TIMEOUT: 504,
+        }
+        status_code = status_map.get(exc.code, 500)
+        return JSONResponse(
+            status_code=status_code,
+            content={
+                "code": exc.code.value,
+                "message": str(exc),
+                "retryable": classification.retry_class != RetryClass.NEVER if classification else False,
+                "category": classification.category.value if classification else "unknown",
+                "suggested_action": classification.suggested_action.value if classification else "report_bug",
+                "fallback_eligible": classification.fallback_eligible if classification else False,
+            },
+        )
+
     app.add_middleware(
         CORSMiddleware,
         allow_origins=["*"],
@@ -1342,7 +1371,7 @@ def create_app(
     @app.post("/v1/chat/completions")
     async def chat_completions(body: ChatCompletionBody) -> Any:
         if state.backend is None:
-            raise HTTPException(status_code=503, detail="Model not loaded")
+            raise OctomilError(code=OctomilErrorCode.MODEL_LOAD_FAILED, message="Model not loaded")
 
         # --- Tier-0: deterministic routing (arithmetic, etc.) ---
         # Check the last user message for a query that can be answered
@@ -1471,18 +1500,18 @@ def create_app(
                 try:
                     text, metrics = await _queue.submit_generate(gen_req, state.backend.generate)
                 except QueueFullError:
-                    raise HTTPException(
-                        status_code=503,
-                        detail="Server busy — request queue full. Try again later.",
+                    raise OctomilError(
+                        code=OctomilErrorCode.RATE_LIMITED,
+                        message="Server busy — request queue full. Try again later.",
                     )
                 except QueueTimeoutError:
-                    raise HTTPException(
-                        status_code=504,
-                        detail="Request timed out waiting in queue.",
+                    raise OctomilError(
+                        code=OctomilErrorCode.REQUEST_TIMEOUT,
+                        message="Request timed out waiting in queue.",
                     )
             else:
                 text, metrics = state.backend.generate(gen_req)
-        except HTTPException:
+        except OctomilError:
             raise
         except Exception:
             if _reporter is not None:
@@ -1598,7 +1627,7 @@ def create_app(
     async def cache_stats() -> dict[str, Any]:
         """Return KV cache statistics."""
         if state.backend is None:
-            raise HTTPException(status_code=503, detail="Model not loaded")
+            raise OctomilError(code=OctomilErrorCode.MODEL_LOAD_FAILED, message="Model not loaded")
 
         cache_mgr = _get_cache_manager(state.backend)
         if cache_mgr is None:
@@ -1627,7 +1656,7 @@ def create_app(
     async def debug_timings() -> dict[str, Any]:
         """Return the latest MLX pre-generation timing breakdown."""
         if state.backend is None:
-            raise HTTPException(status_code=503, detail="Model not loaded")
+            raise OctomilError(code=OctomilErrorCode.MODEL_LOAD_FAILED, message="Model not loaded")
         if hasattr(state.backend, "_last_timings"):
             return state.backend._last_timings
         return {"error": "No timings available (not an MLX backend or no requests yet)"}
@@ -1736,13 +1765,13 @@ def create_app(
         with segment-level timestamps.
         """
         if state.whisper_backend is None:
-            raise HTTPException(
-                status_code=503,
-                detail="No whisper model loaded. Start server with a whisper model: octomil serve whisper-base",
+            raise OctomilError(
+                code=OctomilErrorCode.MODEL_LOAD_FAILED,
+                message="No whisper model loaded. Start server with a whisper model: octomil serve whisper-base",
             )
 
         if file is None:
-            raise HTTPException(status_code=400, detail="No audio file provided")
+            raise OctomilError(code=OctomilErrorCode.INVALID_INPUT, message="No audio file provided")
 
         # Save uploaded file to a temp location
         import tempfile
@@ -2076,11 +2105,12 @@ def create_multi_model_app(
     """
     from contextlib import asynccontextmanager
 
-    from fastapi import FastAPI, HTTPException
+    from fastapi import FastAPI, Request  # noqa: F811
     from fastapi.middleware.cors import CORSMiddleware
     from fastapi.responses import JSONResponse, StreamingResponse
 
     from .decomposer import ResultMerger, SubTaskResult
+    from .errors import OctomilError, OctomilErrorCode  # noqa: F811
     from .routing import (
         DecomposedRoutingDecision,
         QueryRouter,
@@ -2146,6 +2176,33 @@ def create_multi_model_app(
 
     app = FastAPI(title="Octomil Serve (Multi-Model)", version="1.0.0", lifespan=lifespan)
 
+    @app.exception_handler(OctomilError)
+    async def octomil_error_handler(request: Request, exc: OctomilError) -> JSONResponse:  # type: ignore[misc]
+        from ._generated.error_code import ERROR_CLASSIFICATION, RetryClass
+
+        classification = ERROR_CLASSIFICATION.get(exc.code)
+        status_map = {
+            OctomilErrorCode.MODEL_LOAD_FAILED: 503,
+            OctomilErrorCode.RUNTIME_UNAVAILABLE: 503,
+            OctomilErrorCode.MODEL_NOT_FOUND: 404,
+            OctomilErrorCode.INVALID_INPUT: 400,
+            OctomilErrorCode.INVALID_API_KEY: 401,
+            OctomilErrorCode.RATE_LIMITED: 429,
+            OctomilErrorCode.REQUEST_TIMEOUT: 504,
+        }
+        status_code = status_map.get(exc.code, 500)
+        return JSONResponse(
+            status_code=status_code,
+            content={
+                "code": exc.code.value,
+                "message": str(exc),
+                "retryable": classification.retry_class != RetryClass.NEVER if classification else False,
+                "category": classification.category.value if classification else "unknown",
+                "suggested_action": classification.suggested_action.value if classification else "report_bug",
+                "fallback_eligible": classification.fallback_eligible if classification else False,
+            },
+        )
+
     app.add_middleware(
         CORSMiddleware,
         allow_origins=["*"],
@@ -2174,7 +2231,7 @@ def create_multi_model_app(
     @app.post("/v1/chat/completions")
     async def chat_completions(body: ChatCompletionBody) -> Any:
         if not state.backends:
-            raise HTTPException(status_code=503, detail="No models loaded")
+            raise OctomilError(code=OctomilErrorCode.MODEL_LOAD_FAILED, message="No models loaded")
 
         messages = [{"role": m.role, "content": m.content} for m in body.messages]
 
@@ -2354,9 +2411,9 @@ def create_multi_model_app(
             return resp
 
         # All models failed
-        raise HTTPException(
-            status_code=503,
-            detail=f"All models failed. Last error: {last_error}",
+        raise OctomilError(
+            code=OctomilErrorCode.INFERENCE_FAILED,
+            message=f"All models failed. Last error: {last_error}",
         )
 
     @app.get("/v1/routing/stats")

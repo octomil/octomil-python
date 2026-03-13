@@ -139,15 +139,15 @@ async def _stream_anthropic(
 
 def register_anthropic_routes(app: Any, state: Any) -> None:
     """Register ``/v1/messages`` endpoint on the given FastAPI app."""
-    from fastapi import HTTPException
     from fastapi.responses import StreamingResponse
 
+    from .errors import OctomilError, OctomilErrorCode
     from .serve import GenerationRequest
 
     @app.post("/v1/messages")
     async def anthropic_messages(body: AnthropicMessagesBody) -> Any:
         if state.backend is None:
-            raise HTTPException(status_code=503, detail="Model not loaded")
+            raise OctomilError(code=OctomilErrorCode.MODEL_LOAD_FAILED, message="Model not loaded")
 
         openai_messages = _anthropic_to_openai_messages(body)
 
