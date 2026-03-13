@@ -4,6 +4,15 @@ Device auth runtime client for bootstrap/refresh/revoke token flow.
 
 from __future__ import annotations
 
+# Re-export top-level auth classes so PyInstaller import resolution
+# works regardless of which auth module it resolves to.
+try:
+    from octomil.auth import AuthConfig as AuthConfig  # noqa: F401
+    from octomil.auth import DeviceTokenAuth as DeviceTokenAuth  # noqa: F401
+    from octomil.auth import OrgApiKeyAuth as OrgApiKeyAuth  # noqa: F401
+except ImportError:
+    pass
+
 import asyncio
 import json
 import logging
