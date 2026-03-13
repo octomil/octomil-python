@@ -21,6 +21,10 @@ def build_deep_link(token: str, host: str) -> str:
         parameters properly URL-encoded.
     """
     encoded_token = urllib.parse.quote(token, safe="")
+    # Omit host param when it's the default — keeps QR code smaller/scannable.
+    default_host = "https://api.octomil.com/api/v1"
+    if host == default_host:
+        return f"https://octomil.com/pair?token={encoded_token}"
     encoded_host = urllib.parse.quote(host, safe="")
     return f"https://octomil.com/pair?token={encoded_token}&host={encoded_host}"
 
