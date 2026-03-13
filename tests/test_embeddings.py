@@ -5,6 +5,7 @@ from __future__ import annotations
 import unittest
 from unittest.mock import MagicMock, patch
 
+from octomil.auth import OrgApiKeyAuth
 from octomil.embeddings import (
     EmbeddingResult,
     EmbeddingUsage,
@@ -188,7 +189,9 @@ class ClientEmbedTests(unittest.TestCase):
         )
 
         with patch("octomil.embeddings.embed", return_value=expected) as mock_fn:
-            client = OctomilClient(api_key="test-key", api_base="https://api.test.com/api/v1")
+            client = OctomilClient(
+                auth=OrgApiKeyAuth(api_key="test-key", org_id="default", api_base="https://api.test.com/api/v1")
+            )
             result = client.embed("nomic-embed-text", "hello world")
 
         self.assertEqual(result.embeddings, [[0.1, 0.2]])
@@ -210,7 +213,9 @@ class ClientEmbedTests(unittest.TestCase):
         )
 
         with patch("octomil.embeddings.embed", return_value=expected) as mock_fn:
-            client = OctomilClient(api_key="test-key", api_base="https://api.test.com/api/v1")
+            client = OctomilClient(
+                auth=OrgApiKeyAuth(api_key="test-key", org_id="default", api_base="https://api.test.com/api/v1")
+            )
             result = client.embed("nomic-embed-text", ["hello", "world"], timeout=60.0)
 
         self.assertEqual(len(result.embeddings), 2)

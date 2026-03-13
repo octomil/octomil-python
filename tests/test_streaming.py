@@ -5,6 +5,7 @@ from __future__ import annotations
 import unittest
 from unittest.mock import MagicMock, patch
 
+from octomil.auth import OrgApiKeyAuth
 from octomil.streaming import (
     StreamToken,
     _build_payload,
@@ -308,7 +309,9 @@ class ClientStreamPredictTests(unittest.TestCase):
         ]
 
         with patch("octomil.streaming.stream_inference", return_value=iter(expected_tokens)) as mock_fn:
-            client = OctomilClient(api_key="test-key", api_base="https://api.test.com/api/v1")
+            client = OctomilClient(
+                auth=OrgApiKeyAuth(api_key="test-key", org_id="default", api_base="https://api.test.com/api/v1")
+            )
             tokens = list(
                 client.stream_predict(
                     "phi-4-mini",
@@ -346,7 +349,9 @@ class ClientStreamPredictAsyncTests(unittest.IsolatedAsyncioTestCase):
             "octomil.streaming.stream_inference_async",
             side_effect=lambda **kwargs: fake_stream_async(**kwargs),
         ):
-            client = OctomilClient(api_key="test-key", api_base="https://api.test.com/api/v1")
+            client = OctomilClient(
+                auth=OrgApiKeyAuth(api_key="test-key", org_id="default", api_base="https://api.test.com/api/v1")
+            )
             tokens = []
             async for tok in client.stream_predict_async("phi-4-mini", "Hello"):
                 tokens.append(tok)

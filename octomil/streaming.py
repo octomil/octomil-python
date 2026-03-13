@@ -85,9 +85,7 @@ async def stream_inference_async(
     }
 
     async with httpx.AsyncClient(timeout=timeout) as client:
-        async with client.stream(
-            "POST", url, json=payload, headers=headers
-        ) as response:
+        async with client.stream("POST", url, json=payload, headers=headers) as response:
             response.raise_for_status()
             async for line in response.aiter_lines():
                 token = _parse_sse_line(line)

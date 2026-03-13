@@ -6,6 +6,7 @@ import asyncio
 from typing import Any
 from unittest.mock import MagicMock, patch
 
+from octomil.auth import OrgApiKeyAuth
 from octomil.capabilities_client import CapabilitiesClient, CapabilityProfile, _classify_device
 from octomil.chat_client import ChatChunk, ChatCompletion
 from octomil.model import Model, ModelMetadata
@@ -26,7 +27,12 @@ def _make_client(**overrides: Any):
     ):
         from octomil.client import OctomilClient
 
-        return OctomilClient(**{"api_key": "test-key", **overrides})
+        auth = overrides.pop("auth", None) or OrgApiKeyAuth(
+            api_key=overrides.pop("api_key", "test-key"),
+            org_id=overrides.pop("org_id", "default"),
+            api_base=overrides.pop("api_base", "https://api.octomil.com/api/v1"),
+        )
+        return OctomilClient(auth=auth, **overrides)
 
 
 def _make_engine(backend: MagicMock | None = None) -> MagicMock:

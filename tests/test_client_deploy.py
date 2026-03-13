@@ -7,6 +7,7 @@ from unittest.mock import patch
 
 import pytest
 
+from octomil.auth import OrgApiKeyAuth
 from octomil.models import (
     DeploymentPlan,
     DeploymentResult,
@@ -167,7 +168,7 @@ class TestDeployWithDeviceTargeting:
             ],
         }
 
-        client = OctomilClient(api_key="key")
+        client = OctomilClient(auth=OrgApiKeyAuth(api_key="key", org_id="default"))
         result = client.deploy(
             "my-model",
             devices=["dev-1", "dev-2"],
@@ -207,7 +208,7 @@ class TestDeployWithDeviceTargeting:
             ],
         }
 
-        client = OctomilClient(api_key="key")
+        client = OctomilClient(auth=OrgApiKeyAuth(api_key="key", org_id="default"))
         result = client.deploy("my-model", group="production")
 
         assert isinstance(result, DeploymentResult)
@@ -235,7 +236,7 @@ class TestDeployWithDeviceTargeting:
             "device_statuses": [],
         }
 
-        client = OctomilClient(api_key="key")
+        client = OctomilClient(auth=OrgApiKeyAuth(api_key="key", org_id="default"))
         result = client.deploy(
             "my-model",
             version="1.5.0",
@@ -271,7 +272,7 @@ class TestDeployWithDeviceTargeting:
             ],
         }
 
-        client = OctomilClient(api_key="key")
+        client = OctomilClient(auth=OrgApiKeyAuth(api_key="key", org_id="default"))
         result = client.deploy("my-model", devices=["dev-1", "dev-2"])
 
         assert result.status == "partial_failure"
@@ -299,7 +300,7 @@ class TestDeployFallbackToRollout:
             "status": "created",
         }
 
-        client = OctomilClient(api_key="key")
+        client = OctomilClient(auth=OrgApiKeyAuth(api_key="key", org_id="default"))
         result = client.deploy("my-model", rollout=10, strategy="canary")
 
         # Should be a plain dict, not DeploymentResult
@@ -326,7 +327,7 @@ class TestDeployFallbackToRollout:
         mock_reg.get_latest_version.return_value = "1.0.0"
         mock_reg.deploy_version.return_value = {"status": "started"}
 
-        client = OctomilClient(api_key="key")
+        client = OctomilClient(auth=OrgApiKeyAuth(api_key="key", org_id="default"))
         client.deploy("my-model", strategy="immediate")
 
         mock_reg.deploy_version.assert_called_once_with(
@@ -379,7 +380,7 @@ class TestDeployPrepare:
             ]
         }
 
-        client = OctomilClient(api_key="key")
+        client = OctomilClient(auth=OrgApiKeyAuth(api_key="key", org_id="default"))
         plan = client.deploy_prepare("my-model", devices=["iphone-1", "pixel-1"])
 
         assert isinstance(plan, DeploymentPlan)
@@ -413,7 +414,7 @@ class TestDeployPrepare:
             ]
         }
 
-        client = OctomilClient(api_key="key")
+        client = OctomilClient(auth=OrgApiKeyAuth(api_key="key", org_id="default"))
         plan = client.deploy_prepare("my-model", group="production")
 
         assert isinstance(plan, DeploymentPlan)
@@ -437,7 +438,7 @@ class TestDeployPrepare:
 
         mock_api.post.return_value = {"deployments": []}
 
-        client = OctomilClient(api_key="key")
+        client = OctomilClient(auth=OrgApiKeyAuth(api_key="key", org_id="default"))
         plan = client.deploy_prepare("my-model", version="5.0.0")
 
         assert plan.model_version == "5.0.0"
@@ -456,7 +457,7 @@ class TestDeployPrepare:
 
         mock_api.post.return_value = {}
 
-        client = OctomilClient(api_key="key")
+        client = OctomilClient(auth=OrgApiKeyAuth(api_key="key", org_id="default"))
         plan = client.deploy_prepare("my-model")
 
         assert plan.deployments == []
@@ -483,7 +484,7 @@ class TestTrain:
             "status": "created",
         }
 
-        client = OctomilClient(api_key="key")
+        client = OctomilClient(auth=OrgApiKeyAuth(api_key="key", org_id="default"))
         result = client.train("my-model", rounds=5, strategy="fedavg")
 
         assert isinstance(result, TrainingSession)
@@ -508,7 +509,7 @@ class TestTrain:
             "status": "started",
         }
 
-        client = OctomilClient(api_key="key")
+        client = OctomilClient(auth=OrgApiKeyAuth(api_key="key", org_id="default"))
         result = client.train(
             "my-model",
             group="edge-devices",
@@ -546,7 +547,7 @@ class TestTrain:
 
         mock_api.post.return_value = {"session_id": "s-3", "status": "created"}
 
-        client = OctomilClient(api_key="key")
+        client = OctomilClient(auth=OrgApiKeyAuth(api_key="key", org_id="default"))
         result = client.train("my-model")
 
         assert result.group == "default"
@@ -584,7 +585,7 @@ class TestRollback:
             "status": "started",
         }
 
-        client = OctomilClient(api_key="key")
+        client = OctomilClient(auth=OrgApiKeyAuth(api_key="key", org_id="default"))
         result = client.rollback("my-model")
 
         assert isinstance(result, RollbackResult)
@@ -616,7 +617,7 @@ class TestRollback:
             "status": "started",
         }
 
-        client = OctomilClient(api_key="key")
+        client = OctomilClient(auth=OrgApiKeyAuth(api_key="key", org_id="default"))
         result = client.rollback("my-model", to_version="1.0.0")
 
         assert isinstance(result, RollbackResult)
@@ -639,7 +640,7 @@ class TestRollback:
         mock_reg.get_latest_version.return_value = "1.0.0"
         mock_reg.list_versions.return_value = {"versions": [{"version": "1.0.0"}]}
 
-        client = OctomilClient(api_key="key")
+        client = OctomilClient(auth=OrgApiKeyAuth(api_key="key", org_id="default"))
         with pytest.raises(OctomilClientError, match="only one version exists"):
             client.rollback("my-model")
 

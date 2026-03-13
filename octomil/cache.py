@@ -85,9 +85,7 @@ def _estimate_size_bytes(obj: Any) -> int:
 
     # Dicts
     if isinstance(obj, dict):
-        return sum(
-            _estimate_size_bytes(k) + _estimate_size_bytes(v) for k, v in obj.items()
-        )
+        return sum(_estimate_size_bytes(k) + _estimate_size_bytes(v) for k, v in obj.items())
 
     return sys.getsizeof(obj)
 
@@ -124,9 +122,7 @@ class KVCacheManager:
         fires *before* size-based eviction.
     """
 
-    def __init__(
-        self, max_cache_size_mb: int = 2048, max_entries: int | None = None
-    ) -> None:
+    def __init__(self, max_cache_size_mb: int = 2048, max_entries: int | None = None) -> None:
         self._max_bytes = max_cache_size_mb * 1024 * 1024
         self._max_entries = max_entries
         self._entries: OrderedDict[int, _CacheEntry] = OrderedDict()
@@ -153,9 +149,7 @@ class KVCacheManager:
 
             # Only try lengths that actually exist in cache, longest first
             n = len(tokens)
-            for length in sorted(
-                (cl for cl in self._cached_lengths if 4 <= cl <= n), reverse=True
-            ):
+            for length in sorted((cl for cl in self._cached_lengths if 4 <= cl <= n), reverse=True):
                 key = _hash_token_prefix(tokens, length)
                 entry = self._entries.get(key)
                 if entry is not None:

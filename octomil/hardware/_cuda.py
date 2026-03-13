@@ -438,9 +438,7 @@ class CUDABackend(GPUBackend):
             pass
         return None
 
-    def _detect_via_nvidia_smi(
-        self, diagnostics: list[str]
-    ) -> GPUDetectionResult | None:
+    def _detect_via_nvidia_smi(self, diagnostics: list[str]) -> GPUDetectionResult | None:
         """Primary detection via nvidia-smi CSV query."""
         gpus: list[GPUInfo] = []
         driver_version: str | None = None
@@ -495,9 +493,7 @@ class CUDABackend(GPUBackend):
                     )
 
                 cuda_version = self._get_cuda_version()
-                diagnostics.append(
-                    f"cuda: detected {len(gpus)} GPU(s) via nvidia-smi full query"
-                )
+                diagnostics.append(f"cuda: detected {len(gpus)} GPU(s) via nvidia-smi full query")
         except FileNotFoundError:
             diagnostics.append("cuda: nvidia-smi not found")
             return None
@@ -545,9 +541,7 @@ class CUDABackend(GPUBackend):
                             )
                         )
                     cuda_version = self._get_cuda_version()
-                    diagnostics.append(
-                        f"cuda: detected {len(gpus)} GPU(s) via nvidia-smi simple query"
-                    )
+                    diagnostics.append(f"cuda: detected {len(gpus)} GPU(s) via nvidia-smi simple query")
             except Exception as exc:
                 diagnostics.append(f"cuda: nvidia-smi simple query failed — {exc}")
 
@@ -605,9 +599,7 @@ class CUDABackend(GPUBackend):
                 release = platform.release().lower()
                 if "tegra" in release:
                     model_str = f"tegra ({release})"
-                    diagnostics.append(
-                        "cuda/jetson: detected via kernel release string"
-                    )
+                    diagnostics.append("cuda/jetson: detected via kernel release string")
             except Exception:
                 pass
 

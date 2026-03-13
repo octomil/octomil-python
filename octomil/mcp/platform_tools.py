@@ -247,9 +247,10 @@ def register_platform_tools(mcp: Any, backend: Any) -> None:
             )
 
         try:
+            from octomil.auth import OrgApiKeyAuth
             from octomil.client import OctomilClient
 
-            client = OctomilClient(api_key=api_key)
+            client = OctomilClient(auth=OrgApiKeyAuth(api_key=api_key, org_id=os.getenv("OCTOMIL_ORG_ID", "default")))
             kwargs: dict[str, Any] = {"strategy": strategy, "rollout": rollout}
             if version:
                 kwargs["version"] = version
@@ -386,9 +387,10 @@ def register_platform_tools(mcp: Any, backend: Any) -> None:
             )
 
         try:
+            from octomil.auth import OrgApiKeyAuth
             from octomil.client import OctomilClient
 
-            client = OctomilClient(api_key=api_key)
+            client = OctomilClient(auth=OrgApiKeyAuth(api_key=api_key, org_id=os.getenv("OCTOMIL_ORG_ID", "default")))
             # Access the internal registry for the optimize call
             devices = [d.strip() for d in target_devices.split(",") if d.strip()] if target_devices else None
             model_id = client._registry.resolve_model_id(name)
@@ -686,9 +688,10 @@ def register_platform_tools(mcp: Any, backend: Any) -> None:
             )
 
         try:
+            from octomil.auth import OrgApiKeyAuth
             from octomil.client import OctomilClient
 
-            client = OctomilClient(api_key=api_key)
+            client = OctomilClient(auth=OrgApiKeyAuth(api_key=api_key, org_id=os.getenv("OCTOMIL_ORG_ID", "default")))
             kwargs: dict[str, Any] = {}
             if version:
                 kwargs["version"] = version
@@ -730,9 +733,10 @@ def register_platform_tools(mcp: Any, backend: Any) -> None:
             )
 
         try:
+            from octomil.auth import OrgApiKeyAuth
             from octomil.client import OctomilClient
 
-            client = OctomilClient(api_key=api_key)
+            client = OctomilClient(auth=OrgApiKeyAuth(api_key=api_key, org_id=os.getenv("OCTOMIL_ORG_ID", "default")))
 
             # Support both single string and JSON array of strings
             input_text: str | list[str] = text

@@ -184,9 +184,9 @@ def _print_sdk_snippet(model_name: str, version: str) -> None:
     click.secho("  Python", bold=True)
     click.echo(
         f"    # pip install octomil-sdk\n"
-        f"    import octomil\n"
+        f"    from octomil import OctomilClient, OrgApiKeyAuth\n"
         f"\n"
-        f'    client = octomil.OctomilClient(api_key="{api_key}", org_id="{org_id}")\n'
+        f'    client = OctomilClient(auth=OrgApiKeyAuth(api_key="{api_key}", org_id="{org_id}"))\n'
         f'    text = client.predict("{model_name}", [{{"role": "user", "content": "Hello"}}])\n'
     )
     click.secho("  Node.js", bold=True)
@@ -194,7 +194,7 @@ def _print_sdk_snippet(model_name: str, version: str) -> None:
         f"    // npm install @octomil/sdk\n"
         f'    import {{ OctomilClient }} from "@octomil/sdk";\n'
         f"\n"
-        f'    const client = new OctomilClient({{ apiKey: "{api_key}", orgId: "{org_id}" }});\n'
+        f'    const client = new OctomilClient({{ auth: {{ type: "org_api_key", apiKey: "{api_key}", orgId: "{org_id}" }} }});\n'
         f'    const result = await client.predict("{model_name}", {{ text: "Hello" }});\n'
     )
 

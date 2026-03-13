@@ -14,6 +14,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from httpx import ASGITransport, AsyncClient
 
+from octomil.auth import OrgApiKeyAuth
 from octomil.batch import (
     QueueStats,
     RequestQueue,
@@ -97,7 +98,7 @@ class TestClientPredict:
             )
             mock_get.return_value = model
 
-            client = OctomilClient(api_key="test-key", org_id="test-org")
+            client = OctomilClient(auth=OrgApiKeyAuth(api_key="test-key", org_id="test-org"))
             result = client.predict(
                 "phi-4-mini",
                 [{"role": "user", "content": "What is 6*7?"}],
@@ -132,7 +133,7 @@ class TestClientPredict:
             )
             mock_get.return_value = model
 
-            client = OctomilClient(api_key="key")
+            client = OctomilClient(auth=OrgApiKeyAuth(api_key="key", org_id="default"))
             client.predict(
                 "test",
                 [{"role": "user", "content": "hi"}],
@@ -181,7 +182,7 @@ class TestClientPredictStream:
             )
             mock_get.return_value = model
 
-            client = OctomilClient(api_key="key")
+            client = OctomilClient(auth=OrgApiKeyAuth(api_key="key", org_id="default"))
             result = []
             async for chunk in client.predict_stream(
                 "test",
@@ -210,7 +211,9 @@ class TestClientStreamPredict:
         ]
 
         with patch("octomil.streaming.stream_inference", return_value=iter(expected)):
-            client = OctomilClient(api_key="key", api_base="https://api.test.com/api/v1")
+            client = OctomilClient(
+                auth=OrgApiKeyAuth(api_key="key", org_id="default", api_base="https://api.test.com/api/v1")
+            )
             tokens = list(client.stream_predict("phi-4-mini", "What is 2+2?"))
 
         assert len(tokens) == 3
@@ -221,7 +224,9 @@ class TestClientStreamPredict:
     def test_stream_predict_with_chat_messages(self):
         """stream_predict() should accept chat-style message lists."""
         with patch("octomil.streaming.stream_inference", return_value=iter([])) as mock_fn:
-            client = OctomilClient(api_key="key", api_base="https://api.test.com/api/v1")
+            client = OctomilClient(
+                auth=OrgApiKeyAuth(api_key="key", org_id="default", api_base="https://api.test.com/api/v1")
+            )
             msgs = [{"role": "user", "content": "hello"}]
             list(client.stream_predict("phi-4-mini", msgs))
 
@@ -244,7 +249,9 @@ class TestClientChat:
         ]
 
         with patch("octomil.streaming.stream_inference", return_value=iter(tokens)):
-            client = OctomilClient(api_key="key", api_base="https://api.test.com/api/v1")
+            client = OctomilClient(
+                auth=OrgApiKeyAuth(api_key="key", org_id="default", api_base="https://api.test.com/api/v1")
+            )
             result = client.chat(
                 "phi-4-mini",
                 [{"role": "user", "content": "hi"}],

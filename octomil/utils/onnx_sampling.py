@@ -63,14 +63,10 @@ def append_argmax(
 
     # Replace output type info: int64 instead of float
     graph.output.remove(original_output)
-    new_output = helper.make_tensor_value_info(
-        original_output_name, TensorProto.INT64, None
-    )
+    new_output = helper.make_tensor_value_info(original_output_name, TensorProto.INT64, None)
     graph.output.append(new_output)
 
     # Tag model metadata so consumers can detect embedded sampling
-    model.metadata_props.append(
-        onnx.StringStringEntryProto(key="octomil.sampling", value="argmax")
-    )
+    model.metadata_props.append(onnx.StringStringEntryProto(key="octomil.sampling", value="argmax"))
 
     onnx.save(model, output_path)

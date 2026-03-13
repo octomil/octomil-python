@@ -202,9 +202,7 @@ def validate_target(
     # Check column exists
     if target_col not in df.columns:
         available = sorted(df.columns)
-        raise ValueError(
-            f"Target column '{target_col}' not found. " f"Available columns: {available}"
-        )
+        raise ValueError(f"Target column '{target_col}' not found. Available columns: {available}")
 
     df = df.copy()
     y = df[target_col]
@@ -278,9 +276,7 @@ def prepare_data(
         )
     elif target_col not in df.columns:
         available = sorted(df.columns)
-        raise ValueError(
-            f"Target column '{target_col}' not found. " f"Available columns: {available}"
-        )
+        raise ValueError(f"Target column '{target_col}' not found. Available columns: {available}")
 
     # Extract feature columns
     feature_cols = [c for c in df.columns if c != target_col]

@@ -7,6 +7,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from octomil.auth import OrgApiKeyAuth
 from octomil.client import OctomilClient
 from octomil.telemetry import TelemetryReporter
 
@@ -30,7 +31,7 @@ def _make_client_with_reporter():
 
     # Create OctomilClient without api_key to suppress internal reporter creation,
     # then assign the test's controlled reporter to avoid duplicate events.
-    client = OctomilClient(api_key="", org_id="test-org")
+    client = OctomilClient(auth=OrgApiKeyAuth(api_key="", org_id="test-org"))
     client._api_key = "test-key"
     client._reporter = reporter
 
@@ -119,7 +120,7 @@ class TestPushTelemetry:
 
     def test_push_works_without_reporter(self):
         """push() should work fine when no reporter is configured."""
-        client = OctomilClient(api_key="test-key")
+        client = OctomilClient(auth=OrgApiKeyAuth(api_key="test-key", org_id="default"))
 
         mock_registry = MagicMock()
         mock_registry.ensure_model.return_value = {"id": "model-123"}
@@ -137,7 +138,7 @@ class TestPushTelemetry:
 
     def test_push_reporter_failure_silently_swallowed(self):
         """If the reporter itself throws, push should still succeed."""
-        client = OctomilClient(api_key="test-key")
+        client = OctomilClient(auth=OrgApiKeyAuth(api_key="test-key", org_id="default"))
 
         mock_registry = MagicMock()
         mock_registry.ensure_model.return_value = {"id": "model-123"}

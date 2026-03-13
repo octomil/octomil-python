@@ -87,7 +87,11 @@ class _ApiClient:
                     wait = self.backoff_base * (2**attempt)
                     logger.debug(
                         "Generic 404 on %s %s — likely cold start (attempt %d/%d, waiting %.1fs)",
-                        method, url, attempt + 1, self.max_retries, wait,
+                        method,
+                        url,
+                        attempt + 1,
+                        self.max_retries,
+                        wait,
                     )
                     time.sleep(wait)
                     continue
@@ -244,7 +248,6 @@ class _ApiClient:
     ) -> Any:
         """Reveal a Shamir share for a dropped-out peer."""
         return self.post_bytes(
-            f"/training/rounds/{round_id}/secagg/unmask"
-            f"?device_id={device_id}&peer_id={peer_id}",
+            f"/training/rounds/{round_id}/secagg/unmask?device_id={device_id}&peer_id={peer_id}",
             share_data,
         )

@@ -77,8 +77,7 @@ class GradientCache:
         conn = self._connect()
         try:
             conn.execute(
-                "UPDATE gradient_cache SET submitted = 1 "
-                "WHERE round_id = ? AND device_id = ?",
+                "UPDATE gradient_cache SET submitted = 1 WHERE round_id = ? AND device_id = ?",
                 (round_id, device_id),
             )
             conn.commit()

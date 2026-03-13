@@ -121,9 +121,7 @@ def list_ollama_models(base_url: str = OLLAMA_BASE_URL) -> list[OllamaModel]:
     return models
 
 
-def get_ollama_model(
-    name: str, base_url: str = OLLAMA_BASE_URL
-) -> Optional[OllamaModel]:
+def get_ollama_model(name: str, base_url: str = OLLAMA_BASE_URL) -> Optional[OllamaModel]:
     """Get a specific ollama model by name. Returns None if not found."""
     models = list_ollama_models(base_url=base_url)
     for m in models:
@@ -203,9 +201,7 @@ def pull_ollama_model(
             if stream_progress:
                 sys.stderr.write("\n")
     except httpx.ConnectError:
-        raise RuntimeError(
-            "Cannot connect to Ollama. Is it running? Start with: ollama serve"
-        )
+        raise RuntimeError("Cannot connect to Ollama. Is it running? Start with: ollama serve")
 
 
 def map_quantization(ollama_quant: str) -> str:

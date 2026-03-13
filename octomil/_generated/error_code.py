@@ -13,6 +13,10 @@ class ErrorCode(str, Enum):
     """403 — insufficient permissions"""
     DEVICE_NOT_REGISTERED = "device_not_registered"
     """Device has not completed control.register()"""
+    TOKEN_EXPIRED = "token_expired"
+    """Access token has expired and must be refreshed or reissued"""
+    DEVICE_REVOKED = "device_revoked"
+    """Device registration has been revoked by an administrator"""
     NETWORK_UNAVAILABLE = "network_unavailable"
     """No connectivity"""
     REQUEST_TIMEOUT = "request_timeout"
@@ -146,6 +150,12 @@ ERROR_CLASSIFICATION: dict[ErrorCode, ErrorClassification] = {
         ErrorCategory.AUTH, RetryClass.NEVER, False, SuggestedAction.CHECK_PERMISSIONS
     ),
     ErrorCode.DEVICE_NOT_REGISTERED: ErrorClassification(
+        ErrorCategory.AUTH, RetryClass.NEVER, False, SuggestedAction.REGISTER_DEVICE
+    ),
+    ErrorCode.TOKEN_EXPIRED: ErrorClassification(
+        ErrorCategory.AUTH, RetryClass.NEVER, False, SuggestedAction.REAUTHENTICATE
+    ),
+    ErrorCode.DEVICE_REVOKED: ErrorClassification(
         ErrorCategory.AUTH, RetryClass.NEVER, False, SuggestedAction.REGISTER_DEVICE
     ),
     ErrorCode.NETWORK_UNAVAILABLE: ErrorClassification(

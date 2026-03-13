@@ -19,6 +19,7 @@ from typing import Optional as _Optional
 
 from . import _generated as contracts  # noqa: F401
 from . import responses  # noqa: F401
+from .auth import AuthConfig, DeviceTokenAuth, OrgApiKeyAuth
 from .capabilities_client import CapabilitiesClient, CapabilityProfile
 from .chat_client import ChatChunk, ChatClient, ChatCompletion
 from .client import OctomilClient
@@ -226,6 +227,9 @@ def get_reporter() -> _Optional[TelemetryReporter]:
 __all__ = [
     "__version__",
     "OctomilClient",
+    "AuthConfig",
+    "OrgApiKeyAuth",
+    "DeviceTokenAuth",
     "CapabilitiesClient",
     "CapabilityProfile",
     "ChatClient",

@@ -187,9 +187,7 @@ class ROCmBackend(GPUBackend):
                 timeout=15,
             )
             if result.returncode != 0:
-                diagnostics.append(
-                    f"rocm: rocm-smi query returned exit code {result.returncode}"
-                )
+                diagnostics.append(f"rocm: rocm-smi query returned exit code {result.returncode}")
                 return None
 
             output = result.stdout
@@ -220,9 +218,7 @@ class ROCmBackend(GPUBackend):
 
                 # Match VRAM total / used (in bytes or MB)
                 if "vram total" in line.lower():
-                    mem_match = re.search(
-                        r"([\d.]+)\s*(MB|GB|bytes)?", line.split(":", 1)[-1]
-                    )
+                    mem_match = re.search(r"([\d.]+)\s*(MB|GB|bytes)?", line.split(":", 1)[-1])
                     if mem_match and current_gpu_idx >= 0:
                         val = float(mem_match.group(1))
                         unit = (mem_match.group(2) or "bytes").upper()
@@ -234,9 +230,7 @@ class ROCmBackend(GPUBackend):
                             gpu_vram_total[current_gpu_idx] = val / (1024**3)
 
                 if "vram used" in line.lower():
-                    mem_match = re.search(
-                        r"([\d.]+)\s*(MB|GB|bytes)?", line.split(":", 1)[-1]
-                    )
+                    mem_match = re.search(r"([\d.]+)\s*(MB|GB|bytes)?", line.split(":", 1)[-1])
                     if mem_match and current_gpu_idx >= 0:
                         val = float(mem_match.group(1))
                         unit = (mem_match.group(2) or "bytes").upper()
@@ -297,9 +291,7 @@ class ROCmBackend(GPUBackend):
                 timeout=15,
             )
             if result.returncode != 0:
-                diagnostics.append(
-                    f"rocm: rocminfo returned exit code {result.returncode}"
-                )
+                diagnostics.append(f"rocm: rocminfo returned exit code {result.returncode}")
                 return None
 
             output = result.stdout
@@ -319,9 +311,7 @@ class ROCmBackend(GPUBackend):
 
                 # Extract name
                 name_match = re.search(r"Name:\s*(.+)", agent_block)
-                gpu_name = (
-                    name_match.group(1).strip() if name_match else f"AMD GPU {gpu_idx}"
-                )
+                gpu_name = name_match.group(1).strip() if name_match else f"AMD GPU {gpu_idx}"
 
                 # Extract gfx version for architecture info
                 gfx_match = re.search(r"(gfx\w+)", agent_block)
@@ -343,9 +333,7 @@ class ROCmBackend(GPUBackend):
 
                 # Fallback: look for any memory size line
                 if vram_gb == 0.0:
-                    mem_matches = re.findall(
-                        r"Size:\s*(\d+)\s*\(.*?\)\s*KB", agent_block
-                    )
+                    mem_matches = re.findall(r"Size:\s*(\d+)\s*\(.*?\)\s*KB", agent_block)
                     for mem_str in mem_matches:
                         size_gb = int(mem_str) / (1024**2)
                         if size_gb > vram_gb:
@@ -399,9 +387,7 @@ class ROCmBackend(GPUBackend):
                 timeout=10,
             )
             if result.returncode != 0:
-                diagnostics.append(
-                    f"rocm: lspci returned exit code {result.returncode}"
-                )
+                diagnostics.append(f"rocm: lspci returned exit code {result.returncode}")
                 return None
 
             # Match VGA/3D controllers with AMD vendor (1002)
@@ -424,11 +410,7 @@ class ROCmBackend(GPUBackend):
                 else:
                     # Unknown AMD GPU — extract name from lspci description
                     name_match = re.search(r"(?:VGA|3D|Display).*?:\s*(.+?)\s*\[", line)
-                    gpu_name = (
-                        name_match.group(1).strip()
-                        if name_match
-                        else f"AMD GPU [{device_id}]"
-                    )
+                    gpu_name = name_match.group(1).strip() if name_match else f"AMD GPU [{device_id}]"
                     estimated_vram = 0.0
 
                 memory = GPUMemory(total_gb=estimated_vram)
@@ -507,9 +489,7 @@ class ROCmBackend(GPUBackend):
                     if vram_gb == 0.0:
                         vram_gb = fallback_vram
                 else:
-                    gpu_name = (
-                        f"AMD GPU [{device_id}]" if device_id else f"AMD GPU {gpu_idx}"
-                    )
+                    gpu_name = f"AMD GPU [{device_id}]" if device_id else f"AMD GPU {gpu_idx}"
 
                 memory = GPUMemory(total_gb=round(vram_gb, 2))
                 speed_coeff = _lookup_amd_speed(gpu_name)

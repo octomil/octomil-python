@@ -71,13 +71,10 @@ class MetalBackend(GPUBackend):
         if sku_key:
             gpu_cores, bandwidth_gbps, speed_coeff = _M_SERIES_SKUS[sku_key]
             diagnostics.append(
-                f"metal: matched SKU '{sku_key}' — {gpu_cores} GPU cores, "
-                f"{bandwidth_gbps} GB/s bandwidth"
+                f"metal: matched SKU '{sku_key}' — {gpu_cores} GPU cores, {bandwidth_gbps} GB/s bandwidth"
             )
         else:
-            diagnostics.append(
-                f"metal: unknown chip '{chip_name}', using conservative estimates"
-            )
+            diagnostics.append(f"metal: unknown chip '{chip_name}', using conservative estimates")
             gpu_cores = 8
             speed_coeff = 20
 
@@ -96,9 +93,7 @@ class MetalBackend(GPUBackend):
 
         gpu = GPUInfo(
             index=0,
-            name=f"Apple {chip_name}"
-            if not chip_name.startswith("Apple")
-            else chip_name,
+            name=f"Apple {chip_name}" if not chip_name.startswith("Apple") else chip_name,
             memory=memory,
             speed_coefficient=speed_coeff,
             capabilities=capabilities,
@@ -164,9 +159,7 @@ class MetalBackend(GPUBackend):
                         parts = line.split(":", 1)
                         if len(parts) == 2:
                             chip = parts[1].strip()
-                            match = re.search(
-                                r"(M[1-9]\d*(?:\s+(?:Pro|Max|Ultra))?)", chip
-                            )
+                            match = re.search(r"(M[1-9]\d*(?:\s+(?:Pro|Max|Ultra))?)", chip)
                             if match:
                                 return match.group(1)
                             return chip
