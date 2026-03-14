@@ -167,16 +167,25 @@ ERROR_CLASSIFICATION: dict[ErrorCode, ErrorClassification] = {
         ErrorCategory.AUTH, RetryClass.NEVER, False, SuggestedAction.REGISTER_DEVICE
     ),
     ErrorCode.NETWORK_UNAVAILABLE: ErrorClassification(
-        ErrorCategory.NETWORK, RetryClass.BACKOFF_SAFE, True, SuggestedAction.RETRY_OR_FALLBACK
+        ErrorCategory.NETWORK,
+        RetryClass.BACKOFF_SAFE,
+        True,
+        SuggestedAction.RETRY_OR_FALLBACK,
     ),
     ErrorCode.REQUEST_TIMEOUT: ErrorClassification(
-        ErrorCategory.NETWORK, RetryClass.CONDITIONAL, True, SuggestedAction.RETRY_OR_FALLBACK
+        ErrorCategory.NETWORK,
+        RetryClass.CONDITIONAL,
+        True,
+        SuggestedAction.RETRY_OR_FALLBACK,
     ),
     ErrorCode.SERVER_ERROR: ErrorClassification(
         ErrorCategory.NETWORK, RetryClass.BACKOFF_SAFE, True, SuggestedAction.RETRY
     ),
     ErrorCode.RATE_LIMITED: ErrorClassification(
-        ErrorCategory.NETWORK, RetryClass.CONDITIONAL, False, SuggestedAction.RETRY_AFTER
+        ErrorCategory.NETWORK,
+        RetryClass.CONDITIONAL,
+        False,
+        SuggestedAction.RETRY_AFTER,
     ),
     ErrorCode.INVALID_INPUT: ErrorClassification(
         ErrorCategory.INPUT, RetryClass.NEVER, False, SuggestedAction.FIX_REQUEST
@@ -185,40 +194,67 @@ ERROR_CLASSIFICATION: dict[ErrorCode, ErrorClassification] = {
         ErrorCategory.INPUT, RetryClass.NEVER, False, SuggestedAction.FIX_REQUEST
     ),
     ErrorCode.CONTEXT_TOO_LARGE: ErrorClassification(
-        ErrorCategory.INPUT, RetryClass.NEVER, True, SuggestedAction.REDUCE_INPUT_OR_FALLBACK
+        ErrorCategory.INPUT,
+        RetryClass.NEVER,
+        True,
+        SuggestedAction.REDUCE_INPUT_OR_FALLBACK,
     ),
     ErrorCode.MODEL_NOT_FOUND: ErrorClassification(
         ErrorCategory.CATALOG, RetryClass.NEVER, False, SuggestedAction.CHECK_MODEL_ID
     ),
     ErrorCode.MODEL_DISABLED: ErrorClassification(
-        ErrorCategory.CATALOG, RetryClass.NEVER, True, SuggestedAction.USE_ALTERNATE_MODEL
+        ErrorCategory.CATALOG,
+        RetryClass.NEVER,
+        True,
+        SuggestedAction.USE_ALTERNATE_MODEL,
     ),
     ErrorCode.VERSION_NOT_FOUND: ErrorClassification(
         ErrorCategory.CATALOG, RetryClass.NEVER, False, SuggestedAction.CHECK_VERSION
     ),
     ErrorCode.DOWNLOAD_FAILED: ErrorClassification(
-        ErrorCategory.DOWNLOAD, RetryClass.BACKOFF_SAFE, True, SuggestedAction.RETRY_OR_FALLBACK
+        ErrorCategory.DOWNLOAD,
+        RetryClass.BACKOFF_SAFE,
+        True,
+        SuggestedAction.RETRY_OR_FALLBACK,
     ),
     ErrorCode.CHECKSUM_MISMATCH: ErrorClassification(
-        ErrorCategory.DOWNLOAD, RetryClass.CONDITIONAL, False, SuggestedAction.REDOWNLOAD
+        ErrorCategory.DOWNLOAD,
+        RetryClass.CONDITIONAL,
+        False,
+        SuggestedAction.REDOWNLOAD,
     ),
     ErrorCode.INSUFFICIENT_STORAGE: ErrorClassification(
-        ErrorCategory.DEVICE, RetryClass.NEVER, True, SuggestedAction.FREE_STORAGE_OR_FALLBACK
+        ErrorCategory.DEVICE,
+        RetryClass.NEVER,
+        True,
+        SuggestedAction.FREE_STORAGE_OR_FALLBACK,
     ),
     ErrorCode.INSUFFICIENT_MEMORY: ErrorClassification(
         ErrorCategory.DEVICE, RetryClass.NEVER, True, SuggestedAction.TRY_SMALLER_MODEL
     ),
     ErrorCode.RUNTIME_UNAVAILABLE: ErrorClassification(
-        ErrorCategory.DEVICE, RetryClass.NEVER, True, SuggestedAction.TRY_ALTERNATE_RUNTIME
+        ErrorCategory.DEVICE,
+        RetryClass.NEVER,
+        True,
+        SuggestedAction.TRY_ALTERNATE_RUNTIME,
     ),
     ErrorCode.ACCELERATOR_UNAVAILABLE: ErrorClassification(
-        ErrorCategory.DEVICE, RetryClass.NEVER, True, SuggestedAction.TRY_CPU_OR_FALLBACK
+        ErrorCategory.DEVICE,
+        RetryClass.NEVER,
+        True,
+        SuggestedAction.TRY_CPU_OR_FALLBACK,
     ),
     ErrorCode.MODEL_LOAD_FAILED: ErrorClassification(
-        ErrorCategory.RUNTIME, RetryClass.CONDITIONAL, True, SuggestedAction.RETRY_OR_FALLBACK
+        ErrorCategory.RUNTIME,
+        RetryClass.CONDITIONAL,
+        True,
+        SuggestedAction.RETRY_OR_FALLBACK,
     ),
     ErrorCode.INFERENCE_FAILED: ErrorClassification(
-        ErrorCategory.RUNTIME, RetryClass.CONDITIONAL, True, SuggestedAction.RETRY_OR_FALLBACK
+        ErrorCategory.RUNTIME,
+        RetryClass.CONDITIONAL,
+        True,
+        SuggestedAction.RETRY_OR_FALLBACK,
     ),
     ErrorCode.STREAM_INTERRUPTED: ErrorClassification(
         ErrorCategory.RUNTIME, RetryClass.IMMEDIATE_SAFE, True, SuggestedAction.RETRY
@@ -227,10 +263,16 @@ ERROR_CLASSIFICATION: dict[ErrorCode, ErrorClassification] = {
         ErrorCategory.POLICY, RetryClass.NEVER, False, SuggestedAction.CHECK_POLICY
     ),
     ErrorCode.CLOUD_FALLBACK_DISALLOWED: ErrorClassification(
-        ErrorCategory.POLICY, RetryClass.NEVER, False, SuggestedAction.CHANGE_POLICY_OR_FIX_LOCAL
+        ErrorCategory.POLICY,
+        RetryClass.NEVER,
+        False,
+        SuggestedAction.CHANGE_POLICY_OR_FIX_LOCAL,
     ),
     ErrorCode.MAX_TOOL_ROUNDS_EXCEEDED: ErrorClassification(
-        ErrorCategory.POLICY, RetryClass.NEVER, False, SuggestedAction.INCREASE_LIMIT_OR_SIMPLIFY
+        ErrorCategory.POLICY,
+        RetryClass.NEVER,
+        False,
+        SuggestedAction.INCREASE_LIMIT_OR_SIMPLIFY,
     ),
     ErrorCode.TRAINING_FAILED: ErrorClassification(
         ErrorCategory.TRAINING, RetryClass.CONDITIONAL, False, SuggestedAction.RETRY
@@ -249,7 +291,10 @@ ERROR_CLASSIFICATION: dict[ErrorCode, ErrorClassification] = {
     ),
     ErrorCode.CANCELLED: ErrorClassification(ErrorCategory.LIFECYCLE, RetryClass.NEVER, False, SuggestedAction.NONE),
     ErrorCode.APP_BACKGROUNDED: ErrorClassification(
-        ErrorCategory.LIFECYCLE, RetryClass.CONDITIONAL, False, SuggestedAction.RESUME_ON_FOREGROUND
+        ErrorCategory.LIFECYCLE,
+        RetryClass.CONDITIONAL,
+        False,
+        SuggestedAction.RESUME_ON_FOREGROUND,
     ),
     ErrorCode.UNKNOWN: ErrorClassification(ErrorCategory.UNKNOWN, RetryClass.NEVER, False, SuggestedAction.REPORT_BUG),
 }

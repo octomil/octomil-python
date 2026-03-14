@@ -22,7 +22,14 @@ ROLLOUT_ID = "rollout.id"
 MODELS_SYNCED = "models_synced"
 
 SPAN_REQUIRED_ATTRIBUTES: dict[str, list[str]] = {
-    "octomil.response": ["model.id", "model.version", "runtime.executor", "request.mode", "locality", "streaming"],
+    "octomil.response": [
+        "model.id",
+        "model.version",
+        "runtime.executor",
+        "request.mode",
+        "locality",
+        "streaming",
+    ],
     "octomil.model.load": ["model.id", "model.version", "runtime.executor"],
     "octomil.tool.execute": ["tool.name", "tool.round"],
     "octomil.fallback.cloud": ["model.id", "fallback.reason"],

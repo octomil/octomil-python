@@ -22,7 +22,12 @@ OCTOMIL_TOOL_EXECUTE_DURATION = "octomil.tool.execute.duration"
 ALL_METRIC_VIEWS = [
     MetricView("octomil.response.duration", "histogram", "ms", "octomil.response"),
     MetricView("octomil.response.ttft", "histogram", "ms", "octomil.response"),
-    MetricView("octomil.response.tokens_per_second", "histogram", "{tokens}/s", "octomil.response"),
+    MetricView(
+        "octomil.response.tokens_per_second",
+        "histogram",
+        "{tokens}/s",
+        "octomil.response",
+    ),
     MetricView("octomil.model.load.duration", "histogram", "ms", "octomil.model.load"),
     MetricView("octomil.model.load.failure_rate", "counter", "{failures}", "octomil.model.load"),
     MetricView("octomil.fallback.rate", "counter", "{fallbacks}", "octomil.response"),

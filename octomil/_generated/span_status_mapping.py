@@ -31,7 +31,11 @@ SPAN_EXPECTED_ERRORS: dict[str, list[str]] = {
         "model_load_failed",
         "accelerator_unavailable",
     ],
-    "octomil.tool.execute": ["inference_failed", "cancelled", "max_tool_rounds_exceeded"],
+    "octomil.tool.execute": [
+        "inference_failed",
+        "cancelled",
+        "max_tool_rounds_exceeded",
+    ],
     "octomil.fallback.cloud": [
         "network_unavailable",
         "request_timeout",
@@ -40,7 +44,21 @@ SPAN_EXPECTED_ERRORS: dict[str, list[str]] = {
         "cloud_fallback_disallowed",
         "authentication_failed",
     ],
-    "octomil.control.refresh": ["control_sync_failed", "network_unavailable", "authentication_failed", "forbidden"],
-    "octomil.control.heartbeat": ["control_sync_failed", "network_unavailable", "request_timeout"],
-    "octomil.rollout.sync": ["control_sync_failed", "download_failed", "insufficient_storage", "network_unavailable"],
+    "octomil.control.refresh": [
+        "control_sync_failed",
+        "network_unavailable",
+        "authentication_failed",
+        "forbidden",
+    ],
+    "octomil.control.heartbeat": [
+        "control_sync_failed",
+        "network_unavailable",
+        "request_timeout",
+    ],
+    "octomil.rollout.sync": [
+        "control_sync_failed",
+        "download_failed",
+        "insufficient_storage",
+        "network_unavailable",
+    ],
 }

@@ -23,7 +23,11 @@ EVENT_REQUIRED_ATTRIBUTES: dict[str, list[str]] = {
     "chunk_produced": ["octomil.chunk.index"],
     "tool_call_emitted": ["octomil.tool.name", "octomil.tool.round"],
     "fallback_triggered": ["octomil.fallback.reason"],
-    "completed": ["octomil.tokens.total", "octomil.tokens.per_second", "octomil.duration_ms"],
+    "completed": [
+        "octomil.tokens.total",
+        "octomil.tokens.per_second",
+        "octomil.duration_ms",
+    ],
     "download_started": [],
     "download_completed": ["octomil.download.duration_ms", "octomil.download.bytes"],
     "checksum_verified": [],
