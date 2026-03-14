@@ -5,6 +5,12 @@
 - Added `DeviceAuthClient` runtime auth helper for device token bootstrap, refresh, and revoke flows.
 - Added optional `auth` extra with `keyring` secure storage dependency.
 
+## 4.1.0 (2026-03-14)
+
+### Features
+
+- switch to segno, add SVG export, path-based URLs (#285)
+
 ## 4.0.2 (2026-03-14)
 
 ### Fixes

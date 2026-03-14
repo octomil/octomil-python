@@ -68,7 +68,7 @@ class TestMainGroup:
         runner = CliRunner()
         result = runner.invoke(main, ["--version"])
         assert result.exit_code == 0
-        assert "4.0.2" in result.output
+        assert "4.1.0" in result.output
 
     def test_no_args_shows_quickstart(self):
         """Bare `octomil` with no args shows focused onboarding screen."""
