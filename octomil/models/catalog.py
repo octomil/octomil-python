@@ -31,10 +31,13 @@ logger = logging.getLogger(__name__)
 
 @dataclass(frozen=True)
 class GGUFSource:
-    """GGUF model source — HuggingFace repo + filename."""
+    """GGUF model source — HuggingFace repo + optional filename."""
 
     repo: str
-    filename: str
+    filename: str  # empty for repo-level URIs
+    revision: Optional[str] = None
+    quantization_hint: Optional[str] = None
+    uri_type: str = "file"  # "file" or "repo"
 
 
 @dataclass(frozen=True)
@@ -213,12 +216,25 @@ def _package_to_variant_field(
         mlx = repo
     elif executor in ("llamacpp", "llama.cpp") and fmt == "gguf":
         repo, filename = _parse_hf_uri(uri)
-        # Prefer the explicit path field over parsed filename
-        gguf = GGUFSource(repo=repo, filename=path or filename)
+        meta = weights.get("metadata") or {}
+        gguf = GGUFSource(
+            repo=repo,
+            filename=path or filename,
+            revision=meta.get("revision"),
+            quantization_hint=(meta.get("quantization", "") or "").lower() or None,
+            uri_type=meta.get("uri_type", "file"),
+        )
     elif executor == "whisper" or executor == "whisper.cpp":
         # Whisper models use GGUF-like download pattern
         repo, filename = _parse_hf_uri(uri)
-        gguf = GGUFSource(repo=repo, filename=path or filename)
+        meta = weights.get("metadata") or {}
+        gguf = GGUFSource(
+            repo=repo,
+            filename=path or filename,
+            revision=meta.get("revision"),
+            quantization_hint=(meta.get("quantization", "") or "").lower() or None,
+            uri_type=meta.get("uri_type", "file"),
+        )
     elif executor in ("onnxruntime", "ort"):
         repo, _ = _parse_hf_uri(uri)
         ort = repo

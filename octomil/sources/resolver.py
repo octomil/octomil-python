@@ -15,7 +15,7 @@ Supports:
 from __future__ import annotations
 
 import logging
-from typing import Dict, Optional
+from typing import Any, Dict, Optional, Union
 
 import click
 
@@ -43,25 +43,27 @@ def _get_v2_client() -> CatalogClientV2:
     return _v2_client
 
 
-def _manifest_to_aliases(manifest: dict) -> Dict[str, Dict[str, str]]:
+def _manifest_to_aliases(manifest: dict) -> Dict[str, Dict[str, Union[str, Dict[str, Any]]]]:
     """Convert a v2 manifest to source alias mappings.
 
     For each model, extracts download sources from packages:
-    - Packages with ``runtime_executor=ollama`` → ``ollama`` alias
-    - Packages with ``hf://`` URIs → ``hf`` alias
+    - Packages with ``runtime_executor=ollama`` → ``ollama`` alias (bare string)
+    - Packages with ``hf://`` URIs → ``hf`` alias (dict with resolution context)
     - Packages with ``runtime_executor in (onnxruntime, ort)`` and ``hf://`` → ``hf_onnx`` alias
     """
-    aliases: Dict[str, Dict[str, str]] = {}
+    aliases: Dict[str, Dict[str, Union[str, Dict[str, Any]]]] = {}
 
     for model in manifest.get("models", []):
         model_id: str = model.get("id", "")
         if not model_id:
             continue
 
-        model_aliases: Dict[str, str] = {}
+        model_aliases: Dict[str, Union[str, Dict[str, Any]]] = {}
 
         for pkg in model.get("packages", []):
             executor: str = pkg.get("runtime_executor", "")
+            artifact_format: str = pkg.get("artifact_format", "")
+            quantization: str = pkg.get("quantization", "")
 
             # Find weights resource
             weights = None
@@ -73,6 +75,9 @@ def _manifest_to_aliases(manifest: dict) -> Dict[str, Dict[str, str]]:
                 continue
 
             uri: str = weights.get("uri", "")
+            meta: dict = weights.get("metadata") or {}
+            uri_type: str = meta.get("uri_type", "file")
+            revision: Optional[str] = meta.get("revision")
 
             if executor == "ollama" and "ollama" not in model_aliases:
                 model_aliases["ollama"] = uri
@@ -81,8 +86,16 @@ def _manifest_to_aliases(manifest: dict) -> Dict[str, Dict[str, str]]:
                 if "hf_onnx" not in model_aliases:
                     model_aliases["hf_onnx"] = repo
             elif uri.startswith("hf://") and "hf" not in model_aliases:
-                repo, _ = _parse_hf_uri(uri)
-                model_aliases["hf"] = repo
+                repo, filename = _parse_hf_uri(uri)
+                # Carry full resolution context for HF sources
+                model_aliases["hf"] = {
+                    "repo_id": repo,
+                    "filename": filename or None,
+                    "revision": revision,
+                    "quantization_hint": quantization.lower() if quantization else None,
+                    "artifact_format": artifact_format or None,
+                    "uri_type": uri_type,
+                }
 
         if model_aliases:
             aliases[model_id] = model_aliases
@@ -90,7 +103,7 @@ def _manifest_to_aliases(manifest: dict) -> Dict[str, Dict[str, str]]:
     return aliases
 
 
-def _get_model_aliases() -> Dict[str, Dict[str, str]]:
+def _get_model_aliases() -> Dict[str, Dict[str, Union[str, Dict[str, Any]]]]:
     """Fetch source-level model aliases from the v2 manifest (cached)."""
     manifest = _get_v2_client().get_manifest()
     return _manifest_to_aliases(manifest)
@@ -119,7 +132,15 @@ _SOURCE_HINTS: Dict[str, str] = {
 }
 
 
-def _try_source(source: str, ref: str) -> Optional[SourceResult]:
+def _try_source(
+    source: str,
+    ref: str,
+    *,
+    filename: Optional[str] = None,
+    revision: Optional[str] = None,
+    quantization_hint: Optional[str] = None,
+    artifact_format: Optional[str] = None,
+) -> Optional[SourceResult]:
     """Attempt a single source. Returns None on failure (with a logged hint)."""
     backends = {"ollama": _ollama, "hf": _hf, "kaggle": _kaggle}
     backend = backends.get(source)
@@ -131,7 +152,13 @@ def _try_source(source: str, ref: str) -> Optional[SourceResult]:
             logger.debug("Source %s unavailable for %s", source, ref)
             click.echo(f"  {source} backend unavailable. {hint}", err=True)
             return None
-        return backend.resolve(ref)
+        return backend.resolve(
+            ref,
+            filename=filename,
+            revision=revision,
+            quantization_hint=quantization_hint,
+            artifact_format=artifact_format,
+        )
     except Exception as exc:
         logger.debug("Source %s failed for %s: %s", source, ref, exc)
     return None
@@ -178,8 +205,9 @@ def resolve_and_download(name: str) -> str:
     if aliases:
         # Try Ollama first (fastest — local cache), then HuggingFace
         if "ollama" in aliases:
-            click.echo(f"  Checking Ollama for {aliases['ollama']}...")
-            result = _try_source("ollama", aliases["ollama"])
+            ollama_ref = str(aliases["ollama"])
+            click.echo(f"  Checking Ollama for {ollama_ref}...")
+            result = _try_source("ollama", ollama_ref)
             if result:
                 if result.cached:
                     click.echo("  Using Ollama cache")
@@ -188,13 +216,26 @@ def resolve_and_download(name: str) -> str:
                 return result.path
 
         if "hf" in aliases:
-            click.echo(f"  Downloading from HuggingFace: {aliases['hf']}")
-            result = _try_source("hf", aliases["hf"])
+            hf_info = aliases["hf"]
+            if isinstance(hf_info, dict):
+                click.echo(f"  Downloading from HuggingFace: {hf_info['repo_id']}")
+                result = _try_source(
+                    "hf",
+                    hf_info["repo_id"],
+                    filename=hf_info.get("filename"),
+                    revision=hf_info.get("revision"),
+                    quantization_hint=hf_info.get("quantization_hint"),
+                    artifact_format=hf_info.get("artifact_format"),
+                )
+            else:
+                # Backward compat: bare string repo ID
+                click.echo(f"  Downloading from HuggingFace: {hf_info}")
+                result = _try_source("hf", hf_info)
             if result:
                 return result.path
 
         if "kaggle" in aliases:
-            result = _try_source("kaggle", aliases["kaggle"])
+            result = _try_source("kaggle", str(aliases["kaggle"]))
             if result:
                 return result.path
 
@@ -239,9 +280,12 @@ def resolve_hf_repo(name: str, *, prefer_onnx: bool = True) -> Optional[str]:
     aliases = model_aliases.get(canonical) or model_aliases.get(name)
     if aliases:
         if prefer_onnx and "hf_onnx" in aliases:
-            return aliases["hf_onnx"]
+            return str(aliases["hf_onnx"])
         if "hf" in aliases:
-            return aliases["hf"]
+            hf_info = aliases["hf"]
+            if isinstance(hf_info, dict):
+                return hf_info["repo_id"]
+            return hf_info
 
     # Direct org/model format
     if "/" in name:
