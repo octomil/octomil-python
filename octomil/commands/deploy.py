@@ -225,7 +225,7 @@ def deploy(
         if check_resp.status_code == 200:
             for m in check_resp.json().get("models", []):
                 m_name = m.get("name") or m.get("model_id") or ""
-                if m_name == name:
+                if m_name.lower() == name.lower():
                     model_found = True
                     break
         if not model_found:

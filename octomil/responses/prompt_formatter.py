@@ -40,7 +40,7 @@ class PromptFormatter:
                 fn = tool.get("function", tool)
                 sb.append(f"Function: {fn.get('name', '')}\n")
                 sb.append(f"Description: {fn.get('description', '')}\n")
-                params = fn.get("parameters")
+                params = fn.get("parameters") or fn.get("input_schema")
                 if params:
                     sb.append(f"Parameters: {params}\n")
                 sb.append("\n")

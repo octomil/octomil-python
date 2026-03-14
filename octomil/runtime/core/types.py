@@ -9,6 +9,7 @@ from typing import Optional
 @dataclass
 class RuntimeCapabilities:
     supports_tool_calls: bool = False
+    supports_text_tool_calls: bool = False
     supports_structured_output: bool = False
     supports_multimodal_input: bool = False
     supports_streaming: bool = True

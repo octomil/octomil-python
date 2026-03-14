@@ -283,7 +283,7 @@ class ModelRegistry:
     ) -> dict[str, Any]:
         data = self.api.get(_MODELS_PATH, params={"org_id": self.org_id})
         for item in data.get("models", []):
-            if item.get("name") == name:
+            if (item.get("name") or "").lower() == name.lower():
                 return item
         payload: dict[str, Any] = {
             "name": name,
