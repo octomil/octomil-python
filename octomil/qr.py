@@ -1,102 +1,56 @@
-"""QR code rendering for terminal display."""
+"""QR code rendering for terminal display and file export."""
 
 from __future__ import annotations
 
+import io
 import sys
 import urllib.parse
 
 
 def build_deep_link(token: str, host: str) -> str:
-    """Build a Universal Link URL for QR code pairing.
+    """Build a short Universal Link URL for QR code pairing.
 
-    Uses https://octomil.com/pair so iOS Camera can open the app
-    via Universal Links. Falls back to a web page if the app isn't installed.
-
-    Args:
-        token: Pairing token/code from the server.
-        host: Server base URL (e.g. ``https://api.octomil.com/api/v1``).
-
-    Returns:
-        A URL like ``https://octomil.com/pair?token=TOKEN&host=HOST`` with both
-        parameters properly URL-encoded.
+    Uses path-based format ``https://octomil.com/pair/CODE`` to minimize
+    QR density. The host is only appended when non-default.
     """
-    encoded_token = urllib.parse.quote(token, safe="")
-    # Omit host param when it's the default — keeps QR code smaller/scannable.
     default_host = "https://api.octomil.com/api/v1"
     if host == default_host:
-        return f"https://octomil.com/pair?token={encoded_token}"
+        return f"https://octomil.com/pair/{token}"
     encoded_host = urllib.parse.quote(host, safe="")
-    return f"https://octomil.com/pair?token={encoded_token}&host={encoded_host}"
+    return f"https://octomil.com/pair/{token}?host={encoded_host}"
 
 
 def build_custom_scheme_link(token: str, host: str) -> str:
-    """Build an ``octomil://`` deep link for manual opening.
-
-    Args:
-        token: Pairing token/code from the server.
-        host: Server base URL (e.g. ``https://api.octomil.com/api/v1``).
-
-    Returns:
-        A URL like ``octomil://pair?token=TOKEN&host=HOST``.
-        The host is kept readable (colons/slashes preserved) since this
-        is displayed in the terminal as a fallback link.
-    """
-    encoded_token = urllib.parse.quote(token, safe="")
-    return f"octomil://pair?token={encoded_token}&host={host}"
+    """Build an ``octomil://`` deep link for manual opening."""
+    return f"octomil://pair/{token}"
 
 
-def render_qr_terminal(url: str, *, border: int = 2) -> str:
-    """Render a QR code as ASCII art for terminal display.
+def render_qr_terminal(url: str, *, border: int = 4) -> str:
+    """Render a QR code as terminal text using segno's built-in renderer.
 
-    Uses unicode block characters for compact rendering.
-    Falls back to a simple text URL if qrcode lib not available.
+    Uses ``segno.make_qr`` to guarantee a full QR Code (not Micro QR).
+    Error correction M (15% redundancy) keeps module count low.
+    ``border=4`` is the QR spec minimum quiet zone.
+
+    Falls back to a plain text URL if segno is not installed.
     """
     try:
-        import qrcode  # type: ignore[import-untyped]
+        import segno
     except ImportError:
-        return f"[QR code unavailable — install qrcode: pip install qrcode]\n{url}"
+        return f"[QR code unavailable — install segno: pip install segno]\n{url}"
 
-    qr = qrcode.QRCode(
-        version=None,
-        error_correction=qrcode.constants.ERROR_CORRECT_H,
-        box_size=1,
-        border=border,
-    )
-    qr.add_data(url)
-    qr.make(fit=True)
+    qr = segno.make_qr(url, error="m")
+    buf = io.StringIO()
+    qr.terminal(out=buf, border=border, compact=False)
+    return buf.getvalue().rstrip("\n")
 
-    modules = qr.modules
-    if not modules:
-        return url
 
-    lines: list[str] = []
-    row_count = len(modules)
+def save_qr_svg(url: str, path: str, *, border: int = 4, scale: int = 4) -> None:
+    """Save QR code as an SVG file for reliable scanning."""
+    import segno
 
-    # Process two rows at a time using half-block characters.
-    # Each module is 2 chars wide for better phone camera scanning.
-    # Top row dark + bottom row dark = full block
-    # Top row dark + bottom row light = upper half block
-    # Top row light + bottom row dark = lower half block
-    # Top row light + bottom row light = space
-    for y in range(0, row_count, 2):
-        row_top = modules[y]
-        row_bot = modules[y + 1] if y + 1 < row_count else [False] * len(row_top)
-        line_chars: list[str] = []
-        for x in range(len(row_top)):
-            top = row_top[x]
-            bot = row_bot[x]
-            if top and bot:
-                ch = "\u2588\u2588"  # full block x2
-            elif top and not bot:
-                ch = "\u2580\u2580"  # upper half block x2
-            elif not top and bot:
-                ch = "\u2584\u2584"  # lower half block x2
-            else:
-                ch = "  "  # two spaces
-            line_chars.append(ch)
-        lines.append("".join(line_chars))
-
-    return "\n".join(lines)
+    qr = segno.make_qr(url, error="m")
+    qr.save(path, scale=scale, border=border)
 
 
 def print_qr_code(url: str, *, label: str = "") -> str:

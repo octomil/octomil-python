@@ -90,7 +90,7 @@ hidden_imports = [
     "h11",
     # Other runtime deps
     "psutil",
-    "qrcode",
+    "segno",
     # Serve deps (fastapi + uvicorn + pydantic)
     "fastapi",
     "fastapi.middleware",

@@ -169,7 +169,7 @@ def deploy(
     if is_phone:
         # Detect ollama models before deploying
         from octomil.ollama import get_ollama_model
-        from octomil.qr import build_custom_scheme_link, build_deep_link, render_qr_terminal
+        from octomil.qr import build_deep_link, render_qr_terminal, save_qr_svg
 
         ollama_model = get_ollama_model(name)
         if ollama_model:
@@ -312,30 +312,31 @@ def deploy(
         session = resp.json()
         code = session["code"]
 
-        # Build the Universal Link URL for the QR code (https:// so iOS Camera
-        # can open the app via Universal Links) and a custom-scheme fallback
-        # for the "Or open manually" hint in the terminal box.
+        # Build short Universal Link URL for QR code.
         pair_url = build_deep_link(token=code, host=api_base)
-        fallback_url = build_custom_scheme_link(token=code, host=api_base)
 
-        # Render QR code in a styled box
+        # Render QR code in terminal
         qr_art = render_qr_terminal(pair_url)
-        qr_lines = qr_art.split("\n")
-        # Determine box width: widest QR line or minimum for text
-        max_qr_width = max((len(line) for line in qr_lines), default=0)
-        box_inner = max(max_qr_width + 4, 45)
+
+        # Save SVG fallback for reliable scanning
+        import tempfile
+
+        svg_path: str | None = None
+        try:
+            _svg = os.path.join(tempfile.gettempdir(), f"octomil-pair-{code}.svg")
+            save_qr_svg(pair_url, _svg)
+            svg_path = _svg
+        except Exception:
+            pass
 
         click.echo()
-        click.echo("\u256d" + "\u2500" * box_inner + "\u256e")
-        click.echo("\u2502" + "  Scan this QR code with your phone camera:".ljust(box_inner) + "\u2502")
-        click.echo("\u2502" + " " * box_inner + "\u2502")
-        for line in qr_lines:
-            padded = ("  " + line).ljust(box_inner)
-            click.echo("\u2502" + padded + "\u2502")
-        click.echo("\u2502" + " " * box_inner + "\u2502")
-        click.echo("\u2502" + "  Expires in 5 minutes".ljust(box_inner) + "\u2502")
-        click.echo("\u2570" + "\u2500" * box_inner + "\u256f")
-        click.echo(f"  Or open manually: {fallback_url}")
+        click.echo(qr_art)
+        click.echo()
+        click.echo(click.style("  Scan with your phone camera", bold=True))
+        click.echo(click.style("  Or enter code manually: ", dim=True) + click.style(code, fg="cyan", bold=True))
+        if svg_path:
+            click.echo(click.style("  QR image saved: ", dim=True) + click.style(svg_path, fg="cyan"))
+        click.echo(click.style("  Expires in 5 minutes", dim=True))
         click.echo()
 
         webbrowser.open(pair_url)
