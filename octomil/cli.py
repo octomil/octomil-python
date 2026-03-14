@@ -54,6 +54,7 @@ def main(ctx: click.Context) -> None:
 # ---------------------------------------------------------------------------
 
 from octomil.commands import (  # noqa: E402
+    agent,
     benchmark,
     completions,
     deploy,
@@ -65,7 +66,7 @@ from octomil.commands import (  # noqa: E402
     setup,
 )
 
-for _mod in [serve, model_ops, deploy, benchmark, enterprise, federation, interactive, completions, setup]:
+for _mod in [serve, model_ops, deploy, benchmark, enterprise, federation, interactive, completions, setup, agent]:
     _mod.register(main)
 
 from octomil.commands import mcp_cmd  # noqa: E402
