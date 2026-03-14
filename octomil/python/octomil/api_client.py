@@ -157,11 +157,17 @@ class _ApiClient:
         )
         return res.json()
 
-    def post(self, path: str, payload: Optional[dict[str, Any]] = None) -> Any:
+    def post(
+        self,
+        path: str,
+        payload: Optional[dict[str, Any]] = None,
+        params: Optional[dict[str, Any]] = None,
+    ) -> Any:
         res = self._request_with_retry(
             "POST",
             f"{self.api_base}{path}",
             json=payload or {},
+            params=params,
             headers=self._headers(),
         )
         return res.json()

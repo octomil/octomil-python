@@ -59,8 +59,9 @@ class _StubApi:
             return self._responses[key]
         return {"models": [], "versions": []}
 
-    def post(self, path, payload=None):
+    def post(self, path, payload=None, params=None):
         self.calls.append(("post", path, payload))
+        self.last_post_params = params
         if path.startswith("/models") and "versions" in path and not path.endswith("/versions"):
             return {"version": "1.0.0"}
         return {"id": "model_123", "version": "1.0.0"}
@@ -347,6 +348,8 @@ class ModelRegistryTests(unittest.TestCase):
         self.assertEqual(payload["description"], "test model")
         self.assertEqual(payload["model_contract"], {"input": "tensor"})
         self.assertEqual(payload["data_contract"], {"format": "json"})
+        self.assertNotIn("org_id", payload)
+        self.assertEqual(stub.last_post_params, {"org_id": "org_1"})
 
     def test_ensure_model_returns_existing(self):
         registry = ModelRegistry(auth_token_provider=lambda: "token123", org_id="org_1")
@@ -367,6 +370,7 @@ class ModelRegistryTests(unittest.TestCase):
         _, _, payload = stub.calls[-1]
         self.assertNotIn("model_contract", payload)
         self.assertNotIn("data_contract", payload)
+        self.assertEqual(stub.last_post_params, {"org_id": "org_1"})
 
     def test_publish_version(self):
         registry = ModelRegistry(auth_token_provider=lambda: "token123")

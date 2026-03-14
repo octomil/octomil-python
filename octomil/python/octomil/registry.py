@@ -290,13 +290,12 @@ class ModelRegistry:
             "description": description or "",
             "framework": framework,
             "use_case": use_case,
-            "org_id": self.org_id,
         }
         if model_contract:
             payload["model_contract"] = model_contract
         if data_contract:
             payload["data_contract"] = data_contract
-        return self.api.post(_MODELS_PATH, payload)
+        return self.api.post(_MODELS_PATH, payload, params={"org_id": self.org_id})
 
     def upload_version_from_path(
         self,

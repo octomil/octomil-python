@@ -210,10 +210,8 @@ def deploy(
         # Ensure model exists in registry — auto-download, convert, push if needed.
         # The /models/{id} endpoint only accepts UUIDs, so we search by name
         # via the list endpoint instead.
-        org_id = _get_org_id()
-        list_params: dict[str, str] = {}
-        if org_id:
-            list_params["org_id"] = org_id
+        org_id = _get_org_id() or "default"
+        list_params: dict[str, str] = {"org_id": org_id}
         check_resp = http_request(
             "GET",
             f"{api_base}/models",
