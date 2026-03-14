@@ -193,11 +193,12 @@ class TestCatalogClientV2:
         with patch.dict("sys.modules", {"httpx": None}):
             manifest = client.get_manifest(platform="all")
 
-        assert manifest["version"] == "embedded-v1"
-        assert len(manifest["models"]) == 3
+        # Canonical nested format: top-level keys are family names
+        assert "gemma-2" in manifest
+        assert "variants" in manifest["gemma-2"]
 
     def test_get_models_returns_list(self) -> None:
-        """get_models() should return the models list from manifest."""
+        """get_models() should return a flat models list from manifest."""
         client = CatalogClientV2(base_url="https://api.example.com")
 
         with patch.dict("sys.modules", {"httpx": None}):
@@ -221,17 +222,19 @@ class TestCatalogClientV2:
         assert client._fetcher._cached is None
 
     def test_embedded_manifest_has_blessed_models(self) -> None:
-        """Embedded manifest should contain the 3 blessed models."""
-        assert EMBEDDED_MANIFEST["version"] == "embedded-v1"
-        model_ids = [m["id"] for m in EMBEDDED_MANIFEST["models"]]
-        assert "gemma-2-2b" in model_ids
-        assert "qwen2.5-3b" in model_ids
-        assert "whisper-large-v3" in model_ids
+        """Embedded manifest should contain the 3 blessed model families."""
+        assert "gemma-2" in EMBEDDED_MANIFEST
+        assert "qwen2.5" in EMBEDDED_MANIFEST
+        assert "whisper" in EMBEDDED_MANIFEST
 
     def test_embedded_manifest_models_have_packages(self) -> None:
-        """Each embedded model should have at least one package."""
-        for model in EMBEDDED_MANIFEST["models"]:
-            assert len(model["packages"]) >= 1, f"Model {model['id']} has no packages"
+        """Each embedded model variant should have at least one package."""
+        for family_name, family_data in EMBEDDED_MANIFEST.items():
+            if not isinstance(family_data, dict) or "variants" not in family_data:
+                continue
+            for variant_name, variant_data in family_data["variants"].items():
+                pkg_count = sum(len(ver.get("packages", [])) for ver in variant_data.get("versions", {}).values())
+                assert pkg_count >= 1, f"Variant {variant_name} has no packages"
 
     def test_base_url_strips_api_v1_suffix(self) -> None:
         """CatalogClientV2 should strip /api/v1 from OCTOMIL_API_BASE."""

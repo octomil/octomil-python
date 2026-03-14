@@ -320,9 +320,15 @@ class CatalogClientV2:
         return self._fetcher.fetch(params=params)
 
     def get_models(self, platform: str | None = None) -> list[dict]:
-        """Get just the models list from the manifest."""
+        """Get a flat models list extracted from the nested manifest.
+
+        Returns a list of dicts with ``id``, ``family``, ``parameter_count``,
+        ``packages`` etc. — derived from the canonical nested format.
+        """
+        from .catalog import _iter_manifest_models
+
         manifest = self.get_manifest(platform=platform)
-        return manifest.get("models", [])
+        return _iter_manifest_models(manifest)
 
     def invalidate_cache(self) -> None:
         """Force re-fetch on next access."""
