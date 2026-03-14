@@ -202,8 +202,10 @@ class OctomilResponses:
                 RuntimeToolDef(
                     name=t.get("function", t).get("name", ""),
                     description=t.get("function", t).get("description", ""),
-                    parameters_schema=str(t.get("function", t).get("parameters"))
-                    if t.get("function", t).get("parameters")
+                    parameters_schema=str(
+                        t.get("function", t).get("parameters") or t.get("function", t).get("input_schema")
+                    )
+                    if (t.get("function", t).get("parameters") or t.get("function", t).get("input_schema"))
                     else None,
                 )
                 for t in request.tools
