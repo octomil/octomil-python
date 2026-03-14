@@ -101,17 +101,18 @@ class TestSaveQrSvg:
 
 
 class TestBuildDeepLink:
-    def test_default_host_uses_path_only(self):
+    def test_default_host_uses_token_query_param(self):
         url = build_deep_link(token="ABC123", host="https://api.octomil.com/api/v1")
-        assert url == "https://octomil.com/pair/ABC123"
+        assert url == "https://octomil.com/pair?token=ABC123"
 
     def test_custom_host_appended_as_query(self):
         url = build_deep_link(token="T", host="http://localhost:8000/api/v1")
         parsed = urllib.parse.urlparse(url)
         assert parsed.scheme == "https"
         assert parsed.netloc == "octomil.com"
-        assert parsed.path == "/pair/T"
+        assert parsed.path == "/pair"
         params = urllib.parse.parse_qs(parsed.query)
+        assert params["token"] == ["T"]
         assert params["host"] == ["http://localhost:8000/api/v1"]
 
     def test_host_is_url_encoded(self):
@@ -120,13 +121,15 @@ class TestBuildDeepLink:
 
     def test_empty_token(self):
         url = build_deep_link(token="", host="https://api.octomil.com/api/v1")
-        assert url == "https://octomil.com/pair/"
+        assert url == "https://octomil.com/pair?token="
 
-    def test_path_based_format(self):
+    def test_query_param_format(self):
         url = build_deep_link(token="ep_7kx", host="https://api.octomil.com/api/v1")
         parsed = urllib.parse.urlparse(url)
-        assert parsed.path == "/pair/ep_7kx"
-        assert parsed.query == ""  # no query for default host
+        assert parsed.path == "/pair"
+        params = urllib.parse.parse_qs(parsed.query)
+        assert params["token"] == ["ep_7kx"]
+        assert "host" not in params  # no host for default
 
 
 # ---------------------------------------------------------------------------
@@ -135,18 +138,18 @@ class TestBuildDeepLink:
 
 
 class TestBuildCustomSchemeLink:
-    def test_path_based_format(self):
+    def test_query_param_format(self):
         url = build_custom_scheme_link(token="ABC123", host="https://api.octomil.com/api/v1")
-        assert url == "octomil://pair/ABC123"
+        assert url == "octomil://pair?token=ABC123"
 
     def test_custom_scheme(self):
         url = build_custom_scheme_link(token="T", host="https://example.com")
         parsed = urllib.parse.urlparse(url)
         assert parsed.scheme == "octomil"
 
-    def test_token_in_path(self):
+    def test_token_in_query(self):
         url = build_custom_scheme_link(token="XYZ", host="https://example.com")
-        assert "/pair/XYZ" in url
+        assert "token=XYZ" in url
 
 
 # ---------------------------------------------------------------------------
@@ -280,8 +283,8 @@ class TestDeployPhoneQr:
         assert result.exit_code == 0
         mock_open.assert_called_once()
         url = mock_open.call_args[0][0]
-        # Default host → path-only format
-        assert url == "https://octomil.com/pair/QR1234"
+        # Default host → query-param format matching SDK deep link parsers
+        assert url == "https://octomil.com/pair?token=QR1234"
 
     @patch("octomil.commands.deploy.webbrowser.open")
     def test_deploy_phone_session_expired(self, mock_open, monkeypatch):
@@ -307,8 +310,8 @@ class TestDeployPhoneQr:
         assert result.exit_code != 0
 
     @patch("octomil.commands.deploy.webbrowser.open")
-    def test_deploy_phone_path_based_universal_link(self, mock_open, monkeypatch):
-        """The QR code payload uses path-based format: https://octomil.com/pair/CODE."""
+    def test_deploy_phone_query_param_universal_link(self, mock_open, monkeypatch):
+        """The QR code payload uses query-param format: https://octomil.com/pair?token=CODE."""
         monkeypatch.setenv("OCTOMIL_API_KEY", "test-key")
 
         mock_check = MagicMock(status_code=200, json=MagicMock(return_value={"models": [{"name": "test-model"}]}))
@@ -333,9 +336,10 @@ class TestDeployPhoneQr:
         parsed = urllib.parse.urlparse(url)
         assert parsed.scheme == "https"
         assert parsed.netloc == "octomil.com"
-        assert parsed.path == "/pair/DL_TEST"
-        # Default host → no query params
-        assert parsed.query == ""
+        assert parsed.path == "/pair"
+        params = urllib.parse.parse_qs(parsed.query)
+        assert params["token"] == ["DL_TEST"]
+        assert "host" not in params
 
     @patch("octomil.commands.deploy.webbrowser.open")
     def test_deploy_phone_custom_api_base(self, mock_open, monkeypatch):
@@ -363,7 +367,7 @@ class TestDeployPhoneQr:
         assert result.exit_code == 0
         url = mock_open.call_args[0][0]
         parsed = urllib.parse.urlparse(url)
-        assert parsed.path == "/pair/CUST01"
+        assert parsed.path == "/pair"
         params = urllib.parse.parse_qs(parsed.query)
         assert params["host"] == ["http://localhost:8000/api/v1"]
 
