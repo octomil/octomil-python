@@ -18,9 +18,10 @@ from __future__ import annotations
 import logging
 import os
 import platform
-from enum import Enum
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Optional
+
+from octomil._generated.model_status import ModelStatus
 
 if TYPE_CHECKING:
     from .client import OctomilClient
@@ -47,15 +48,6 @@ _MODEL_EXTENSIONS = {
     ".mlpackage",
     ".nnpackage",
 }
-
-
-class ModelStatus(str, Enum):
-    """Cache status for a model."""
-
-    NOT_CACHED = "not_cached"
-    DOWNLOADING = "downloading"
-    READY = "ready"
-    ERROR = "error"
 
 
 class OctomilModels:

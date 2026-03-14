@@ -24,6 +24,7 @@ from typing import Any, Optional
 
 import httpx
 
+from octomil._generated import otlp_resource_attributes as _res_attrs
 from octomil._generated import telemetry_events as _contract_events
 
 logger = logging.getLogger(__name__)
@@ -190,15 +191,19 @@ class TelemetryReporter:
 
     def _resource(self) -> dict[str, Any]:
         """Build the OTLP Resource with KeyValue attributes."""
+        sdk_version = _get_sdk_version()
         return {
             "attributes": _to_kv_list(
                 {
-                    "service.name": "octomil-sdk",
-                    "sdk.language": "python",
-                    "sdk.version": _get_sdk_version(),
-                    "device.id": self.device_id,
-                    "os.type": sys.platform,
-                    "org.id": self.org_id,
+                    _res_attrs.SERVICE_NAME: "octomil-sdk",
+                    _res_attrs.SERVICE_VERSION: sdk_version,
+                    _res_attrs.TELEMETRY_SDK_NAME: "octomil",
+                    _res_attrs.TELEMETRY_SDK_LANGUAGE: "python",
+                    _res_attrs.TELEMETRY_SDK_VERSION: sdk_version,
+                    _res_attrs.OCTOMIL_ORG_ID: self.org_id,
+                    _res_attrs.OCTOMIL_DEVICE_ID: self.device_id,
+                    _res_attrs.OCTOMIL_PLATFORM: sys.platform,
+                    _res_attrs.OCTOMIL_SDK_SURFACE: "python",
                 }
             ),
         }

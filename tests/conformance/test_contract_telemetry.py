@@ -85,26 +85,38 @@ class TestOtlpResourceAttributes:
     def test_service_version(self) -> None:
         assert contract_attrs.SERVICE_VERSION == "service.version"
 
-    def test_octomil_sdk(self) -> None:
-        assert contract_attrs.OCTOMIL_SDK == "octomil.sdk"
+    def test_telemetry_sdk_name(self) -> None:
+        assert contract_attrs.TELEMETRY_SDK_NAME == "telemetry.sdk.name"
+
+    def test_telemetry_sdk_language(self) -> None:
+        assert contract_attrs.TELEMETRY_SDK_LANGUAGE == "telemetry.sdk.language"
+
+    def test_telemetry_sdk_version(self) -> None:
+        assert contract_attrs.TELEMETRY_SDK_VERSION == "telemetry.sdk.version"
 
     def test_octomil_org_id(self) -> None:
-        assert contract_attrs.OCTOMIL_ORG_ID == "octomil.org_id"
+        assert contract_attrs.OCTOMIL_ORG_ID == "octomil.org.id"
 
     def test_octomil_device_id(self) -> None:
-        assert contract_attrs.OCTOMIL_DEVICE_ID == "octomil.device_id"
+        assert contract_attrs.OCTOMIL_DEVICE_ID == "octomil.device.id"
 
-    def test_os_type(self) -> None:
-        assert contract_attrs.OS_TYPE == "os.type"
+    def test_octomil_platform(self) -> None:
+        assert contract_attrs.OCTOMIL_PLATFORM == "octomil.platform"
+
+    def test_octomil_sdk_surface(self) -> None:
+        assert contract_attrs.OCTOMIL_SDK_SURFACE == "octomil.sdk.surface"
 
     def test_required_keys_list(self) -> None:
         assert set(contract_attrs.REQUIRED_KEYS) == {
             "service.name",
             "service.version",
-            "octomil.sdk",
-            "octomil.org_id",
-            "octomil.device_id",
-            "os.type",
+            "telemetry.sdk.name",
+            "telemetry.sdk.language",
+            "telemetry.sdk.version",
+            "octomil.org.id",
+            "octomil.device.id",
+            "octomil.platform",
+            "octomil.sdk.surface",
         }
 
 

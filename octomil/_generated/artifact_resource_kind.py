@@ -1,0 +1,30 @@
+"""Auto-generated from octomil-contracts. Do not edit."""
+
+from enum import Enum
+
+
+class ArtifactResourceKind(str, Enum):
+    WEIGHTS = "weights"
+    """Model weights file (safetensors, GGUF, etc.)"""
+    TOKENIZER = "tokenizer"
+    """Tokenizer data file (tokenizer.json, tokenizer.model)"""
+    TOKENIZER_CONFIG = "tokenizer_config"
+    """Tokenizer configuration (tokenizer_config.json)"""
+    MODEL_CONFIG = "model_config"
+    """Model architecture configuration (config.json)"""
+    GENERATION_CONFIG = "generation_config"
+    """Text generation parameters (generation_config.json)"""
+    PROCESSOR = "processor"
+    """Processor configuration for multi-modal models"""
+    VOCAB = "vocab"
+    """Vocabulary file (vocab.json, vocab.txt)"""
+    MERGES = "merges"
+    """BPE merge rules file (merges.txt)"""
+    ADAPTER = "adapter"
+    """LoRA or other adapter weights"""
+    MANIFEST = "manifest"
+    """Package manifest with entrypoints and metadata"""
+    SIGNATURE = "signature"
+    """Cryptographic signature or checksum file"""
+    METADATA = "metadata"
+    """Additional metadata file"""
