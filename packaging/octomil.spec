@@ -18,6 +18,18 @@ hidden_imports = [
     # Top-level octomil modules that shadow inner octomil.python.octomil.*
     # Must be listed first so PyInstaller resolves them correctly.
     "octomil.auth",
+    # Generated contract types (some are symlinks PyInstaller can't follow)
+    "octomil._generated",
+    "octomil._generated.auth_type",
+    "octomil._generated.compatibility_level",
+    "octomil._generated.device_class",
+    "octomil._generated.error_code",
+    "octomil._generated.finish_reason",
+    "octomil._generated.model_status",
+    "octomil._generated.otlp_resource_attributes",
+    "octomil._generated.principal_type",
+    "octomil._generated.scope",
+    "octomil._generated.telemetry_events",
     # SDK modules imported by __init__.py
     "octomil.model",
     "octomil.client",
