@@ -41,7 +41,7 @@ def render_qr_terminal(url: str, *, border: int = 4) -> str:
 
     qr = segno.make_qr(url, error="m")
     buf = io.StringIO()
-    qr.terminal(out=buf, border=border, compact=False)
+    qr.terminal(out=buf, border=border, compact=True)
     return buf.getvalue().rstrip("\n")
 
 
