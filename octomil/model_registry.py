@@ -130,126 +130,110 @@ def _get_v2_client() -> CatalogClientV2:
     return _v2_client
 
 
-def _flatten_server_manifest(manifest: dict) -> list[dict]:
-    """Convert server's nested {family: {variants: ...}} to flat model list.
-
-    The server returns families keyed by name with nested variants/versions/packages.
-    The SDK expects a flat list of models with packages directly attached.
-    """
-    models = []
-    for family_name, family_data in manifest.items():
-        if not isinstance(family_data, dict) or "variants" not in family_data:
-            continue
-        for variant_name, variant_data in family_data.get("variants", {}).items():
-            # Collect all packages across all versions
-            packages = []
-            for _ver_key, ver_data in variant_data.get("versions", {}).items():
-                for pkg in ver_data.get("packages", []):
-                    packages.append(pkg)
-
-            quants = variant_data.get("quantizations", [])
-            default_quant = quants[0].lower() if quants else "q4_k_m"
-
-            models.append(
-                {
-                    "id": variant_name,
-                    "family": family_name,
-                    "name": variant_name,
-                    "parameter_count": variant_data.get("parameter_count", ""),
-                    "default_quantization": default_quant,
-                    "packages": packages,
-                }
-            )
-    return models
-
-
 def _manifest_to_families(manifest: dict) -> dict[str, ModelFamily]:
-    """Convert a v2 manifest to a dict of ModelFamily objects.
+    """Convert a v2 catalog manifest to a dict of ModelFamily objects.
 
-    Each manifest model becomes a ModelFamily keyed by model ID.
-    Packages are grouped by quantization into ModelVariant objects,
-    with each package contributing a ModelSource.
+    Parses the canonical nested manifest format returned by the server::
 
-    Handles both embedded format ({"models": [...]}) and server format
-    ({"family_name": {"variants": {...}}}).
+        {
+            "family_name": {
+                "vendor": "...",
+                "variants": {
+                    "variant_name": {
+                        "parameter_count": "2B",
+                        "quantizations": ["Q4_K_M"],
+                        "versions": {
+                            "1.0.0": {
+                                "packages": [...]
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+    Each variant becomes a ModelFamily keyed by variant name (e.g. ``"gemma-2-2b"``).
+    Packages across all versions are collected and grouped by quantization tag
+    into ModelVariant objects, with each package contributing a ModelSource.
     """
     result: dict[str, ModelFamily] = {}
 
-    # Detect format: embedded has "models" key, server has family names as keys
-    models_list = manifest.get("models")
-    if models_list is None:
-        models_list = _flatten_server_manifest(manifest)
-
-    for model in models_list:
-        model_id: str = model.get("id", "")
-        family_name: str = model.get("family", "")
-        params: str = model.get("parameter_count", "")
-        default_quant_raw: str = model.get("default_quantization", "q4_k_m")
-        publisher = _FAMILY_TO_PUBLISHER.get(family_name, "Unknown")
-
-        # Group packages by raw quantization tag
-        tag_variants: dict[str, ModelVariant] = {}
-
-        for pkg in model.get("packages", []):
-            quant_raw: str = pkg.get("quantization", default_quant_raw)
-            executor: str = pkg.get("runtime_executor", "")
-
-            # Find weights resource
-            weights = None
-            for res in pkg.get("resources", []):
-                if res.get("kind") == "weights":
-                    weights = res
-                    break
-            if weights is None:
-                continue
-
-            uri: str = weights.get("uri", "")
-            path: str = weights.get("path", "")
-
-            # Build ModelSource from package
-            if executor == "ollama":
-                source = ModelSource(type="ollama", ref=uri, trust="curated")
-            elif uri.startswith("hf://"):
-                repo, filename = _parse_hf_uri(uri)
-                source = ModelSource(
-                    type="huggingface",
-                    ref=repo,
-                    file=path or filename or None,
-                    trust="official",
-                )
-            else:
-                source = ModelSource(type="huggingface", ref=uri, trust="community")
-
-            # Determine MLX repo
-            mlx_repo: Optional[str] = None
-            if executor in ("mlx", "mlx-lm"):
-                repo, _ = _parse_hf_uri(uri)
-                mlx_repo = repo
-
-            # Map quant to canonical form for quantization_family
-            quant_canonical = _QUANT_TO_CANONICAL.get(quant_raw, quant_raw)
-
-            if quant_raw not in tag_variants:
-                tag_variants[quant_raw] = ModelVariant(
-                    quantization_family=quant_canonical,
-                    sources=[source],
-                    mlx=mlx_repo,
-                )
-            else:
-                existing = tag_variants[quant_raw]
-                existing.sources.append(source)
-                if mlx_repo and not existing.mlx:
-                    existing.mlx = mlx_repo
-
-        if not tag_variants:
+    for family_name, family_data in manifest.items():
+        if not isinstance(family_data, dict) or "variants" not in family_data:
             continue
 
-        result[model_id] = ModelFamily(
-            default_tag=default_quant_raw,
-            publisher=publisher,
-            params=params,
-            variants=tag_variants,
-        )
+        vendor = family_data.get("vendor", "")
+        publisher = _FAMILY_TO_PUBLISHER.get(family_name, vendor or "Unknown")
+
+        for variant_name, variant_data in family_data["variants"].items():
+            params: str = variant_data.get("parameter_count", "")
+            quants = variant_data.get("quantizations", [])
+            default_quant_raw: str = quants[0].lower() if quants else "q4_k_m"
+
+            # Collect all packages across all versions
+            tag_variants: dict[str, ModelVariant] = {}
+
+            for _ver_key, ver_data in variant_data.get("versions", {}).items():
+                for pkg in ver_data.get("packages", []):
+                    quant_raw: str = pkg.get("quantization", default_quant_raw).lower()
+                    executor: str = pkg.get("runtime_executor", "")
+
+                    # Find weights resource
+                    weights = None
+                    for res in pkg.get("resources", []):
+                        if res.get("kind") == "weights":
+                            weights = res
+                            break
+                    if weights is None:
+                        continue
+
+                    uri: str = weights.get("uri", "")
+                    path: str = weights.get("path", "")
+
+                    # Build ModelSource from package
+                    if executor == "ollama":
+                        source = ModelSource(type="ollama", ref=uri, trust="curated")
+                    elif uri.startswith("hf://"):
+                        repo, filename = _parse_hf_uri(uri)
+                        source = ModelSource(
+                            type="huggingface",
+                            ref=repo,
+                            file=path or filename or None,
+                            trust="official",
+                        )
+                    else:
+                        source = ModelSource(type="huggingface", ref=uri, trust="community")
+
+                    # Determine MLX repo
+                    mlx_repo: Optional[str] = None
+                    if executor in ("mlx", "mlx-lm"):
+                        repo, _ = _parse_hf_uri(uri)
+                        mlx_repo = repo
+
+                    # Map quant to canonical form for quantization_family
+                    quant_canonical = _QUANT_TO_CANONICAL.get(quant_raw, quant_raw)
+
+                    if quant_raw not in tag_variants:
+                        tag_variants[quant_raw] = ModelVariant(
+                            quantization_family=quant_canonical,
+                            sources=[source],
+                            mlx=mlx_repo,
+                        )
+                    else:
+                        existing = tag_variants[quant_raw]
+                        existing.sources.append(source)
+                        if mlx_repo and not existing.mlx:
+                            existing.mlx = mlx_repo
+
+            if not tag_variants:
+                continue
+
+            result[variant_name] = ModelFamily(
+                default_tag=default_quant_raw,
+                publisher=publisher,
+                params=params,
+                variants=tag_variants,
+            )
 
     return result
 

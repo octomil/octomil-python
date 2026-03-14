@@ -312,13 +312,46 @@ def _manifest_model_to_entry(model: dict) -> tuple[str, ModelEntry]:
     )
 
 
+def _iter_manifest_models(manifest: dict) -> list[dict]:
+    """Extract flat model dicts from the canonical nested manifest format.
+
+    The canonical manifest (from server and embedded fallback) is keyed by
+    family name with nested variants/versions/packages. This flattens it
+    to the model dicts that ``_manifest_model_to_entry`` expects.
+    """
+    models: list[dict] = []
+    for family_name, family_data in manifest.items():
+        if not isinstance(family_data, dict) or "variants" not in family_data:
+            continue
+        for variant_name, variant_data in family_data["variants"].items():
+            packages: list[dict] = []
+            for ver_data in variant_data.get("versions", {}).values():
+                packages.extend(ver_data.get("packages", []))
+
+            quants = variant_data.get("quantizations", [])
+            default_quant = quants[0].lower() if quants else "q4_k_m"
+
+            models.append(
+                {
+                    "id": variant_name,
+                    "family": family_name,
+                    "name": variant_name,
+                    "parameter_count": variant_data.get("parameter_count", ""),
+                    "default_quantization": default_quant,
+                    "packages": packages,
+                }
+            )
+    return models
+
+
 def _hydrate_manifest(manifest: dict) -> dict[str, ModelEntry]:
     """Convert a v2 manifest dict to the legacy catalog dict format.
 
-    Each manifest model becomes a ``ModelEntry`` keyed by model ID.
+    Each manifest variant becomes a ``ModelEntry`` keyed by variant name.
+    Parses the canonical nested manifest format from the server.
     """
     result: dict[str, ModelEntry] = {}
-    for model in manifest.get("models", []):
+    for model in _iter_manifest_models(manifest):
         try:
             key, entry = _manifest_model_to_entry(model)
             if key:
@@ -339,12 +372,14 @@ def _build_aliases(manifest: dict) -> dict[str, str]:
     - family name -> model ID (e.g. "gemma-2" -> "gemma-2-2b")
     - lowercase model name -> model ID
     - name with spaces/hyphens normalized -> model ID
+
+    Parses the canonical nested manifest format from the server.
     """
     aliases: dict[str, str] = {}
     # Track which families we've seen to handle multiple models per family
     family_models: dict[str, list[str]] = {}
 
-    for model in manifest.get("models", []):
+    for model in _iter_manifest_models(manifest):
         model_id = model.get("id", "")
         family = model.get("family", "")
         name = model.get("name", "")
