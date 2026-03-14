@@ -41,6 +41,10 @@ class SourceBackend:
         self,
         ref: str,
         filename: Optional[str] = None,
+        *,
+        revision: Optional[str] = None,
+        quantization_hint: Optional[str] = None,
+        artifact_format: Optional[str] = None,
     ) -> SourceResult:
         """Resolve and optionally download a model.
 
@@ -50,6 +54,13 @@ class SourceBackend:
             The model reference (repo ID, ollama name, etc).
         filename:
             Specific file within the reference (for GGUF files in HF repos).
+        revision:
+            Pinned commit SHA or branch name.
+        quantization_hint:
+            Quantization to filter by (e.g. "q4_k_m") for multi-quant repos.
+        artifact_format:
+            "gguf" or "directory" — determines resolution strategy for
+            repo-level URIs.
 
         Returns
         -------

@@ -117,6 +117,10 @@ class OllamaSource(SourceBackend):
         self,
         ref: str,
         filename: Optional[str] = None,
+        *,
+        revision: Optional[str] = None,
+        quantization_hint: Optional[str] = None,
+        artifact_format: Optional[str] = None,
     ) -> SourceResult:
         """Resolve an Ollama model to a local blob path.
 

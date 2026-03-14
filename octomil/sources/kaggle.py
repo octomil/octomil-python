@@ -37,6 +37,10 @@ class KaggleSource(SourceBackend):
         self,
         ref: str,
         filename: Optional[str] = None,
+        *,
+        revision: Optional[str] = None,
+        quantization_hint: Optional[str] = None,
+        artifact_format: Optional[str] = None,
     ) -> SourceResult:
         """Resolve a Kaggle model reference.
 
