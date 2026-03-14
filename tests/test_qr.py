@@ -43,10 +43,12 @@ class TestRenderQrTerminal:
         assert isinstance(result, str)
         assert len(result) > 0
 
-    def test_contains_ansi_escape_sequences(self):
+    def test_contains_block_characters(self):
         result = render_qr_terminal("https://example.com")
-        # segno terminal() output uses ANSI escape codes
-        assert "\033[" in result
+        # compact=True uses Unicode block characters
+        block_chars = {"\u2580", "\u2584", "\u2588", " "}
+        found = any(c in result for c in block_chars)
+        assert found, "QR output should contain unicode block characters"
 
     def test_multiline_output(self):
         result = render_qr_terminal("https://example.com")
