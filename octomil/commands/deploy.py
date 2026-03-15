@@ -236,7 +236,8 @@ def deploy(
                             timeout=10.0,
                         )
                         if ver_resp.status_code == 200:
-                            versions = ver_resp.json().get("versions", [])
+                            ver_data = ver_resp.json()
+                            versions = ver_data if isinstance(ver_data, list) else ver_data.get("versions", [])
                             if versions:
                                 model_has_versions = True
                     break
@@ -288,6 +289,8 @@ def deploy(
                 click.echo(click.style(f"  Downloaded to {resolved_path}", fg="green"))
 
                 try:
+                    file_size_mb = os.path.getsize(resolved_path) / (1024 * 1024)
+                    click.echo(click.style(f"  Uploading to registry ({file_size_mb:.0f} MB)...", dim=True))
                     client.push(
                         resolved_path,
                         name=resolved_name,
