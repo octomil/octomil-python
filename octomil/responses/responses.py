@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import json
 import uuid
 from typing import AsyncIterator, Callable, Optional
 
@@ -198,18 +199,17 @@ class OctomilResponses:
         )
         tool_defs: Optional[list[RuntimeToolDef]] = None
         if request.tools:
-            tool_defs = [
-                RuntimeToolDef(
-                    name=t.get("function", t).get("name", ""),
-                    description=t.get("function", t).get("description", ""),
-                    parameters_schema=str(
-                        t.get("function", t).get("parameters") or t.get("function", t).get("input_schema")
+            tool_defs = []
+            for t in request.tools:
+                fn = t.get("function", t)
+                schema = fn.get("input_schema") or fn.get("parameters")
+                tool_defs.append(
+                    RuntimeToolDef(
+                        name=fn.get("name", ""),
+                        description=fn.get("description", ""),
+                        parameters_schema=json.dumps(schema) if schema else None,
                     )
-                    if (t.get("function", t).get("parameters") or t.get("function", t).get("input_schema"))
-                    else None,
                 )
-                for t in request.tools
-            ]
 
         json_schema: Optional[str] = None
         if isinstance(request.response_format, JsonSchemaFormat):

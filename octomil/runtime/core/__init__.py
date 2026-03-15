@@ -20,6 +20,7 @@ from octomil.runtime.core.types import (
     RuntimeToolCallDelta,
     RuntimeToolDef,
     RuntimeUsage,
+    ToolCallTier,
 )
 
 __all__ = [
@@ -38,4 +39,5 @@ __all__ = [
     "RuntimeToolCallDelta",
     "RuntimeToolDef",
     "RuntimeUsage",
+    "ToolCallTier",
 ]

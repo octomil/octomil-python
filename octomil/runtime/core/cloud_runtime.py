@@ -20,8 +20,10 @@ class CloudModelRuntime(ModelRuntime):
 
     @property
     def capabilities(self) -> RuntimeCapabilities:
+        from octomil.runtime.core.types import ToolCallTier
+
         return RuntimeCapabilities(
-            supports_tool_calls=True,
+            tool_call_tier=ToolCallTier.NATIVE,
             supports_structured_output=True,
             supports_streaming=True,
         )
