@@ -9,41 +9,18 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
-from enum import Enum
 from pathlib import Path
 from typing import Any, Optional
 
-# ---------------------------------------------------------------------------
-# Known capability values (kept in sync with octomil-contracts)
-# ---------------------------------------------------------------------------
-
-KNOWN_CAPABILITIES: frozenset[str] = frozenset(
-    {
-        "chat",
-        "transcription",
-        "keyboard_prediction",
-        "embedding",
-        "image_classification",
-        "object_detection",
-        "text_to_speech",
-    }
-)
+from octomil._generated.delivery_mode import DeliveryMode
+from octomil._generated.model_capability import ModelCapability
+from octomil._generated.routing_policy import RoutingPolicy as AppRoutingPolicy
 
 # ---------------------------------------------------------------------------
-# Enums
+# Known capability values (derived from contracts-generated enum)
 # ---------------------------------------------------------------------------
 
-
-class DeliveryMode(str, Enum):
-    BUNDLED = "bundled"
-    MANAGED = "managed"
-    CLOUD = "cloud"
-
-
-class AppRoutingPolicy(str, Enum):
-    LOCAL_ONLY = "local_only"
-    LOCAL_FIRST = "local_first"
-    CLOUD_ONLY = "cloud_only"
+KNOWN_CAPABILITIES: frozenset[str] = frozenset(m.value for m in ModelCapability)
 
 
 # ---------------------------------------------------------------------------
