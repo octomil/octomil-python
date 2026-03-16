@@ -86,25 +86,20 @@ def _compute_stats(result: BenchmarkResult) -> None:
     result.e2e_p95_ms = round(_percentile(e2e_values, 95), 3)
 
 
-async def _run_single_iteration(config: BenchmarkConfig) -> BenchmarkSample:
-    """Run a single benchmark iteration using the echo backend."""
-    from octomil.serve import EchoBackend, GenerationRequest
+async def _run_single_iteration(
+    backend: object,
+    request: object,
+) -> BenchmarkSample:
+    """Run a single benchmark iteration against the provided backend.
 
-    backend = EchoBackend()
-    backend.load_model(config.model_name)
-
-    request = GenerationRequest(
-        model=config.model_name,
-        messages=[{"role": "user", "content": "Benchmark test prompt for TTFT measurement"}],
-        max_tokens=config.max_tokens,
-        temperature=0.0,
-    )
-
+    The backend must implement ``generate_stream(request)`` returning an
+    async iterator of chunks (the standard ``InferenceBackend`` interface).
+    """
     start_ns = time.monotonic_ns()
     first_token_ns: Optional[int] = None
     token_count = 0
 
-    async for _chunk in backend.generate_stream(request):
+    async for _chunk in backend.generate_stream(request):  # type: ignore[attr-defined]
         if first_token_ns is None:
             first_token_ns = time.monotonic_ns()
         token_count += 1
@@ -119,21 +114,42 @@ async def _run_single_iteration(config: BenchmarkConfig) -> BenchmarkSample:
 
 async def _run_async(config: BenchmarkConfig) -> BenchmarkResult:
     """Run the full benchmark suite asynchronously."""
+    import logging
+
+    from octomil.serve import EchoBackend, GenerationRequest
+
     result = BenchmarkResult(model_name=config.model_name, iterations=config.iterations)
 
+    # Suppress the noisy "no inference backend" warning from EchoBackend
+    serve_logger = logging.getLogger("octomil.serve")
+    prev_level = serve_logger.level
+    serve_logger.setLevel(logging.ERROR)
+
     try:
+        backend = EchoBackend()
+        backend.load_model(config.model_name)
+
+        request = GenerationRequest(
+            model=config.model_name,
+            messages=[{"role": "user", "content": "Benchmark test prompt for TTFT measurement"}],
+            max_tokens=config.max_tokens,
+            temperature=0.0,
+        )
+
         # Warmup
         for _ in range(config.warmup_iterations):
-            await _run_single_iteration(config)
+            await _run_single_iteration(backend, request)
 
         # Measure
         for _ in range(config.iterations):
-            sample = await _run_single_iteration(config)
+            sample = await _run_single_iteration(backend, request)
             result.samples.append(sample)
 
         _compute_stats(result)
     except Exception as exc:
         result.error = str(exc)
+    finally:
+        serve_logger.setLevel(prev_level)
 
     return result
 
