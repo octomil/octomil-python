@@ -39,6 +39,7 @@ __all__ = [
     "Scope",
     "OrgApiKeyAuth",
     "DeviceTokenAuth",
+    "PublishableKeyAuth",
     "AuthConfig",
 ]
 
@@ -99,5 +100,54 @@ class DeviceTokenAuth:
     auth_type: AuthType = AuthType.DEVICE_TOKEN
 
 
-AuthConfig = Union[OrgApiKeyAuth, DeviceTokenAuth]
+_PUBLISHABLE_KEY_PREFIX = "oct_pub_"
+
+# Scopes that are safe for publishable keys (client-side, no secrets).
+PUBLISHABLE_KEY_SCOPES: frozenset[Scope] = frozenset(
+    {
+        Scope.DEVICES_REGISTER,
+        Scope.DEVICES_HEARTBEAT,
+        Scope.TELEMETRY_WRITE,
+        Scope.MODELS_READ,
+    }
+)
+
+
+@dataclass(frozen=True)
+class PublishableKeyAuth:
+    """Authentication via a publishable key (``oct_pub_`` prefix).
+
+    Publishable keys are safe to embed in mobile apps and browser code.
+    They are restricted to a fixed set of scopes:
+    ``devices:register``, ``devices:heartbeat``, ``telemetry:write``,
+    ``models:read``.
+    """
+
+    api_key: str
+    api_base: str = _DEFAULT_API_BASE
+    auth_type: AuthType = AuthType.PUBLISHABLE_KEY
+
+    def __post_init__(self) -> None:
+        if not self.api_key.startswith(_PUBLISHABLE_KEY_PREFIX):
+            raise OctomilError(
+                code=OctomilErrorCode.INVALID_API_KEY,
+                message=(
+                    f"Publishable key must start with '{_PUBLISHABLE_KEY_PREFIX}', " f"got '{self.api_key[:16]}...'"
+                ),
+            )
+
+    @property
+    def scopes(self) -> frozenset[Scope]:
+        """Return the fixed set of scopes allowed for publishable keys."""
+        return PUBLISHABLE_KEY_SCOPES
+
+    def headers(self) -> dict[str, str]:
+        """Return HTTP headers for publishable key authentication."""
+        return {
+            "Authorization": f"Bearer {self.api_key}",
+            "X-Octomil-Auth-Type": self.auth_type.value,
+        }
+
+
+AuthConfig = Union[OrgApiKeyAuth, DeviceTokenAuth, PublishableKeyAuth]
 """Discriminated union of supported authentication configurations."""
