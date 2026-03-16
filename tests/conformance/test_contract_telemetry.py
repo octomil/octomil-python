@@ -117,6 +117,7 @@ class TestOtlpResourceAttributes:
             "octomil.device.id",
             "octomil.platform",
             "octomil.sdk.surface",
+            "octomil.install.id",
         }
 
 

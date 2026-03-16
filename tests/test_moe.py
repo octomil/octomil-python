@@ -448,8 +448,8 @@ class TestTelemetryMoERouting:
         # Resource carries device_id and org_id in OTLP KeyValue format
         resource = self.sent[0]["resourceLogs"][0]["resource"]
         res_attrs = parse_otlp_kv(resource["attributes"])
-        assert res_attrs["device.id"] == "dev-moe"
-        assert res_attrs["org.id"] == "test-org"
+        assert res_attrs["octomil.device.id"] == "dev-moe"
+        assert res_attrs["octomil.org.id"] == "test-org"
         attrs = parse_otlp_kv(record["attributes"])
         assert attrs["model.id"] == "mixtral-8x7b"
         assert attrs["inference.session_id"] == "sess-1"

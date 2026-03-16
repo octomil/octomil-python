@@ -154,6 +154,7 @@ omit = [
   "octomil/tool_schemas.py",
   "octomil/sources/resolver.py",
   "octomil/sources/huggingface.py",
+  "octomil/_generated/*",
 ]
 
 [tool.coverage.report]

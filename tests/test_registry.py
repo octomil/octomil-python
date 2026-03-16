@@ -21,10 +21,25 @@ class _FakeHttpxResponse:
 
 
 class _FakeHttpxClient:
-    """Configurable fake httpx.Client that returns a preset response."""
+    """Configurable fake httpx.Client that returns a preset response.
+
+    If *response* is a list, each call (regardless of method) pops the next
+    response from the front of the list, allowing multi-step flows like
+    presigned-upload to receive different responses at each stage.
+    """
 
     def __init__(self, response):
-        self._response = response
+        if isinstance(response, list):
+            self._responses = list(response)
+            self._response = None
+        else:
+            self._responses = None
+            self._response = response
+
+    def _next(self):
+        if self._responses is not None and self._responses:
+            return self._responses.pop(0)
+        return self._response
 
     def __call__(self, *args, **kwargs):
         return self
@@ -36,10 +51,13 @@ class _FakeHttpxClient:
         return False
 
     def get(self, url, **kwargs):
-        return self._response
+        return self._next()
 
     def post(self, url, **kwargs):
-        return self._response
+        return self._next()
+
+    def put(self, url, **kwargs):
+        return self._next()
 
 
 class _StubApi:
@@ -434,12 +452,19 @@ class ModelRegistryTests(unittest.TestCase):
         stub = _StubApi()
         registry.api = stub
 
-        fake_response = _FakeHttpxResponse(
+        # Step 1: presigned URL response
+        url_response = _FakeHttpxResponse(
             status_code=200,
-            text="",
+            json_data={"upload_url": "https://s3.example.com/presigned", "storage_key": "key-123"},
+        )
+        # Step 2: S3 PUT response
+        put_response = _FakeHttpxResponse(status_code=200)
+        # Step 3: confirm upload response
+        confirm_response = _FakeHttpxResponse(
+            status_code=200,
             json_data={"version": "1.0.0", "id": "version_123"},
         )
-        fake_client = _FakeHttpxClient(fake_response)
+        fake_client = _FakeHttpxClient([url_response, put_response, confirm_response])
 
         with tempfile.NamedTemporaryFile(delete=False, suffix=".onnx") as tmp:
             tmp.write(b"model data")
@@ -467,12 +492,19 @@ class ModelRegistryTests(unittest.TestCase):
         stub = _StubApi()
         registry.api = stub
 
-        fake_response = _FakeHttpxResponse(
+        # Step 1: presigned URL response
+        url_response = _FakeHttpxResponse(
             status_code=200,
-            text="",
+            json_data={"upload_url": "https://s3.example.com/presigned", "storage_key": "key-456"},
+        )
+        # Step 2: S3 PUT response
+        put_response = _FakeHttpxResponse(status_code=200)
+        # Step 3: confirm upload response
+        confirm_response = _FakeHttpxResponse(
+            status_code=200,
             json_data={"version": "1.0.0"},
         )
-        fake_client = _FakeHttpxClient(fake_response)
+        fake_client = _FakeHttpxClient([url_response, put_response, confirm_response])
 
         with tempfile.NamedTemporaryFile(delete=False, suffix=".onnx") as tmp:
             tmp.write(b"model data")

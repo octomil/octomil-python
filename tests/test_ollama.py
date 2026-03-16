@@ -343,7 +343,11 @@ class TestDeployWithOllama:
             quantization="Q4_K_M",
         )
 
-        mock_check = MagicMock(status_code=200, json=MagicMock(return_value={"name": "gemma:2b"}))
+        mock_list_resp = MagicMock(
+            status_code=200,
+            json=MagicMock(return_value={"models": [{"name": "gemma:2b", "id": "m-1"}]}),
+        )
+        mock_versions_resp = MagicMock(status_code=200, json=MagicMock(return_value=[{"version": "1.0.0"}]))
         mock_post_resp = MagicMock(
             status_code=200,
             json=MagicMock(
@@ -356,7 +360,7 @@ class TestDeployWithOllama:
         mock_poll_resp = MagicMock(status_code=200, json=MagicMock(return_value={"status": "done"}))
 
         mock_client = MagicMock()
-        mock_client.request.side_effect = [mock_check, mock_post_resp, mock_poll_resp]
+        mock_client.request.side_effect = [mock_list_resp, mock_versions_resp, mock_post_resp, mock_poll_resp]
         mock_client.__enter__ = MagicMock(return_value=mock_client)
         mock_client.__exit__ = MagicMock(return_value=False)
 
@@ -368,7 +372,7 @@ class TestDeployWithOllama:
             runner = CliRunner()
             result = runner.invoke(main, ["deploy", "gemma:2b", "--phone"])
 
-        assert result.exit_code == 0
+        assert result.exit_code == 0, f"CLI failed: {result.output}"
         assert "Detected ollama model: gemma:2b" in result.output
         assert "1.6 GB" in result.output
         assert "Q4_K_M" in result.output
@@ -378,7 +382,11 @@ class TestDeployWithOllama:
     def test_deploy_phone_no_ollama_match(self, mock_get_model, mock_open, monkeypatch):
         monkeypatch.setenv("OCTOMIL_API_KEY", "test-key")
 
-        mock_check = MagicMock(status_code=200, json=MagicMock(return_value={"name": "my-custom-model"}))
+        mock_list_resp = MagicMock(
+            status_code=200,
+            json=MagicMock(return_value={"models": [{"name": "my-custom-model", "id": "m-2"}]}),
+        )
+        mock_versions_resp = MagicMock(status_code=200, json=MagicMock(return_value=[{"version": "1.0.0"}]))
         mock_post_resp = MagicMock(
             status_code=200,
             json=MagicMock(
@@ -391,7 +399,7 @@ class TestDeployWithOllama:
         mock_poll_resp = MagicMock(status_code=200, json=MagicMock(return_value={"status": "done"}))
 
         mock_client = MagicMock()
-        mock_client.request.side_effect = [mock_check, mock_post_resp, mock_poll_resp]
+        mock_client.request.side_effect = [mock_list_resp, mock_versions_resp, mock_post_resp, mock_poll_resp]
         mock_client.__enter__ = MagicMock(return_value=mock_client)
         mock_client.__exit__ = MagicMock(return_value=False)
 
@@ -403,5 +411,5 @@ class TestDeployWithOllama:
             runner = CliRunner()
             result = runner.invoke(main, ["deploy", "my-custom-model", "--phone"])
 
-        assert result.exit_code == 0
+        assert result.exit_code == 0, f"CLI failed: {result.output}"
         assert "Detected ollama model" not in result.output
