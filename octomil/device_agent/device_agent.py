@@ -70,6 +70,7 @@ class DeviceAgent:
         api_key: str = "",
         inference_fn: Optional[Callable[..., dict[str, Any]]] = None,
         server_client: Any = None,
+        control: Any = None,
     ) -> None:
         self._device_id = device_id or uuid.uuid4().hex
         self._boot_id = uuid.uuid4().hex
@@ -111,6 +112,20 @@ class DeviceAgent:
             api_key=api_key,
         )
 
+        # --- Control plane ---
+        self._control = control
+
+        # Build observed-state reporter callback for the artifact loop.
+        # When an OctomilControl instance is provided, the artifact loop
+        # calls report_observed_state() after every reconciliation cycle
+        # so the server can reconcile desired vs observed state.
+        observed_state_reporter: Optional[Callable[..., Any]] = None
+        if self._control is not None:
+            observed_state_reporter = lambda statuses: self._control.report_observed_state(  # noqa: E731
+                device_id=self._device_id,
+                artifact_statuses=statuses,
+            )
+
         # --- Loops ---
         self._inference_loop = InferenceLoop(
             session_manager=self._session_manager,
@@ -126,6 +141,7 @@ class DeviceAgent:
             operation_scheduler=self._scheduler,
             telemetry_store=self._telemetry_store,
             server_client=server_client,
+            observed_state_reporter=observed_state_reporter,
         )
         self._activation_loop = ActivationLoop(
             model_registry=self._model_registry,

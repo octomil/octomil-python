@@ -11,7 +11,7 @@ import json
 import logging
 import threading
 import time
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 from ..artifact_downloader import ArtifactDownloader
 from ..artifact_verifier import ArtifactVerifier
@@ -43,6 +43,7 @@ class ArtifactLoop:
         server_client: Any = None,
         poll_interval: float = 300.0,
         process_interval: float = 5.0,
+        observed_state_reporter: Optional[Callable[[list[dict[str, Any]]], Any]] = None,
     ) -> None:
         self._model_registry = model_registry
         self._downloader = downloader
@@ -53,6 +54,7 @@ class ArtifactLoop:
         self._server_client = server_client
         self._poll_interval = poll_interval
         self._process_interval = process_interval
+        self._observed_state_reporter = observed_state_reporter
         self._running = False
         self._thread: Optional[threading.Thread] = None
         self._stop_event = threading.Event()
@@ -99,11 +101,40 @@ class ArtifactLoop:
                 # Process pending download/verify operations
                 self._process_pending_ops()
 
+                # Report observed artifact state to control plane
+                self._report_observed_state()
+
             except Exception:
                 logger.warning("Artifact loop iteration failed", exc_info=True)
 
             self._stop_event.wait(timeout=self._process_interval)
         logger.info("Artifact loop stopped")
+
+    def _report_observed_state(self) -> None:
+        """Report current artifact statuses to the control plane via the callback.
+
+        Collects all tracked artifacts and their statuses from the local
+        registry and calls the ``observed_state_reporter`` callback (which
+        typically delegates to ``OctomilControl.report_observed_state()``).
+        """
+        if self._observed_state_reporter is None:
+            return
+
+        try:
+            db = self._model_registry._db
+            rows = db.execute("SELECT artifact_id, model_id, version, status FROM model_artifacts")
+            artifact_statuses: list[dict[str, Any]] = [
+                {
+                    "artifactId": row["artifact_id"],
+                    "modelId": row["model_id"],
+                    "version": row["version"],
+                    "status": row["status"],
+                }
+                for row in rows
+            ]
+            self._observed_state_reporter(artifact_statuses)
+        except Exception:
+            logger.debug("Failed to report observed state", exc_info=True)
 
     def _poll_desired_state(self) -> None:
         """Check server for new desired model versions.
