@@ -159,11 +159,11 @@ class TestTelemetryV2Envelope:
         # Convert OTLP KV list to dict for easier assertion
         attrs = parse_otlp_kv(resource["attributes"])
         assert attrs["service.name"] == "octomil-sdk"
-        assert attrs["sdk.language"] == "python"
-        assert attrs["device.id"] == "dev-abc"
-        assert attrs["os.type"] == sys.platform
-        assert attrs["org.id"] == "test-org"
-        assert "sdk.version" in attrs
+        assert attrs["telemetry.sdk.language"] == "python"
+        assert attrs["octomil.device.id"] == "dev-abc"
+        assert attrs["octomil.platform"] == sys.platform
+        assert attrs["octomil.org.id"] == "test-org"
+        assert "telemetry.sdk.version" in attrs
 
     def test_v2_endpoint_used(self):
         """Dispatch should POST to the v2 telemetry endpoint."""
