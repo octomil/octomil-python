@@ -10,3 +10,5 @@ class RoutingPolicy(str, Enum):
     """Prefer on-device inference; fall back to cloud if local is unavailable or insufficient."""
     CLOUD_ONLY = "cloud_only"
     """Always use cloud inference. Never attempt local model execution."""
+    AUTO = "auto"
+    """SDK automatically selects the best inference path based on model availability, hardware capability, and network conditions."""

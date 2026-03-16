@@ -263,6 +263,7 @@ class OctomilClient:
             self._control = OctomilControl(
                 api=self._api,
                 org_id=self._org_id,
+                telemetry=self._reporter,
             )
         return self._control
 

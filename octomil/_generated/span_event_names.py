@@ -36,6 +36,7 @@ JOB_COMPLETED = "job_completed"
 DESIRED_STATE_FETCHED = "desired_state_fetched"
 OBSERVED_STATE_REPORTED = "observed_state_reported"
 STATE_DRIFT_DETECTED = "state_drift_detected"
+DEVICE_REGISTERED = "device.registered"
 
 EVENT_PARENT_SPAN: dict[str, str] = {
     "first_token": "octomil.response",
@@ -74,4 +75,5 @@ EVENT_PARENT_SPAN: dict[str, str] = {
     "desired_state_fetched": "octomil.device.sync",
     "observed_state_reported": "octomil.device.sync",
     "state_drift_detected": "octomil.device.sync",
+    "device.registered": "octomil.control.register",
 }

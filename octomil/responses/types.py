@@ -170,6 +170,7 @@ class Response:
     output: list[OutputItem]
     finish_reason: str
     usage: Optional[ResponseUsage] = None
+    locality: Optional[str] = None
 
 
 # -- Stream Events --

@@ -15,6 +15,8 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Optional
 
+from ._generated import span_attributes as _span_attrs
+from ._generated import span_names as _span_names
 from .device_info import DeviceInfo
 from .python.octomil.api_client import _ApiClient
 
@@ -65,13 +67,15 @@ class OctomilControl:
     - heartbeat() -> HeartbeatResponse
     """
 
-    def __init__(self, api: _ApiClient, org_id: str) -> None:
+    def __init__(self, api: _ApiClient, org_id: str, telemetry: Any = None) -> None:
         self._api = api
         self._org_id = org_id
         self._device_info = DeviceInfo()
         self._server_device_id: Optional[str] = None
         self._heartbeat_thread: Optional[threading.Thread] = None
         self._heartbeat_stop: threading.Event = threading.Event()
+        self._telemetry = telemetry
+        self._heartbeat_sequence: int = 0
 
     def refresh(self) -> ControlSyncResult:
         """Fetch latest assignments and rollout state from server.
@@ -125,6 +129,15 @@ class OctomilControl:
         if not self._server_device_id:
             raise RuntimeError("Device not registered. Call register() first.")
 
+        # Emit octomil.control.heartbeat telemetry span (GAP-12)
+        seq = self._heartbeat_sequence
+        self._heartbeat_sequence += 1
+        if self._telemetry is not None:
+            self._telemetry._enqueue(
+                name=_span_names.OCTOMIL_CONTROL_HEARTBEAT,
+                attributes={_span_attrs.HEARTBEAT_SEQUENCE: seq},
+            )
+
         payload: dict[str, Any] = {
             "sdk_version": _get_sdk_version(),
             "os_version": platform.platform(),
@@ -166,6 +179,45 @@ class OctomilControl:
         if self._heartbeat_thread is not None:
             self._heartbeat_thread.join(timeout=5.0)
             self._heartbeat_thread = None
+
+    def report_observed_state(
+        self,
+        device_id: Optional[str] = None,
+        artifact_statuses: Optional[list[dict[str, Any]]] = None,
+    ) -> dict[str, Any]:
+        """POST observed device state to the server.
+
+        Conforms to ``devices.observed_state`` contract (1.4.0).  Reports
+        artifact download progress, active model pointer, and runtime
+        metadata so the server can reconcile desired vs observed state.
+
+        Args:
+            device_id: Explicit device id override.  Falls back to the
+                server-assigned id from ``register()``.
+            artifact_statuses: List of per-artifact status dicts, each
+                containing at minimum ``artifactId`` and ``status``.
+
+        Returns:
+            Server acknowledgement dict.
+
+        Raises:
+            RuntimeError: If no device id is available (not registered).
+        """
+        effective_id = device_id or self._server_device_id
+        if not effective_id:
+            raise RuntimeError("Device not registered. Call register() first.")
+
+        now = datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+        payload: dict[str, Any] = {
+            "schemaVersion": "1.4.0",
+            "deviceId": effective_id,
+            "reportedAt": now,
+            "artifactStatuses": artifact_statuses or [],
+            "sdkVersion": _get_sdk_version(),
+            "osVersion": platform.platform(),
+        }
+
+        return self._api.post(f"/devices/{effective_id}/observed-state", payload)
 
     def _heartbeat_loop(self, interval: float) -> None:
         while not self._heartbeat_stop.wait(timeout=interval):

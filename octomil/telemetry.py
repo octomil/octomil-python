@@ -219,6 +219,7 @@ class TelemetryReporter:
         session_id: str,
         modality: str = "text",
         attention_backend: str | None = None,
+        locality: str | None = None,
     ) -> None:
         """Report that a new generation has started."""
         attributes: dict[str, Any] = {
@@ -229,6 +230,8 @@ class TelemetryReporter:
         }
         if attention_backend is not None:
             attributes["inference.attention_backend"] = attention_backend
+        if locality is not None:
+            attributes["locality"] = locality
         self._enqueue(name="inference.started", attributes=attributes)
 
     def report_inference_chunk(
@@ -267,6 +270,7 @@ class TelemetryReporter:
         modality: str = "text",
         attention_backend: str | None = None,
         early_exit_stats: dict[str, Any] | None = None,
+        locality: str | None = None,
     ) -> None:
         """Report that a generation finished successfully."""
         # Compute TPOT: time per output token
@@ -290,7 +294,24 @@ class TelemetryReporter:
             attributes["inference.attention_backend"] = attention_backend
         if early_exit_stats is not None:
             attributes["inference.early_exit"] = early_exit_stats
+        if locality is not None:
+            attributes["locality"] = locality
         self._enqueue(name="inference.completed", attributes=attributes)
+
+    def report_fallback_cloud(
+        self,
+        model_id: str,
+        fallback_reason: str,
+        fallback_provider: str | None = None,
+    ) -> None:
+        """Emit an octomil.fallback.cloud span when RouterModelRuntime falls back to cloud."""
+        attributes: dict[str, Any] = {
+            "model.id": model_id,
+            "fallback.reason": fallback_reason,
+        }
+        if fallback_provider is not None:
+            attributes["fallback.provider"] = fallback_provider
+        self._enqueue(name="octomil.fallback.cloud", attributes=attributes)
 
     def report_early_exit_stats(
         self,

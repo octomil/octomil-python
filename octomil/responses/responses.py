@@ -10,8 +10,11 @@ import uuid
 from typing import TYPE_CHECKING, AsyncIterator, Callable, Optional, Union
 
 from octomil.model_ref import ModelRef, _ModelRefCapability, _ModelRefId
+from octomil.runtime.core.adapter import InferenceBackendAdapter
+from octomil.runtime.core.cloud_runtime import CloudModelRuntime
 from octomil.runtime.core.model_runtime import ModelRuntime
 from octomil.runtime.core.registry import ModelRuntimeRegistry
+from octomil.runtime.core.router import LOCALITY_CLOUD, LOCALITY_ON_DEVICE, RouterModelRuntime
 from octomil.runtime.core.types import (
     RuntimeRequest,
     RuntimeToolDef,
@@ -47,6 +50,25 @@ if TYPE_CHECKING:
     from octomil.manifest.catalog_service import ModelCatalogService
 
 
+def _determine_locality(runtime: ModelRuntime, model_id: str) -> tuple[str, bool]:
+    """Return (locality, is_fallback) for a resolved runtime.
+
+    locality: "on_device" | "cloud"
+    is_fallback: True when RouterModelRuntime fell back from local to cloud.
+    """
+    if isinstance(runtime, RouterModelRuntime):
+        try:
+            return runtime.resolve_locality()
+        except RuntimeError:
+            return LOCALITY_CLOUD, False
+    if isinstance(runtime, CloudModelRuntime):
+        return LOCALITY_CLOUD, False
+    if isinstance(runtime, InferenceBackendAdapter):
+        return LOCALITY_ON_DEVICE, False
+    # Unknown runtime type — default to on_device (conservative)
+    return LOCALITY_ON_DEVICE, False
+
+
 class OctomilResponses:
     """Developer-facing Response API (Layer 2).
 
@@ -63,22 +85,48 @@ class OctomilResponses:
         self,
         runtime_resolver: Optional[Callable[[str], Optional[ModelRuntime]]] = None,
         catalog: Optional[ModelCatalogService] = None,
+        telemetry_reporter: Optional[object] = None,
     ) -> None:
         self._runtime_resolver = runtime_resolver
         self._catalog = catalog
         self._response_cache: dict[str, Response] = {}
+        self._telemetry = telemetry_reporter
 
     async def create(self, request: ResponseRequest) -> Response:
         runtime = self._resolve_runtime(request.model)
+        model_id = _model_id_str(request.model)
+        locality, is_fallback = _determine_locality(runtime, model_id)
+
+        if is_fallback and self._telemetry is not None:
+            try:
+                self._telemetry.report_fallback_cloud(  # type: ignore[attr-defined]
+                    model_id=model_id,
+                    fallback_reason="local_unavailable",
+                )
+            except Exception:
+                pass
+
         effective_request = self._apply_previous_response(request)
         runtime_request = self._build_runtime_request(effective_request)
         runtime_response = await runtime.run(runtime_request)
-        response = self._build_response(request.model, runtime_response)
+        response = self._build_response(request.model, runtime_response, locality=locality)
         self._response_cache[response.id] = response
         return response
 
     async def stream(self, request: ResponseRequest) -> AsyncIterator[ResponseStreamEvent]:
         runtime = self._resolve_runtime(request.model)
+        model_id = _model_id_str(request.model)
+        locality, is_fallback = _determine_locality(runtime, model_id)
+
+        if is_fallback and self._telemetry is not None:
+            try:
+                self._telemetry.report_fallback_cloud(  # type: ignore[attr-defined]
+                    model_id=model_id,
+                    fallback_reason="local_unavailable",
+                )
+            except Exception:
+                pass
+
         runtime_request = self._build_runtime_request(request)
         response_id = _generate_id()
         text_parts: list[str] = []
@@ -144,6 +192,7 @@ class OctomilResponses:
                 output=output,
                 finish_reason=finish_reason,
                 usage=usage,
+                locality=locality,
             )
         )
 
@@ -261,7 +310,12 @@ class OctomilResponses:
             json_schema=json_schema,
         )
 
-    def _build_response(self, model: str, runtime_response: _RuntimeResponse) -> Response:
+    def _build_response(
+        self,
+        model: str,
+        runtime_response: _RuntimeResponse,
+        locality: Optional[str] = None,
+    ) -> Response:
         output: list[OutputItem] = []
 
         if runtime_response.text:
@@ -297,7 +351,17 @@ class OctomilResponses:
             output=output,
             finish_reason=finish_reason,
             usage=usage,
+            locality=locality,
         )
+
+
+def _model_id_str(model: Union[str, ModelRef]) -> str:
+    """Normalize a model ref to a plain string ID."""
+    if isinstance(model, _ModelRefId):
+        return model.model_id
+    if isinstance(model, _ModelRefCapability):
+        return model.capability.value
+    return str(model)
 
 
 def _generate_id() -> str:
