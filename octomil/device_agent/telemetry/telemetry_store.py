@@ -216,28 +216,18 @@ class TelemetryStore:
     def drop_best_effort(self, older_than_hours: int = 24) -> int:
         """Delete BEST_EFFORT events older than the given threshold. Returns count."""
         cutoff = _hours_ago_iso(older_than_hours)
-        rows = self._db.execute(
-            """
-            DELETE FROM telemetry_events
-            WHERE telemetry_class = 'BEST_EFFORT' AND occurred_at < ?
-            RETURNING event_id
-            """,
+        return self._delete_count(
+            "DELETE FROM telemetry_events WHERE telemetry_class = 'BEST_EFFORT' AND occurred_at < ?",
             (cutoff,),
         )
-        return len(rows)
 
     def drop_important(self, older_than_hours: int = 168) -> int:
         """Delete IMPORTANT events older than the given threshold (default 7 days)."""
         cutoff = _hours_ago_iso(older_than_hours)
-        rows = self._db.execute(
-            """
-            DELETE FROM telemetry_events
-            WHERE telemetry_class = 'IMPORTANT' AND occurred_at < ?
-            RETURNING event_id
-            """,
+        return self._delete_count(
+            "DELETE FROM telemetry_events WHERE telemetry_class = 'IMPORTANT' AND occurred_at < ?",
             (cutoff,),
         )
-        return len(rows)
 
     def storage_pressure_cleanup(self, target_bytes: int) -> int:
         """Aggressively drop events to free space. BEST_EFFORT first, then IMPORTANT.
@@ -246,25 +236,25 @@ class TelemetryStore:
         """
         total_dropped = 0
         # Phase 1: drop all BEST_EFFORT
-        rows = self._db.execute(
-            "DELETE FROM telemetry_events WHERE telemetry_class = 'BEST_EFFORT' RETURNING event_id",
+        total_dropped += self._delete_count(
+            "DELETE FROM telemetry_events WHERE telemetry_class = 'BEST_EFFORT'",
         )
-        total_dropped += len(rows)
 
         # Check if we've freed enough (heuristic: ~512 bytes per event)
         if total_dropped * 512 >= target_bytes:
             return total_dropped
 
-        # Phase 2: drop IMPORTANT from oldest
-        rows = self._db.execute(
-            """
-            DELETE FROM telemetry_events
-            WHERE telemetry_class = 'IMPORTANT'
-            RETURNING event_id
-            """,
+        # Phase 2: drop IMPORTANT
+        total_dropped += self._delete_count(
+            "DELETE FROM telemetry_events WHERE telemetry_class = 'IMPORTANT'",
         )
-        total_dropped += len(rows)
         return total_dropped
+
+    def _delete_count(self, sql: str, params: tuple[Any, ...] = ()) -> int:
+        """Execute a DELETE and return the number of rows affected."""
+        with self._db.transaction() as cursor:
+            cursor.execute(sql, params)
+            return cursor.rowcount
 
     def count_by_class(self) -> dict[str, int]:
         """Return a dict of event counts keyed by telemetry class."""

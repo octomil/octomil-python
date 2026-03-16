@@ -147,6 +147,8 @@ class PolicyEngine:
             if s.network_type == "cellular":
                 if size_bytes > c.max_cellular_download_bytes and not user_initiated:
                     return False, "cellular_size_limit"
+                # Small cellular downloads are allowed — skip general network check
+                return True, "ok"
 
             if s.network_type not in c.allowed_download_networks and not user_initiated:
                 return False, "network_not_allowed"
