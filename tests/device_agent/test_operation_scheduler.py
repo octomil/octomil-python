@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
-
 import pytest
 
 from octomil.device_agent.db.local_db import LocalDB
@@ -35,6 +33,7 @@ class TestSchedule:
     def test_schedule_with_payload(self, scheduler: OperationScheduler) -> None:
         op_id = scheduler.schedule("download", "model-1", payload={"url": "https://example.com"})
         op = scheduler.get_operation(op_id)
+        assert op is not None
         assert op["payload_json"] is not None
 
     def test_idempotency_key(self, scheduler: OperationScheduler) -> None:
@@ -48,6 +47,7 @@ class TestLease:
         op_id = scheduler.schedule("download", "m1")
         assert scheduler.lease(op_id, "worker-1") is True
         op = scheduler.get_operation(op_id)
+        assert op is not None
         assert op["state"] == "LEASED"
         assert op["lease_owner"] == "worker-1"
 
@@ -84,6 +84,7 @@ class TestComplete:
         scheduler.lease(op_id, "worker-1")
         scheduler.complete(op_id)
         op = scheduler.get_operation(op_id)
+        assert op is not None
         assert op["state"] == "SUCCESS"
         assert op["lease_owner"] is None
 
@@ -94,6 +95,7 @@ class TestFail:
         scheduler.lease(op_id, "worker-1")
         scheduler.fail(op_id, "network error")
         op = scheduler.get_operation(op_id)
+        assert op is not None
         assert op["state"] == "FAILED"
         assert op["next_retry_at"] is not None
 
@@ -111,6 +113,7 @@ class TestRecoverExpiredLeases:
         reclaimed = scheduler.recover_expired_leases()
         assert op_id in reclaimed
         op = scheduler.get_operation(op_id)
+        assert op is not None
         assert op["state"] == "PENDING"
         assert op["lease_owner"] is None
 

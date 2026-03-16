@@ -42,6 +42,7 @@ class TestActivePointer:
         registry.set_active_model("m1", "v2")
         registry.set_active_model("m1", "v3")
         active = registry.get_active_model("m1")
+        assert active is not None
         assert active["active_version"] == "v3"
         assert active["previous_version"] == "v2"
 
@@ -61,6 +62,7 @@ class TestArtifactCRUD:
         registry.register_artifact("a1", "m1", "v1", manifest, 100)
         registry.update_artifact_status("a1", "DOWNLOADING", bytes_downloaded=50)
         art = registry.get_artifact("a1")
+        assert art is not None
         assert art["status"] == "DOWNLOADING"
         assert art["bytes_downloaded"] == 50
 
@@ -85,9 +87,7 @@ class TestArtifactCRUD:
         manifest = json.dumps({"files": []})
         registry.register_artifact("a1", "m1", "v1", manifest, 100)
         # Manually set status to STAGED for test
-        registry._db.execute(
-            "UPDATE model_artifacts SET status = 'STAGED', staged_at = 'now' WHERE artifact_id = 'a1'"
-        )
+        registry._db.execute("UPDATE model_artifacts SET status = 'STAGED', staged_at = 'now' WHERE artifact_id = 'a1'")
         staged = registry.get_staged_versions("m1")
         assert len(staged) == 1
         assert staged[0]["version"] == "v1"
@@ -105,6 +105,7 @@ class TestRollback:
         result = registry.rollback("m1", "warmup failed")
         assert result == "v1"
         active = registry.get_active_model("m1")
+        assert active is not None
         assert active["active_version"] == "v1"
         assert active["previous_version"] == "v2"
 
