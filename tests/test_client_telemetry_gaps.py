@@ -11,6 +11,8 @@ from octomil.auth import OrgApiKeyAuth
 from octomil.client import OctomilClient
 from octomil.telemetry import TelemetryReporter
 
+from .conftest import extract_otlp_records, parse_otlp_kv
+
 
 def _make_client_with_reporter():
     """Create an OctomilClient with mocked internals and a captured reporter."""
@@ -39,12 +41,18 @@ def _make_client_with_reporter():
 
 
 def _extract_funnel_events(sent_envelopes):
-    """Extract all funnel events from sent envelopes."""
+    """Extract all funnel events from sent OTLP envelopes."""
     events = []
     for envelope in sent_envelopes:
-        for event in envelope.get("events", []):
-            if event["name"].startswith("funnel."):
-                events.append(event)
+        for record in extract_otlp_records(envelope):
+            name = record.get("body", {}).get("stringValue", "")
+            if name.startswith("funnel."):
+                events.append(
+                    {
+                        "name": name,
+                        "attributes": parse_otlp_kv(record.get("attributes", [])),
+                    }
+                )
     return events
 
 
@@ -334,12 +342,18 @@ class TestRollbackTelemetry:
 
 
 def _extract_deploy_events(sent_envelopes):
-    """Extract all deploy.* events from sent envelopes."""
+    """Extract all deploy.* events from sent OTLP envelopes."""
     events = []
     for envelope in sent_envelopes:
-        for event in envelope.get("events", []):
-            if event["name"].startswith("deploy."):
-                events.append(event)
+        for record in extract_otlp_records(envelope):
+            name = record.get("body", {}).get("stringValue", "")
+            if name.startswith("deploy."):
+                events.append(
+                    {
+                        "name": name,
+                        "attributes": parse_otlp_kv(record.get("attributes", [])),
+                    }
+                )
     return events
 
 
