@@ -11,10 +11,19 @@ from octomil._generated.model_capability import ModelCapability
 from octomil.manifest.readiness_manager import ModelReadinessManager
 from octomil.manifest.types import AppManifest, AppModelEntry
 from octomil.model_ref import ModelRef, _ModelRefCapability, _ModelRefId
-from octomil.runtime.core.model_runtime import ModelRuntime
+from octomil.runtime.core.model_runtime import ModelRuntime, RuntimeFactory
 from octomil.runtime.core.registry import ModelRuntimeRegistry
 
 logger = logging.getLogger(__name__)
+
+
+def _constant_factory(runtime: ModelRuntime) -> RuntimeFactory:
+    """Create a RuntimeFactory that always returns the given runtime."""
+
+    def factory(_model_id: str) -> Optional[ModelRuntime]:
+        return runtime
+
+    return factory
 
 
 class ModelCatalogService:
@@ -77,7 +86,7 @@ class ModelCatalogService:
 
         runtime = LocalFileModelRuntime(model_id=entry.id, file_path=path)
         self._capability_runtimes[entry.capability] = runtime
-        self._registry.register(family=entry.id, factory=lambda _mid: runtime)
+        self._registry.register(family=entry.id, factory=_constant_factory(runtime))
         logger.info("Managed model '%s' now ready", entry.id)
 
     def _bootstrap_entry(self, entry: AppModelEntry) -> None:
@@ -98,7 +107,7 @@ class ModelCatalogService:
             raise RuntimeError(f"Bundled model '{entry.id}' not found at {path}")
         runtime = LocalFileModelRuntime(model_id=entry.id, file_path=path)
         self._capability_runtimes[entry.capability] = runtime
-        self._registry.register(family=entry.id, factory=lambda _mid: runtime)
+        self._registry.register(family=entry.id, factory=_constant_factory(runtime))
         logger.info("Bundled model '%s' registered for capability '%s'", entry.id, entry.capability.value)
 
     def _bootstrap_managed(self, entry: AppModelEntry) -> None:
@@ -117,5 +126,5 @@ class ModelCatalogService:
             raise RuntimeError(f"No cloud runtime factory for model '{entry.id}'")
         runtime = self._cloud_runtime_factory(entry.id)
         self._capability_runtimes[entry.capability] = runtime
-        self._registry.register(family=entry.id, factory=lambda _mid: runtime)
+        self._registry.register(family=entry.id, factory=_constant_factory(runtime))
         logger.info("Cloud model '%s' registered for capability '%s'", entry.id, entry.capability.value)

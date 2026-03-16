@@ -319,7 +319,7 @@ class OctomilClient:
             # Reset responses so it picks up the new catalog
             self._responses = None
 
-    def _resolve_model_ref(self, ref: object) -> Optional["ModelRuntime"]:
+    def _resolve_model_ref(self, ref: object) -> Optional[ModelRuntime]:
         """Resolve a ModelRef to a ModelRuntime via the catalog or registry."""
         from .model_ref import _ModelRefCapability, _ModelRefId
         from .runtime.core.registry import ModelRuntimeRegistry
