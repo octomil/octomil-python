@@ -28,31 +28,35 @@ class RouterModelRuntime(ModelRuntime):
     def capabilities(self) -> RuntimeCapabilities:
         return RuntimeCapabilities(supports_streaming=True)
 
-    async def run(self, request: RuntimeRequest) -> RuntimeResponse:
-        runtime, _meta = self._select_runtime_with_locality()
+    async def run(self, request: RuntimeRequest, *, policy: Optional[RoutingPolicy] = None) -> RuntimeResponse:
+        runtime, _meta = self._select_runtime_with_locality(policy)
         return await runtime.run(request)
 
-    async def stream(self, request: RuntimeRequest) -> AsyncIterator[RuntimeChunk]:
-        runtime, _meta = self._select_runtime_with_locality()
+    async def stream(
+        self, request: RuntimeRequest, *, policy: Optional[RoutingPolicy] = None
+    ) -> AsyncIterator[RuntimeChunk]:
+        runtime, _meta = self._select_runtime_with_locality(policy)
         async for chunk in runtime.stream(request):
             yield chunk
 
-    def resolve_locality(self) -> tuple[str, bool]:
+    def resolve_locality(self, policy: Optional[RoutingPolicy] = None) -> tuple[str, bool]:
         """Return (locality, is_fallback) without executing inference.
 
         locality: LOCALITY_ON_DEVICE or LOCALITY_CLOUD
         is_fallback: True when local was unavailable and cloud is used as fallback.
         """
-        _, meta = self._select_runtime_with_locality()
+        _, meta = self._select_runtime_with_locality(policy)
         return meta
 
     def _select_runtime(self) -> ModelRuntime:
         runtime, _meta = self._select_runtime_with_locality()
         return runtime
 
-    def _select_runtime_with_locality(self) -> tuple[ModelRuntime, tuple[str, bool]]:
+    def _select_runtime_with_locality(
+        self, policy_override: Optional[RoutingPolicy] = None
+    ) -> tuple[ModelRuntime, tuple[str, bool]]:
         """Select the runtime and return (runtime, (locality, is_fallback))."""
-        policy = self._default_policy
+        policy = policy_override or self._default_policy
         if policy.mode == "local_only":
             local = self._local_factory("local") if self._local_factory else None
             if local is None:

@@ -13,6 +13,7 @@ from octomil.model_ref import ModelRef, _ModelRefCapability, _ModelRefId
 from octomil.runtime.core.adapter import InferenceBackendAdapter
 from octomil.runtime.core.cloud_runtime import CloudModelRuntime
 from octomil.runtime.core.model_runtime import ModelRuntime
+from octomil.runtime.core.policy import RoutingPolicy
 from octomil.runtime.core.registry import ModelRuntimeRegistry
 from octomil.runtime.core.router import LOCALITY_CLOUD, LOCALITY_ON_DEVICE, RouterModelRuntime
 from octomil.runtime.core.types import (
@@ -50,7 +51,11 @@ if TYPE_CHECKING:
     from octomil.manifest.catalog_service import ModelCatalogService
 
 
-def _determine_locality(runtime: ModelRuntime, model_id: str) -> tuple[str, bool]:
+def _determine_locality(
+    runtime: ModelRuntime,
+    model_id: str,
+    routing_policy: Optional[RoutingPolicy] = None,
+) -> tuple[str, bool]:
     """Return (locality, is_fallback) for a resolved runtime.
 
     locality: "on_device" | "cloud"
@@ -58,7 +63,7 @@ def _determine_locality(runtime: ModelRuntime, model_id: str) -> tuple[str, bool
     """
     if isinstance(runtime, RouterModelRuntime):
         try:
-            return runtime.resolve_locality()
+            return runtime.resolve_locality(routing_policy)
         except RuntimeError:
             return LOCALITY_CLOUD, False
     if isinstance(runtime, CloudModelRuntime):
@@ -95,7 +100,8 @@ class OctomilResponses:
     async def create(self, request: ResponseRequest) -> Response:
         runtime = self._resolve_runtime(request.model)
         model_id = _model_id_str(request.model)
-        locality, is_fallback = _determine_locality(runtime, model_id)
+        routing_policy = RoutingPolicy.from_metadata(request.metadata)
+        locality, is_fallback = _determine_locality(runtime, model_id, routing_policy)
 
         if is_fallback and self._telemetry is not None:
             try:
@@ -108,7 +114,10 @@ class OctomilResponses:
 
         effective_request = self._apply_previous_response(request)
         runtime_request = self._build_runtime_request(effective_request)
-        runtime_response = await runtime.run(runtime_request)
+        if isinstance(runtime, RouterModelRuntime) and routing_policy is not None:
+            runtime_response = await runtime.run(runtime_request, policy=routing_policy)
+        else:
+            runtime_response = await runtime.run(runtime_request)
         response = self._build_response(request.model, runtime_response, locality=locality)
         self._response_cache[response.id] = response
         return response
@@ -116,7 +125,8 @@ class OctomilResponses:
     async def stream(self, request: ResponseRequest) -> AsyncIterator[ResponseStreamEvent]:
         runtime = self._resolve_runtime(request.model)
         model_id = _model_id_str(request.model)
-        locality, is_fallback = _determine_locality(runtime, model_id)
+        routing_policy = RoutingPolicy.from_metadata(request.metadata)
+        locality, is_fallback = _determine_locality(runtime, model_id, routing_policy)
 
         if is_fallback and self._telemetry is not None:
             try:
@@ -133,7 +143,11 @@ class OctomilResponses:
         tool_call_buffers: dict[int, _ToolCallBuffer] = {}
         last_usage: Optional[RuntimeUsage] = None
 
-        async for chunk in runtime.stream(runtime_request):
+        if isinstance(runtime, RouterModelRuntime) and routing_policy is not None:
+            stream_iter = runtime.stream(runtime_request, policy=routing_policy)
+        else:
+            stream_iter = runtime.stream(runtime_request)
+        async for chunk in stream_iter:
             if chunk.text is not None:
                 text_parts.append(chunk.text)
                 yield TextDeltaEvent(delta=chunk.text)
