@@ -26,6 +26,7 @@ import httpx
 
 from octomil._generated import otlp_resource_attributes as _res_attrs
 from octomil._generated import telemetry_events as _contract_events
+from octomil.install_id import get_install_id
 
 logger = logging.getLogger(__name__)
 
@@ -204,6 +205,7 @@ class TelemetryReporter:
                     _res_attrs.OCTOMIL_DEVICE_ID: self.device_id,
                     _res_attrs.OCTOMIL_PLATFORM: sys.platform,
                     _res_attrs.OCTOMIL_SDK_SURFACE: "python",
+                    _res_attrs.OCTOMIL_INSTALL_ID: get_install_id(),
                 }
             ),
         }
