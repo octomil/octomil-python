@@ -7,10 +7,10 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any, Optional
 
-
 # ---------------------------------------------------------------------------
 # Telemetry classes — control retention, upload priority, and drop order
 # ---------------------------------------------------------------------------
+
 
 class TelemetryClass(str, enum.Enum):
     """Priority class governing retention and upload ordering.
@@ -148,9 +148,7 @@ def make_event(
         "session_id": session_id,
         "sequence_no": sequence_no,
         "event_type": event_type,
-        "telemetry_class": (
-            telemetry_class or default_class_for(event_type)
-        ).value,
+        "telemetry_class": (telemetry_class or default_class_for(event_type)).value,
         "occurred_at": occurred_at or datetime.now(timezone.utc).isoformat(),
         "model_id": model_id,
         "model_version": model_version,

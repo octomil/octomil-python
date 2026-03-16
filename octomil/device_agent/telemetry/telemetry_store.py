@@ -15,10 +15,10 @@ from .events import TelemetryClass, default_class_for
 logger = logging.getLogger(__name__)
 
 # Priority ordering for class-based sorting (lower = higher priority).
-_CLASS_SORT_ORDER: dict[str, int] = {
-    TelemetryClass.MUST_KEEP.value: 0,
-    TelemetryClass.IMPORTANT.value: 1,
-    TelemetryClass.BEST_EFFORT.value: 2,
+_CLASS_SORT_ORDER: dict[TelemetryClass, int] = {
+    TelemetryClass.MUST_KEEP: 0,
+    TelemetryClass.IMPORTANT: 1,
+    TelemetryClass.BEST_EFFORT: 2,
 }
 
 
@@ -140,11 +140,8 @@ class TelemetryStore:
         class_filter = ""
         params: list[Any] = []
         if min_class is not None:
-            allowed = [
-                c.value
-                for c, pri in _CLASS_SORT_ORDER.items()
-                if pri <= _CLASS_SORT_ORDER.get(min_class.value, 2)
-            ]
+            min_pri = _CLASS_SORT_ORDER.get(min_class, 2)
+            allowed = [c.value for c, pri in _CLASS_SORT_ORDER.items() if pri <= min_pri]
             placeholders = ",".join("?" for _ in allowed)
             class_filter = f"AND telemetry_class IN ({placeholders})"
             params.extend(allowed)
@@ -284,6 +281,7 @@ class TelemetryStore:
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _hours_ago_iso(hours: int) -> str:
     """Return an ISO timestamp for *hours* ago."""
