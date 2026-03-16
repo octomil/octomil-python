@@ -9,6 +9,7 @@ OCTOMIL_ORG_ID = "octomil.org.id"
 OCTOMIL_DEVICE_ID = "octomil.device.id"
 OCTOMIL_PLATFORM = "octomil.platform"
 OCTOMIL_SDK_SURFACE = "octomil.sdk.surface"
+OCTOMIL_INSTALL_ID = "octomil.install.id"
 OCTOMIL_DEVICE_CLASS = "octomil.device.class"
 OCTOMIL_AVAILABLE_RUNTIMES = "octomil.available_runtimes"
 OCTOMIL_ACCELERATORS = "octomil.accelerators"
@@ -23,4 +24,5 @@ REQUIRED_KEYS = [
     OCTOMIL_DEVICE_ID,
     OCTOMIL_PLATFORM,
     OCTOMIL_SDK_SURFACE,
+    OCTOMIL_INSTALL_ID,
 ]
