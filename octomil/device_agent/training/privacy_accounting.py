@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timezone
-from typing import Any, Optional
+from typing import Any
 
 from ..db.local_db import LocalDB
 
@@ -129,7 +129,5 @@ class PrivacyAccountant:
 
     def get_all_scopes(self) -> list[dict[str, Any]]:
         """Return privacy budget records for all tracked scopes."""
-        rows = self._db.execute(
-            "SELECT * FROM privacy_accounting ORDER BY scope_key"
-        )
+        rows = self._db.execute("SELECT * FROM privacy_accounting ORDER BY scope_key")
         return [dict(r) for r in rows]

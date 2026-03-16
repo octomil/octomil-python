@@ -10,7 +10,6 @@ import hashlib
 import json
 import logging
 import math
-import secrets
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -146,25 +145,20 @@ class DeviceFederatedClient:
     def _now(self) -> str:
         return datetime.now(timezone.utc).isoformat()
 
-    def transition(
-        self, participation_id: str, new_state: str, **kwargs: Any
-    ) -> None:
+    def transition(self, participation_id: str, new_state: str, **kwargs: Any) -> None:
         """Validate and execute a participation state transition."""
         if new_state not in ALL_STATES:
             raise FederatedTransitionError(f"Unknown state: {new_state}")
 
         record = self.get_participation(participation_id)
         if record is None:
-            raise FederatedTransitionError(
-                f"Participation not found: {participation_id}"
-            )
+            raise FederatedTransitionError(f"Participation not found: {participation_id}")
 
         current = record["state"]
         allowed = VALID_TRANSITIONS.get(current, set())
         if new_state not in allowed:
             raise FederatedTransitionError(
-                f"Cannot transition from {current} to {new_state} "
-                f"(allowed: {sorted(allowed)})"
+                f"Cannot transition from {current} to {new_state} (allowed: {sorted(allowed)})"
             )
 
         set_parts = ["state = ?", "updated_at = ?"]
@@ -186,13 +180,9 @@ class DeviceFederatedClient:
         params.append(participation_id)
         sql = f"UPDATE federated_participation SET {', '.join(set_parts)} WHERE participation_id = ?"
         self._db.execute(sql, tuple(params))
-        logger.info(
-            "Participation %s: %s -> %s", participation_id, current, new_state
-        )
+        logger.info("Participation %s: %s -> %s", participation_id, current, new_state)
 
-    def get_participation(
-        self, participation_id: str
-    ) -> Optional[dict[str, Any]]:
+    def get_participation(self, participation_id: str) -> Optional[dict[str, Any]]:
         """Retrieve a participation record."""
         row = self._db.execute_one(
             "SELECT * FROM federated_participation WHERE participation_id = ?",
@@ -259,9 +249,7 @@ class DeviceFederatedClient:
         constructed directly.
         """
         if self._http is not None:
-            resp = self._http.get(
-                f"{self._api_base}/federation/plans/{plan_id}"
-            )
+            resp = self._http.get(f"{self._api_base}/federation/plans/{plan_id}")
             data = resp.json()
             return TrainingPlan(
                 plan_id=data["plan_id"],
@@ -306,9 +294,7 @@ class DeviceFederatedClient:
             result = train_fn(ctx)
             return result.get("update", [])
         except Exception as e:
-            self.transition(
-                participation_id, "FAILED_RETRYABLE", last_error=str(e)
-            )
+            self.transition(participation_id, "FAILED_RETRYABLE", last_error=str(e))
             raise
 
     def prepare_update(
@@ -339,9 +325,7 @@ class DeviceFederatedClient:
 
         return envelope
 
-    def clip_update(
-        self, update: list[float], clip_norm: float
-    ) -> list[float]:
+    def clip_update(self, update: list[float], clip_norm: float) -> list[float]:
         """Clip the update vector to the given L2 norm."""
         norm = math.sqrt(sum(x * x for x in update))
         if norm <= clip_norm or norm == 0:

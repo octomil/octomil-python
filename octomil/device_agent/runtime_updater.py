@@ -93,14 +93,14 @@ class RuntimeUpdater:
     def get_active_runtime(self) -> Optional[dict[str, Any]]:
         """Return the currently active runtime, or None."""
         row = self._db.execute_one(
-            "SELECT * FROM runtime_versions WHERE status = 'ACTIVE_ON_NEXT_BOOT' " "ORDER BY activated_at DESC LIMIT 1",
+            "SELECT * FROM runtime_versions WHERE status = 'ACTIVE_ON_NEXT_BOOT' ORDER BY activated_at DESC LIMIT 1",
         )
         return dict(row) if row else None
 
     def get_pending_runtime(self) -> Optional[dict[str, Any]]:
         """Return the runtime pending restart, or None."""
         row = self._db.execute_one(
-            "SELECT * FROM runtime_versions WHERE status = 'PENDING_RESTART' " "ORDER BY pending_since DESC LIMIT 1",
+            "SELECT * FROM runtime_versions WHERE status = 'PENDING_RESTART' ORDER BY pending_since DESC LIMIT 1",
         )
         return dict(row) if row else None
 

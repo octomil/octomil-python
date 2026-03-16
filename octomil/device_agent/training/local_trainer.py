@@ -193,7 +193,7 @@ class LocalTrainer:
         allowed = VALID_TRANSITIONS.get(current_state, set())
         if new_state not in allowed:
             raise InvalidTransitionError(
-                f"Cannot transition from {current_state} to {new_state} " f"(allowed: {sorted(allowed)})"
+                f"Cannot transition from {current_state} to {new_state} (allowed: {sorted(allowed)})"
             )
 
         # Build dynamic SET clause from kwargs

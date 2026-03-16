@@ -58,7 +58,7 @@ class TestResumeDownload:
     def test_excludes_complete_chunks(self, setup) -> None:
         db, dl, manifest = setup
         dl.start_download("a1", manifest, "https://example.com")
-        db.execute("UPDATE download_chunks SET status = 'COMPLETE' " "WHERE artifact_id = 'a1' AND chunk_index = 0")
+        db.execute("UPDATE download_chunks SET status = 'COMPLETE' WHERE artifact_id = 'a1' AND chunk_index = 0")
         pending = dl.resume_download("a1")
         assert len(pending) == 2
         assert all(p["chunk_index"] != 0 for p in pending)

@@ -45,7 +45,6 @@ QUANT_ALIASES: dict[str, str] = {
     "q4_k_s": "4bit",
     "q8_0": "8bit",
     "q8_1": "8bit",
-    "f16": "fp16",
     # Engine-specific MLX names -> canonical
     "float16": "fp16",
 }

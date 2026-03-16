@@ -179,7 +179,7 @@ class ArtifactLoop:
 
         db = self._model_registry._db
         rows = db.execute(
-            "SELECT artifact_id, model_id, version, total_bytes " "FROM model_artifacts WHERE status = 'REGISTERED'"
+            "SELECT artifact_id, model_id, version, total_bytes FROM model_artifacts WHERE status = 'REGISTERED'"
         )
 
         for row in rows:

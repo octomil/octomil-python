@@ -8,7 +8,6 @@ import unittest
 from octomil.device_agent.db.local_db import LocalDB
 from octomil.device_agent.training.db_schema import TRAINING_SCHEMA_STATEMENTS
 from octomil.device_agent.training.local_trainer import (
-    ALL_STATES,
     VALID_TRANSITIONS,
     InvalidTransitionError,
     LocalTrainer,
@@ -165,9 +164,7 @@ class TestLocalTrainerStateMachine(unittest.TestCase):
             base_model_id="m1",
             base_version="1.0",
         )
-        self.trainer.transition(
-            job_id, "BLOCKED_POLICY", last_error="Budget exhausted"
-        )
+        self.trainer.transition(job_id, "BLOCKED_POLICY", last_error="Budget exhausted")
         job = self.trainer.get_job(job_id)
         assert job is not None
         self.assertEqual(job["last_error"], "Budget exhausted")
@@ -225,9 +222,7 @@ class TestLocalTrainerTraining(unittest.TestCase):
                 "checkpoint_data": b"model_weights_" + str(ctx["step"]).encode(),
             }
 
-        metrics = self.trainer.train(
-            job_id, train_fn, max_steps=10, checkpoint_every=5
-        )
+        self.trainer.train(job_id, train_fn, max_steps=10, checkpoint_every=5)
         # Should have checkpoint at step 5 and step 10
         checkpoints = self.db.execute(
             "SELECT * FROM training_checkpoints WHERE job_id = ? ORDER BY step",

@@ -59,7 +59,7 @@ class TestTransactions:
         db = LocalDB(":memory:")
         with db.transaction() as cur:
             cur.execute(
-                "INSERT INTO active_model_pointer (model_id, active_version, updated_at) " "VALUES (?, ?, ?)",
+                "INSERT INTO active_model_pointer (model_id, active_version, updated_at) VALUES (?, ?, ?)",
                 ("m1", "v1", "2024-01-01T00:00:00Z"),
             )
         row = db.execute_one("SELECT * FROM active_model_pointer WHERE model_id = 'm1'")
@@ -72,7 +72,7 @@ class TestTransactions:
         with pytest.raises(ValueError):
             with db.transaction() as cur:
                 cur.execute(
-                    "INSERT INTO active_model_pointer (model_id, active_version, updated_at) " "VALUES (?, ?, ?)",
+                    "INSERT INTO active_model_pointer (model_id, active_version, updated_at) VALUES (?, ?, ?)",
                     ("m1", "v1", "2024-01-01T00:00:00Z"),
                 )
                 raise ValueError("test error")
@@ -83,7 +83,7 @@ class TestTransactions:
     def test_execute_returns_rows(self) -> None:
         db = LocalDB(":memory:")
         db.execute(
-            "INSERT INTO active_model_pointer (model_id, active_version, updated_at) " "VALUES (?, ?, ?)",
+            "INSERT INTO active_model_pointer (model_id, active_version, updated_at) VALUES (?, ?, ?)",
             ("m1", "v1", "now"),
         )
         rows = db.execute("SELECT * FROM active_model_pointer")
@@ -103,7 +103,7 @@ class TestTransactions:
         def insert(i: int) -> None:
             try:
                 db.execute(
-                    "INSERT INTO active_model_pointer (model_id, active_version, updated_at) " "VALUES (?, ?, ?)",
+                    "INSERT INTO active_model_pointer (model_id, active_version, updated_at) VALUES (?, ?, ?)",
                     (f"m{i}", f"v{i}", "now"),
                 )
             except Exception as e:

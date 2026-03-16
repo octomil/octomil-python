@@ -42,8 +42,7 @@ class ArtifactDownloader:
         """
         with self._db.transaction() as cur:
             cur.execute(
-                "UPDATE model_artifacts SET status = 'DOWNLOADING', updated_at = datetime('now') "
-                "WHERE artifact_id = ?",
+                "UPDATE model_artifacts SET status = 'DOWNLOADING', updated_at = datetime('now') WHERE artifact_id = ?",
                 (artifact_id,),
             )
             for file_info in manifest.get("files", []):
@@ -174,7 +173,7 @@ class ArtifactDownloader:
             return False
 
         chunks = self._db.execute(
-            "SELECT chunk_index FROM download_chunks " "WHERE artifact_id = ? AND file_path = ? ORDER BY chunk_index",
+            "SELECT chunk_index FROM download_chunks WHERE artifact_id = ? AND file_path = ? ORDER BY chunk_index",
             (artifact_id, file_path),
         )
 
@@ -216,7 +215,7 @@ class ArtifactDownloader:
     def pause(self, artifact_id: str) -> None:
         """Pause download by setting artifact status to PAUSED."""
         self._db.execute(
-            "UPDATE model_artifacts SET status = 'PAUSED', updated_at = datetime('now') " "WHERE artifact_id = ?",
+            "UPDATE model_artifacts SET status = 'PAUSED', updated_at = datetime('now') WHERE artifact_id = ?",
             (artifact_id,),
         )
 
@@ -238,6 +237,6 @@ class ArtifactDownloader:
             (artifact_id,),
         )
         self._db.execute(
-            "UPDATE model_artifacts SET status = 'CANCELLED', updated_at = datetime('now') " "WHERE artifact_id = ?",
+            "UPDATE model_artifacts SET status = 'CANCELLED', updated_at = datetime('now') WHERE artifact_id = ?",
             (artifact_id,),
         )

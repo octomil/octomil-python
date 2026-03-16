@@ -109,7 +109,7 @@ def resolve_hf_checkpoint(
         return _resolve_directory(repo_id, revision, files)
     else:
         raise RuntimeError(
-            f"Unknown artifact_format '{artifact_format}' for {repo_id}. " f"Expected 'gguf' or 'directory'."
+            f"Unknown artifact_format '{artifact_format}' for {repo_id}. Expected 'gguf' or 'directory'."
         )
 
 
@@ -154,7 +154,7 @@ def _resolve_gguf(
         if not matching:
             available = [f.path for f in gguf_files]
             raise RuntimeError(
-                f"No GGUF files matching quantization '{quant_hint}' in {repo_id}. " f"Available: {available}"
+                f"No GGUF files matching quantization '{quant_hint}' in {repo_id}. Available: {available}"
             )
         gguf_files = matching
 

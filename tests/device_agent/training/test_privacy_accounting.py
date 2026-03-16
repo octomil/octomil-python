@@ -50,26 +50,18 @@ class TestPrivacyAccountant(unittest.TestCase):
 
     def test_has_budget_sufficient(self) -> None:
         self.accountant.spend("scope_1", 0.5, 1e-5)
-        self.assertTrue(
-            self.accountant.has_budget("scope_1", epsilon_needed=0.3, daily_budget_eps=1.0)
-        )
+        self.assertTrue(self.accountant.has_budget("scope_1", epsilon_needed=0.3, daily_budget_eps=1.0))
 
     def test_has_budget_insufficient(self) -> None:
         self.accountant.spend("scope_1", 0.9, 1e-5)
-        self.assertFalse(
-            self.accountant.has_budget("scope_1", epsilon_needed=0.3, daily_budget_eps=1.0)
-        )
+        self.assertFalse(self.accountant.has_budget("scope_1", epsilon_needed=0.3, daily_budget_eps=1.0))
 
     def test_has_budget_exact(self) -> None:
         self.accountant.spend("scope_1", 0.7, 1e-5)
-        self.assertTrue(
-            self.accountant.has_budget("scope_1", epsilon_needed=0.3, daily_budget_eps=1.0)
-        )
+        self.assertTrue(self.accountant.has_budget("scope_1", epsilon_needed=0.3, daily_budget_eps=1.0))
 
     def test_has_budget_no_prior_spend(self) -> None:
-        self.assertTrue(
-            self.accountant.has_budget("new_scope", epsilon_needed=0.5, daily_budget_eps=1.0)
-        )
+        self.assertTrue(self.accountant.has_budget("new_scope", epsilon_needed=0.5, daily_budget_eps=1.0))
 
     def test_reset_daily(self) -> None:
         self.accountant.spend("scope_1", 1.0, 1e-5)

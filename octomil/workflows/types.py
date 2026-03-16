@@ -6,7 +6,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Awaitable, Callable, Optional
+from typing import Any, Awaitable, Callable, Optional, Union
 
 
 @dataclass
@@ -29,7 +29,7 @@ class TransformStep:
     transform: Callable[[str], Awaitable[str]] | Callable[[str], str]
 
 
-WorkflowStep = InferenceStep | ToolRoundStep | TransformStep
+WorkflowStep = Union[InferenceStep, ToolRoundStep, TransformStep]
 
 
 @dataclass

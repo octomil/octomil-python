@@ -30,9 +30,7 @@ class TestDataPipelineSelection(unittest.TestCase):
 
     def test_select_examples_with_policy(self) -> None:
         policy = {"strategy": "diverse", "min_quality": 0.5}
-        examples = self.pipeline.select_examples(
-            "user_1", max_count=5, selection_policy=policy
-        )
+        examples = self.pipeline.select_examples("user_1", max_count=5, selection_policy=policy)
         self.assertEqual(len(examples), 5)
         for ex in examples:
             self.assertEqual(ex["strategy"], "diverse")

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
-import atheris
 import sys
+
+import atheris
 
 with atheris.instrument_imports():
     import json

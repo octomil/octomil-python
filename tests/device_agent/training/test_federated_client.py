@@ -10,7 +10,6 @@ from unittest.mock import MagicMock
 from octomil.device_agent.db.local_db import LocalDB
 from octomil.device_agent.training.db_schema import TRAINING_SCHEMA_STATEMENTS
 from octomil.device_agent.training.federated_client import (
-    ALL_STATES,
     VALID_TRANSITIONS,
     DeviceFederatedClient,
     FederatedTransitionError,
@@ -179,9 +178,7 @@ class TestFederatedClientPrepareUpdate(unittest.TestCase):
         self.client.transition(pid, "LOCAL_EVAL")
 
         raw_update = [3.0, 4.0]  # norm = 5.0
-        envelope = self.client.prepare_update(
-            pid, raw_update, clip_norm=1.0, noise_sigma=0.001
-        )
+        envelope = self.client.prepare_update(pid, raw_update, clip_norm=1.0, noise_sigma=0.001)
 
         self.assertIsInstance(envelope, bytes)
         record = self.client.get_participation(pid)

@@ -62,7 +62,7 @@ class CrashDetector:
 
         # Mark any previous unclean boots as crashes
         unclean_rows = self._db.execute(
-            "SELECT boot_id FROM boot_history " "WHERE clean_shutdown = 0 AND crash_detected = 0",
+            "SELECT boot_id FROM boot_history WHERE clean_shutdown = 0 AND crash_detected = 0",
         )
         crash_count = 0
         for row in unclean_rows:
@@ -102,7 +102,7 @@ class CrashDetector:
         duration = max(0.0, end_epoch - start_epoch)
 
         self._db.execute(
-            "UPDATE boot_history SET clean_shutdown = 1, duration_sec = ? " "WHERE boot_id = ?",
+            "UPDATE boot_history SET clean_shutdown = 1, duration_sec = ? WHERE boot_id = ?",
             (duration, boot_id),
         )
         return True
@@ -122,7 +122,7 @@ class CrashDetector:
         """
         now_epoch = _iso_to_epoch(_now_iso())
         rows = self._db.execute(
-            "SELECT started_at FROM boot_history " "WHERE crash_detected = 1 AND active_model_id = ?",
+            "SELECT started_at FROM boot_history WHERE crash_detected = 1 AND active_model_id = ?",
             (model_id,),
         )
         recent_crashes = 0

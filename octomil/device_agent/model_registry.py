@@ -32,7 +32,7 @@ class DeviceModelRegistry:
     def get_active_model(self, model_id: str) -> Optional[dict[str, Any]]:
         """Return the active version info for a model, or None."""
         row = self._db.execute_one(
-            "SELECT active_version, previous_version, updated_at " "FROM active_model_pointer WHERE model_id = ?",
+            "SELECT active_version, previous_version, updated_at FROM active_model_pointer WHERE model_id = ?",
             (model_id,),
         )
         if row is None:
@@ -163,7 +163,7 @@ class DeviceModelRegistry:
         now = _now_iso()
         with self._db.transaction() as cur:
             row = cur.execute(
-                "SELECT active_version, previous_version " "FROM active_model_pointer WHERE model_id = ?",
+                "SELECT active_version, previous_version FROM active_model_pointer WHERE model_id = ?",
                 (model_id,),
             ).fetchone()
 
@@ -194,7 +194,7 @@ class DeviceModelRegistry:
     def gc_eligible_versions(self, model_id: str) -> list[str]:
         """Return versions that are not active or previous and can be cleaned up."""
         row = self._db.execute_one(
-            "SELECT active_version, previous_version " "FROM active_model_pointer WHERE model_id = ?",
+            "SELECT active_version, previous_version FROM active_model_pointer WHERE model_id = ?",
             (model_id,),
         )
         protected: set[str] = set()

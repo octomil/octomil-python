@@ -6,7 +6,6 @@ import unittest
 
 from octomil.device_agent.db.local_db import LocalDB
 from octomil.device_agent.training.adapter_manager import (
-    ActiveBinding,
     AdapterManager,
 )
 from octomil.device_agent.training.db_schema import TRAINING_SCHEMA_STATEMENTS
@@ -128,9 +127,7 @@ class TestAdapterManagerShadowAndRollback(unittest.TestCase):
         self.mgr.register_adapter("a2", "m1", "1.0", "user_1", "v2", "/a2")
         self.mgr.activate_adapter("m1::user_1", "a1", "v1")
 
-        result = self.mgr.shadow_compare(
-            "m1::user_1", "a2", ["prompt1", "prompt2"]
-        )
+        result = self.mgr.shadow_compare("m1::user_1", "a2", ["prompt1", "prompt2"])
         self.assertEqual(result["current_adapter_id"], "a1")
         self.assertEqual(result["candidate_adapter_id"], "a2")
         self.assertEqual(result["prompts_count"], 2)
@@ -148,9 +145,7 @@ class TestAdapterManagerShadowAndRollback(unittest.TestCase):
 
     def test_rollback_with_parent(self) -> None:
         self.mgr.register_adapter("a1", "m1", "1.0", "user_1", "v1", "/a1")
-        self.mgr.register_adapter(
-            "a2", "m1", "1.0", "user_1", "v2", "/a2", parent_version="v1"
-        )
+        self.mgr.register_adapter("a2", "m1", "1.0", "user_1", "v2", "/a2", parent_version="v1")
         self.mgr.activate_adapter("m1::user_1", "a2", "v2")
 
         result = self.mgr.rollback_adapter("m1::user_1", "bad quality")
