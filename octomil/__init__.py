@@ -45,6 +45,7 @@ from .enterprise import (
     save_config,
 )
 from .errors import OctomilError, OctomilErrorCode
+from .manifest import AppManifest, AppModelEntry, AppRoutingPolicy, DeliveryMode
 from .model import Model, ModelMetadata, Prediction
 from .models import (
     DeploymentPlan,
@@ -312,4 +313,8 @@ __all__ = [
     "HeartbeatResponse",
     "OctomilError",
     "OctomilErrorCode",
+    "AppManifest",
+    "AppModelEntry",
+    "AppRoutingPolicy",
+    "DeliveryMode",
 ]

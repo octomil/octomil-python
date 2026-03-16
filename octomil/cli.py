@@ -61,12 +61,25 @@ from octomil.commands import (  # noqa: E402
     enterprise,
     federation,
     interactive,
+    manifest_cmd,
     model_ops,
     serve,
     setup,
 )
 
-for _mod in [serve, model_ops, deploy, benchmark, enterprise, federation, interactive, completions, setup, agent]:
+for _mod in [
+    serve,
+    model_ops,
+    deploy,
+    benchmark,
+    enterprise,
+    federation,
+    interactive,
+    completions,
+    setup,
+    agent,
+    manifest_cmd,
+]:
     _mod.register(main)
 
 from octomil.commands import mcp_cmd  # noqa: E402

@@ -11,7 +11,7 @@ COMMAND_SECTIONS: dict[str, list[str]] = {
     "Models": ["models", "push", "pull", "convert", "check", "list"],
     "Deploy": ["deploy", "rollback", "pair", "status", "benchmark", "dashboard"],
     "Account": ["login", "init", "org", "team", "keys"],
-    "Advanced": ["train", "federation", "mcp", "scan", "demo", "interactive", "completions"],
+    "Advanced": ["train", "federation", "mcp", "scan", "demo", "interactive", "completions", "manifest"],
 }
 
 
