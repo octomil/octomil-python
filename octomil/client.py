@@ -24,17 +24,22 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, AsyncIterator, Iterator, Optional
 
 if TYPE_CHECKING:
+    from .audio import OctomilAudio
     from .capabilities_client import CapabilitiesClient
     from .chat_client import ChatClient
     from .control import OctomilControl
     from .embeddings import EmbeddingResult
+    from .manifest import AppManifest
+    from .manifest.catalog_service import ModelCatalogService
     from .model import Model, Prediction
     from .models_namespace import OctomilModels
     from .responses.responses import OctomilResponses
+    from .runtime.core.model_runtime import ModelRuntime
     from .serve import GenerationChunk
     from .streaming import StreamToken
     from .telemetry import TelemetryReporter
     from .telemetry_client import TelemetryClient
+    from .text import OctomilText
     from .workflows import WorkflowRunner
 
 logger = logging.getLogger(__name__)
@@ -136,6 +141,9 @@ class OctomilClient:
         self._chat_ns: ChatClient | None = None
         self._capabilities_ns: CapabilitiesClient | None = None
         self._telemetry_ns: TelemetryClient | None = None
+        self._audio_ns: OctomilAudio | None = None
+        self._text_ns: OctomilText | None = None
+        self._catalog: ModelCatalogService | None = None
 
         # Telemetry — best-effort, never blocks or raises
         self._reporter: TelemetryReporter | None = None
@@ -226,7 +234,7 @@ class OctomilClient:
         if self._responses is None:
             from .responses import OctomilResponses
 
-            self._responses = OctomilResponses()
+            self._responses = OctomilResponses(catalog=self._catalog)
         return self._responses
 
     # ------------------------------------------------------------------
@@ -257,6 +265,77 @@ class OctomilClient:
                 org_id=self._org_id,
             )
         return self._control
+
+    # ------------------------------------------------------------------
+    # Audio namespace — transcription APIs
+    # ------------------------------------------------------------------
+
+    @property
+    def audio(self) -> "OctomilAudio":
+        """Audio transcription APIs."""
+        if self._audio_ns is None:
+            from .audio import OctomilAudio
+
+            self._audio_ns = OctomilAudio(runtime_resolver=self._resolve_model_ref)
+        return self._audio_ns
+
+    # ------------------------------------------------------------------
+    # Text namespace — prediction APIs
+    # ------------------------------------------------------------------
+
+    @property
+    def text(self) -> "OctomilText":
+        """Text prediction and completion APIs."""
+        if self._text_ns is None:
+            from .text import OctomilText
+
+            self._text_ns = OctomilText(runtime_resolver=self._resolve_model_ref)
+        return self._text_ns
+
+    # ------------------------------------------------------------------
+    # Catalog — manifest-driven model catalog
+    # ------------------------------------------------------------------
+
+    @property
+    def catalog(self) -> "ModelCatalogService | None":
+        """Model catalog service, or None if not configured."""
+        return self._catalog
+
+    def configure(
+        self,
+        *,
+        manifest: "AppManifest | None" = None,
+    ) -> None:
+        """Configure the client with a manifest for catalog-driven model resolution.
+
+        Args:
+            manifest: App manifest describing desired models.
+        """
+        if manifest is not None:
+            from .manifest.catalog_service import ModelCatalogService
+
+            self._catalog = ModelCatalogService(manifest=manifest)
+            self._catalog.bootstrap()
+            # Reset responses so it picks up the new catalog
+            self._responses = None
+
+    def _resolve_model_ref(self, ref: object) -> Optional[ModelRuntime]:
+        """Resolve a ModelRef to a ModelRuntime via the catalog or registry."""
+        from .model_ref import _ModelRefCapability, _ModelRefId
+        from .runtime.core.registry import ModelRuntimeRegistry
+
+        if self._catalog is not None:
+            if isinstance(ref, (_ModelRefId, _ModelRefCapability)):
+                runtime = self._catalog.runtime_for_ref(ref)
+                if runtime is not None:
+                    return runtime
+
+        # Fallback to registry for ID-based refs
+        if isinstance(ref, _ModelRefId):
+            return ModelRuntimeRegistry.shared().resolve(ref.model_id)
+        if isinstance(ref, _ModelRefCapability):
+            return ModelRuntimeRegistry.shared().resolve(ref.capability.value)
+        return None
 
     # ------------------------------------------------------------------
     # Push — upload a model file + trigger server-side conversion

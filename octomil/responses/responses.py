@@ -7,8 +7,9 @@ from __future__ import annotations
 
 import json
 import uuid
-from typing import AsyncIterator, Callable, Optional
+from typing import TYPE_CHECKING, AsyncIterator, Callable, Optional, Union
 
+from octomil.model_ref import ModelRef, _ModelRefCapability, _ModelRefId
 from octomil.runtime.core.model_runtime import ModelRuntime
 from octomil.runtime.core.registry import ModelRuntimeRegistry
 from octomil.runtime.core.types import (
@@ -42,19 +43,29 @@ from .types import (
     text_input,
 )
 
+if TYPE_CHECKING:
+    from octomil.manifest.catalog_service import ModelCatalogService
+
 
 class OctomilResponses:
     """Developer-facing Response API (Layer 2).
 
     Provides create() and stream() methods that resolve a ModelRuntime,
     format the prompt, and return structured responses.
+
+    Resolution order (3-step):
+      1. ModelCatalogService (if configured)
+      2. Custom runtime_resolver callback (if provided)
+      3. ModelRuntimeRegistry (global fallback)
     """
 
     def __init__(
         self,
         runtime_resolver: Optional[Callable[[str], Optional[ModelRuntime]]] = None,
+        catalog: Optional[ModelCatalogService] = None,
     ) -> None:
         self._runtime_resolver = runtime_resolver
+        self._catalog = catalog
         self._response_cache: dict[str, Response] = {}
 
     async def create(self, request: ResponseRequest) -> Response:
@@ -136,15 +147,38 @@ class OctomilResponses:
             )
         )
 
-    def _resolve_runtime(self, model: str) -> ModelRuntime:
-        if self._runtime_resolver is not None:
-            runtime = self._runtime_resolver(model)
+    def _resolve_runtime(self, model: Union[str, ModelRef]) -> ModelRuntime:
+        """3-step resolution: catalog -> custom resolver -> registry."""
+        # Step 1: ModelCatalogService (if configured)
+        if self._catalog is not None:
+            if isinstance(model, (_ModelRefId, _ModelRefCapability)):
+                runtime = self._catalog.runtime_for_ref(model)
+            else:
+                runtime = self._catalog.runtime_for_ref(_ModelRefId(model_id=model))
             if runtime is not None:
                 return runtime
-        runtime = ModelRuntimeRegistry.shared().resolve(model)
+
+        # Normalize to string model ID for steps 2-3
+        model_id: str
+        if isinstance(model, _ModelRefId):
+            model_id = model.model_id
+        elif isinstance(model, _ModelRefCapability):
+            model_id = model.capability.value
+        else:
+            model_id = model
+
+        # Step 2: Custom resolver (if provided)
+        if self._runtime_resolver is not None:
+            runtime = self._runtime_resolver(model_id)
+            if runtime is not None:
+                return runtime
+
+        # Step 3: ModelRuntimeRegistry (global fallback)
+        runtime = ModelRuntimeRegistry.shared().resolve(model_id)
         if runtime is not None:
             return runtime
-        raise RuntimeError(f"No ModelRuntime registered for model: {model}")
+
+        raise RuntimeError(f"No ModelRuntime registered for model: {model_id}")
 
     def _apply_previous_response(self, request: ResponseRequest) -> ResponseRequest:
         """Prepend previous response output as assistant context when previous_response_id is set."""
