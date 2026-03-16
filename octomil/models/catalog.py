@@ -38,6 +38,8 @@ class GGUFSource:
     revision: Optional[str] = None
     quantization_hint: Optional[str] = None
     uri_type: str = "file"  # "file" or "repo"
+    projector_repo: Optional[str] = None  # HF repo for mmproj (same repo if None)
+    projector_filename: Optional[str] = None  # mmproj GGUF filename
 
 
 @dataclass(frozen=True)
@@ -146,6 +148,8 @@ _FAMILY_TO_PUBLISHER: dict[str, str] = {
     "deepseek-r1": "DeepSeek",
     "starcoder": "BigCode",
     "starcoder2": "BigCode",
+    "smolvlm2": "HuggingFace",
+    "ultravox": "Fixie AI",
 }
 
 
@@ -186,6 +190,14 @@ def _get_weights_resource(pkg: dict) -> Optional[dict]:
     return None
 
 
+def _get_projector_resource(pkg: dict) -> Optional[dict]:
+    """Extract the first projector resource from a package."""
+    for res in pkg.get("resources", []):
+        if res.get("kind") == "projector":
+            return res
+    return None
+
+
 def _package_to_variant_field(
     pkg: dict,
 ) -> tuple[Optional[str], Optional[GGUFSource], Optional[str], Optional[str], Optional[str], Optional[str]]:
@@ -217,12 +229,25 @@ def _package_to_variant_field(
     elif executor in ("llamacpp", "llama.cpp") and fmt == "gguf":
         repo, filename = _parse_hf_uri(uri)
         meta = weights.get("metadata") or {}
+
+        # Check for projector resource (mmproj for multimodal)
+        projector = _get_projector_resource(pkg)
+        proj_repo: Optional[str] = None
+        proj_filename: Optional[str] = None
+        if projector:
+            proj_uri = projector.get("uri", "")
+            pr, pf = _parse_hf_uri(proj_uri)
+            proj_repo = pr if pr != repo else None  # omit if same repo
+            proj_filename = pf or None
+
         gguf = GGUFSource(
             repo=repo,
             filename=path or filename,
             revision=meta.get("revision"),
             quantization_hint=(meta.get("quantization", "") or "").lower() or None,
             uri_type=meta.get("uri_type", "file"),
+            projector_repo=proj_repo,
+            projector_filename=proj_filename,
         )
     elif executor == "whisper" or executor == "whisper.cpp":
         # Whisper models use GGUF-like download pattern

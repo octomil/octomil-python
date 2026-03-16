@@ -3,18 +3,45 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from enum import Enum
 from typing import Optional
+
+
+class ToolCallTier(Enum):
+    """How an inference engine handles tool/function calling.
+
+    Matches the ToolCallTier contract enum (since 1.3.0).
+    """
+
+    NONE = "NONE"
+    TEXT_JSON = "TEXT_JSON"
+    GRAMMAR = "GRAMMAR"
+    NATIVE = "NATIVE"
 
 
 @dataclass
 class RuntimeCapabilities:
-    supports_tool_calls: bool = False
-    supports_text_tool_calls: bool = False
+    tool_call_tier: ToolCallTier = ToolCallTier.NONE
     supports_structured_output: bool = False
     supports_multimodal_input: bool = False
     supports_streaming: bool = True
     max_context_length: Optional[int] = None
     supported_families: frozenset[str] = field(default_factory=frozenset)
+
+    @property
+    def supports_tool_calls(self) -> bool:
+        """True if tool calling is available at any tier (backward compat)."""
+        return self.tool_call_tier != ToolCallTier.NONE
+
+    @property
+    def supports_reliable_tool_calls(self) -> bool:
+        """True if tool calling is guaranteed structurally valid (GRAMMAR/NATIVE)."""
+        return self.tool_call_tier in (ToolCallTier.GRAMMAR, ToolCallTier.NATIVE)
+
+    @property
+    def supports_text_tool_calls(self) -> bool:
+        """True if tool calls are extracted from model text output."""
+        return self.tool_call_tier == ToolCallTier.TEXT_JSON
 
 
 @dataclass
@@ -55,6 +82,7 @@ class RuntimeResponse:
     tool_calls: Optional[list[RuntimeToolCall]] = None
     finish_reason: str = "stop"
     usage: Optional[RuntimeUsage] = None
+    raw_text: Optional[str] = None
 
 
 @dataclass

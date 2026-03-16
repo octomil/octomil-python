@@ -45,7 +45,9 @@ class PromptFormatter:
                     sb.append(f"Parameters: {params}\n")
                 sb.append("\n")
             sb.append(
-                'To use a tool, respond with JSON: {"tool_call": {"name": "function_name", "arguments": {...}}}\n'
+                "To use a tool, respond with ONLY this JSON and nothing else:\n"
+                '{"type": "tool_call", "name": "function_name", "arguments": {...}}\n'
+                "If you do not need a tool, respond with normal text.\n"
             )
 
             if isinstance(tool_choice, ToolChoice) and tool_choice == ToolChoice.REQUIRED:
@@ -78,7 +80,7 @@ class PromptFormatter:
                             sb.append(part.text)
                 if item.tool_calls:
                     for call in item.tool_calls:
-                        sb.append(f'{{"tool_call": {{"name": "{call.name}", "arguments": {call.arguments}}}}}')
+                        sb.append(f'{{"type": "tool_call", "name": "{call.name}", "arguments": {call.arguments}}}')
                 sb.append("\n")
             elif isinstance(item, ToolResultInput):
                 sb.append(f"<|tool|>\n{item.content}\n")

@@ -220,14 +220,29 @@ def deploy(
             timeout=10.0,
         )
         model_found = False
+        model_has_versions = False
         if check_resp.status_code == 200:
             for m in check_resp.json().get("models", []):
                 m_name = m.get("name") or m.get("model_id") or ""
                 if m_name.lower() == name.lower():
                     model_found = True
+                    # Check if model has at least one version
+                    m_id = m.get("id", "")
+                    if m_id:
+                        ver_resp = http_request(
+                            "GET",
+                            f"{api_base}/models/{m_id}/versions",
+                            headers=headers,
+                            timeout=10.0,
+                        )
+                        if ver_resp.status_code == 200:
+                            ver_data = ver_resp.json()
+                            versions = ver_data if isinstance(ver_data, list) else ver_data.get("versions", [])
+                            if versions:
+                                model_has_versions = True
                     break
-        if not model_found:
-            click.echo(f"Model '{name}' not in registry — importing...")
+        if not model_found or not model_has_versions:
+            click.echo(click.style(f"  Model '{name}' not in registry — importing...", dim=True))
             client = _get_client()
             effective_version = version or "1.0.0"
             resolved_name = name.split("/")[-1].split(":")[-1]
@@ -274,11 +289,26 @@ def deploy(
                 click.echo(click.style(f"  Downloaded to {resolved_path}", fg="green"))
 
                 try:
+                    # Push model weights
+                    file_size_mb = os.path.getsize(resolved_path) / (1024 * 1024)
+                    click.echo(click.style(f"  Uploading to registry ({file_size_mb:.0f} MB)...", dim=True))
                     client.push(
                         resolved_path,
                         name=resolved_name,
                         version=effective_version,
                     )
+                    # Push companion files (mmproj, etc.) from same directory
+                    model_dir = os.path.dirname(resolved_path)
+                    for companion in os.listdir(model_dir):
+                        if companion.startswith("mmproj") and companion.endswith(".gguf"):
+                            comp_path = os.path.join(model_dir, companion)
+                            comp_mb = os.path.getsize(comp_path) / (1024 * 1024)
+                            click.echo(click.style(f"  Uploading projector ({comp_mb:.0f} MB)...", dim=True))
+                            client.push(
+                                comp_path,
+                                name=f"{resolved_name}-mmproj",
+                                version=effective_version,
+                            )
                     click.echo(click.style(f"  Pushed {resolved_name} v{effective_version}", fg="green"))
                     name = resolved_name
                 except Exception as exc:
@@ -337,8 +367,6 @@ def deploy(
         click.echo(click.style("  Expires in 5 minutes", dim=True))
         click.echo()
 
-        webbrowser.open(pair_url)
-
         click.echo("Waiting for device to connect (Ctrl+C to cancel)...")
         last_status = ""
         try:
@@ -366,6 +394,32 @@ def deploy(
                             fg="green",
                         )
                     )
+                    # Trigger deployment — server resolves model version from catalog
+                    try:
+                        deploy_resp = http_request(
+                            "POST",
+                            f"{api_base}/deploy/pair/{code}/deploy",
+                            headers=headers,
+                            timeout=10.0,
+                        )
+                        if deploy_resp.status_code >= 400:
+                            click.echo(
+                                click.style(
+                                    f"  Deploy trigger failed: {deploy_resp.status_code} — {deploy_resp.text}",
+                                    fg="red",
+                                ),
+                                err=True,
+                            )
+                            sys.exit(1)
+                        click.echo(click.style("  \u2713 Deploying to device...", fg="yellow"))
+                    except SystemExit:
+                        raise
+                    except Exception as exc:
+                        click.echo(
+                            click.style(f"  Deploy trigger error: {exc}", fg="red"),
+                            err=True,
+                        )
+                        sys.exit(1)
                 elif status_val == "converting":
                     click.echo(click.style("  \u2713 Converting model for device...", fg="yellow"))
                 elif status_val == "deploying":

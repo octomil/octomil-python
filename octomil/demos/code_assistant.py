@@ -213,20 +213,14 @@ def _build_metrics_panel(metrics: MetricsTracker, model: str) -> Panel:
     table.add_row("Avg latency", f"{metrics.avg_latency_ms:.0f} ms")
     table.add_row("Avg TTFC", f"{metrics.avg_ttfc_ms:.0f} ms")
     table.add_row("Throughput", f"{metrics.avg_tok_per_sec:.1f} tok/s")
-    table.add_row(
-        "Tokens (in/out)", f"{metrics.total_input_tokens}/{metrics.total_output_tokens}"
-    )
+    table.add_row("Tokens (in/out)", f"{metrics.total_input_tokens}/{metrics.total_output_tokens}")
     table.add_row("", "")
     table.add_row("Cloud API calls", "[green]0[/green]")
     table.add_row("Data sent to cloud", "[green]0 bytes[/green]")
-    table.add_row(
-        "Cost", f"[green]$0.00[/green] (saved ${metrics.cloud_cost_saved:.4f})"
-    )
+    table.add_row("Cost", f"[green]$0.00[/green] (saved ${metrics.cloud_cost_saved:.4f})")
     table.add_row("Session", f"{metrics.session_duration_min:.1f} min")
 
-    return Panel(
-        table, title="[bold cyan]Octomil Metrics[/bold cyan]", border_style="cyan"
-    )
+    return Panel(table, title="[bold cyan]Octomil Metrics[/bold cyan]", border_style="cyan")
 
 
 def _print_metrics_plain(metrics: MetricsTracker, model: str) -> None:
@@ -306,9 +300,7 @@ def run_demo(
         port = int(url.split(":")[-1])
         server_proc = _start_server(model, port)
         if server_proc is None:
-            print(
-                "  ✗ Failed to start octomil serve. Install with: pip install octomil[serve]"
-            )
+            print("  ✗ Failed to start octomil serve. Install with: pip install octomil[serve]")
             sys.exit(1)
 
         if console:
@@ -336,9 +328,7 @@ def run_demo(
 
     if console:
         console.print()
-        console.print(
-            "  Type your question and press Enter. Type [bold]/quit[/bold] to exit."
-        )
+        console.print("  Type your question and press Enter. Type [bold]/quit[/bold] to exit.")
         console.print("  Type [bold]/metrics[/bold] to see session stats.\n")
     else:
         print("\n  Type your question and press Enter. Type /quit to exit.")
@@ -390,11 +380,7 @@ def run_demo(
                 console.print()
                 with Live(Text(""), console=console, refresh_per_second=15) as live:
                     for chunk in stream_chat(url, model, messages):
-                        delta = (
-                            chunk.get("choices", [{}])[0]
-                            .get("delta", {})
-                            .get("content", "")
-                        )
+                        delta = chunk.get("choices", [{}])[0].get("delta", {}).get("content", "")
                         if delta:
                             if ttfc_ms is None:
                                 ttfc_ms = (time.perf_counter() - start) * 1000
@@ -409,11 +395,7 @@ def run_demo(
                 # Plain text streaming
                 print()
                 for chunk in stream_chat(url, model, messages):
-                    delta = (
-                        chunk.get("choices", [{}])[0]
-                        .get("delta", {})
-                        .get("content", "")
-                    )
+                    delta = chunk.get("choices", [{}])[0].get("delta", {}).get("content", "")
                     if delta:
                         if ttfc_ms is None:
                             ttfc_ms = (time.perf_counter() - start) * 1000

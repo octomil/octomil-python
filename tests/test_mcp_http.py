@@ -12,6 +12,7 @@ import pytest_asyncio
 # httpx + ASGITransport for testing FastAPI without a real server
 httpx = pytest.importorskip("httpx")
 pytest.importorskip("fastapi")
+pytest.importorskip("mcp", reason="mcp package requires Python >=3.10")
 
 
 @pytest_asyncio.fixture

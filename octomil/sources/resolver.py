@@ -93,7 +93,7 @@ def _manifest_to_aliases(manifest: dict) -> Dict[str, Dict[str, Union[str, Dict[
                             model_aliases["hf_onnx"] = repo
                     elif uri.startswith("hf://") and "hf" not in model_aliases:
                         repo, filename = _parse_hf_uri(uri)
-                        model_aliases["hf"] = {
+                        hf_alias: Dict[str, Any] = {
                             "repo_id": repo,
                             "filename": filename or None,
                             "revision": revision,
@@ -101,6 +101,16 @@ def _manifest_to_aliases(manifest: dict) -> Dict[str, Dict[str, Union[str, Dict[
                             "artifact_format": artifact_format or None,
                             "uri_type": uri_type,
                         }
+                        # Include projector resource info if present
+                        for res in pkg.get("resources", []):
+                            if res.get("kind") == "projector":
+                                proj_uri = res.get("uri", "")
+                                if proj_uri.startswith("hf://"):
+                                    pr, pf = _parse_hf_uri(proj_uri)
+                                    hf_alias["projector_repo"] = pr if pr != repo else None
+                                    hf_alias["projector_filename"] = pf or None
+                                break
+                        model_aliases["hf"] = hf_alias
 
             if model_aliases:
                 aliases[variant_name] = model_aliases
@@ -232,6 +242,12 @@ def resolve_and_download(name: str) -> str:
                     quantization_hint=hf_info.get("quantization_hint"),
                     artifact_format=hf_info.get("artifact_format"),
                 )
+                # Download projector (mmproj) alongside if present
+                if result and hf_info.get("projector_filename"):
+                    proj_repo = hf_info.get("projector_repo") or hf_info["repo_id"]
+                    proj_file = hf_info["projector_filename"]
+                    click.echo(f"  Downloading projector: {proj_file}")
+                    _try_source("hf", proj_repo, filename=proj_file)
             else:
                 # Backward compat: bare string repo ID
                 click.echo(f"  Downloading from HuggingFace: {hf_info}")

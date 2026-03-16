@@ -58,7 +58,8 @@ def test_formats_assistant_with_tool_calls():
         ]
     )
     assert "<|assistant|>\n" in result
-    assert "get_weather" in result
+    assert '"type": "tool_call"' in result
+    assert '"name": "get_weather"' in result
 
 
 def test_includes_tool_definitions():
@@ -75,6 +76,16 @@ def test_includes_tool_definitions():
     )
     assert "Function: get_weather" in result
     assert "Description: Get weather for a city" in result
+
+
+def test_tool_instruction_uses_new_format():
+    result = PromptFormatter.format(
+        input=[text_input("Hello")],
+        tools=[{"name": "fn", "description": "desc"}],
+    )
+    assert '"type": "tool_call"' in result
+    assert "respond with ONLY this JSON" in result
+    assert "normal text" in result
 
 
 def test_skips_tools_when_none():

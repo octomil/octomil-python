@@ -1,82 +1,137 @@
-"""Transitional tool-call extraction from plain text.
+"""Tool-call extraction from model text output.
 
-Parses LLM text output that contains tool-call JSON in the format
-emitted by PromptFormatter's tool instruction:
+Expected format:
+  {"type": "tool_call", "name": "fn", "arguments": {...}}
 
-    {"tool_call": {"name": "function_name", "arguments": {...}}}
-
-This is a tactical bridge — long-term, tool-call parsing moves to a
-response postprocessor layer above the adapter.
+The parser requires the ENTIRE response to be a single JSON object
+(after whitespace trimming and code-fence stripping). This prevents
+false positives from models that mention JSON in prose.
 """
 
 from __future__ import annotations
 
+import json
 import logging
 import uuid
+from dataclasses import dataclass, field
+from typing import Optional
 
-from octomil.grammar import extract_json
 from octomil.runtime.core.types import RuntimeToolCall
 
 logger = logging.getLogger(__name__)
 
 
+@dataclass
+class ToolCallParseResult:
+    """Result of tool-call extraction with validation metadata."""
+
+    tool_call: Optional[RuntimeToolCall] = None
+    schema_valid: Optional[bool] = None
+    schema_errors: list[str] = field(default_factory=list)
+
+
 def extract_tool_call_from_text(
     text: str,
     declared_tools: list[str] | None = None,
+    tool_schemas: dict[str, dict] | None = None,
 ) -> RuntimeToolCall | None:
     """Extract a tool call from model text output.
 
-    Returns a RuntimeToolCall if the text contains valid tool-call JSON,
-    or None on any failure (malformed JSON, unknown tool, wrong shape).
-    Never raises.
+    Returns a RuntimeToolCall if the full response is valid tool-call JSON,
+    or None on any failure. Never raises.
+    """
+    result = extract_tool_call_with_validation(text, declared_tools, tool_schemas)
+    return result.tool_call
+
+
+def extract_tool_call_with_validation(
+    text: str,
+    declared_tools: list[str] | None = None,
+    tool_schemas: dict[str, dict] | None = None,
+) -> ToolCallParseResult:
+    """Extract a tool call with schema validation metadata.
+
+    Returns ToolCallParseResult with tool_call set if extraction succeeded,
+    plus schema_valid/schema_errors if schemas were provided.
     """
     if not text or not text.strip():
-        return None
+        return ToolCallParseResult()
 
     stripped = text.strip()
 
-    # Fast path: skip parsing if text doesn't look like it could contain tool JSON
-    if not stripped.startswith("{") and '"tool_call"' not in stripped:
-        return None
+    # Strip code fences if present
+    stripped = _strip_code_fence(stripped)
+
+    # Full-response-only: entire output must be a JSON object
+    if not stripped.startswith("{") or not stripped.endswith("}"):
+        return ToolCallParseResult()
 
     try:
-        obj = extract_json(stripped)
-        if obj is None:
-            logger.debug("tool_parser: no JSON extracted from text")
-            return None
+        obj = json.loads(stripped)
+    except (json.JSONDecodeError, ValueError):
+        logger.debug("tool_parser: invalid JSON in full response")
+        return ToolCallParseResult()
 
-        tool_call = obj.get("tool_call")
-        if not isinstance(tool_call, dict):
-            logger.debug("tool_parser: missing or invalid 'tool_call' key")
-            return None
+    if not isinstance(obj, dict):
+        return ToolCallParseResult()
 
-        name = tool_call.get("name")
-        if not isinstance(name, str) or not name:
-            logger.debug("tool_parser: missing or invalid tool name")
-            return None
+    # Required format: {"type": "tool_call", "name": "...", "arguments": {...}}
+    if obj.get("type") != "tool_call":
+        logger.debug("tool_parser: missing or wrong 'type' field (expected 'tool_call')")
+        return ToolCallParseResult()
 
-        arguments = tool_call.get("arguments")
-        if not isinstance(arguments, dict):
-            logger.debug("tool_parser: arguments is not a dict")
-            return None
+    name = obj.get("name")
+    arguments = obj.get("arguments")
 
-        # Validate against declared tools if provided
-        if declared_tools is not None and name not in declared_tools:
-            logger.debug("tool_parser: unknown tool '%s' (declared: %s)", name, declared_tools)
-            return None
+    if not isinstance(name, str) or not name:
+        logger.debug("tool_parser: missing or invalid tool name")
+        return ToolCallParseResult()
 
-        return RuntimeToolCall(
-            id=f"call_{uuid.uuid4().hex[:16]}",
-            name=name,
-            arguments=_serialize_arguments(arguments),
-        )
-    except Exception:
-        logger.debug("tool_parser: unexpected error during extraction", exc_info=True)
-        return None
+    if not isinstance(arguments, dict):
+        logger.debug("tool_parser: arguments is not a dict")
+        return ToolCallParseResult()
+
+    # Validate against declared tools if provided
+    if declared_tools is not None and name not in declared_tools:
+        logger.debug("tool_parser: unknown tool '%s' (declared: %s)", name, declared_tools)
+        return ToolCallParseResult()
+
+    tool_call = RuntimeToolCall(
+        id=f"call_{uuid.uuid4().hex[:16]}",
+        name=name,
+        arguments=json.dumps(arguments),
+    )
+
+    # Schema validation if schemas provided
+    schema_valid = None
+    schema_errors: list[str] = []
+    if tool_schemas and name in tool_schemas:
+        schema_valid, schema_errors = _validate_arguments(arguments, tool_schemas[name])
+
+    return ToolCallParseResult(
+        tool_call=tool_call,
+        schema_valid=schema_valid,
+        schema_errors=schema_errors,
+    )
 
 
-def _serialize_arguments(arguments: dict) -> str:
-    """Serialize arguments dict to JSON string."""
-    import json
+def _strip_code_fence(text: str) -> str:
+    """Strip markdown code fences if the entire text is fenced."""
+    lines = text.split("\n")
+    if len(lines) >= 3 and lines[0].startswith("```") and lines[-1].strip() == "```":
+        return "\n".join(lines[1:-1]).strip()
+    return text
 
-    return json.dumps(arguments)
+
+def _validate_arguments(arguments: dict, schema: dict) -> tuple[bool, list[str]]:
+    """Validate arguments against a JSON schema. Returns (valid, errors)."""
+    try:
+        import jsonschema
+
+        jsonschema.validate(instance=arguments, schema=schema)
+        return True, []
+    except ImportError:
+        # jsonschema not installed — skip validation
+        return True, []
+    except Exception as e:
+        return False, [str(e)]

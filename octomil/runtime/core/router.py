@@ -22,7 +22,7 @@ class RouterModelRuntime(ModelRuntime):
 
     @property
     def capabilities(self) -> RuntimeCapabilities:
-        return RuntimeCapabilities(supports_tool_calls=True, supports_streaming=True)
+        return RuntimeCapabilities(supports_streaming=True)
 
     async def run(self, request: RuntimeRequest) -> RuntimeResponse:
         runtime = self._select_runtime()

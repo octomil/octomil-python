@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import contextlib
 from typing import Any, Callable, Optional
 
 import httpx
@@ -320,34 +319,72 @@ class ModelRegistry:
         if not os.path.isfile(file_path):
             raise OctomilClientError(f"File not found: {file_path}")
 
-        data: dict[str, Any] = {"version": version}
-        if description:
-            data["description"] = description
-        if formats:
-            data["formats"] = formats
-        if architecture:
-            data["architecture"] = architecture
-        if input_dim is not None:
-            data["input_dim"] = str(input_dim)
-        if hidden_dim is not None:
-            data["hidden_dim"] = str(hidden_dim)
-        if output_dim is not None:
-            data["output_dim"] = str(output_dim)
+        file_size = os.path.getsize(file_path)
+        return self._upload_via_presigned(
+            model_id=model_id,
+            file_path=file_path,
+            file_size=file_size,
+            version=version,
+            description=description,
+        )
 
-        with contextlib.ExitStack() as stack:
-            files: dict[str, Any] = {"file": stack.enter_context(open(file_path, "rb"))}
-            if onnx_data_path:
-                files["onnx_data"] = stack.enter_context(open(onnx_data_path, "rb"))
-            with httpx.Client(timeout=self.api.timeout) as client:
-                res = client.post(
-                    f"{self.api.api_base}/models/{model_id}/versions/upload",
-                    data=data,
-                    files=files,
-                    headers=self.api._headers(),
+    def _upload_via_presigned(
+        self,
+        model_id: str,
+        file_path: str,
+        file_size: int,
+        version: str,
+        description: Optional[str] = None,
+    ) -> dict[str, Any]:
+        """Upload a large file directly to S3 via a presigned PUT URL."""
+        import os
+
+        filename = os.path.basename(file_path)
+
+        # Step 1: Get presigned upload URL from server.
+        with httpx.Client(timeout=30.0) as client:
+            url_resp = client.post(
+                f"{self.api.api_base}/models/{model_id}/versions/upload-url",
+                data={
+                    "version": version,
+                    "filename": filename,
+                    "content_type": "application/octet-stream",
+                },
+                headers=self.api._headers(),
+            )
+        if url_resp.status_code >= 400:
+            raise OctomilClientError(f"Failed to get upload URL: {url_resp.text}")
+        url_data = url_resp.json()
+        presigned_url = url_data["upload_url"]
+        storage_key = url_data["storage_key"]
+
+        # Step 2: PUT the file directly to S3.
+        upload_timeout = max(600.0, file_size / (1024 * 1024))  # ~1s per MB minimum
+        with open(file_path, "rb") as f:
+            with httpx.Client(timeout=upload_timeout) as client:
+                put_resp = client.put(
+                    presigned_url,
+                    content=f,
+                    headers={"Content-Type": "application/octet-stream"},
                 )
-        if res.status_code >= 400:
-            raise OctomilClientError(res.text)
-        return res.json()
+        if put_resp.status_code >= 400:
+            raise OctomilClientError(f"S3 upload failed ({put_resp.status_code}): {put_resp.text}")
+
+        # Step 3: Confirm upload with the server to create version record.
+        with httpx.Client(timeout=30.0) as client:
+            confirm_resp = client.post(
+                f"{self.api.api_base}/models/{model_id}/versions/confirm-upload",
+                data={
+                    "version": version,
+                    "storage_key": storage_key,
+                    "file_size": str(file_size),
+                    "description": description or "",
+                },
+                headers=self.api._headers(),
+            )
+        if confirm_resp.status_code >= 400:
+            raise OctomilClientError(f"Upload confirmation failed: {confirm_resp.text}")
+        return confirm_resp.json()
 
     def publish_version(self, model_id: str, version: str) -> dict[str, Any]:
         return self.api.post(f"/models/{model_id}/versions/{version}/publish", {})

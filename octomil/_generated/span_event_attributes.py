@@ -17,6 +17,8 @@ OCTOMIL_DOWNLOAD_BYTES = "octomil.download.bytes"
 OCTOMIL_CHECKSUM_ALGORITHM = "octomil.checksum.algorithm"
 OCTOMIL_RUNTIME_EXECUTOR = "octomil.runtime.executor"
 OCTOMIL_RUNTIME_INIT_MS = "octomil.runtime.init_ms"
+OCTOMIL_TOOL_EXTRACTION_STRATEGY = "octomil.tool.extraction_strategy"
+OCTOMIL_TOOL_RAW_TEXT_PREVIEW = "octomil.tool.raw_text_preview"
 
 EVENT_REQUIRED_ATTRIBUTES: dict[str, list[str]] = {
     "first_token": ["octomil.ttft_ms"],
@@ -28,4 +30,6 @@ EVENT_REQUIRED_ATTRIBUTES: dict[str, list[str]] = {
     "download_completed": ["octomil.download.duration_ms", "octomil.download.bytes"],
     "checksum_verified": [],
     "runtime_initialized": ["octomil.runtime.executor", "octomil.runtime.init_ms"],
+    "tool_call_parse_succeeded": ["octomil.tool.name", "octomil.tool.extraction_strategy"],
+    "tool_call_parse_failed": ["octomil.tool.extraction_strategy"],
 }

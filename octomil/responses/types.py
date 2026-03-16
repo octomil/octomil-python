@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Optional
+from typing import Any, Optional, Union
 
 # -- Content Parts (multimodal input) --
 
@@ -36,7 +36,7 @@ class FileContent:
 
 
 # Union type for content parts
-ContentPart = TextContent | ImageContent | AudioContent | FileContent
+ContentPart = Union[TextContent, ImageContent, AudioContent, FileContent]
 
 
 # -- Input Items --
@@ -64,7 +64,7 @@ class ToolResultInput:
     content: str
 
 
-InputItem = SystemInput | UserInput | AssistantInput | ToolResultInput
+InputItem = Union[SystemInput, UserInput, AssistantInput, ToolResultInput]
 
 
 # -- Tool Call --
@@ -147,7 +147,7 @@ class JsonOutput:
     json: str
 
 
-OutputItem = TextOutput | ToolCallOutput | JsonOutput
+OutputItem = Union[TextOutput, ToolCallOutput, JsonOutput]
 
 
 # -- Usage --
@@ -198,7 +198,7 @@ class ErrorEvent:
     error: Exception
 
 
-ResponseStreamEvent = TextDeltaEvent | ToolCallDeltaEvent | DoneEvent | ErrorEvent
+ResponseStreamEvent = Union[TextDeltaEvent, ToolCallDeltaEvent, DoneEvent, ErrorEvent]
 
 
 # -- Convenience constructors --

@@ -206,10 +206,12 @@ class TestCatalogClientV2:
 
         assert isinstance(manifest, dict)
         assert "gemma-2" in manifest
+        assert "gemma-3" in manifest
         assert "qwen2.5" in manifest
         assert "whisper" in manifest
         # Each family has variants
         assert "gemma-2-2b" in manifest["gemma-2"]["variants"]
+        assert "gemma3-1b" in manifest["gemma-3"]["variants"]
         assert "qwen2.5-3b" in manifest["qwen2.5"]["variants"]
         assert "whisper-large-v3" in manifest["whisper"]["variants"]
 
@@ -224,8 +226,11 @@ class TestCatalogClientV2:
         assert client._fetcher._cached is None
 
     def test_embedded_manifest_has_blessed_models(self) -> None:
-        """Embedded manifest should contain the 3 blessed model families."""
+        """Embedded manifest should contain the 6 blessed model families."""
         assert "gemma-2" in EMBEDDED_MANIFEST
+        assert "gemma-3" in EMBEDDED_MANIFEST
+        assert "llama-3.2" in EMBEDDED_MANIFEST
+        assert "phi-4" in EMBEDDED_MANIFEST
         assert "qwen2.5" in EMBEDDED_MANIFEST
         assert "whisper" in EMBEDDED_MANIFEST
 

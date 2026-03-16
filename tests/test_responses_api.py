@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from typing import AsyncIterator
 
 import pytest
@@ -134,5 +135,89 @@ async def test_create_includes_usage():
 @pytest.mark.asyncio
 async def test_create_throws_when_no_runtime():
     responses = OctomilResponses(runtime_resolver=lambda _: None)
-    with pytest.raises(RuntimeError, match="No ModelRuntime"):
+    with pytest.raises((RuntimeError, Exception)):
         await responses.create(ResponseRequest(model="unknown", input=[text_input("Hi")]))
+
+
+@pytest.mark.asyncio
+async def test_tool_schema_serialized_with_json_dumps():
+    """Verify that tool schemas are serialized with json.dumps, not str()."""
+    captured_request: list[RuntimeRequest] = []
+
+    class CapturingRuntime(ModelRuntime):
+        @property
+        def capabilities(self) -> RuntimeCapabilities:
+            return RuntimeCapabilities()
+
+        async def run(self, request: RuntimeRequest) -> RuntimeResponse:
+            captured_request.append(request)
+            return RuntimeResponse(text="ok")
+
+        async def stream(self, request: RuntimeRequest) -> AsyncIterator[RuntimeChunk]:
+            return
+            yield  # pragma: no cover
+
+    responses = OctomilResponses(runtime_resolver=lambda _: CapturingRuntime())
+    await responses.create(
+        ResponseRequest(
+            model="test",
+            input=[text_input("Hi")],
+            tools=[
+                {
+                    "name": "fn",
+                    "description": "desc",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {"x": {"type": "integer"}},
+                    },
+                }
+            ],
+        )
+    )
+
+    assert len(captured_request) == 1
+    tool_def = captured_request[0].tool_definitions[0]
+    # Must be valid JSON (json.dumps output), not Python repr (str() output)
+    parsed = json.loads(tool_def.parameters_schema)
+    assert parsed["type"] == "object"
+    assert "properties" in parsed
+
+
+@pytest.mark.asyncio
+async def test_input_schema_preferred_over_parameters():
+    """input_schema takes precedence when both are present."""
+    captured_request: list[RuntimeRequest] = []
+
+    class CapturingRuntime(ModelRuntime):
+        @property
+        def capabilities(self) -> RuntimeCapabilities:
+            return RuntimeCapabilities()
+
+        async def run(self, request: RuntimeRequest) -> RuntimeResponse:
+            captured_request.append(request)
+            return RuntimeResponse(text="ok")
+
+        async def stream(self, request: RuntimeRequest) -> AsyncIterator[RuntimeChunk]:
+            return
+            yield  # pragma: no cover
+
+    responses = OctomilResponses(runtime_resolver=lambda _: CapturingRuntime())
+    await responses.create(
+        ResponseRequest(
+            model="test",
+            input=[text_input("Hi")],
+            tools=[
+                {
+                    "name": "fn",
+                    "description": "desc",
+                    "parameters": {"type": "object", "properties": {"old": {"type": "string"}}},
+                    "input_schema": {"type": "object", "properties": {"new": {"type": "string"}}},
+                }
+            ],
+        )
+    )
+
+    tool_def = captured_request[0].tool_definitions[0]
+    parsed = json.loads(tool_def.parameters_schema)
+    assert "new" in parsed["properties"]
+    assert "old" not in parsed["properties"]

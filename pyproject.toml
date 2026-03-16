@@ -83,6 +83,7 @@ test = [
   "uvicorn[standard]>=0.20.0",
   "flwr-datasets>=0.3.0",
   "eth-account>=0.10.0",
+  "httpx>=0.25.0",
 ]
 dev = [
   "pytest>=7.0.0",
