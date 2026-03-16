@@ -20,9 +20,11 @@ from typing import Optional as _Optional
 from . import _generated as contracts  # noqa: F401
 from . import responses  # noqa: F401
 from .auth import AuthConfig, DeviceTokenAuth, OrgApiKeyAuth
+from .auth_config import AnonymousAuth, BootstrapTokenAuth, DeviceAuthConfig, PublishableKeyAuth
 from .capabilities_client import CapabilitiesClient, CapabilityProfile
 from .chat_client import ChatChunk, ChatClient, ChatCompletion
 from .client import OctomilClient
+from .configure import configure, get_device_context
 from .control import DeviceRegistration, HeartbeatResponse, OctomilControl
 from .decomposer import (
     DecompositionResult,
@@ -31,6 +33,7 @@ from .decomposer import (
     SubTask,
     SubTaskResult,
 )
+from .device_context import DeviceContext, RegistrationState, TokenState
 from .embeddings import (
     EmbeddingResult,
     EmbeddingUsage,
@@ -58,6 +61,7 @@ from .models import (
     is_moe_model,
     list_moe_models,
 )
+from .monitoring_config import MonitoringConfig
 from .routing import (
     DecomposedRoutingDecision,
     ModelInfo,
@@ -312,4 +316,14 @@ __all__ = [
     "HeartbeatResponse",
     "OctomilError",
     "OctomilErrorCode",
+    "PublishableKeyAuth",
+    "BootstrapTokenAuth",
+    "AnonymousAuth",
+    "DeviceAuthConfig",
+    "configure",
+    "get_device_context",
+    "DeviceContext",
+    "RegistrationState",
+    "TokenState",
+    "MonitoringConfig",
 ]
