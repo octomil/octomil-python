@@ -130,6 +130,7 @@ class TestReconcile:
         db, registry, downloader, verifier, policy, scheduler, tel_store = components
         manifest = json.dumps({"files": []})
         registry.register_artifact("art1", "m1", "v1", manifest, 100)
+        policy.update_device_state(network_type="wifi")
 
         loop = ArtifactLoop(
             model_registry=registry,
@@ -149,6 +150,7 @@ class TestReconcile:
         db, registry, downloader, verifier, policy, scheduler, tel_store = components
         manifest = json.dumps({"files": []})
         registry.register_artifact("art1", "m1", "v1", manifest, 100)
+        policy.update_device_state(network_type="wifi")
 
         loop = ArtifactLoop(
             model_registry=registry,
