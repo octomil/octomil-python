@@ -18,6 +18,7 @@ EMBEDDED_MANIFEST: dict = {
         "vendor": "Google",
         "description": "Google Gemma 2 family of lightweight open models",
         "modalities": ["text"],
+        "capabilities": ["chat"],
         "license": "gemma",
         "homepage_url": "https://ai.google.dev/gemma",
         "variants": {
@@ -200,7 +201,8 @@ EMBEDDED_MANIFEST: dict = {
         "id": "gemma-3",
         "vendor": "Google",
         "description": "Google Gemma 3 multimodal models with vision support",
-        "modalities": ["text", "vision"],
+        "modalities": ["text", "image"],
+        "capabilities": ["chat"],
         "license": "gemma",
         "homepage_url": "https://ai.google.dev/gemma",
         "variants": {
@@ -453,6 +455,7 @@ EMBEDDED_MANIFEST: dict = {
         "vendor": "Meta",
         "description": "Meta Llama 3.2 lightweight instruction-tuned models",
         "modalities": ["text"],
+        "capabilities": ["chat"],
         "license": "llama3.2",
         "homepage_url": "https://llama.meta.com/",
         "variants": {
@@ -601,6 +604,7 @@ EMBEDDED_MANIFEST: dict = {
         "vendor": "Microsoft",
         "description": "Microsoft Phi 4 state-of-the-art 14B open model",
         "modalities": ["text"],
+        "capabilities": ["chat"],
         "license": "mit",
         "homepage_url": "https://azure.microsoft.com/en-us/products/phi",
         "variants": {
@@ -680,6 +684,7 @@ EMBEDDED_MANIFEST: dict = {
         "vendor": "Alibaba",
         "description": "Qwen 2.5 instruction-tuned models with 128K context",
         "modalities": ["text"],
+        "capabilities": ["chat"],
         "license": "apache-2.0",
         "homepage_url": "https://qwenlm.github.io/",
         "variants": {
@@ -1122,6 +1127,7 @@ EMBEDDED_MANIFEST: dict = {
         "vendor": "OpenAI",
         "description": "OpenAI Whisper automatic speech recognition models",
         "modalities": ["audio"],
+        "capabilities": ["transcription"],
         "license": "mit",
         "homepage_url": "https://github.com/openai/whisper",
         "variants": {
@@ -1321,7 +1327,8 @@ EMBEDDED_MANIFEST: dict = {
         "id": "smolvlm2",
         "vendor": "HuggingFace",
         "description": "HuggingFace SmolVLM2 multimodal vision-language models",
-        "modalities": ["multimodal"],
+        "modalities": ["text", "image", "video"],
+        "capabilities": ["chat"],
         "license": "apache-2.0",
         "homepage_url": "https://huggingface.co/collections/HuggingFaceTB/smolvlm2",
         "variants": {
@@ -1414,6 +1421,7 @@ EMBEDDED_MANIFEST: dict = {
         "vendor": "HuggingFace",
         "description": "HuggingFace SmolLM2 compact language models for on-device text generation",
         "modalities": ["text"],
+        "capabilities": ["text_completion", "keyboard_prediction"],
         "license": "apache-2.0",
         "homepage_url": "https://huggingface.co/collections/HuggingFaceTB/smollm2",
         "variants": {
