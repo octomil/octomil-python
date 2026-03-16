@@ -10,3 +10,5 @@ class AuthType(str, Enum):
     """Short-lived device access token (JWT with typ=device_access)"""
     SERVICE_TOKEN = "service_token"
     """Internal service-to-service token"""
+    PUBLISHABLE_KEY = "publishable_key"
+    """Client-safe API key with restricted scopes, safe to embed in mobile apps and browser code."""

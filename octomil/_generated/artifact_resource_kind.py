@@ -26,5 +26,7 @@ class ArtifactResourceKind(str, Enum):
     """Package manifest with entrypoints and metadata"""
     SIGNATURE = "signature"
     """Cryptographic signature or checksum file"""
+    PROJECTOR = "projector"
+    """Multimodal projection weights (mmproj GGUF for vision/audio encoders)"""
     METADATA = "metadata"
     """Additional metadata file"""
