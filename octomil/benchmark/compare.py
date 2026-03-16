@@ -20,15 +20,6 @@ MIN_TTFT_THRESHOLD_MS = 1.0
 
 
 @dataclass
-class BaselineEntry:
-    """A single metric entry from the baseline file."""
-
-    metric: str
-    value: float
-    unit: str
-
-
-@dataclass
 class Baseline:
     """Parsed baseline containing TTFT p95 and optional extra metrics."""
 
