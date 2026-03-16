@@ -167,6 +167,45 @@ class OctomilControl:
             self._heartbeat_thread.join(timeout=5.0)
             self._heartbeat_thread = None
 
+    def report_observed_state(
+        self,
+        device_id: Optional[str] = None,
+        artifact_statuses: Optional[list[dict[str, Any]]] = None,
+    ) -> dict[str, Any]:
+        """POST observed device state to the server.
+
+        Conforms to ``devices.observed_state`` contract (1.4.0).  Reports
+        artifact download progress, active model pointer, and runtime
+        metadata so the server can reconcile desired vs observed state.
+
+        Args:
+            device_id: Explicit device id override.  Falls back to the
+                server-assigned id from ``register()``.
+            artifact_statuses: List of per-artifact status dicts, each
+                containing at minimum ``artifactId`` and ``status``.
+
+        Returns:
+            Server acknowledgement dict.
+
+        Raises:
+            RuntimeError: If no device id is available (not registered).
+        """
+        effective_id = device_id or self._server_device_id
+        if not effective_id:
+            raise RuntimeError("Device not registered. Call register() first.")
+
+        now = datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+        payload: dict[str, Any] = {
+            "schemaVersion": "1.4.0",
+            "deviceId": effective_id,
+            "reportedAt": now,
+            "artifactStatuses": artifact_statuses or [],
+            "sdkVersion": _get_sdk_version(),
+            "osVersion": platform.platform(),
+        }
+
+        return self._api.post(f"/devices/{effective_id}/observed-state", payload)
+
     def _heartbeat_loop(self, interval: float) -> None:
         while not self._heartbeat_stop.wait(timeout=interval):
             try:
