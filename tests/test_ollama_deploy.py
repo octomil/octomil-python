@@ -194,7 +194,11 @@ class TestDeployOllamaUri:
             quantization="Q4_K_M",
         )
 
-        mock_check = MagicMock(status_code=200, json=MagicMock(return_value={"name": "gemma"}))
+        mock_list_resp = MagicMock(
+            status_code=200,
+            json=MagicMock(return_value={"models": [{"name": "gemma", "id": "m-oll"}]}),
+        )
+        mock_versions_resp = MagicMock(status_code=200, json=MagicMock(return_value=[{"version": "1.0.0"}]))
         mock_post_resp = MagicMock(
             status_code=200,
             json=MagicMock(
@@ -207,7 +211,7 @@ class TestDeployOllamaUri:
         mock_poll_resp = MagicMock(status_code=200, json=MagicMock(return_value={"status": "done"}))
 
         mock_client = MagicMock()
-        mock_client.request.side_effect = [mock_check, mock_post_resp, mock_poll_resp]
+        mock_client.request.side_effect = [mock_list_resp, mock_versions_resp, mock_post_resp, mock_poll_resp]
         mock_client.__enter__ = MagicMock(return_value=mock_client)
         mock_client.__exit__ = MagicMock(return_value=False)
 
