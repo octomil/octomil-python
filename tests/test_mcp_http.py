@@ -200,7 +200,7 @@ class TestRESTEndpoints:
         ]
         mock_registry = MagicMock()
         mock_registry.detect_all.return_value = fake_results
-        with patch("octomil.runtime.engines.registry.get_registry", return_value=mock_registry):
+        with patch("octomil.runtime.engines.get_registry", return_value=mock_registry):
             resp = await client.post("/api/v1/detect_engines", json={})
 
         assert resp.status_code == 200
@@ -284,7 +284,7 @@ class TestPhase2Endpoints:
         ranked = [FakeRankedBenchmark(engine=FakeEnginePlugin("mlx-lm"))]
         mock_registry = MagicMock()
         mock_registry.benchmark_all.return_value = ranked
-        with patch("octomil.runtime.engines.registry.get_registry", return_value=mock_registry):
+        with patch("octomil.runtime.engines.get_registry", return_value=mock_registry):
             resp = await client.post("/api/v1/benchmark_model", json={"model_name": "gemma-3b"})
         assert resp.status_code == 200
         data = resp.json()
