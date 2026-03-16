@@ -84,7 +84,6 @@ test = [
   "flwr-datasets>=0.3.0",
   "eth-account>=0.10.0",
   "httpx>=0.25.0",
-  "mcp[cli]>=1.2.0; python_version>='3.10'",
 ]
 dev = [
   "pytest>=7.0.0",
