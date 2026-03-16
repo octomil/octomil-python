@@ -44,6 +44,77 @@ r = client.chat.completions.create(
 print(r.choices[0].message.content)
 ```
 
+## Native API
+
+The `responses` API is the primary Octomil interface. It gives you local inference, routing policies, multimodal inputs, and conversation threading — use it for all new code.
+
+### responses.create
+
+```python
+import asyncio
+from octomil.responses import OctomilResponses, ResponseRequest, text_input
+
+responses = OctomilResponses()
+
+async def main():
+    result = await responses.create(ResponseRequest(
+        model="gemma-1b",
+        input=[text_input("Explain quantum computing in one sentence")],
+    ))
+    print(result.output[0].text)
+
+asyncio.run(main())
+```
+
+Pass a plain string as shorthand:
+
+```python
+result = await responses.create(ResponseRequest.text("gemma-1b", "Hello"))
+print(result.output[0].text)
+```
+
+### responses.stream
+
+```python
+import asyncio
+from octomil.responses import OctomilResponses, ResponseRequest, TextDeltaEvent, DoneEvent, text_input
+
+responses = OctomilResponses()
+
+async def main():
+    async for event in responses.stream(ResponseRequest(
+        model="gemma-1b",
+        input=[text_input("Write a haiku about the ocean")],
+    )):
+        if isinstance(event, TextDeltaEvent):
+            print(event.delta, end="", flush=True)
+        elif isinstance(event, DoneEvent):
+            print()
+            print(f"Tokens used: {event.response.usage.total_tokens}")
+
+asyncio.run(main())
+```
+
+### With system instructions and conversation threading
+
+```python
+result1 = await responses.create(ResponseRequest(
+    model="gemma-1b",
+    input=[text_input("My name is Alice.")],
+    instructions="You are a helpful assistant.",
+))
+
+# Continue the conversation by referencing the previous response
+result2 = await responses.create(ResponseRequest(
+    model="gemma-1b",
+    input=[text_input("What's my name?")],
+    previous_response_id=result1.id,
+))
+print(result2.output[0].text)  # "Your name is Alice."
+```
+
+The OpenAI-compatible `/v1/chat/completions` endpoint remains available for existing integrations. See [Migrating from OpenAI](#migrating-from-openai) if you are switching from the OpenAI SDK.
+
 ## Features
 
 **Auto engine selection** -- benchmarks all available engines and picks the fastest:
@@ -231,6 +302,24 @@ octomil serve gemma-1b
 | Cost per inference               | $0 (your hardware)   | $0                      | $0                     | $0.01-0.10 |
 | 60+ models in catalog            | yes                  | yes (different catalog) | yes (manual download)  | varies     |
 | Python SDK                       | yes                  | yes                     | community              | yes        |
+
+## Migrating from OpenAI
+
+Octomil is wire-compatible with the OpenAI API. Change two lines:
+
+```python
+# Before
+from openai import OpenAI
+client = OpenAI(api_key="sk-...")
+
+# After (local inference — no API key needed)
+from openai import OpenAI
+client = OpenAI(base_url="http://localhost:8080/v1", api_key="unused")
+```
+
+That's it. `chat.completions.create`, streaming, tool calls, and audio transcriptions all work without further changes.
+
+For a full guide including model name mapping, error code mapping, and a comparison of what's different: [docs/migration-from-openai.md](docs/migration-from-openai.md)
 
 ## SDKs
 
