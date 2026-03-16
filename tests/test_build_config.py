@@ -14,21 +14,35 @@ import pytest
 
 ROOT = Path(__file__).resolve().parent.parent
 
+# Build artifacts that only exist during release builds
+_SPEC_FILE = ROOT / "octomil.spec"
+_FORMULA_FILE = ROOT / "homebrew" / "octomil.rb"
+
+_skip_no_spec = pytest.mark.skipif(
+    not _SPEC_FILE.is_file(),
+    reason="octomil.spec not present (only exists during release builds)",
+)
+_skip_no_formula = pytest.mark.skipif(
+    not _FORMULA_FILE.is_file(),
+    reason="homebrew/octomil.rb not present (only exists during release builds)",
+)
+
 
 # ---------------------------------------------------------------------------
 # PyInstaller spec
 # ---------------------------------------------------------------------------
 
 
+@_skip_no_spec
 class TestPyInstallerSpec:
     """Validate octomil.spec contents."""
 
     @pytest.fixture()
     def spec_content(self) -> str:
-        return (ROOT / "octomil.spec").read_text()
+        return _SPEC_FILE.read_text()
 
     def test_spec_file_exists(self) -> None:
-        assert (ROOT / "octomil.spec").is_file()
+        assert _SPEC_FILE.is_file()
 
     def test_spec_is_valid_python(self, spec_content: str) -> None:
         """The spec file must be parseable Python."""
@@ -185,15 +199,16 @@ class TestInstallScript:
 # ---------------------------------------------------------------------------
 
 
+@_skip_no_formula
 class TestHomebrewFormula:
     """Validate homebrew/octomil.rb."""
 
     @pytest.fixture()
     def formula_content(self) -> str:
-        return (ROOT / "homebrew" / "octomil.rb").read_text()
+        return _FORMULA_FILE.read_text()
 
     def test_formula_exists(self) -> None:
-        assert (ROOT / "homebrew" / "octomil.rb").is_file()
+        assert _FORMULA_FILE.is_file()
 
     def test_formula_class_name(self, formula_content: str) -> None:
         assert "class Octomil < Formula" in formula_content
@@ -255,7 +270,7 @@ class TestReleaseWorkflow:
         assert "pyinstaller" in workflow_content.lower()
 
     def test_workflow_runs_pyinstaller(self, workflow_content: str) -> None:
-        assert "pyinstaller octomil.spec" in workflow_content
+        assert "pyinstaller packaging/octomil.spec" in workflow_content
 
     def test_workflow_verifies_binary(self, workflow_content: str) -> None:
         assert "--version" in workflow_content
@@ -286,11 +301,12 @@ class TestReleaseWorkflow:
 class TestConsistency:
     """Verify files are consistent with each other and the project."""
 
+    @_skip_no_spec
     def test_spec_entry_point_matches_pyproject(self) -> None:
         """octomil.spec should use the same entry point as pyproject.toml."""
         pyproject_content = (ROOT / "pyproject.toml").read_text()
         assert "octomil.cli:main" in pyproject_content
-        spec_content = (ROOT / "octomil.spec").read_text()
+        spec_content = _SPEC_FILE.read_text()
         assert "octomil/__main__.py" in spec_content
 
     def test_all_engines_in_spec(self) -> None:
@@ -311,19 +327,20 @@ class TestConsistency:
     def test_github_repo_consistent(self) -> None:
         """All files should reference the same GitHub repo."""
         repo = "octomil/octomil-python"
-        for path in [
-            ROOT / "scripts" / "install.sh",
-            ROOT / "homebrew" / "octomil.rb",
-        ]:
+        paths = [ROOT / "scripts" / "install.sh"]
+        if _FORMULA_FILE.is_file():
+            paths.append(_FORMULA_FILE)
+        for path in paths:
             content = path.read_text()
             assert repo in content, f"{path.name} missing repo reference"
 
+    @_skip_no_formula
     def test_version_in_formula_matches_pyproject(self) -> None:
         """The formula version should match pyproject.toml version."""
         import re
 
         pyproject_content = (ROOT / "pyproject.toml").read_text()
-        formula_content = (ROOT / "homebrew" / "octomil.rb").read_text()
+        formula_content = _FORMULA_FILE.read_text()
         # Extract version from pyproject.toml and formula, then compare
         pyproject_match = re.search(r'version\s*=\s*"([^"]+)"', pyproject_content)
         formula_match = re.search(r'version "([^"]+)"', formula_content)
