@@ -88,32 +88,55 @@ class TestChatChunk:
 
 class TestChatClientCreate:
     def test_returns_chat_completion(self):
-        tokens = [
-            StreamToken(token="Hi", done=False),
-            StreamToken(token=" there", done=True),
-        ]
-        with patch("octomil.streaming.stream_inference", return_value=iter(tokens)):
-            client = _make_client()
-            result = client.chat.create(
-                model="phi-4-mini",
-                messages=[{"role": "user", "content": "hello"}],
-            )
+        from octomil.responses.types import Response, TextOutput
+
+        fake_response = Response(
+            id="resp-1",
+            model="phi-4-mini",
+            output=[TextOutput(text="Hi there")],
+            finish_reason="stop",
+        )
+
+        async def _mock_create(request):
+            return fake_response
+
+        client = _make_client()
+        mock_responses = MagicMock()
+        mock_responses.create = _mock_create
+        client._responses = mock_responses
+        result = client.chat.create(
+            model="phi-4-mini",
+            messages=[{"role": "user", "content": "hello"}],
+        )
         assert isinstance(result, ChatCompletion)
         assert result.message["role"] == "assistant"
         assert result.message["content"] == "Hi there"
         assert result.latency_ms > 0
 
     def test_passes_params(self):
-        tokens = [StreamToken(token="ok", done=True)]
-        with patch("octomil.streaming.stream_inference", return_value=iter(tokens)):
-            client = _make_client()
-            result = client.chat.create(
-                model="m",
-                messages=[{"role": "user", "content": "x"}],
-                temperature=0.3,
-                max_tokens=100,
-                top_p=0.9,
-            )
+        from octomil.responses.types import Response, TextOutput
+
+        fake_response = Response(
+            id="resp-2",
+            model="m",
+            output=[TextOutput(text="ok")],
+            finish_reason="stop",
+        )
+
+        async def _mock_create(request):
+            return fake_response
+
+        client = _make_client()
+        mock_responses = MagicMock()
+        mock_responses.create = _mock_create
+        client._responses = mock_responses
+        result = client.chat.create(
+            model="m",
+            messages=[{"role": "user", "content": "x"}],
+            temperature=0.3,
+            max_tokens=100,
+            top_p=0.9,
+        )
         assert isinstance(result, ChatCompletion)
 
 
@@ -135,33 +158,38 @@ class TestChatClientBackwardCompat:
 
 class TestChatClientStream:
     def test_yields_chat_chunks(self):
-        tokens = [
-            StreamToken(token="A", done=False),
-            StreamToken(token="B", done=True),
-        ]
+        from octomil.responses.types import DoneEvent, Response, TextDeltaEvent, TextOutput
 
         async def _run():
-            with patch("octomil.streaming.stream_inference_async") as mock_stream:
+            async def _fake_stream(request):
+                yield TextDeltaEvent(delta="A")
+                yield TextDeltaEvent(delta="B")
+                yield DoneEvent(
+                    response=Response(
+                        id="resp-s1",
+                        model="phi-4-mini",
+                        output=[TextOutput(text="AB")],
+                        finish_reason="stop",
+                    )
+                )
 
-                async def _fake_stream(*a, **kw):
-                    for t in tokens:
-                        yield t
-
-                mock_stream.return_value = _fake_stream()
-                client = _make_client()
-                chunks = []
-                async for chunk in client.chat.stream(
-                    model="phi-4-mini",
-                    messages=[{"role": "user", "content": "hi"}],
-                ):
-                    chunks.append(chunk)
+            client = _make_client()
+            mock_responses = MagicMock()
+            mock_responses.stream = _fake_stream
+            client._responses = mock_responses
+            chunks = []
+            async for chunk in client.chat.stream(
+                model="phi-4-mini",
+                messages=[{"role": "user", "content": "hi"}],
+            ):
+                chunks.append(chunk)
             return chunks
 
         chunks = asyncio.run(_run())
-        assert len(chunks) == 2
+        assert len(chunks) == 3
         assert all(isinstance(c, ChatChunk) for c in chunks)
         assert chunks[0].content == "A"
-        assert chunks[1].done is True
+        assert chunks[2].done is True
 
 
 class TestChatClientPropertyCached:
