@@ -191,14 +191,20 @@ class TestDashboardCommand:
 
 
 class TestDeployCommand:
-    @patch("octomil.commands.deploy.webbrowser.open")
-    def test_deploy_phone(self, mock_open, monkeypatch):
+    def test_deploy_phone(self, monkeypatch):
         monkeypatch.setenv("OCTOMIL_API_KEY", "test-key")
 
-        # Mock the model registry check (returns 200 = model exists)
-        mock_check_resp = MagicMock()
-        mock_check_resp.status_code = 200
-        mock_check_resp.json.return_value = {"name": "gemma-1b"}
+        # Mock the model list endpoint (returns models list with matching name)
+        mock_list_resp = MagicMock()
+        mock_list_resp.status_code = 200
+        mock_list_resp.json.return_value = {
+            "models": [{"name": "gemma-1b", "id": "model-123"}],
+        }
+
+        # Mock the versions check (model has at least one version)
+        mock_versions_resp = MagicMock()
+        mock_versions_resp.status_code = 200
+        mock_versions_resp.json.return_value = [{"version": "1.0.0"}]
 
         # Mock pairing session creation
         mock_post_resp = MagicMock()
@@ -215,7 +221,8 @@ class TestDeployCommand:
         # http_request uses httpx.Client().request(), not httpx.post/get
         mock_client_instance = MagicMock()
         mock_client_instance.request.side_effect = [
-            mock_check_resp,
+            mock_list_resp,
+            mock_versions_resp,
             mock_post_resp,
             mock_poll_resp,
         ]
@@ -232,11 +239,7 @@ class TestDeployCommand:
 
         assert result.exit_code == 0, f"CLI failed: {result.output}"
         assert "ABC123" in result.output
-        mock_open.assert_called_once()
-        call_url = mock_open.call_args[0][0]
-        assert call_url.startswith("octomil://pair?")
-        assert "token=ABC123" in call_url
-        assert "host=" in call_url
+        assert "Deployment complete" in result.output
 
     @patch("octomil.commands.deploy._get_client")
     def test_deploy_rollout(self, mock_get_client, monkeypatch):

@@ -345,30 +345,35 @@ class TestResolutionContextFlow:
         from octomil.sources.resolver import _manifest_to_aliases
 
         manifest = {
-            "models": [
-                {
-                    "id": "qwen2.5-7b",
-                    "packages": [
-                        {
-                            "runtime_executor": "llamacpp",
-                            "artifact_format": "gguf",
-                            "quantization": "Q4_K_M",
-                            "resources": [
-                                {
-                                    "kind": "weights",
-                                    "uri": "hf://Qwen/Qwen2.5-7B-Instruct-GGUF",
-                                    "metadata": {
-                                        "uri_type": "repo",
-                                        "quantization": "q4_k_m",
+            "qwen2.5": {
+                "variants": {
+                    "qwen2.5-7b": {
+                        "versions": {
+                            "1.0.0": {
+                                "packages": [
+                                    {
+                                        "runtime_executor": "llamacpp",
                                         "artifact_format": "gguf",
-                                        "revision": "abc123",
-                                    },
-                                }
-                            ],
-                        }
-                    ],
-                }
-            ],
+                                        "quantization": "Q4_K_M",
+                                        "resources": [
+                                            {
+                                                "kind": "weights",
+                                                "uri": "hf://Qwen/Qwen2.5-7B-Instruct-GGUF",
+                                                "metadata": {
+                                                    "uri_type": "repo",
+                                                    "quantization": "q4_k_m",
+                                                    "artifact_format": "gguf",
+                                                    "revision": "abc123",
+                                                },
+                                            }
+                                        ],
+                                    }
+                                ],
+                            }
+                        },
+                    }
+                },
+            },
         }
 
         aliases = _manifest_to_aliases(manifest)
@@ -387,25 +392,30 @@ class TestResolutionContextFlow:
         from octomil.sources.resolver import _manifest_to_aliases
 
         manifest = {
-            "models": [
-                {
-                    "id": "qwen2.5-3b",
-                    "packages": [
-                        {
-                            "runtime_executor": "llamacpp",
-                            "artifact_format": "gguf",
-                            "quantization": "Q4_K_M",
-                            "resources": [
-                                {
-                                    "kind": "weights",
-                                    "uri": "hf://Qwen/Qwen2.5-3B-Instruct-GGUF/qwen2.5-3b-instruct-q4_k_m.gguf",
-                                    "metadata": {"uri_type": "file"},
-                                }
-                            ],
-                        }
-                    ],
-                }
-            ],
+            "qwen2.5": {
+                "variants": {
+                    "qwen2.5-3b": {
+                        "versions": {
+                            "1.0.0": {
+                                "packages": [
+                                    {
+                                        "runtime_executor": "llamacpp",
+                                        "artifact_format": "gguf",
+                                        "quantization": "Q4_K_M",
+                                        "resources": [
+                                            {
+                                                "kind": "weights",
+                                                "uri": "hf://Qwen/Qwen2.5-3B-Instruct-GGUF/qwen2.5-3b-instruct-q4_k_m.gguf",
+                                                "metadata": {"uri_type": "file"},
+                                            }
+                                        ],
+                                    }
+                                ],
+                            }
+                        },
+                    }
+                },
+            },
         }
 
         aliases = _manifest_to_aliases(manifest)
@@ -421,19 +431,24 @@ class TestResolutionContextFlow:
         from octomil.sources.resolver import _manifest_to_aliases
 
         manifest = {
-            "models": [
-                {
-                    "id": "test-model",
-                    "packages": [
-                        {
-                            "runtime_executor": "ollama",
-                            "resources": [
-                                {"kind": "weights", "uri": "gemma3:1b"},
-                            ],
-                        }
-                    ],
-                }
-            ],
+            "test-family": {
+                "variants": {
+                    "test-model": {
+                        "versions": {
+                            "1.0.0": {
+                                "packages": [
+                                    {
+                                        "runtime_executor": "ollama",
+                                        "resources": [
+                                            {"kind": "weights", "uri": "gemma3:1b"},
+                                        ],
+                                    }
+                                ],
+                            }
+                        },
+                    }
+                },
+            },
         }
 
         aliases = _manifest_to_aliases(manifest)

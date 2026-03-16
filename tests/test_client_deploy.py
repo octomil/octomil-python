@@ -678,10 +678,13 @@ class TestCLIDeploy:
         mock_client.deploy.assert_called_once_with(
             "gemma-1b",
             version=None,
-            rollout=100,
-            strategy="canary",
+            rollout=10,
+            strategy="progressive-15m",
             devices=["dev-1", "dev-2"],
             group=None,
+            env=None,
+            sub_env=None,
+            schedule=None,
         )
 
     @patch("octomil.commands.deploy._get_client")
@@ -707,10 +710,13 @@ class TestCLIDeploy:
         mock_client.deploy.assert_called_once_with(
             "gemma-1b",
             version=None,
-            rollout=100,
-            strategy="canary",
+            rollout=10,
+            strategy="progressive-15m",
             devices=None,
             group="production",
+            env=None,
+            sub_env=None,
+            schedule=None,
         )
 
     @patch("octomil.commands.deploy._get_client")
@@ -773,7 +779,7 @@ class TestCLIDeploy:
         runner = CliRunner()
         result = runner.invoke(
             main,
-            ["deploy", "sentiment-v1", "--rollout", "10", "--strategy", "canary"],
+            ["deploy", "sentiment-v1", "--fleet", "--rollout", "10", "--strategy", "progressive-15m"],
         )
 
         assert result.exit_code == 0
@@ -782,11 +788,14 @@ class TestCLIDeploy:
             "sentiment-v1",
             version=None,
             rollout=10,
-            strategy="canary",
+            strategy="progressive-15m",
+            env=None,
+            sub_env=None,
+            schedule=None,
         )
 
     @patch("octomil.commands.deploy._get_client")
-    def test_cli_deploy_blue_green_strategy(self, mock_get_client):
+    def test_cli_deploy_instant_strategy(self, mock_get_client):
         from click.testing import CliRunner
 
         from octomil.cli import main
@@ -809,7 +818,7 @@ class TestCLIDeploy:
                 "--devices",
                 "dev-1",
                 "--strategy",
-                "blue_green",
+                "instant",
             ],
         )
 

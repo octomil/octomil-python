@@ -100,6 +100,12 @@ class TestFederationCreate:
             "octomil.cli_helpers.os.path.expanduser",
             lambda p: str(tmp_path / p.lstrip("~/")),
         )
+        # Prevent browser login flow from running — it starts HTTP servers
+        # and prompts for input, which is flaky in CLI test runners.
+        monkeypatch.setattr(
+            "octomil.commands.enterprise._browser_login",
+            lambda: None,
+        )
         runner = CliRunner()
         result = runner.invoke(main, ["federation", "create", "test"])
         assert result.exit_code != 0
