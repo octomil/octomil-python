@@ -162,8 +162,7 @@ class OperationScheduler:
         """Reclaim operations with expired leases. Returns reclaimed op_ids."""
         now = _now_iso()
         rows = self._db.execute(
-            "SELECT op_id FROM operations "
-            "WHERE state = 'LEASED' AND lease_expires_at < ?",
+            "SELECT op_id FROM operations WHERE state = 'LEASED' AND lease_expires_at < ?",
             (now,),
         )
         reclaimed = []
