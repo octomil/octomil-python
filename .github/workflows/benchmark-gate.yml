@@ -1,0 +1,131 @@
+name: Benchmark Regression Gate
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'octomil/**'
+      - 'scripts/run_benchmark.py'
+      - 'benchmarks/**'
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      update_baseline:
+        description: 'Update baseline after successful run'
+        required: false
+        default: 'false'
+        type: choice
+        options:
+          - 'true'
+          - 'false'
+
+concurrency:
+  group: benchmark-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions: {}
+
+jobs:
+  benchmark:
+    name: TTFT Regression Check
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[serve]"
+
+      - name: Run benchmark
+        id: bench
+        run: |
+          python scripts/run_benchmark.py \
+            --iterations 30 \
+            --warmup 5 \
+            --threshold 0.15 \
+            --json \
+            2>&1 | tee benchmark-output.txt
+
+          # Capture exit code
+          BENCH_EXIT=${PIPESTATUS[0]}
+          echo "exit_code=${BENCH_EXIT}" >> "$GITHUB_OUTPUT"
+
+          # Extract TTFT p95 from output for PR comment
+          TTFT_P95=$(grep 'TTFT p95:' benchmark-output.txt | awk '{print $3}' | tr -d 'ms')
+          echo "ttft_p95=${TTFT_P95}" >> "$GITHUB_OUTPUT"
+
+          exit $BENCH_EXIT
+
+      - name: Comment on PR
+        if: github.event_name == 'pull_request' && always()
+        uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea # v7
+        with:
+          script: |
+            const fs = require('fs');
+            const output = fs.readFileSync('benchmark-output.txt', 'utf8');
+            const passed = '${{ steps.bench.outputs.exit_code }}' === '0';
+            const icon = passed ? ':white_check_mark:' : ':x:';
+            const status = passed ? 'PASSED' : 'FAILED';
+
+            const body = `## ${icon} Benchmark Regression Gate ${status}
+
+            \`\`\`
+            ${output}
+            \`\`\`
+
+            **Threshold:** 15% regression on TTFT p95
+            `;
+
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: body,
+            });
+
+      - name: Update baseline (release builds)
+        if: >
+          startsWith(github.ref, 'refs/tags/v') &&
+          steps.bench.outputs.exit_code == '0'
+        run: |
+          python scripts/run_benchmark.py \
+            --iterations 30 \
+            --warmup 5 \
+            --update-baseline
+
+      - name: Update baseline (manual trigger)
+        if: >
+          github.event_name == 'workflow_dispatch' &&
+          github.event.inputs.update_baseline == 'true' &&
+          steps.bench.outputs.exit_code == '0'
+        run: |
+          python scripts/run_benchmark.py \
+            --iterations 30 \
+            --warmup 5 \
+            --update-baseline
+
+      - name: Commit updated baseline
+        if: >
+          (startsWith(github.ref, 'refs/tags/v') ||
+          (github.event_name == 'workflow_dispatch' && github.event.inputs.update_baseline == 'true')) &&
+          steps.bench.outputs.exit_code == '0'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add benchmarks/baseline.json
+          git diff --cached --quiet || \
+            (git commit -m "chore(bench): update baseline after ${GITHUB_REF_NAME}" && \
+             git push origin HEAD:main)
