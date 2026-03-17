@@ -282,6 +282,103 @@ class TestOctomilControlHeartbeatLoop(unittest.TestCase):
         self.assertGreaterEqual(call_count, 2)
 
 
+class TestOctomilControlFetchDesiredState(unittest.TestCase):
+    def test_fetch_desired_state_raises_when_not_registered(self):
+        api = _StubApi()
+        ctrl = OctomilControl(api=api, org_id="org_test")
+
+        with self.assertRaises(RuntimeError) as ctx:
+            ctrl.fetch_desired_state()
+        self.assertIn("not registered", str(ctx.exception).lower())
+
+    def test_fetch_desired_state_calls_correct_endpoint(self):
+        desired = {
+            "schema_version": "1.4.0",
+            "device_id": "dev_ds",
+            "artifacts": [{"artifact_id": "model-1", "version": "2.0"}],
+            "gc_eligible_artifact_ids": ["old-model"],
+        }
+        api = _StubApi(
+            responses={
+                ("post", "/devices/register"): {"id": "dev_ds"},
+                ("get", "/devices/dev_ds/desired-state"): desired,
+            }
+        )
+        ctrl = OctomilControl(api=api, org_id="org_test")
+        ctrl.register(device_id="dev")
+
+        result = ctrl.fetch_desired_state()
+
+        method, path, _ = api.calls[-1]
+        self.assertEqual(method, "get")
+        self.assertEqual(path, "/devices/dev_ds/desired-state")
+        self.assertEqual(result["schema_version"], "1.4.0")
+        self.assertEqual(len(result["artifacts"]), 1)
+
+    def test_fetch_desired_state_with_explicit_device_id(self):
+        desired = {"device_id": "explicit-dev", "artifacts": []}
+        api = _StubApi(
+            responses={
+                ("get", "/devices/explicit-dev/desired-state"): desired,
+            }
+        )
+        ctrl = OctomilControl(api=api, org_id="org_test")
+
+        result = ctrl.fetch_desired_state(device_id="explicit-dev")
+
+        method, path, _ = api.calls[-1]
+        self.assertEqual(path, "/devices/explicit-dev/desired-state")
+        self.assertEqual(result["device_id"], "explicit-dev")
+
+
+class TestOctomilControlReportObservedState(unittest.TestCase):
+    def test_report_observed_state_raises_when_not_registered(self):
+        api = _StubApi()
+        ctrl = OctomilControl(api=api, org_id="org_test")
+
+        with self.assertRaises(RuntimeError) as ctx:
+            ctrl.report_observed_state()
+        self.assertIn("not registered", str(ctx.exception).lower())
+
+    def test_report_observed_state_calls_correct_endpoint(self):
+        api = _StubApi(
+            responses={
+                ("post", "/devices/register"): {"id": "dev_obs"},
+                ("post", "/devices/dev_obs/observed-state"): {"ack": True},
+            }
+        )
+        ctrl = OctomilControl(api=api, org_id="org_test")
+        ctrl.register(device_id="dev")
+
+        statuses = [{"artifactId": "model-1", "status": "current"}]
+        ctrl.report_observed_state(artifact_statuses=statuses)
+
+        method, path, payload = api.calls[-1]
+        self.assertEqual(method, "post")
+        self.assertEqual(path, "/devices/dev_obs/observed-state")
+        self.assertEqual(payload["schemaVersion"], "1.4.0")
+        self.assertEqual(payload["deviceId"], "dev_obs")
+        self.assertEqual(len(payload["artifactStatuses"]), 1)
+        self.assertIn("reportedAt", payload)
+        self.assertIn("sdkVersion", payload)
+        self.assertIn("osVersion", payload)
+
+    def test_report_observed_state_with_explicit_device_id(self):
+        api = _StubApi(
+            responses={
+                ("post", "/devices/explicit-dev/observed-state"): {"ack": True},
+            }
+        )
+        ctrl = OctomilControl(api=api, org_id="org_test")
+
+        ctrl.report_observed_state(device_id="explicit-dev")
+
+        method, path, payload = api.calls[-1]
+        self.assertEqual(path, "/devices/explicit-dev/observed-state")
+        self.assertEqual(payload["deviceId"], "explicit-dev")
+        self.assertEqual(payload["artifactStatuses"], [])
+
+
 class TestGetSdkVersion(unittest.TestCase):
     def test_returns_version_string(self):
         version = _get_sdk_version()

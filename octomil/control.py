@@ -180,6 +180,33 @@ class OctomilControl:
             self._heartbeat_thread.join(timeout=5.0)
             self._heartbeat_thread = None
 
+    def fetch_desired_state(
+        self,
+        device_id: Optional[str] = None,
+    ) -> dict[str, Any]:
+        """GET desired state for this device from the server.
+
+        Conforms to ``devices.desired_state`` contract (1.4.0).  Returns the
+        target state the device should converge toward: artifacts to download,
+        policy config, federation offers, and GC-eligible artifact IDs.
+
+        Args:
+            device_id: Explicit device id override.  Falls back to the
+                server-assigned id from ``register()``.
+
+        Returns:
+            Desired state dict containing ``artifacts``, ``policyConfig``,
+            ``federationOffers``, ``gcEligibleArtifactIds``, etc.
+
+        Raises:
+            RuntimeError: If no device id is available (not registered).
+        """
+        effective_id = device_id or self._server_device_id
+        if not effective_id:
+            raise RuntimeError("Device not registered. Call register() first.")
+
+        return self._api.get(f"/devices/{effective_id}/desired-state")
+
     def report_observed_state(
         self,
         device_id: Optional[str] = None,
