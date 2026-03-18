@@ -25,7 +25,9 @@ from ._types import (
 )
 from .catalog import (
     CATALOG,
+    ModelEntry,
     MoEMetadata,
+    ResourceBindingSpec,
     get_moe_metadata,
     is_moe_model,
     list_models,
@@ -37,9 +39,11 @@ from .resolver import ResolvedModel, resolve
 __all__ = [
     # New model resolution API
     "CATALOG",
+    "ModelEntry",
     "MoEMetadata",
     "ParsedModel",
     "ResolvedModel",
+    "ResourceBindingSpec",
     "get_moe_metadata",
     "is_moe_model",
     "list_models",

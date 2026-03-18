@@ -18,8 +18,10 @@ from __future__ import annotations
 
 import difflib
 import logging
-from dataclasses import dataclass
-from typing import Optional
+from dataclasses import dataclass, field
+from typing import Any, Optional
+
+from octomil._generated.modality import Modality
 
 from .catalog import (
     _EXECUTOR_TO_ENGINE,
@@ -27,7 +29,10 @@ from .catalog import (
     CATALOG,
     ModelEntry,
     MoEMetadata,
+    ResourceBindingSpec,
+    _build_resource_bindings,
     _parse_hf_uri,
+    _parse_modalities,
     _resolve_alias,
     resolve_ollama_tag,
 )
@@ -45,12 +50,16 @@ class ResolvedModel:
     quant: str
     engine: Optional[str]
     hf_repo: str
+    input_modalities: list[Modality]
+    output_modalities: list[Modality]
     filename: Optional[str] = None
     mlx_repo: Optional[str] = None
     source_repo: Optional[str] = None
     raw: str = ""
     architecture: str = "dense"
     moe: Optional[MoEMetadata] = None
+    engine_config: dict[str, Any] = field(default_factory=dict)  # type: ignore[assignment]
+    resource_bindings: list[ResourceBindingSpec] = field(default_factory=list)  # type: ignore[assignment]
 
     @property
     def is_gguf(self) -> bool:
@@ -60,6 +69,11 @@ class ResolvedModel:
     def is_moe(self) -> bool:
         """True if this model uses Mixture of Experts architecture."""
         return self.architecture == "moe" and self.moe is not None
+
+    @property
+    def is_multimodal(self) -> bool:
+        """True if this model accepts non-text input modalities."""
+        return any(m != Modality.TEXT for m in self.input_modalities)
 
 
 class ModelResolutionError(ValueError):
@@ -354,15 +368,25 @@ def _resolve_from_manifest(
     pkg_quant_raw = selected.get("quantization", default_quant_raw)
     resolved_quant = _QUANT_TO_CANONICAL.get(pkg_quant_raw, pkg_quant_raw)
 
+    # Extract modalities and engine_config from selected package
+    pkg_input_modalities = _parse_modalities(selected.get("input_modalities"))
+    pkg_output_modalities = _parse_modalities(selected.get("output_modalities"))
+    pkg_engine_config: dict[str, Any] = selected.get("engine_config") or {}
+    pkg_resource_bindings = _build_resource_bindings(selected)
+
     return ResolvedModel(
         family=model_id,
         quant=resolved_quant,
         engine=resolved_engine,
         hf_repo=hf_repo,
+        input_modalities=pkg_input_modalities,
+        output_modalities=pkg_output_modalities,
         filename=resolved_filename,
         mlx_repo=mlx_repo,
         source_repo=None,
         raw=name,
+        engine_config=pkg_engine_config,
+        resource_bindings=pkg_resource_bindings,
     )
 
 
@@ -454,6 +478,8 @@ def resolve(
             quant="unknown",
             engine=resolved_engine,
             hf_repo=parsed.raw,
+            input_modalities=[Modality.TEXT],
+            output_modalities=[Modality.TEXT],
             filename=parsed.raw if parsed.is_local_file else None,
             raw=name,
         )
@@ -562,10 +588,14 @@ def resolve(
         quant=quant,
         engine=resolved_engine,
         hf_repo=hf_repo,
+        input_modalities=entry.input_modalities,
+        output_modalities=entry.output_modalities,
         filename=filename,
         mlx_repo=mlx_repo,
         source_repo=variant.source_repo,
         raw=name,
         architecture=entry.architecture,
         moe=entry.moe,
+        engine_config=entry.engine_config,
+        resource_bindings=entry.resource_bindings,
     )
