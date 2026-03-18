@@ -9,6 +9,7 @@ from typing import Optional
 import pytest
 
 from octomil._generated.delivery_mode import DeliveryMode
+from octomil._generated.modality import Modality
 from octomil._generated.model_capability import ModelCapability
 from octomil.manifest.readiness_manager import (
     DownloadStatus,
@@ -17,6 +18,8 @@ from octomil.manifest.readiness_manager import (
     ProgressCallback,
 )
 from octomil.manifest.types import AppModelEntry
+
+_TEXT = [Modality.TEXT]
 
 
 def _make_entry(
@@ -28,6 +31,8 @@ def _make_entry(
         id=model_id,
         capability=ModelCapability.CHAT,
         delivery=delivery,
+        input_modalities=_TEXT,
+        output_modalities=_TEXT,
         download_url=download_url,
     )
 

@@ -20,6 +20,7 @@ import pytest
 # Ensure the octomil package is importable from the repo root.
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
+from octomil._generated.modality import Modality
 from octomil.models.catalog import (
     CATALOG,
     MODEL_ALIASES,
@@ -35,6 +36,8 @@ from octomil.models.resolver import ResolvedModel, resolve
 from octomil.telemetry import TelemetryReporter, _compute_load_balance
 
 from .conftest import parse_otlp_kv
+
+_TEXT = [Modality.TEXT]
 
 # =====================================================================
 # Catalog — MoE model entries
@@ -656,6 +659,8 @@ class TestResolvedModelIsMoE:
             quant="4bit",
             engine="llama.cpp",
             hf_repo="REDACTED",
+            input_modalities=_TEXT,
+            output_modalities=_TEXT,
             architecture="moe",
             moe=meta,
         )
@@ -667,6 +672,8 @@ class TestResolvedModelIsMoE:
             quant="4bit",
             engine="mlx-lm",
             hf_repo="REDACTED",
+            input_modalities=_TEXT,
+            output_modalities=_TEXT,
         )
         assert r.is_moe is False
 
@@ -677,6 +684,8 @@ class TestResolvedModelIsMoE:
             quant="4bit",
             engine="llama.cpp",
             hf_repo="test/repo",
+            input_modalities=_TEXT,
+            output_modalities=_TEXT,
             architecture="moe",
             moe=None,
         )

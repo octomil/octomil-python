@@ -21,6 +21,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from octomil._generated.delivery_mode import DeliveryMode
+from octomil._generated.modality import Modality
 from octomil._generated.model_capability import ModelCapability
 from octomil.manifest.catalog_service import ModelCatalogService
 from octomil.manifest.readiness_manager import (
@@ -49,6 +50,9 @@ from octomil.runtime.core import (
     RuntimeResponse,
     RuntimeUsage,
 )
+
+_TEXT = [Modality.TEXT]
+_AUDIO = [Modality.AUDIO]
 
 # ---------------------------------------------------------------------------
 # Stub runtime for testing
@@ -136,21 +140,41 @@ class TestAppManifest:
             id="phi-4-mini",
             capability=ModelCapability.CHAT,
             delivery=DeliveryMode.MANAGED,
+            input_modalities=_TEXT,
+            output_modalities=_TEXT,
         )
         manifest = AppManifest(models=[entry])
         assert len(manifest.models) == 1
         assert manifest.models[0].id == "phi-4-mini"
 
     def test_entry_for_capability(self) -> None:
-        chat = AppModelEntry(id="phi-4", capability=ModelCapability.CHAT, delivery=DeliveryMode.MANAGED)
-        asr = AppModelEntry(id="whisper-base", capability=ModelCapability.TRANSCRIPTION, delivery=DeliveryMode.BUNDLED)
+        chat = AppModelEntry(
+            id="phi-4",
+            capability=ModelCapability.CHAT,
+            delivery=DeliveryMode.MANAGED,
+            input_modalities=_TEXT,
+            output_modalities=_TEXT,
+        )
+        asr = AppModelEntry(
+            id="whisper-base",
+            capability=ModelCapability.TRANSCRIPTION,
+            delivery=DeliveryMode.BUNDLED,
+            input_modalities=_AUDIO,
+            output_modalities=_TEXT,
+        )
         manifest = AppManifest(models=[chat, asr])
         assert manifest.entry_for(ModelCapability.CHAT) == chat
         assert manifest.entry_for(ModelCapability.TRANSCRIPTION) == asr
         assert manifest.entry_for(ModelCapability.EMBEDDING) is None
 
     def test_entry_by_id(self) -> None:
-        entry = AppModelEntry(id="phi-4", capability=ModelCapability.CHAT, delivery=DeliveryMode.CLOUD)
+        entry = AppModelEntry(
+            id="phi-4",
+            capability=ModelCapability.CHAT,
+            delivery=DeliveryMode.CLOUD,
+            input_modalities=_TEXT,
+            output_modalities=_TEXT,
+        )
         manifest = AppManifest(models=[entry])
         assert manifest.entry_by_id("phi-4") == entry
         assert manifest.entry_by_id("nonexistent") is None
@@ -193,6 +217,8 @@ class TestModelReadinessManager:
             id="phi-4",
             capability=ModelCapability.CHAT,
             delivery=DeliveryMode.BUNDLED,
+            input_modalities=_TEXT,
+            output_modalities=_TEXT,
         )
         mgr.enqueue(entry)
         assert not mgr.is_ready("phi-4")
@@ -218,6 +244,8 @@ class TestModelCatalogService:
             id="gpt-4",
             capability=ModelCapability.CHAT,
             delivery=DeliveryMode.CLOUD,
+            input_modalities=_TEXT,
+            output_modalities=_TEXT,
         )
         manifest = AppManifest(models=[entry])
         stub = StubRuntime("cloud response")
@@ -235,6 +263,8 @@ class TestModelCatalogService:
             id="gpt-4",
             capability=ModelCapability.CHAT,
             delivery=DeliveryMode.CLOUD,
+            input_modalities=_TEXT,
+            output_modalities=_TEXT,
             required=True,
         )
         manifest = AppManifest(models=[entry])
@@ -248,6 +278,8 @@ class TestModelCatalogService:
             id="gpt-4",
             capability=ModelCapability.CHAT,
             delivery=DeliveryMode.CLOUD,
+            input_modalities=_TEXT,
+            output_modalities=_TEXT,
             required=False,
         )
         manifest = AppManifest(models=[entry])
@@ -260,6 +292,8 @@ class TestModelCatalogService:
             id="phi-4",
             capability=ModelCapability.CHAT,
             delivery=DeliveryMode.BUNDLED,
+            input_modalities=_TEXT,
+            output_modalities=_TEXT,
         )
         manifest = AppManifest(models=[entry])
         catalog = ModelCatalogService(manifest=manifest)
@@ -272,6 +306,8 @@ class TestModelCatalogService:
             id="gpt-4",
             capability=ModelCapability.CHAT,
             delivery=DeliveryMode.CLOUD,
+            input_modalities=_TEXT,
+            output_modalities=_TEXT,
         )
         manifest = AppManifest(models=[entry])
         stub = StubRuntime()
@@ -293,6 +329,8 @@ class TestModelCatalogService:
             id="gpt-4",
             capability=ModelCapability.CHAT,
             delivery=DeliveryMode.CLOUD,
+            input_modalities=_TEXT,
+            output_modalities=_TEXT,
         )
         manifest = AppManifest(models=[entry])
         stub = StubRuntime()
@@ -312,6 +350,8 @@ class TestModelCatalogService:
             id="phi-4-mini",
             capability=ModelCapability.CHAT,
             delivery=DeliveryMode.MANAGED,
+            input_modalities=_TEXT,
+            output_modalities=_TEXT,
         )
         manifest = AppManifest(models=[entry])
         catalog = ModelCatalogService(manifest=manifest)
@@ -324,6 +364,8 @@ class TestModelCatalogService:
             id="phi-4-mini",
             capability=ModelCapability.CHAT,
             delivery=DeliveryMode.MANAGED,
+            input_modalities=_TEXT,
+            output_modalities=_TEXT,
         )
         manifest = AppManifest(models=[entry])
         catalog = ModelCatalogService(manifest=manifest)
