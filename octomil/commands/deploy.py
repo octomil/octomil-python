@@ -207,6 +207,9 @@ def deploy(
         dashboard_url = os.environ.get("OCTOMIL_DASHBOARD_URL", "https://app.octomil.com")
         headers = {"Authorization": f"Bearer {api_key}"}
 
+        # Resolve the display/registry name early — strip hf: prefix and org path.
+        resolved_name = name.split("/")[-1].split(":")[-1]
+
         # Ensure model exists in registry — auto-download, convert, push if needed.
         # The /models/{id} endpoint only accepts UUIDs, so we search by name
         # via the list endpoint instead.
@@ -224,7 +227,8 @@ def deploy(
         if check_resp.status_code == 200:
             for m in check_resp.json().get("models", []):
                 m_name = m.get("name") or m.get("model_id") or ""
-                if m_name.lower() == name.lower():
+                # Check both the original name and the resolved registry name
+                if m_name.lower() in (name.lower(), resolved_name.lower()):
                     model_found = True
                     # Check if model has at least one version
                     m_id = m.get("id", "")
@@ -242,10 +246,9 @@ def deploy(
                                 model_has_versions = True
                     break
         if not model_found or not model_has_versions:
-            click.echo(click.style(f"  Model '{name}' not in registry — importing...", dim=True))
+            click.echo(click.style(f"  Model '{resolved_name}' not in registry — importing...", dim=True))
             client = _get_client()
             effective_version = version or "1.0.0"
-            resolved_name = name.split("/")[-1].split(":")[-1]
 
             # Try server-side HF import first (no local download needed)
             from octomil.sources.resolver import resolve_hf_repo

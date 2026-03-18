@@ -345,6 +345,7 @@ class ModelRegistry:
         with httpx.Client(timeout=30.0) as client:
             url_resp = client.post(
                 f"{self.api.api_base}/models/{model_id}/versions/upload-url",
+                params={"org_id": self.org_id},
                 data={
                     "version": version,
                     "filename": filename,
@@ -374,6 +375,7 @@ class ModelRegistry:
         with httpx.Client(timeout=30.0) as client:
             confirm_resp = client.post(
                 f"{self.api.api_base}/models/{model_id}/versions/confirm-upload",
+                params={"org_id": self.org_id},
                 data={
                     "version": version,
                     "storage_key": storage_key,
