@@ -16,8 +16,10 @@ SCHEMA_STATEMENTS: list[str] = [
         verified_at   TEXT,
         staged_at     TEXT,
         activated_at  TEXT,
+        installed_at  INTEGER,
         last_error    TEXT,
         retry_count   INTEGER NOT NULL DEFAULT 0,
+        engine_benchmarks TEXT,
         updated_at    TEXT NOT NULL
     )
     """,
@@ -119,6 +121,22 @@ SCHEMA_STATEMENTS: list[str] = [
         pending_since TEXT,
         activated_at  TEXT,
         updated_at    TEXT NOT NULL
+    )
+    """,
+    # -- Per-engine benchmark results --
+    """
+    CREATE TABLE IF NOT EXISTS benchmark_results (
+        model_id       TEXT NOT NULL,
+        model_version  TEXT NOT NULL,
+        device_class   TEXT NOT NULL,
+        sdk_version    TEXT NOT NULL,
+        engine         TEXT NOT NULL,
+        latency_ms     REAL,
+        throughput_tps REAL,
+        memory_bytes   INTEGER,
+        metadata_json  TEXT,
+        recorded_at    TEXT NOT NULL,
+        PRIMARY KEY (model_id, model_version, device_class, sdk_version, engine)
     )
     """,
     # -- Boot history for crash detection --
