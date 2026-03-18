@@ -197,7 +197,29 @@ def _transform_package(
     """Transform a seed package dict into embedded catalog format."""
     fmt = pkg["format"]
     quant = pkg["quant"]
-    uri = pkg["uri"]
+
+    # Multi-resource packages (vision projectors, sherpa encoder/decoder/joiner)
+    if "resources" in pkg:
+        resources = [
+            {
+                "kind": r["kind"],
+                "uri": r["uri"],
+                "path": _infer_resource_path(r["uri"], fmt),
+                "required": True,
+                "load_order": r.get("load_order", 0),
+            }
+            for r in pkg["resources"]
+        ]
+    else:
+        uri = pkg["uri"]
+        resources = [
+            {
+                "kind": "weights",
+                "uri": uri,
+                "path": _infer_resource_path(uri, fmt),
+                "required": True,
+            }
+        ]
 
     return {
         "id": _make_package_id(variant_name, fmt, quant),
@@ -207,14 +229,7 @@ def _transform_package(
         "quantization": quant,
         "support_tier": pkg.get("support_tier", family_tier),
         "is_default": pkg.get("default", False),
-        "resources": [
-            {
-                "kind": "weights",
-                "uri": uri,
-                "path": _infer_resource_path(uri, fmt),
-                "required": True,
-            }
-        ],
+        "resources": resources,
     }
 
 
