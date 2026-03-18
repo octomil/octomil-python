@@ -379,6 +379,95 @@ class TestOctomilControlReportObservedState(unittest.TestCase):
         self.assertEqual(payload["artifactStatuses"], [])
 
 
+class TestOctomilControlGetDesiredState(unittest.TestCase):
+    """Tests for the get_desired_state() adapter method."""
+
+    def test_get_desired_state_returns_mapped_list(self):
+        raw_desired = {
+            "schema_version": "1.4.0",
+            "artifacts": [
+                {
+                    "artifactId": "art-1",
+                    "modelId": "m1",
+                    "version": "v2",
+                    "manifest": {"files": [{"path": "model.bin"}]},
+                    "totalBytes": 5000,
+                    "activationPolicy": "immediate",
+                },
+                {
+                    "artifact_id": "art-2",
+                    "model_id": "m2",
+                    "version": "v1",
+                    "manifest": {},
+                    "total_bytes": 200,
+                },
+            ],
+        }
+        api = _StubApi(
+            responses={
+                ("post", "/devices/register"): {"id": "dev_gds"},
+                ("get", "/devices/dev_gds/desired-state"): raw_desired,
+            }
+        )
+        ctrl = OctomilControl(api=api, org_id="org_test")
+        ctrl.register(device_id="dev")
+
+        result = ctrl.get_desired_state()
+
+        self.assertIsInstance(result, list)
+        self.assertEqual(len(result), 2)
+
+        # First entry: camelCase keys mapped
+        self.assertEqual(result[0]["artifact_id"], "art-1")
+        self.assertEqual(result[0]["model_id"], "m1")
+        self.assertEqual(result[0]["version"], "v2")
+        self.assertEqual(result[0]["total_bytes"], 5000)
+        self.assertEqual(result[0]["activation_policy"], "immediate")
+
+        # Second entry: snake_case keys passed through
+        self.assertEqual(result[1]["artifact_id"], "art-2")
+        self.assertEqual(result[1]["model_id"], "m2")
+        # No activation_policy set -> key absent
+        self.assertNotIn("activation_policy", result[1])
+
+    def test_get_desired_state_empty_artifacts(self):
+        api = _StubApi(
+            responses={
+                ("post", "/devices/register"): {"id": "dev_empty"},
+                ("get", "/devices/dev_empty/desired-state"): {"artifacts": []},
+            }
+        )
+        ctrl = OctomilControl(api=api, org_id="org_test")
+        ctrl.register(device_id="dev")
+
+        result = ctrl.get_desired_state()
+        self.assertEqual(result, [])
+
+    def test_get_desired_state_no_artifacts_key(self):
+        api = _StubApi(
+            responses={
+                ("post", "/devices/register"): {"id": "dev_noart"},
+                ("get", "/devices/dev_noart/desired-state"): {"policyConfig": {}},
+            }
+        )
+        ctrl = OctomilControl(api=api, org_id="org_test")
+        ctrl.register(device_id="dev")
+
+        result = ctrl.get_desired_state()
+        self.assertEqual(result, [])
+
+    def test_base_url_property(self):
+        api = _StubApi()
+        api.base_url = "https://api.octomil.com"
+        ctrl = OctomilControl(api=api, org_id="org_test")
+        self.assertEqual(ctrl.base_url, "https://api.octomil.com")
+
+    def test_base_url_default_empty(self):
+        api = _StubApi()
+        ctrl = OctomilControl(api=api, org_id="org_test")
+        self.assertEqual(ctrl.base_url, "")
+
+
 class TestGetSdkVersion(unittest.TestCase):
     def test_returns_version_string(self):
         version = _get_sdk_version()
