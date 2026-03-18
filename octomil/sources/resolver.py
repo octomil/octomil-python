@@ -71,12 +71,14 @@ def _manifest_to_aliases(manifest: dict) -> Dict[str, Dict[str, Union[str, Dict[
                     artifact_format: str = pkg.get("artifact_format", "")
                     quantization: str = pkg.get("quantization", "")
 
-                    # Find weights resource
+                    # Find primary resource (prefer "weights", fall back to first)
                     weights = None
                     for res in pkg.get("resources", []):
                         if res.get("kind") == "weights":
                             weights = res
                             break
+                    if weights is None and pkg.get("resources"):
+                        weights = pkg["resources"][0]
                     if weights is None:
                         continue
 
