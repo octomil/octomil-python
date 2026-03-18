@@ -210,41 +210,43 @@ def deploy(
         # Resolve the display/registry name early — strip hf: prefix and org path.
         resolved_name = name.split("/")[-1].split(":")[-1]
 
-        # Ensure model exists in registry — auto-download, convert, push if needed.
-        # The /models/{id} endpoint only accepts UUIDs, so we search by name
-        # via the list endpoint instead.
+        # Check v2 catalog first — if the model is there, no push needed.
+        from octomil.models.catalog import CATALOG
+
+        in_catalog = resolved_name in CATALOG or name in CATALOG
+
+        # If not in catalog, check v1 registry for custom-pushed models.
         org_id = _get_org_id() or "default"
-        list_params: dict[str, str] = {"org_id": org_id}
-        check_resp = http_request(
-            "GET",
-            f"{api_base}/models",
-            headers=headers,
-            params=list_params,
-            timeout=10.0,
-        )
-        model_found = False
-        model_has_versions = False
-        if check_resp.status_code == 200:
-            for m in check_resp.json().get("models", []):
-                m_name = m.get("name") or m.get("model_id") or ""
-                # Check both the original name and the resolved registry name
-                if m_name.lower() in (name.lower(), resolved_name.lower()):
-                    model_found = True
-                    # Check if model has at least one version
-                    m_id = m.get("id", "")
-                    if m_id:
-                        ver_resp = http_request(
-                            "GET",
-                            f"{api_base}/models/{m_id}/versions",
-                            headers=headers,
-                            timeout=10.0,
-                        )
-                        if ver_resp.status_code == 200:
-                            ver_data = ver_resp.json()
-                            versions = ver_data if isinstance(ver_data, list) else ver_data.get("versions", [])
-                            if versions:
-                                model_has_versions = True
-                    break
+        model_found = in_catalog
+        model_has_versions = in_catalog
+        if not in_catalog:
+            list_params: dict[str, str] = {"org_id": org_id}
+            check_resp = http_request(
+                "GET",
+                f"{api_base}/models",
+                headers=headers,
+                params=list_params,
+                timeout=10.0,
+            )
+            if check_resp.status_code == 200:
+                for m in check_resp.json().get("models", []):
+                    m_name = m.get("name") or m.get("model_id") or ""
+                    if m_name.lower() in (name.lower(), resolved_name.lower()):
+                        model_found = True
+                        m_id = m.get("id", "")
+                        if m_id:
+                            ver_resp = http_request(
+                                "GET",
+                                f"{api_base}/models/{m_id}/versions",
+                                headers=headers,
+                                timeout=10.0,
+                            )
+                            if ver_resp.status_code == 200:
+                                ver_data = ver_resp.json()
+                                versions = ver_data if isinstance(ver_data, list) else ver_data.get("versions", [])
+                                if versions:
+                                    model_has_versions = True
+                        break
         if not model_found or not model_has_versions:
             click.echo(click.style(f"  Model '{resolved_name}' not in registry — importing...", dim=True))
             client = _get_client()
