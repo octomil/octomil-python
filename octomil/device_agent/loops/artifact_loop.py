@@ -111,28 +111,53 @@ class ArtifactLoop:
         logger.info("Artifact loop stopped")
 
     def _report_observed_state(self) -> None:
-        """Report current artifact statuses to the control plane via the callback.
+        """Report per-model observed state to the control plane via the callback.
 
-        Collects all tracked artifacts and their statuses from the local
-        registry and calls the ``observed_state_reporter`` callback (which
-        typically delegates to ``OctomilControl.report_observed_state()``).
+        Collects per-model status from the local registry and active
+        pointer table, building the ``models`` array conforming to the
+        ``ObservedState`` contract.  Calls the ``observed_state_reporter``
+        callback (which typically delegates to
+        ``OctomilControl.report_observed_state()``).
         """
         if self._observed_state_reporter is None:
             return
 
         try:
             db = self._model_registry._db
-            rows = db.execute("SELECT artifact_id, model_id, version, status FROM model_artifacts")
-            artifact_statuses: list[dict[str, Any]] = [
-                {
-                    "artifactId": row["artifact_id"],
-                    "modelId": row["model_id"],
-                    "version": row["version"],
-                    "status": row["status"],
+
+            # Build per-model observed state entries
+            # Group artifacts by model_id, pick the latest status
+            model_rows = db.execute("SELECT DISTINCT model_id FROM model_artifacts")
+            model_entries: list[dict[str, Any]] = []
+            for model_row in model_rows:
+                model_id = model_row["model_id"]
+
+                # Get the latest artifact status for this model
+                latest = db.execute_one(
+                    "SELECT version, status FROM model_artifacts WHERE model_id = ? ORDER BY updated_at DESC LIMIT 1",
+                    (model_id,),
+                )
+
+                # Get active version if any
+                active = db.execute_one(
+                    "SELECT active_version FROM active_model_pointer WHERE model_id = ?",
+                    (model_id,),
+                )
+
+                entry: dict[str, Any] = {
+                    "modelId": model_id,
+                    "status": latest["status"] if latest else "UNKNOWN",
                 }
-                for row in rows
-            ]
-            self._observed_state_reporter(artifact_statuses)
+                if latest:
+                    entry["installedVersion"] = latest["version"]
+                if active:
+                    entry["activeVersion"] = active["active_version"]
+                else:
+                    entry["activeVersion"] = None
+
+                model_entries.append(entry)
+
+            self._observed_state_reporter(model_entries)
         except Exception:
             logger.debug("Failed to report observed state", exc_info=True)
 

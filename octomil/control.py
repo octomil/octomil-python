@@ -181,29 +181,32 @@ class OctomilControl:
             self._heartbeat_thread = None
 
     def get_desired_state(self) -> list[dict[str, Any]]:
-        """Return desired state as a list of artifact entries.
+        """Return desired state as a list of per-model entries.
 
         Adapter method that makes ``OctomilControl`` compatible with the
         ``server_client`` interface expected by ``ArtifactLoop``.  Calls
-        ``fetch_desired_state()`` and extracts the ``artifacts`` list, mapping
-        each entry to the flat dict format the loop expects.
+        ``fetch_desired_state()`` and extracts the ``models`` array
+        (DesiredModelEntry), flattening each entry with its nested
+        ``artifactManifest`` into the flat dict format the loop expects.
+
+        Uses the canonical contract shape only — no backwards-compat
+        fallbacks for the old ``artifacts`` array.
         """
         raw = self.fetch_desired_state()
-        artifacts = raw.get("artifacts", [])
-        if not isinstance(artifacts, list):
+        models = raw.get("models", [])
+        if not isinstance(models, list):
             return []
         result: list[dict[str, Any]] = []
-        for entry in artifacts:
+        for entry in models:
+            manifest = entry.get("artifactManifest", {})
             mapped: dict[str, Any] = {
-                "model_id": entry.get("modelId", entry.get("model_id", "")),
-                "version": entry.get("version", ""),
-                "artifact_id": entry.get("artifactId", entry.get("artifact_id", "")),
-                "manifest": entry.get("manifest", {}),
-                "total_bytes": entry.get("totalBytes", entry.get("total_bytes", 0)),
+                "model_id": entry["modelId"],
+                "version": entry["desiredVersion"],
+                "artifact_id": manifest.get("artifactId", ""),
+                "manifest": manifest,
+                "total_bytes": manifest.get("totalBytes", 0),
+                "activation_policy": entry.get("activationPolicy", "immediate"),
             }
-            # Pass through activation_policy if present
-            if "activationPolicy" in entry or "activation_policy" in entry:
-                mapped["activation_policy"] = entry.get("activationPolicy", entry.get("activation_policy", "immediate"))
             result.append(mapped)
         return result
 
@@ -218,16 +221,17 @@ class OctomilControl:
     ) -> dict[str, Any]:
         """GET desired state for this device from the server.
 
-        Conforms to ``devices.desired_state`` contract (1.4.0).  Returns the
-        target state the device should converge toward: artifacts to download,
-        policy config, federation offers, and GC-eligible artifact IDs.
+        Conforms to the ``DesiredState`` contract.  Returns the target state
+        the device should converge toward: per-model entries with delivery
+        mode and activation policy, policy config, federation offers, and
+        GC-eligible artifact IDs.
 
         Args:
             device_id: Explicit device id override.  Falls back to the
                 server-assigned id from ``register()``.
 
         Returns:
-            Desired state dict containing ``artifacts``, ``policyConfig``,
+            Desired state dict containing ``models``, ``policyConfig``,
             ``federationOffers``, ``gcEligibleArtifactIds``, etc.
 
         Raises:
@@ -242,19 +246,19 @@ class OctomilControl:
     def report_observed_state(
         self,
         device_id: Optional[str] = None,
-        artifact_statuses: Optional[list[dict[str, Any]]] = None,
+        models: Optional[list[dict[str, Any]]] = None,
     ) -> dict[str, Any]:
         """POST observed device state to the server.
 
-        Conforms to ``devices.observed_state`` contract (1.4.0).  Reports
-        artifact download progress, active model pointer, and runtime
-        metadata so the server can reconcile desired vs observed state.
+        Conforms to the ``ObservedState`` contract.  Reports per-model
+        observed state (installed version, active version, status, health)
+        so the server can reconcile desired vs observed state.
 
         Args:
             device_id: Explicit device id override.  Falls back to the
                 server-assigned id from ``register()``.
-            artifact_statuses: List of per-artifact status dicts, each
-                containing at minimum ``artifactId`` and ``status``.
+            models: List of per-model observed state dicts, each
+                containing at minimum ``modelId`` and ``status``.
 
         Returns:
             Server acknowledgement dict.
@@ -271,7 +275,7 @@ class OctomilControl:
             "schemaVersion": "1.4.0",
             "deviceId": effective_id,
             "reportedAt": now,
-            "artifactStatuses": artifact_statuses or [],
+            "models": models or [],
             "sdkVersion": _get_sdk_version(),
             "osVersion": platform.platform(),
         }

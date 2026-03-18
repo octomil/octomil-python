@@ -122,9 +122,9 @@ class DeviceAgent:
         # so the server can reconcile desired vs observed state.
         observed_state_reporter: Optional[Callable[..., Any]] = None
         if self._control is not None:
-            observed_state_reporter = lambda statuses: self._control.report_observed_state(  # noqa: E731
+            observed_state_reporter = lambda model_entries: self._control.report_observed_state(  # noqa: E731
                 device_id=self._device_id,
-                artifact_statuses=statuses,
+                models=model_entries,
             )
 
         # Use OctomilControl as the canonical sync source when no explicit

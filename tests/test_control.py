@@ -350,15 +350,16 @@ class TestOctomilControlReportObservedState(unittest.TestCase):
         ctrl = OctomilControl(api=api, org_id="org_test")
         ctrl.register(device_id="dev")
 
-        statuses = [{"artifactId": "model-1", "status": "current"}]
-        ctrl.report_observed_state(artifact_statuses=statuses)
+        model_entries = [{"modelId": "m1", "status": "STAGED", "installedVersion": "v2"}]
+        ctrl.report_observed_state(models=model_entries)
 
         method, path, payload = api.calls[-1]
         self.assertEqual(method, "post")
         self.assertEqual(path, "/devices/dev_obs/observed-state")
         self.assertEqual(payload["schemaVersion"], "1.4.0")
         self.assertEqual(payload["deviceId"], "dev_obs")
-        self.assertEqual(len(payload["artifactStatuses"]), 1)
+        self.assertEqual(len(payload["models"]), 1)
+        self.assertEqual(payload["models"][0]["modelId"], "m1")
         self.assertIn("reportedAt", payload)
         self.assertIn("sdkVersion", payload)
         self.assertIn("osVersion", payload)
@@ -376,7 +377,7 @@ class TestOctomilControlReportObservedState(unittest.TestCase):
         method, path, payload = api.calls[-1]
         self.assertEqual(path, "/devices/explicit-dev/observed-state")
         self.assertEqual(payload["deviceId"], "explicit-dev")
-        self.assertEqual(payload["artifactStatuses"], [])
+        self.assertEqual(payload["models"], [])
 
 
 class TestOctomilControlGetDesiredState(unittest.TestCase):
@@ -384,22 +385,32 @@ class TestOctomilControlGetDesiredState(unittest.TestCase):
 
     def test_get_desired_state_returns_mapped_list(self):
         raw_desired = {
-            "schema_version": "1.4.0",
-            "artifacts": [
+            "schemaVersion": "1.4.0",
+            "models": [
                 {
-                    "artifactId": "art-1",
                     "modelId": "m1",
-                    "version": "v2",
-                    "manifest": {"files": [{"path": "model.bin"}]},
-                    "totalBytes": 5000,
+                    "desiredVersion": "v2",
                     "activationPolicy": "immediate",
+                    "artifactManifest": {
+                        "artifactId": "art-1",
+                        "modelId": "m1",
+                        "version": "v2",
+                        "format": "gguf",
+                        "totalBytes": 5000,
+                        "chunks": [{"index": 0, "offset": 0, "size": 5000, "sha256": "abc"}],
+                    },
                 },
                 {
-                    "artifact_id": "art-2",
-                    "model_id": "m2",
-                    "version": "v1",
-                    "manifest": {},
-                    "total_bytes": 200,
+                    "modelId": "m2",
+                    "desiredVersion": "v1",
+                    "artifactManifest": {
+                        "artifactId": "art-2",
+                        "modelId": "m2",
+                        "version": "v1",
+                        "format": "coreml",
+                        "totalBytes": 200,
+                        "chunks": [],
+                    },
                 },
             ],
         }
@@ -417,24 +428,24 @@ class TestOctomilControlGetDesiredState(unittest.TestCase):
         self.assertIsInstance(result, list)
         self.assertEqual(len(result), 2)
 
-        # First entry: camelCase keys mapped
+        # First entry
         self.assertEqual(result[0]["artifact_id"], "art-1")
         self.assertEqual(result[0]["model_id"], "m1")
         self.assertEqual(result[0]["version"], "v2")
         self.assertEqual(result[0]["total_bytes"], 5000)
         self.assertEqual(result[0]["activation_policy"], "immediate")
 
-        # Second entry: snake_case keys passed through
+        # Second entry — no activationPolicy defaults to "immediate"
         self.assertEqual(result[1]["artifact_id"], "art-2")
         self.assertEqual(result[1]["model_id"], "m2")
-        # No activation_policy set -> key absent
-        self.assertNotIn("activation_policy", result[1])
+        self.assertEqual(result[1]["version"], "v1")
+        self.assertEqual(result[1]["activation_policy"], "immediate")
 
-    def test_get_desired_state_empty_artifacts(self):
+    def test_get_desired_state_empty_models(self):
         api = _StubApi(
             responses={
                 ("post", "/devices/register"): {"id": "dev_empty"},
-                ("get", "/devices/dev_empty/desired-state"): {"artifacts": []},
+                ("get", "/devices/dev_empty/desired-state"): {"models": []},
             }
         )
         ctrl = OctomilControl(api=api, org_id="org_test")
@@ -443,7 +454,7 @@ class TestOctomilControlGetDesiredState(unittest.TestCase):
         result = ctrl.get_desired_state()
         self.assertEqual(result, [])
 
-    def test_get_desired_state_no_artifacts_key(self):
+    def test_get_desired_state_no_models_key(self):
         api = _StubApi(
             responses={
                 ("post", "/devices/register"): {"id": "dev_noart"},
