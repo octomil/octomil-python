@@ -193,10 +193,20 @@ class DeviceAgent:
         # Record boot and check for crash loops
         self._check_crash_loops_on_boot()
 
+        # Mark activation loop as in startup phase so next_launch policies
+        # are processed during the first reconciliation cycle.
+        self._activation_loop._is_startup = True
+
         self._inference_loop.start()
         self._artifact_loop.start()
         self._activation_loop.start()
         self._telemetry_loop.start()
+
+        # Run one immediate check for next_launch artifacts, then mark
+        # startup as complete so they won't re-trigger on subsequent ticks.
+        self._activation_loop._check_staged()
+        self._activation_loop.mark_startup_complete()
+
         logger.info("DeviceAgent started")
 
     def stop(self) -> None:

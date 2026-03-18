@@ -25,6 +25,12 @@ class ActivationLoop:
     Periodically checks for STAGED artifacts. When found and policy allows,
     performs warmup, activates the new version, and drains the old version
     by waiting for its refcount to reach zero.
+
+    Respects the per-artifact ``activation_policy``:
+    - ``immediate`` — activate as soon as artifact is verified/staged
+    - ``next_launch`` — mark pending, activate on next DeviceAgent.start()
+    - ``manual`` — stage only, wait for explicit activate() call
+    - ``when_idle`` — activate when no inference sessions are active
     """
 
     def __init__(
@@ -37,6 +43,7 @@ class ActivationLoop:
         *,
         check_interval: float = 30.0,
         drain_timeout: float = 300.0,
+        is_startup: bool = False,
     ) -> None:
         self._model_registry = model_registry
         self._activation_manager = activation_manager
@@ -45,6 +52,7 @@ class ActivationLoop:
         self._telemetry_store = telemetry_store
         self._check_interval = check_interval
         self._drain_timeout = drain_timeout
+        self._is_startup = is_startup
         self._running = False
         self._thread: Optional[threading.Thread] = None
         self._stop_event = threading.Event()
@@ -81,11 +89,20 @@ class ActivationLoop:
             self._stop_event.wait(timeout=self._check_interval)
         logger.info("Activation loop stopped")
 
+    def mark_startup_complete(self) -> None:
+        """Signal that startup phase is done.
+
+        After this call, ``next_launch`` artifacts will no longer be
+        auto-activated until the next restart.
+        """
+        self._is_startup = False
+
     def _check_staged(self) -> None:
         """Find STAGED artifacts and attempt warmup + activation when policy allows.
 
         Queries all distinct model_ids that have STAGED artifacts, then for each
         model, picks the latest staged version and attempts activation.
+        Respects the artifact's activation_policy.
         """
         db = self._model_registry._db
         rows = db.execute("SELECT DISTINCT model_id FROM model_artifacts WHERE status = 'STAGED'")
@@ -103,6 +120,10 @@ class ActivationLoop:
             latest = staged[0]
             artifact_id = latest["artifact_id"]
             new_version = latest["version"]
+
+            # Check activation policy
+            if not self._should_activate(artifact_id):
+                continue
 
             # Check warmup policy
             allowed, reason = self._policy_engine.should_allow_warmup()
@@ -150,6 +171,39 @@ class ActivationLoop:
             # Drain old version if there was one
             if old_version and old_version != new_version:
                 self._drain_old_version(model_id, old_version)
+
+    def _should_activate(self, artifact_id: str) -> bool:
+        """Check whether the artifact should be activated based on its policy.
+
+        Returns True if activation should proceed now, False to skip.
+        """
+        db = self._model_registry._db
+        row = db.execute_one(
+            "SELECT activation_policy FROM model_artifacts WHERE artifact_id = ?",
+            (artifact_id,),
+        )
+        if row is None:
+            return True
+
+        policy = row["activation_policy"]
+
+        if policy == "immediate":
+            return True
+        elif policy == "next_launch":
+            # Only activate during the startup phase
+            return self._is_startup
+        elif policy == "manual":
+            # Never auto-activate — wait for explicit activate() call
+            return False
+        elif policy == "when_idle":
+            # Activate only when no inference sessions are active
+            active_sessions = self._session_manager.get_active_sessions()
+            return len(active_sessions) == 0
+        else:
+            logger.warning(
+                "Unknown activation_policy '%s' for artifact %s, defaulting to immediate", policy, artifact_id
+            )
+            return True
 
     def _drain_old_version(self, model_id: str, old_version: str) -> None:
         """Wait for refcount=0 on old_version via session_manager, then unload.
