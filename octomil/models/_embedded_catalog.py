@@ -32,7 +32,7 @@ EMBEDDED_MANIFEST: dict = {
                         "id": "embedded-gemma_2_2b-v1",
                         "version": "1.0.0",
                         "lifecycle": "active",
-                        "released_at": "2026-03-12T00:00:00Z",
+                        "released_at": "2026-03-18T00:00:00Z",
                         "min_sdk_version": None,
                         "packages": [
                             {
@@ -101,7 +101,7 @@ EMBEDDED_MANIFEST: dict = {
                         "id": "embedded-gemma_2_9b-v1",
                         "version": "1.0.0",
                         "lifecycle": "active",
-                        "released_at": "2026-03-12T00:00:00Z",
+                        "released_at": "2026-03-18T00:00:00Z",
                         "min_sdk_version": None,
                         "packages": [
                             {
@@ -153,7 +153,7 @@ EMBEDDED_MANIFEST: dict = {
                         "id": "embedded-gemma_2_27b-v1",
                         "version": "1.0.0",
                         "lifecycle": "active",
-                        "released_at": "2026-03-12T00:00:00Z",
+                        "released_at": "2026-03-18T00:00:00Z",
                         "min_sdk_version": None,
                         "packages": [
                             {
@@ -200,7 +200,7 @@ EMBEDDED_MANIFEST: dict = {
         "id": "gemma-3",
         "vendor": "Google",
         "description": "Google Gemma 3 multimodal models with vision support",
-        "modalities": ["text", "vision"],
+        "modalities": ["text", "image"],
         "license": "gemma",
         "homepage_url": "https://ai.google.dev/gemma",
         "variants": {
@@ -208,14 +208,14 @@ EMBEDDED_MANIFEST: dict = {
                 "id": "gemma3-1b",
                 "parameter_count": "1B",
                 "context_length": 32768,
-                "modalities": ["text", "vision"],
+                "modalities": ["text", "image"],
                 "quantizations": ["Q4_0"],
                 "versions": {
                     "1.0.0": {
                         "id": "embedded-gemma3_1b-v1",
                         "version": "1.0.0",
                         "lifecycle": "active",
-                        "released_at": "2026-03-12T00:00:00Z",
+                        "released_at": "2026-03-18T00:00:00Z",
                         "min_sdk_version": None,
                         "packages": [
                             {
@@ -277,14 +277,14 @@ EMBEDDED_MANIFEST: dict = {
                 "id": "gemma3-4b",
                 "parameter_count": "4B",
                 "context_length": 128000,
-                "modalities": ["text", "vision"],
+                "modalities": ["text", "image"],
                 "quantizations": ["Q4_0"],
                 "versions": {
                     "1.0.0": {
                         "id": "embedded-gemma3_4b-v1",
                         "version": "1.0.0",
                         "lifecycle": "active",
-                        "released_at": "2026-03-12T00:00:00Z",
+                        "released_at": "2026-03-18T00:00:00Z",
                         "min_sdk_version": None,
                         "packages": [
                             {
@@ -346,14 +346,14 @@ EMBEDDED_MANIFEST: dict = {
                 "id": "gemma3-12b",
                 "parameter_count": "12B",
                 "context_length": 128000,
-                "modalities": ["text", "vision"],
+                "modalities": ["text", "image"],
                 "quantizations": ["Q4_0"],
                 "versions": {
                     "1.0.0": {
                         "id": "embedded-gemma3_12b-v1",
                         "version": "1.0.0",
                         "lifecycle": "active",
-                        "released_at": "2026-03-12T00:00:00Z",
+                        "released_at": "2026-03-18T00:00:00Z",
                         "min_sdk_version": None,
                         "packages": [
                             {
@@ -398,14 +398,14 @@ EMBEDDED_MANIFEST: dict = {
                 "id": "gemma3-27b",
                 "parameter_count": "27B",
                 "context_length": 128000,
-                "modalities": ["text", "vision"],
+                "modalities": ["text", "image"],
                 "quantizations": ["Q4_0"],
                 "versions": {
                     "1.0.0": {
                         "id": "embedded-gemma3_27b-v1",
                         "version": "1.0.0",
                         "lifecycle": "active",
-                        "released_at": "2026-03-12T00:00:00Z",
+                        "released_at": "2026-03-18T00:00:00Z",
                         "min_sdk_version": None,
                         "packages": [
                             {
@@ -467,7 +467,7 @@ EMBEDDED_MANIFEST: dict = {
                         "id": "embedded-llama_3_2_1b-v1",
                         "version": "1.0.0",
                         "lifecycle": "active",
-                        "released_at": "2026-03-12T00:00:00Z",
+                        "released_at": "2026-03-18T00:00:00Z",
                         "min_sdk_version": None,
                         "packages": [
                             {
@@ -536,7 +536,7 @@ EMBEDDED_MANIFEST: dict = {
                         "id": "embedded-llama_3_2_3b-v1",
                         "version": "1.0.0",
                         "lifecycle": "active",
-                        "released_at": "2026-03-12T00:00:00Z",
+                        "released_at": "2026-03-18T00:00:00Z",
                         "min_sdk_version": None,
                         "packages": [
                             {
@@ -599,7 +599,7 @@ EMBEDDED_MANIFEST: dict = {
     "phi-4": {
         "id": "phi-4",
         "vendor": "Microsoft",
-        "description": "Microsoft Phi 4 state-of-the-art 14B open model",
+        "description": "Microsoft Phi 4 family — 14B flagship and 3.8B mini",
         "modalities": ["text"],
         "license": "mit",
         "homepage_url": "https://azure.microsoft.com/en-us/products/phi",
@@ -615,7 +615,7 @@ EMBEDDED_MANIFEST: dict = {
                         "id": "embedded-phi4-v1",
                         "version": "1.0.0",
                         "lifecycle": "active",
-                        "released_at": "2026-03-12T00:00:00Z",
+                        "released_at": "2026-03-18T00:00:00Z",
                         "min_sdk_version": None,
                         "packages": [
                             {
@@ -673,6 +673,237 @@ EMBEDDED_MANIFEST: dict = {
                     },
                 },
             },
+            "phi-4-mini": {
+                "id": "phi-4-mini",
+                "parameter_count": "3.8B",
+                "context_length": 131072,
+                "modalities": ["text"],
+                "quantizations": ["Q4_K_M"],
+                "versions": {
+                    "1.0.0": {
+                        "id": "embedded-phi_4_mini-v1",
+                        "version": "1.0.0",
+                        "lifecycle": "active",
+                        "released_at": "2026-03-18T00:00:00Z",
+                        "min_sdk_version": None,
+                        "packages": [
+                            {
+                                "id": "pkg_phi_4_mini_gguf_q4_k_m",
+                                "platform": "android",
+                                "artifact_format": "gguf",
+                                "runtime_executor": "llamacpp",
+                                "quantization": "Q4_K_M",
+                                "support_tier": "blessed",
+                                "is_default": True,
+                                "resources": [
+                                    {
+                                        "kind": "weights",
+                                        "uri": "hf://bartowski/microsoft_Phi-4-mini-instruct-GGUF/microsoft_Phi-4-mini-instruct-Q4_K_M.gguf",
+                                        "path": "microsoft_Phi-4-mini-instruct-Q4_K_M.gguf",
+                                        "required": True,
+                                    },
+                                ],
+                            },
+                            {
+                                "id": "pkg_phi_4_mini_gguf_q4_k_m",
+                                "platform": "ios",
+                                "artifact_format": "gguf",
+                                "runtime_executor": "llamacpp",
+                                "quantization": "Q4_K_M",
+                                "support_tier": "blessed",
+                                "is_default": True,
+                                "resources": [
+                                    {
+                                        "kind": "weights",
+                                        "uri": "hf://bartowski/microsoft_Phi-4-mini-instruct-GGUF/microsoft_Phi-4-mini-instruct-Q4_K_M.gguf",
+                                        "path": "microsoft_Phi-4-mini-instruct-Q4_K_M.gguf",
+                                        "required": True,
+                                    },
+                                ],
+                            },
+                            {
+                                "id": "pkg_phi_4_mini_gguf_q4_k_m",
+                                "platform": "macos",
+                                "artifact_format": "gguf",
+                                "runtime_executor": "llamacpp",
+                                "quantization": "Q4_K_M",
+                                "support_tier": "blessed",
+                                "is_default": True,
+                                "resources": [
+                                    {
+                                        "kind": "weights",
+                                        "uri": "hf://bartowski/microsoft_Phi-4-mini-instruct-GGUF/microsoft_Phi-4-mini-instruct-Q4_K_M.gguf",
+                                        "path": "microsoft_Phi-4-mini-instruct-Q4_K_M.gguf",
+                                        "required": True,
+                                    },
+                                ],
+                            },
+                            {
+                                "id": "pkg_phi_4_mini_mlx_q4",
+                                "platform": "macos",
+                                "artifact_format": "mlx",
+                                "runtime_executor": "mlx",
+                                "quantization": "Q4",
+                                "support_tier": "blessed",
+                                "is_default": False,
+                                "resources": [
+                                    {
+                                        "kind": "weights",
+                                        "uri": "hf://mlx-community/Phi-4-mini-instruct-4bit",
+                                        "path": ".",
+                                        "required": True,
+                                    },
+                                ],
+                            },
+                            {
+                                "id": "pkg_phi_4_mini_gguf_q4_k_m",
+                                "platform": "linux",
+                                "artifact_format": "gguf",
+                                "runtime_executor": "llamacpp",
+                                "quantization": "Q4_K_M",
+                                "support_tier": "blessed",
+                                "is_default": True,
+                                "resources": [
+                                    {
+                                        "kind": "weights",
+                                        "uri": "hf://bartowski/microsoft_Phi-4-mini-instruct-GGUF/microsoft_Phi-4-mini-instruct-Q4_K_M.gguf",
+                                        "path": "microsoft_Phi-4-mini-instruct-Q4_K_M.gguf",
+                                        "required": True,
+                                    },
+                                ],
+                            },
+                        ],
+                    },
+                },
+            },
+        },
+    },
+    "punct-en": {
+        "id": "punct-en",
+        "vendor": "k2-fsa",
+        "description": "English punctuation and capitalization restoration model for sherpa-onnx",
+        "modalities": ["text"],
+        "license": "apache-2.0",
+        "homepage_url": "https://github.com/k2-fsa/sherpa-onnx",
+        "variants": {
+            "punct-en": {
+                "id": "punct-en",
+                "parameter_count": "7M",
+                "context_length": None,
+                "modalities": ["text"],
+                "quantizations": ["int8"],
+                "versions": {
+                    "1.0.0": {
+                        "id": "embedded-punct_en-v1",
+                        "version": "1.0.0",
+                        "lifecycle": "active",
+                        "released_at": "2026-03-18T00:00:00Z",
+                        "min_sdk_version": None,
+                        "packages": [
+                            {
+                                "id": "pkg_punct_en_onnx_int8",
+                                "platform": "android",
+                                "artifact_format": "onnx",
+                                "runtime_executor": "sherpa",
+                                "quantization": "int8",
+                                "support_tier": "blessed",
+                                "is_default": True,
+                                "resources": [
+                                    {
+                                        "kind": "weights",
+                                        "uri": "hf://k2-fsa/sherpa-onnx-punct-models/sherpa-onnx-online-punct-en-2024-08-06/model.int8.onnx",
+                                        "path": "sherpa-onnx-online-punct-en-2024-08-06/model.int8.onnx",
+                                        "required": True,
+                                        "load_order": 0,
+                                    },
+                                    {
+                                        "kind": "vocab",
+                                        "uri": "hf://k2-fsa/sherpa-onnx-punct-models/sherpa-onnx-online-punct-en-2024-08-06/bpe.vocab",
+                                        "path": "sherpa-onnx-online-punct-en-2024-08-06/bpe.vocab",
+                                        "required": True,
+                                        "load_order": 1,
+                                    },
+                                ],
+                            },
+                            {
+                                "id": "pkg_punct_en_onnx_int8",
+                                "platform": "ios",
+                                "artifact_format": "onnx",
+                                "runtime_executor": "sherpa",
+                                "quantization": "int8",
+                                "support_tier": "blessed",
+                                "is_default": True,
+                                "resources": [
+                                    {
+                                        "kind": "weights",
+                                        "uri": "hf://k2-fsa/sherpa-onnx-punct-models/sherpa-onnx-online-punct-en-2024-08-06/model.int8.onnx",
+                                        "path": "sherpa-onnx-online-punct-en-2024-08-06/model.int8.onnx",
+                                        "required": True,
+                                        "load_order": 0,
+                                    },
+                                    {
+                                        "kind": "vocab",
+                                        "uri": "hf://k2-fsa/sherpa-onnx-punct-models/sherpa-onnx-online-punct-en-2024-08-06/bpe.vocab",
+                                        "path": "sherpa-onnx-online-punct-en-2024-08-06/bpe.vocab",
+                                        "required": True,
+                                        "load_order": 1,
+                                    },
+                                ],
+                            },
+                            {
+                                "id": "pkg_punct_en_onnx_int8",
+                                "platform": "macos",
+                                "artifact_format": "onnx",
+                                "runtime_executor": "sherpa",
+                                "quantization": "int8",
+                                "support_tier": "blessed",
+                                "is_default": True,
+                                "resources": [
+                                    {
+                                        "kind": "weights",
+                                        "uri": "hf://k2-fsa/sherpa-onnx-punct-models/sherpa-onnx-online-punct-en-2024-08-06/model.int8.onnx",
+                                        "path": "sherpa-onnx-online-punct-en-2024-08-06/model.int8.onnx",
+                                        "required": True,
+                                        "load_order": 0,
+                                    },
+                                    {
+                                        "kind": "vocab",
+                                        "uri": "hf://k2-fsa/sherpa-onnx-punct-models/sherpa-onnx-online-punct-en-2024-08-06/bpe.vocab",
+                                        "path": "sherpa-onnx-online-punct-en-2024-08-06/bpe.vocab",
+                                        "required": True,
+                                        "load_order": 1,
+                                    },
+                                ],
+                            },
+                            {
+                                "id": "pkg_punct_en_onnx_int8",
+                                "platform": "linux",
+                                "artifact_format": "onnx",
+                                "runtime_executor": "sherpa",
+                                "quantization": "int8",
+                                "support_tier": "blessed",
+                                "is_default": True,
+                                "resources": [
+                                    {
+                                        "kind": "weights",
+                                        "uri": "hf://k2-fsa/sherpa-onnx-punct-models/sherpa-onnx-online-punct-en-2024-08-06/model.int8.onnx",
+                                        "path": "sherpa-onnx-online-punct-en-2024-08-06/model.int8.onnx",
+                                        "required": True,
+                                        "load_order": 0,
+                                    },
+                                    {
+                                        "kind": "vocab",
+                                        "uri": "hf://k2-fsa/sherpa-onnx-punct-models/sherpa-onnx-online-punct-en-2024-08-06/bpe.vocab",
+                                        "path": "sherpa-onnx-online-punct-en-2024-08-06/bpe.vocab",
+                                        "required": True,
+                                        "load_order": 1,
+                                    },
+                                ],
+                            },
+                        ],
+                    },
+                },
+            },
         },
     },
     "qwen2.5": {
@@ -694,7 +925,7 @@ EMBEDDED_MANIFEST: dict = {
                         "id": "embedded-qwen2_5_0_5b-v1",
                         "version": "1.0.0",
                         "lifecycle": "active",
-                        "released_at": "2026-03-12T00:00:00Z",
+                        "released_at": "2026-03-18T00:00:00Z",
                         "min_sdk_version": None,
                         "packages": [
                             {
@@ -746,7 +977,7 @@ EMBEDDED_MANIFEST: dict = {
                         "id": "embedded-qwen2_5_1_5b-v1",
                         "version": "1.0.0",
                         "lifecycle": "active",
-                        "released_at": "2026-03-12T00:00:00Z",
+                        "released_at": "2026-03-18T00:00:00Z",
                         "min_sdk_version": None,
                         "packages": [
                             {
@@ -815,7 +1046,7 @@ EMBEDDED_MANIFEST: dict = {
                         "id": "embedded-qwen2_5_3b-v1",
                         "version": "1.0.0",
                         "lifecycle": "active",
-                        "released_at": "2026-03-12T00:00:00Z",
+                        "released_at": "2026-03-18T00:00:00Z",
                         "min_sdk_version": None,
                         "packages": [
                             {
@@ -884,7 +1115,7 @@ EMBEDDED_MANIFEST: dict = {
                         "id": "embedded-qwen2_5_7b-v1",
                         "version": "1.0.0",
                         "lifecycle": "active",
-                        "released_at": "2026-03-12T00:00:00Z",
+                        "released_at": "2026-03-18T00:00:00Z",
                         "min_sdk_version": None,
                         "packages": [
                             {
@@ -953,7 +1184,7 @@ EMBEDDED_MANIFEST: dict = {
                         "id": "embedded-qwen2_5_14b-v1",
                         "version": "1.0.0",
                         "lifecycle": "active",
-                        "released_at": "2026-03-12T00:00:00Z",
+                        "released_at": "2026-03-18T00:00:00Z",
                         "min_sdk_version": None,
                         "packages": [
                             {
@@ -1022,7 +1253,7 @@ EMBEDDED_MANIFEST: dict = {
                         "id": "embedded-qwen2_5_32b-v1",
                         "version": "1.0.0",
                         "lifecycle": "active",
-                        "released_at": "2026-03-12T00:00:00Z",
+                        "released_at": "2026-03-18T00:00:00Z",
                         "min_sdk_version": None,
                         "packages": [
                             {
@@ -1074,7 +1305,7 @@ EMBEDDED_MANIFEST: dict = {
                         "id": "embedded-qwen2_5_72b-v1",
                         "version": "1.0.0",
                         "lifecycle": "active",
-                        "released_at": "2026-03-12T00:00:00Z",
+                        "released_at": "2026-03-18T00:00:00Z",
                         "min_sdk_version": None,
                         "packages": [
                             {
@@ -1125,6 +1356,178 @@ EMBEDDED_MANIFEST: dict = {
         "license": "mit",
         "homepage_url": "https://github.com/openai/whisper",
         "variants": {
+            "whisper-tiny": {
+                "id": "whisper-tiny",
+                "parameter_count": "39M",
+                "context_length": None,
+                "modalities": ["audio"],
+                "quantizations": ["fp16"],
+                "versions": {
+                    "1.0.0": {
+                        "id": "embedded-whisper_tiny-v1",
+                        "version": "1.0.0",
+                        "lifecycle": "active",
+                        "released_at": "2026-03-18T00:00:00Z",
+                        "min_sdk_version": None,
+                        "packages": [
+                            {
+                                "id": "pkg_whisper_tiny_gguf_fp16",
+                                "platform": "android",
+                                "artifact_format": "gguf",
+                                "runtime_executor": "whisper",
+                                "quantization": "fp16",
+                                "support_tier": "blessed",
+                                "is_default": True,
+                                "resources": [
+                                    {
+                                        "kind": "weights",
+                                        "uri": "hf://ggerganov/whisper.cpp/ggml-tiny.bin",
+                                        "path": "ggml-tiny.bin",
+                                        "required": True,
+                                    },
+                                ],
+                            },
+                            {
+                                "id": "pkg_whisper_tiny_gguf_fp16",
+                                "platform": "ios",
+                                "artifact_format": "gguf",
+                                "runtime_executor": "whisper",
+                                "quantization": "fp16",
+                                "support_tier": "blessed",
+                                "is_default": True,
+                                "resources": [
+                                    {
+                                        "kind": "weights",
+                                        "uri": "hf://ggerganov/whisper.cpp/ggml-tiny.bin",
+                                        "path": "ggml-tiny.bin",
+                                        "required": True,
+                                    },
+                                ],
+                            },
+                            {
+                                "id": "pkg_whisper_tiny_gguf_fp16",
+                                "platform": "macos",
+                                "artifact_format": "gguf",
+                                "runtime_executor": "whisper",
+                                "quantization": "fp16",
+                                "support_tier": "blessed",
+                                "is_default": True,
+                                "resources": [
+                                    {
+                                        "kind": "weights",
+                                        "uri": "hf://ggerganov/whisper.cpp/ggml-tiny.bin",
+                                        "path": "ggml-tiny.bin",
+                                        "required": True,
+                                    },
+                                ],
+                            },
+                            {
+                                "id": "pkg_whisper_tiny_gguf_fp16",
+                                "platform": "linux",
+                                "artifact_format": "gguf",
+                                "runtime_executor": "whisper",
+                                "quantization": "fp16",
+                                "support_tier": "blessed",
+                                "is_default": True,
+                                "resources": [
+                                    {
+                                        "kind": "weights",
+                                        "uri": "hf://ggerganov/whisper.cpp/ggml-tiny.bin",
+                                        "path": "ggml-tiny.bin",
+                                        "required": True,
+                                    },
+                                ],
+                            },
+                        ],
+                    },
+                },
+            },
+            "whisper-base": {
+                "id": "whisper-base",
+                "parameter_count": "74M",
+                "context_length": None,
+                "modalities": ["audio"],
+                "quantizations": ["fp16"],
+                "versions": {
+                    "1.0.0": {
+                        "id": "embedded-whisper_base-v1",
+                        "version": "1.0.0",
+                        "lifecycle": "active",
+                        "released_at": "2026-03-18T00:00:00Z",
+                        "min_sdk_version": None,
+                        "packages": [
+                            {
+                                "id": "pkg_whisper_base_gguf_fp16",
+                                "platform": "android",
+                                "artifact_format": "gguf",
+                                "runtime_executor": "whisper",
+                                "quantization": "fp16",
+                                "support_tier": "blessed",
+                                "is_default": True,
+                                "resources": [
+                                    {
+                                        "kind": "weights",
+                                        "uri": "hf://ggerganov/whisper.cpp/ggml-base.bin",
+                                        "path": "ggml-base.bin",
+                                        "required": True,
+                                    },
+                                ],
+                            },
+                            {
+                                "id": "pkg_whisper_base_gguf_fp16",
+                                "platform": "ios",
+                                "artifact_format": "gguf",
+                                "runtime_executor": "whisper",
+                                "quantization": "fp16",
+                                "support_tier": "blessed",
+                                "is_default": True,
+                                "resources": [
+                                    {
+                                        "kind": "weights",
+                                        "uri": "hf://ggerganov/whisper.cpp/ggml-base.bin",
+                                        "path": "ggml-base.bin",
+                                        "required": True,
+                                    },
+                                ],
+                            },
+                            {
+                                "id": "pkg_whisper_base_gguf_fp16",
+                                "platform": "macos",
+                                "artifact_format": "gguf",
+                                "runtime_executor": "whisper",
+                                "quantization": "fp16",
+                                "support_tier": "blessed",
+                                "is_default": True,
+                                "resources": [
+                                    {
+                                        "kind": "weights",
+                                        "uri": "hf://ggerganov/whisper.cpp/ggml-base.bin",
+                                        "path": "ggml-base.bin",
+                                        "required": True,
+                                    },
+                                ],
+                            },
+                            {
+                                "id": "pkg_whisper_base_gguf_fp16",
+                                "platform": "linux",
+                                "artifact_format": "gguf",
+                                "runtime_executor": "whisper",
+                                "quantization": "fp16",
+                                "support_tier": "blessed",
+                                "is_default": True,
+                                "resources": [
+                                    {
+                                        "kind": "weights",
+                                        "uri": "hf://ggerganov/whisper.cpp/ggml-base.bin",
+                                        "path": "ggml-base.bin",
+                                        "required": True,
+                                    },
+                                ],
+                            },
+                        ],
+                    },
+                },
+            },
             "whisper-large-v3": {
                 "id": "whisper-large-v3",
                 "parameter_count": "1.5B",
@@ -1136,9 +1539,43 @@ EMBEDDED_MANIFEST: dict = {
                         "id": "embedded-whisper_large_v3-v1",
                         "version": "1.0.0",
                         "lifecycle": "active",
-                        "released_at": "2026-03-12T00:00:00Z",
+                        "released_at": "2026-03-18T00:00:00Z",
                         "min_sdk_version": None,
                         "packages": [
+                            {
+                                "id": "pkg_whisper_large_v3_gguf_fp16",
+                                "platform": "android",
+                                "artifact_format": "gguf",
+                                "runtime_executor": "whisper",
+                                "quantization": "fp16",
+                                "support_tier": "blessed",
+                                "is_default": True,
+                                "resources": [
+                                    {
+                                        "kind": "weights",
+                                        "uri": "hf://ggerganov/whisper.cpp/ggml-large-v3.bin",
+                                        "path": "ggml-large-v3.bin",
+                                        "required": True,
+                                    },
+                                ],
+                            },
+                            {
+                                "id": "pkg_whisper_large_v3_gguf_fp16",
+                                "platform": "ios",
+                                "artifact_format": "gguf",
+                                "runtime_executor": "whisper",
+                                "quantization": "fp16",
+                                "support_tier": "blessed",
+                                "is_default": True,
+                                "resources": [
+                                    {
+                                        "kind": "weights",
+                                        "uri": "hf://ggerganov/whisper.cpp/ggml-large-v3.bin",
+                                        "path": "ggml-large-v3.bin",
+                                        "required": True,
+                                    },
+                                ],
+                            },
                             {
                                 "id": "pkg_whisper_large_v3_gguf_fp16",
                                 "platform": "macos",
@@ -1170,6 +1607,190 @@ EMBEDDED_MANIFEST: dict = {
                                         "uri": "hf://ggerganov/whisper.cpp/ggml-large-v3.bin",
                                         "path": "ggml-large-v3.bin",
                                         "required": True,
+                                    },
+                                ],
+                            },
+                        ],
+                    },
+                },
+            },
+        },
+    },
+    "zipformer": {
+        "id": "zipformer",
+        "vendor": "k2-fsa",
+        "description": "Zipformer streaming speech recognition via sherpa-onnx — real-time live transcription",
+        "modalities": ["audio"],
+        "license": "apache-2.0",
+        "homepage_url": "https://github.com/k2-fsa/sherpa-onnx",
+        "variants": {
+            "zipformer-en-20m": {
+                "id": "zipformer-en-20m",
+                "parameter_count": "20M",
+                "context_length": None,
+                "modalities": ["audio"],
+                "quantizations": ["int8"],
+                "versions": {
+                    "1.0.0": {
+                        "id": "embedded-zipformer_en_20m-v1",
+                        "version": "1.0.0",
+                        "lifecycle": "active",
+                        "released_at": "2026-03-18T00:00:00Z",
+                        "min_sdk_version": None,
+                        "packages": [
+                            {
+                                "id": "pkg_zipformer_en_20m_onnx_int8",
+                                "platform": "android",
+                                "artifact_format": "onnx",
+                                "runtime_executor": "sherpa",
+                                "quantization": "int8",
+                                "support_tier": "blessed",
+                                "is_default": True,
+                                "resources": [
+                                    {
+                                        "kind": "encoder",
+                                        "uri": "hf://csukuangfj/sherpa-onnx-streaming-zipformer-en-20M-2023-02-17/encoder-epoch-99-avg-1.int8.onnx",
+                                        "path": "encoder-epoch-99-avg-1.int8.onnx",
+                                        "required": True,
+                                        "load_order": 0,
+                                    },
+                                    {
+                                        "kind": "decoder",
+                                        "uri": "hf://csukuangfj/sherpa-onnx-streaming-zipformer-en-20M-2023-02-17/decoder-epoch-99-avg-1.onnx",
+                                        "path": "decoder-epoch-99-avg-1.onnx",
+                                        "required": True,
+                                        "load_order": 1,
+                                    },
+                                    {
+                                        "kind": "joiner",
+                                        "uri": "hf://csukuangfj/sherpa-onnx-streaming-zipformer-en-20M-2023-02-17/joiner-epoch-99-avg-1.int8.onnx",
+                                        "path": "joiner-epoch-99-avg-1.int8.onnx",
+                                        "required": True,
+                                        "load_order": 2,
+                                    },
+                                    {
+                                        "kind": "tokens",
+                                        "uri": "hf://csukuangfj/sherpa-onnx-streaming-zipformer-en-20M-2023-02-17/tokens.txt",
+                                        "path": "tokens.txt",
+                                        "required": True,
+                                        "load_order": 3,
+                                    },
+                                ],
+                            },
+                            {
+                                "id": "pkg_zipformer_en_20m_onnx_int8",
+                                "platform": "ios",
+                                "artifact_format": "onnx",
+                                "runtime_executor": "sherpa",
+                                "quantization": "int8",
+                                "support_tier": "blessed",
+                                "is_default": True,
+                                "resources": [
+                                    {
+                                        "kind": "encoder",
+                                        "uri": "hf://csukuangfj/sherpa-onnx-streaming-zipformer-en-20M-2023-02-17/encoder-epoch-99-avg-1.int8.onnx",
+                                        "path": "encoder-epoch-99-avg-1.int8.onnx",
+                                        "required": True,
+                                        "load_order": 0,
+                                    },
+                                    {
+                                        "kind": "decoder",
+                                        "uri": "hf://csukuangfj/sherpa-onnx-streaming-zipformer-en-20M-2023-02-17/decoder-epoch-99-avg-1.onnx",
+                                        "path": "decoder-epoch-99-avg-1.onnx",
+                                        "required": True,
+                                        "load_order": 1,
+                                    },
+                                    {
+                                        "kind": "joiner",
+                                        "uri": "hf://csukuangfj/sherpa-onnx-streaming-zipformer-en-20M-2023-02-17/joiner-epoch-99-avg-1.int8.onnx",
+                                        "path": "joiner-epoch-99-avg-1.int8.onnx",
+                                        "required": True,
+                                        "load_order": 2,
+                                    },
+                                    {
+                                        "kind": "tokens",
+                                        "uri": "hf://csukuangfj/sherpa-onnx-streaming-zipformer-en-20M-2023-02-17/tokens.txt",
+                                        "path": "tokens.txt",
+                                        "required": True,
+                                        "load_order": 3,
+                                    },
+                                ],
+                            },
+                            {
+                                "id": "pkg_zipformer_en_20m_onnx_int8",
+                                "platform": "macos",
+                                "artifact_format": "onnx",
+                                "runtime_executor": "sherpa",
+                                "quantization": "int8",
+                                "support_tier": "blessed",
+                                "is_default": True,
+                                "resources": [
+                                    {
+                                        "kind": "encoder",
+                                        "uri": "hf://csukuangfj/sherpa-onnx-streaming-zipformer-en-20M-2023-02-17/encoder-epoch-99-avg-1.int8.onnx",
+                                        "path": "encoder-epoch-99-avg-1.int8.onnx",
+                                        "required": True,
+                                        "load_order": 0,
+                                    },
+                                    {
+                                        "kind": "decoder",
+                                        "uri": "hf://csukuangfj/sherpa-onnx-streaming-zipformer-en-20M-2023-02-17/decoder-epoch-99-avg-1.onnx",
+                                        "path": "decoder-epoch-99-avg-1.onnx",
+                                        "required": True,
+                                        "load_order": 1,
+                                    },
+                                    {
+                                        "kind": "joiner",
+                                        "uri": "hf://csukuangfj/sherpa-onnx-streaming-zipformer-en-20M-2023-02-17/joiner-epoch-99-avg-1.int8.onnx",
+                                        "path": "joiner-epoch-99-avg-1.int8.onnx",
+                                        "required": True,
+                                        "load_order": 2,
+                                    },
+                                    {
+                                        "kind": "tokens",
+                                        "uri": "hf://csukuangfj/sherpa-onnx-streaming-zipformer-en-20M-2023-02-17/tokens.txt",
+                                        "path": "tokens.txt",
+                                        "required": True,
+                                        "load_order": 3,
+                                    },
+                                ],
+                            },
+                            {
+                                "id": "pkg_zipformer_en_20m_onnx_int8",
+                                "platform": "linux",
+                                "artifact_format": "onnx",
+                                "runtime_executor": "sherpa",
+                                "quantization": "int8",
+                                "support_tier": "blessed",
+                                "is_default": True,
+                                "resources": [
+                                    {
+                                        "kind": "encoder",
+                                        "uri": "hf://csukuangfj/sherpa-onnx-streaming-zipformer-en-20M-2023-02-17/encoder-epoch-99-avg-1.int8.onnx",
+                                        "path": "encoder-epoch-99-avg-1.int8.onnx",
+                                        "required": True,
+                                        "load_order": 0,
+                                    },
+                                    {
+                                        "kind": "decoder",
+                                        "uri": "hf://csukuangfj/sherpa-onnx-streaming-zipformer-en-20M-2023-02-17/decoder-epoch-99-avg-1.onnx",
+                                        "path": "decoder-epoch-99-avg-1.onnx",
+                                        "required": True,
+                                        "load_order": 1,
+                                    },
+                                    {
+                                        "kind": "joiner",
+                                        "uri": "hf://csukuangfj/sherpa-onnx-streaming-zipformer-en-20M-2023-02-17/joiner-epoch-99-avg-1.int8.onnx",
+                                        "path": "joiner-epoch-99-avg-1.int8.onnx",
+                                        "required": True,
+                                        "load_order": 2,
+                                    },
+                                    {
+                                        "kind": "tokens",
+                                        "uri": "hf://csukuangfj/sherpa-onnx-streaming-zipformer-en-20M-2023-02-17/tokens.txt",
+                                        "path": "tokens.txt",
+                                        "required": True,
+                                        "load_order": 3,
                                     },
                                 ],
                             },
