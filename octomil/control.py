@@ -180,6 +180,38 @@ class OctomilControl:
             self._heartbeat_thread.join(timeout=5.0)
             self._heartbeat_thread = None
 
+    def get_desired_state(self) -> list[dict[str, Any]]:
+        """Return desired state as a list of artifact entries.
+
+        Adapter method that makes ``OctomilControl`` compatible with the
+        ``server_client`` interface expected by ``ArtifactLoop``.  Calls
+        ``fetch_desired_state()`` and extracts the ``artifacts`` list, mapping
+        each entry to the flat dict format the loop expects.
+        """
+        raw = self.fetch_desired_state()
+        artifacts = raw.get("artifacts", [])
+        if not isinstance(artifacts, list):
+            return []
+        result: list[dict[str, Any]] = []
+        for entry in artifacts:
+            mapped: dict[str, Any] = {
+                "model_id": entry.get("modelId", entry.get("model_id", "")),
+                "version": entry.get("version", ""),
+                "artifact_id": entry.get("artifactId", entry.get("artifact_id", "")),
+                "manifest": entry.get("manifest", {}),
+                "total_bytes": entry.get("totalBytes", entry.get("total_bytes", 0)),
+            }
+            # Pass through activation_policy if present
+            if "activationPolicy" in entry or "activation_policy" in entry:
+                mapped["activation_policy"] = entry.get("activationPolicy", entry.get("activation_policy", "immediate"))
+            result.append(mapped)
+        return result
+
+    @property
+    def base_url(self) -> str:
+        """Expose the API base URL so ArtifactLoop can build download URLs."""
+        return getattr(self._api, "base_url", "")
+
     def fetch_desired_state(
         self,
         device_id: Optional[str] = None,
