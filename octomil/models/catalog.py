@@ -19,6 +19,9 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
+from octomil._generated.artifact_resource_kind import ArtifactResourceKind
+from octomil._generated.modality import Modality
+
 from .catalog_client import CatalogClientV2
 
 logger = logging.getLogger(__name__)
@@ -55,6 +58,20 @@ class VariantSpec:
 
 
 @dataclass(frozen=True)
+class ResourceBindingSpec:
+    """A resolved resource within a package, mapping kind to URI/path."""
+
+    kind: ArtifactResourceKind
+    uri: str
+    path: str = ""
+    size_bytes: int = 0
+    checksum_sha256: str = ""
+    required: bool = True
+    load_order: int = 0
+    metadata: dict[str, Any] = field(default_factory=dict)  # type: ignore[assignment]
+
+
+@dataclass(frozen=True)
 class MoEMetadata:
     """Mixture of Experts model metadata.
 
@@ -76,12 +93,17 @@ class ModelEntry:
 
     publisher: str
     params: str
+    input_modalities: list[Modality]
+    output_modalities: list[Modality]
     default_quant: str = "4bit"
     variants: dict[str, VariantSpec] = field(default_factory=dict)
     engines: frozenset[str] = frozenset()  # engines this model is known to work on
     architecture: str = "dense"  # "dense" or "moe"
     moe: Optional[MoEMetadata] = None  # populated when architecture == "moe"
     download_size: Optional[str] = None  # human-readable, e.g. "1.7 GB"
+    task_taxonomy: list[str] = field(default_factory=list)
+    engine_config: dict[str, Any] = field(default_factory=dict)
+    resource_bindings: list[ResourceBindingSpec] = field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -182,20 +204,59 @@ def _parse_hf_uri(uri: str) -> tuple[str, str]:
     return path, ""
 
 
-def _get_weights_resource(pkg: dict) -> Optional[dict]:
-    """Extract the first weights resource from a package."""
+def _get_resource_by_kind(pkg: dict, kind: str) -> Optional[dict]:
+    """Extract the first resource of a given kind from a package."""
     for res in pkg.get("resources", []):
-        if res.get("kind") == "weights":
+        if res.get("kind") == kind:
             return res
     return None
+
+
+def _get_weights_resource(pkg: dict) -> Optional[dict]:
+    """Extract the first weights resource from a package."""
+    return _get_resource_by_kind(pkg, "weights")
 
 
 def _get_projector_resource(pkg: dict) -> Optional[dict]:
     """Extract the first projector resource from a package."""
+    return _get_resource_by_kind(pkg, "projector")
+
+
+def _parse_modalities(raw: list[str] | None) -> list[Modality]:
+    """Parse a list of raw modality strings into Modality enum values."""
+    if not raw:
+        return [Modality.TEXT]
+    result: list[Modality] = []
+    for m in raw:
+        try:
+            result.append(Modality(m.lower()))
+        except ValueError:
+            pass
+    return result or [Modality.TEXT]
+
+
+def _build_resource_bindings(pkg: dict) -> list[ResourceBindingSpec]:
+    """Build ResourceBindingSpec list from package resources."""
+    bindings: list[ResourceBindingSpec] = []
     for res in pkg.get("resources", []):
-        if res.get("kind") == "projector":
-            return res
-    return None
+        kind_str = res.get("kind", "")
+        try:
+            kind = ArtifactResourceKind(kind_str)
+        except ValueError:
+            continue
+        bindings.append(
+            ResourceBindingSpec(
+                kind=kind,
+                uri=res.get("uri", ""),
+                path=res.get("path", ""),
+                size_bytes=res.get("size_bytes", 0),
+                checksum_sha256=res.get("checksum_sha256", ""),
+                required=res.get("required", True),
+                load_order=res.get("load_order", 0),
+                metadata=res.get("metadata") or {},
+            )
+        )
+    return bindings
 
 
 def _package_to_variant_field(
@@ -293,9 +354,18 @@ def _manifest_model_to_entry(model: dict) -> tuple[str, ModelEntry]:
     # Determine publisher from family
     publisher = _FAMILY_TO_PUBLISHER.get(family, "Unknown")
 
+    # Extract task_taxonomy from model (renamed from legacy "modalities" field)
+    task_taxonomy: list[str] = model.get("task_taxonomy", [])
+
     # Build variants and engines from packages
     packages = model.get("packages", [])
     engine_names: set[str] = set()
+
+    # Collect input/output modalities and engine_config across all packages
+    all_input_modalities: set[Modality] = set()
+    all_output_modalities: set[Modality] = set()
+    merged_engine_config: dict[str, Any] = {}
+    all_resource_bindings: list[ResourceBindingSpec] = []
 
     # Group packages by canonical quant to build VariantSpec per quant
     quant_packages: dict[str, list[dict]] = {}
@@ -309,6 +379,24 @@ def _manifest_model_to_entry(model: dict) -> tuple[str, ModelEntry]:
         engine = _EXECUTOR_TO_ENGINE.get(executor, executor)
         if engine:
             engine_names.add(engine)
+
+        # Collect modalities from packages
+        pkg_input = _parse_modalities(pkg.get("input_modalities"))
+        pkg_output = _parse_modalities(pkg.get("output_modalities"))
+        all_input_modalities.update(pkg_input)
+        all_output_modalities.update(pkg_output)
+
+        # Merge engine_config (first wins per key)
+        for k, v in (pkg.get("engine_config") or {}).items():
+            if k not in merged_engine_config:
+                merged_engine_config[k] = v
+
+        # Build resource bindings
+        all_resource_bindings.extend(_build_resource_bindings(pkg))
+
+    # Sort modalities for deterministic output
+    input_modalities = sorted(all_input_modalities, key=lambda m: m.value)
+    output_modalities = sorted(all_output_modalities, key=lambda m: m.value)
 
     # Build VariantSpec for each quant level by merging all packages
     variants: dict[str, VariantSpec] = {}
@@ -347,9 +435,14 @@ def _manifest_model_to_entry(model: dict) -> tuple[str, ModelEntry]:
     return model_id, ModelEntry(
         publisher=publisher,
         params=param_count,
+        input_modalities=input_modalities,
+        output_modalities=output_modalities,
         default_quant=default_quant,
         variants=variants,
         engines=frozenset(engine_names),
+        task_taxonomy=task_taxonomy,
+        engine_config=merged_engine_config,
+        resource_bindings=all_resource_bindings,
     )
 
 
@@ -364,6 +457,10 @@ def _hydrate_manifest(manifest: dict) -> dict[str, ModelEntry]:
     for family_name, family_data in manifest.items():
         if not isinstance(family_data, dict) or "variants" not in family_data:
             continue
+
+        # Extract task_taxonomy from family level (renamed from legacy "modalities")
+        family_task_taxonomy: list[str] = family_data.get("task_taxonomy", family_data.get("modalities", []))
+
         for variant_name, variant_data in family_data["variants"].items():
             packages: list[dict] = []
             for ver_data in variant_data.get("versions", {}).values():
@@ -372,6 +469,11 @@ def _hydrate_manifest(manifest: dict) -> dict[str, ModelEntry]:
             quants = variant_data.get("quantizations", [])
             default_quant = quants[0].lower() if quants else "q4_k_m"
 
+            # Variant-level task_taxonomy overrides family-level
+            variant_task_taxonomy: list[str] = variant_data.get(
+                "task_taxonomy", variant_data.get("modalities", family_task_taxonomy)
+            )
+
             model: dict = {
                 "id": variant_name,
                 "family": family_name,
@@ -379,6 +481,7 @@ def _hydrate_manifest(manifest: dict) -> dict[str, ModelEntry]:
                 "parameter_count": variant_data.get("parameter_count", ""),
                 "default_quantization": default_quant,
                 "packages": packages,
+                "task_taxonomy": variant_task_taxonomy,
             }
             try:
                 key, entry = _manifest_model_to_entry(model)

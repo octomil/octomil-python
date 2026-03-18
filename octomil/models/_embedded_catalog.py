@@ -17,7 +17,7 @@ EMBEDDED_MANIFEST: dict = {
         "id": "gemma-2",
         "vendor": "Google",
         "description": "Google Gemma 2 family of lightweight open models",
-        "modalities": ["text"],
+        "task_taxonomy": ["text"],
         "license": "gemma",
         "homepage_url": "https://ai.google.dev/gemma",
         "variants": {
@@ -25,7 +25,7 @@ EMBEDDED_MANIFEST: dict = {
                 "id": "gemma-2-2b",
                 "parameter_count": "2B",
                 "context_length": 8192,
-                "modalities": ["text"],
+                "task_taxonomy": ["text"],
                 "quantizations": ["Q4_K_M", "Q4"],
                 "versions": {
                     "1.0.0": {
@@ -51,6 +51,8 @@ EMBEDDED_MANIFEST: dict = {
                                         "required": True,
                                     },
                                 ],
+                                "input_modalities": ["text"],
+                                "output_modalities": ["text"],
                             },
                             {
                                 "id": "pkg_gemma_2_2b_mlx_q4",
@@ -68,6 +70,8 @@ EMBEDDED_MANIFEST: dict = {
                                         "required": True,
                                     },
                                 ],
+                                "input_modalities": ["text"],
+                                "output_modalities": ["text"],
                             },
                             {
                                 "id": "pkg_gemma_2_2b_gguf_q4_k_m",
@@ -85,6 +89,8 @@ EMBEDDED_MANIFEST: dict = {
                                         "required": True,
                                     },
                                 ],
+                                "input_modalities": ["text"],
+                                "output_modalities": ["text"],
                             },
                         ],
                     },
@@ -94,7 +100,7 @@ EMBEDDED_MANIFEST: dict = {
                 "id": "gemma-2-9b",
                 "parameter_count": "9B",
                 "context_length": 8192,
-                "modalities": ["text"],
+                "task_taxonomy": ["text"],
                 "quantizations": ["Q4_K_M"],
                 "versions": {
                     "1.0.0": {
@@ -120,6 +126,8 @@ EMBEDDED_MANIFEST: dict = {
                                         "required": True,
                                     },
                                 ],
+                                "input_modalities": ["text"],
+                                "output_modalities": ["text"],
                             },
                             {
                                 "id": "pkg_gemma_2_9b_gguf_q4_k_m",
@@ -137,6 +145,8 @@ EMBEDDED_MANIFEST: dict = {
                                         "required": True,
                                     },
                                 ],
+                                "input_modalities": ["text"],
+                                "output_modalities": ["text"],
                             },
                         ],
                     },
@@ -146,7 +156,7 @@ EMBEDDED_MANIFEST: dict = {
                 "id": "gemma-2-27b",
                 "parameter_count": "27B",
                 "context_length": 8192,
-                "modalities": ["text"],
+                "task_taxonomy": ["text"],
                 "quantizations": ["Q4_K_M"],
                 "versions": {
                     "1.0.0": {
@@ -172,6 +182,8 @@ EMBEDDED_MANIFEST: dict = {
                                         "required": True,
                                     },
                                 ],
+                                "input_modalities": ["text"],
+                                "output_modalities": ["text"],
                             },
                             {
                                 "id": "pkg_gemma_2_27b_gguf_q4_k_m",
@@ -189,6 +201,8 @@ EMBEDDED_MANIFEST: dict = {
                                         "required": True,
                                     },
                                 ],
+                                "input_modalities": ["text"],
+                                "output_modalities": ["text"],
                             },
                         ],
                     },
@@ -200,7 +214,7 @@ EMBEDDED_MANIFEST: dict = {
         "id": "gemma-3",
         "vendor": "Google",
         "description": "Google Gemma 3 multimodal models with vision support",
-        "modalities": ["text", "image"],
+        "task_taxonomy": ["text", "image"],
         "license": "gemma",
         "homepage_url": "https://ai.google.dev/gemma",
         "variants": {
@@ -208,7 +222,7 @@ EMBEDDED_MANIFEST: dict = {
                 "id": "gemma3-1b",
                 "parameter_count": "1B",
                 "context_length": 32768,
-                "modalities": ["text", "image"],
+                "task_taxonomy": ["text", "image"],
                 "quantizations": ["Q4_0"],
                 "versions": {
                     "1.0.0": {
@@ -234,6 +248,8 @@ EMBEDDED_MANIFEST: dict = {
                                         "required": True,
                                     },
                                 ],
+                                "input_modalities": ["text", "image"],
+                                "output_modalities": ["text"],
                             },
                             {
                                 "id": "pkg_gemma3_1b_mlx_q4",
@@ -251,6 +267,8 @@ EMBEDDED_MANIFEST: dict = {
                                         "required": True,
                                     },
                                 ],
+                                "input_modalities": ["text", "image"],
+                                "output_modalities": ["text"],
                             },
                             {
                                 "id": "pkg_gemma3_1b_gguf_q4_0",
@@ -268,6 +286,8 @@ EMBEDDED_MANIFEST: dict = {
                                         "required": True,
                                     },
                                 ],
+                                "input_modalities": ["text", "image"],
+                                "output_modalities": ["text"],
                             },
                         ],
                     },
@@ -277,7 +297,7 @@ EMBEDDED_MANIFEST: dict = {
                 "id": "gemma3-4b",
                 "parameter_count": "4B",
                 "context_length": 128000,
-                "modalities": ["text", "image"],
+                "task_taxonomy": ["text", "image"],
                 "quantizations": ["Q4_0"],
                 "versions": {
                     "1.0.0": {
@@ -303,6 +323,8 @@ EMBEDDED_MANIFEST: dict = {
                                         "required": True,
                                     },
                                 ],
+                                "input_modalities": ["text", "image"],
+                                "output_modalities": ["text"],
                             },
                             {
                                 "id": "pkg_gemma3_4b_mlx_q4",
@@ -320,6 +342,8 @@ EMBEDDED_MANIFEST: dict = {
                                         "required": True,
                                     },
                                 ],
+                                "input_modalities": ["text", "image"],
+                                "output_modalities": ["text"],
                             },
                             {
                                 "id": "pkg_gemma3_4b_gguf_q4_0",
@@ -337,6 +361,8 @@ EMBEDDED_MANIFEST: dict = {
                                         "required": True,
                                     },
                                 ],
+                                "input_modalities": ["text", "image"],
+                                "output_modalities": ["text"],
                             },
                         ],
                     },
@@ -346,7 +372,7 @@ EMBEDDED_MANIFEST: dict = {
                 "id": "gemma3-12b",
                 "parameter_count": "12B",
                 "context_length": 128000,
-                "modalities": ["text", "image"],
+                "task_taxonomy": ["text", "image"],
                 "quantizations": ["Q4_0"],
                 "versions": {
                     "1.0.0": {
@@ -372,6 +398,8 @@ EMBEDDED_MANIFEST: dict = {
                                         "required": True,
                                     },
                                 ],
+                                "input_modalities": ["text", "image"],
+                                "output_modalities": ["text"],
                             },
                             {
                                 "id": "pkg_gemma3_12b_gguf_q4_0",
@@ -389,6 +417,8 @@ EMBEDDED_MANIFEST: dict = {
                                         "required": True,
                                     },
                                 ],
+                                "input_modalities": ["text", "image"],
+                                "output_modalities": ["text"],
                             },
                         ],
                     },
@@ -398,7 +428,7 @@ EMBEDDED_MANIFEST: dict = {
                 "id": "gemma3-27b",
                 "parameter_count": "27B",
                 "context_length": 128000,
-                "modalities": ["text", "image"],
+                "task_taxonomy": ["text", "image"],
                 "quantizations": ["Q4_0"],
                 "versions": {
                     "1.0.0": {
@@ -424,6 +454,8 @@ EMBEDDED_MANIFEST: dict = {
                                         "required": True,
                                     },
                                 ],
+                                "input_modalities": ["text", "image"],
+                                "output_modalities": ["text"],
                             },
                             {
                                 "id": "pkg_gemma3_27b_gguf_q4_0",
@@ -441,6 +473,8 @@ EMBEDDED_MANIFEST: dict = {
                                         "required": True,
                                     },
                                 ],
+                                "input_modalities": ["text", "image"],
+                                "output_modalities": ["text"],
                             },
                         ],
                     },
@@ -452,7 +486,7 @@ EMBEDDED_MANIFEST: dict = {
         "id": "llama-3.2",
         "vendor": "Meta",
         "description": "Meta Llama 3.2 lightweight instruction-tuned models",
-        "modalities": ["text"],
+        "task_taxonomy": ["text"],
         "license": "llama3.2",
         "homepage_url": "https://llama.meta.com/",
         "variants": {
@@ -460,7 +494,7 @@ EMBEDDED_MANIFEST: dict = {
                 "id": "llama-3.2-1b",
                 "parameter_count": "1B",
                 "context_length": 131072,
-                "modalities": ["text"],
+                "task_taxonomy": ["text"],
                 "quantizations": ["Q4_K_M"],
                 "versions": {
                     "1.0.0": {
@@ -486,6 +520,8 @@ EMBEDDED_MANIFEST: dict = {
                                         "required": True,
                                     },
                                 ],
+                                "input_modalities": ["text"],
+                                "output_modalities": ["text"],
                             },
                             {
                                 "id": "pkg_llama_3_2_1b_mlx_q4",
@@ -503,6 +539,8 @@ EMBEDDED_MANIFEST: dict = {
                                         "required": True,
                                     },
                                 ],
+                                "input_modalities": ["text"],
+                                "output_modalities": ["text"],
                             },
                             {
                                 "id": "pkg_llama_3_2_1b_gguf_q4_k_m",
@@ -520,6 +558,8 @@ EMBEDDED_MANIFEST: dict = {
                                         "required": True,
                                     },
                                 ],
+                                "input_modalities": ["text"],
+                                "output_modalities": ["text"],
                             },
                         ],
                     },
@@ -529,7 +569,7 @@ EMBEDDED_MANIFEST: dict = {
                 "id": "llama-3.2-3b",
                 "parameter_count": "3B",
                 "context_length": 131072,
-                "modalities": ["text"],
+                "task_taxonomy": ["text"],
                 "quantizations": ["Q4_K_M"],
                 "versions": {
                     "1.0.0": {
@@ -555,6 +595,8 @@ EMBEDDED_MANIFEST: dict = {
                                         "required": True,
                                     },
                                 ],
+                                "input_modalities": ["text"],
+                                "output_modalities": ["text"],
                             },
                             {
                                 "id": "pkg_llama_3_2_3b_mlx_q4",
@@ -572,6 +614,8 @@ EMBEDDED_MANIFEST: dict = {
                                         "required": True,
                                     },
                                 ],
+                                "input_modalities": ["text"],
+                                "output_modalities": ["text"],
                             },
                             {
                                 "id": "pkg_llama_3_2_3b_gguf_q4_k_m",
@@ -589,6 +633,8 @@ EMBEDDED_MANIFEST: dict = {
                                         "required": True,
                                     },
                                 ],
+                                "input_modalities": ["text"],
+                                "output_modalities": ["text"],
                             },
                         ],
                     },
@@ -599,8 +645,8 @@ EMBEDDED_MANIFEST: dict = {
     "phi-4": {
         "id": "phi-4",
         "vendor": "Microsoft",
-        "description": "Microsoft Phi 4 family — 14B flagship and 3.8B mini",
-        "modalities": ["text"],
+        "description": "Microsoft Phi 4 family \u2014 14B flagship and 3.8B mini",
+        "task_taxonomy": ["text"],
         "license": "mit",
         "homepage_url": "https://azure.microsoft.com/en-us/products/phi",
         "variants": {
@@ -608,7 +654,7 @@ EMBEDDED_MANIFEST: dict = {
                 "id": "phi4",
                 "parameter_count": "14B",
                 "context_length": 16384,
-                "modalities": ["text"],
+                "task_taxonomy": ["text"],
                 "quantizations": ["Q4_K"],
                 "versions": {
                     "1.0.0": {
@@ -634,6 +680,8 @@ EMBEDDED_MANIFEST: dict = {
                                         "required": True,
                                     },
                                 ],
+                                "input_modalities": ["text"],
+                                "output_modalities": ["text"],
                             },
                             {
                                 "id": "pkg_phi4_mlx_q4",
@@ -651,6 +699,8 @@ EMBEDDED_MANIFEST: dict = {
                                         "required": True,
                                     },
                                 ],
+                                "input_modalities": ["text"],
+                                "output_modalities": ["text"],
                             },
                             {
                                 "id": "pkg_phi4_gguf_q4_k",
@@ -668,6 +718,8 @@ EMBEDDED_MANIFEST: dict = {
                                         "required": True,
                                     },
                                 ],
+                                "input_modalities": ["text"],
+                                "output_modalities": ["text"],
                             },
                         ],
                     },
@@ -677,7 +729,7 @@ EMBEDDED_MANIFEST: dict = {
                 "id": "phi-4-mini",
                 "parameter_count": "3.8B",
                 "context_length": 131072,
-                "modalities": ["text"],
+                "task_taxonomy": ["text"],
                 "quantizations": ["Q4_K_M"],
                 "versions": {
                     "1.0.0": {
@@ -703,6 +755,8 @@ EMBEDDED_MANIFEST: dict = {
                                         "required": True,
                                     },
                                 ],
+                                "input_modalities": ["text"],
+                                "output_modalities": ["text"],
                             },
                             {
                                 "id": "pkg_phi_4_mini_gguf_q4_k_m",
@@ -720,6 +774,8 @@ EMBEDDED_MANIFEST: dict = {
                                         "required": True,
                                     },
                                 ],
+                                "input_modalities": ["text"],
+                                "output_modalities": ["text"],
                             },
                             {
                                 "id": "pkg_phi_4_mini_gguf_q4_k_m",
@@ -737,6 +793,8 @@ EMBEDDED_MANIFEST: dict = {
                                         "required": True,
                                     },
                                 ],
+                                "input_modalities": ["text"],
+                                "output_modalities": ["text"],
                             },
                             {
                                 "id": "pkg_phi_4_mini_mlx_q4",
@@ -754,6 +812,8 @@ EMBEDDED_MANIFEST: dict = {
                                         "required": True,
                                     },
                                 ],
+                                "input_modalities": ["text"],
+                                "output_modalities": ["text"],
                             },
                             {
                                 "id": "pkg_phi_4_mini_gguf_q4_k_m",
@@ -771,6 +831,8 @@ EMBEDDED_MANIFEST: dict = {
                                         "required": True,
                                     },
                                 ],
+                                "input_modalities": ["text"],
+                                "output_modalities": ["text"],
                             },
                         ],
                     },
@@ -782,7 +844,7 @@ EMBEDDED_MANIFEST: dict = {
         "id": "punct-en",
         "vendor": "k2-fsa",
         "description": "English punctuation and capitalization restoration model for sherpa-onnx",
-        "modalities": ["text"],
+        "task_taxonomy": ["text"],
         "license": "apache-2.0",
         "homepage_url": "https://github.com/k2-fsa/sherpa-onnx",
         "variants": {
@@ -790,7 +852,7 @@ EMBEDDED_MANIFEST: dict = {
                 "id": "punct-en",
                 "parameter_count": "7M",
                 "context_length": None,
-                "modalities": ["text"],
+                "task_taxonomy": ["text"],
                 "quantizations": ["int8"],
                 "versions": {
                     "1.0.0": {
@@ -824,6 +886,8 @@ EMBEDDED_MANIFEST: dict = {
                                         "load_order": 1,
                                     },
                                 ],
+                                "input_modalities": ["text"],
+                                "output_modalities": ["text"],
                             },
                             {
                                 "id": "pkg_punct_en_onnx_int8",
@@ -849,6 +913,8 @@ EMBEDDED_MANIFEST: dict = {
                                         "load_order": 1,
                                     },
                                 ],
+                                "input_modalities": ["text"],
+                                "output_modalities": ["text"],
                             },
                             {
                                 "id": "pkg_punct_en_onnx_int8",
@@ -874,6 +940,8 @@ EMBEDDED_MANIFEST: dict = {
                                         "load_order": 1,
                                     },
                                 ],
+                                "input_modalities": ["text"],
+                                "output_modalities": ["text"],
                             },
                             {
                                 "id": "pkg_punct_en_onnx_int8",
@@ -899,6 +967,8 @@ EMBEDDED_MANIFEST: dict = {
                                         "load_order": 1,
                                     },
                                 ],
+                                "input_modalities": ["text"],
+                                "output_modalities": ["text"],
                             },
                         ],
                     },
@@ -910,7 +980,7 @@ EMBEDDED_MANIFEST: dict = {
         "id": "qwen2.5",
         "vendor": "Alibaba",
         "description": "Qwen 2.5 instruction-tuned models with 128K context",
-        "modalities": ["text"],
+        "task_taxonomy": ["text"],
         "license": "apache-2.0",
         "homepage_url": "https://qwenlm.github.io/",
         "variants": {
@@ -918,7 +988,7 @@ EMBEDDED_MANIFEST: dict = {
                 "id": "qwen2.5-0.5b",
                 "parameter_count": "0.5B",
                 "context_length": 32768,
-                "modalities": ["text"],
+                "task_taxonomy": ["text"],
                 "quantizations": ["Q4_K_M"],
                 "versions": {
                     "1.0.0": {
@@ -944,6 +1014,8 @@ EMBEDDED_MANIFEST: dict = {
                                         "required": True,
                                     },
                                 ],
+                                "input_modalities": ["text"],
+                                "output_modalities": ["text"],
                             },
                             {
                                 "id": "pkg_qwen2_5_0_5b_gguf_q4_k_m",
@@ -961,6 +1033,8 @@ EMBEDDED_MANIFEST: dict = {
                                         "required": True,
                                     },
                                 ],
+                                "input_modalities": ["text"],
+                                "output_modalities": ["text"],
                             },
                         ],
                     },
@@ -970,7 +1044,7 @@ EMBEDDED_MANIFEST: dict = {
                 "id": "qwen2.5-1.5b",
                 "parameter_count": "1.5B",
                 "context_length": 131072,
-                "modalities": ["text"],
+                "task_taxonomy": ["text"],
                 "quantizations": ["Q4_K_M"],
                 "versions": {
                     "1.0.0": {
@@ -996,6 +1070,8 @@ EMBEDDED_MANIFEST: dict = {
                                         "required": True,
                                     },
                                 ],
+                                "input_modalities": ["text"],
+                                "output_modalities": ["text"],
                             },
                             {
                                 "id": "pkg_qwen2_5_1_5b_mlx_q4",
@@ -1013,6 +1089,8 @@ EMBEDDED_MANIFEST: dict = {
                                         "required": True,
                                     },
                                 ],
+                                "input_modalities": ["text"],
+                                "output_modalities": ["text"],
                             },
                             {
                                 "id": "pkg_qwen2_5_1_5b_gguf_q4_k_m",
@@ -1030,6 +1108,8 @@ EMBEDDED_MANIFEST: dict = {
                                         "required": True,
                                     },
                                 ],
+                                "input_modalities": ["text"],
+                                "output_modalities": ["text"],
                             },
                         ],
                     },
@@ -1039,7 +1119,7 @@ EMBEDDED_MANIFEST: dict = {
                 "id": "qwen2.5-3b",
                 "parameter_count": "3B",
                 "context_length": 131072,
-                "modalities": ["text"],
+                "task_taxonomy": ["text"],
                 "quantizations": ["Q4_K_M"],
                 "versions": {
                     "1.0.0": {
@@ -1065,6 +1145,8 @@ EMBEDDED_MANIFEST: dict = {
                                         "required": True,
                                     },
                                 ],
+                                "input_modalities": ["text"],
+                                "output_modalities": ["text"],
                             },
                             {
                                 "id": "pkg_qwen2_5_3b_mlx_q4",
@@ -1082,6 +1164,8 @@ EMBEDDED_MANIFEST: dict = {
                                         "required": True,
                                     },
                                 ],
+                                "input_modalities": ["text"],
+                                "output_modalities": ["text"],
                             },
                             {
                                 "id": "pkg_qwen2_5_3b_gguf_q4_k_m",
@@ -1099,6 +1183,8 @@ EMBEDDED_MANIFEST: dict = {
                                         "required": True,
                                     },
                                 ],
+                                "input_modalities": ["text"],
+                                "output_modalities": ["text"],
                             },
                         ],
                     },
@@ -1108,7 +1194,7 @@ EMBEDDED_MANIFEST: dict = {
                 "id": "qwen2.5-7b",
                 "parameter_count": "7B",
                 "context_length": 131072,
-                "modalities": ["text"],
+                "task_taxonomy": ["text"],
                 "quantizations": ["Q4_K_M"],
                 "versions": {
                     "1.0.0": {
@@ -1134,6 +1220,8 @@ EMBEDDED_MANIFEST: dict = {
                                         "required": True,
                                     },
                                 ],
+                                "input_modalities": ["text"],
+                                "output_modalities": ["text"],
                             },
                             {
                                 "id": "pkg_qwen2_5_7b_mlx_q4",
@@ -1151,6 +1239,8 @@ EMBEDDED_MANIFEST: dict = {
                                         "required": True,
                                     },
                                 ],
+                                "input_modalities": ["text"],
+                                "output_modalities": ["text"],
                             },
                             {
                                 "id": "pkg_qwen2_5_7b_gguf_q4_k_m",
@@ -1168,6 +1258,8 @@ EMBEDDED_MANIFEST: dict = {
                                         "required": True,
                                     },
                                 ],
+                                "input_modalities": ["text"],
+                                "output_modalities": ["text"],
                             },
                         ],
                     },
@@ -1177,7 +1269,7 @@ EMBEDDED_MANIFEST: dict = {
                 "id": "qwen2.5-14b",
                 "parameter_count": "14B",
                 "context_length": 131072,
-                "modalities": ["text"],
+                "task_taxonomy": ["text"],
                 "quantizations": ["Q4_K_M"],
                 "versions": {
                     "1.0.0": {
@@ -1203,6 +1295,8 @@ EMBEDDED_MANIFEST: dict = {
                                         "required": True,
                                     },
                                 ],
+                                "input_modalities": ["text"],
+                                "output_modalities": ["text"],
                             },
                             {
                                 "id": "pkg_qwen2_5_14b_mlx_q4",
@@ -1220,6 +1314,8 @@ EMBEDDED_MANIFEST: dict = {
                                         "required": True,
                                     },
                                 ],
+                                "input_modalities": ["text"],
+                                "output_modalities": ["text"],
                             },
                             {
                                 "id": "pkg_qwen2_5_14b_gguf_q4_k_m",
@@ -1237,6 +1333,8 @@ EMBEDDED_MANIFEST: dict = {
                                         "required": True,
                                     },
                                 ],
+                                "input_modalities": ["text"],
+                                "output_modalities": ["text"],
                             },
                         ],
                     },
@@ -1246,7 +1344,7 @@ EMBEDDED_MANIFEST: dict = {
                 "id": "qwen2.5-32b",
                 "parameter_count": "32B",
                 "context_length": 131072,
-                "modalities": ["text"],
+                "task_taxonomy": ["text"],
                 "quantizations": ["Q4_K_M"],
                 "versions": {
                     "1.0.0": {
@@ -1272,6 +1370,8 @@ EMBEDDED_MANIFEST: dict = {
                                         "required": True,
                                     },
                                 ],
+                                "input_modalities": ["text"],
+                                "output_modalities": ["text"],
                             },
                             {
                                 "id": "pkg_qwen2_5_32b_gguf_q4_k_m",
@@ -1289,6 +1389,8 @@ EMBEDDED_MANIFEST: dict = {
                                         "required": True,
                                     },
                                 ],
+                                "input_modalities": ["text"],
+                                "output_modalities": ["text"],
                             },
                         ],
                     },
@@ -1298,7 +1400,7 @@ EMBEDDED_MANIFEST: dict = {
                 "id": "qwen2.5-72b",
                 "parameter_count": "72B",
                 "context_length": 131072,
-                "modalities": ["text"],
+                "task_taxonomy": ["text"],
                 "quantizations": ["Q4_K_M"],
                 "versions": {
                     "1.0.0": {
@@ -1324,6 +1426,8 @@ EMBEDDED_MANIFEST: dict = {
                                         "required": True,
                                     },
                                 ],
+                                "input_modalities": ["text"],
+                                "output_modalities": ["text"],
                             },
                             {
                                 "id": "pkg_qwen2_5_72b_gguf_q4_k_m",
@@ -1341,6 +1445,8 @@ EMBEDDED_MANIFEST: dict = {
                                         "required": True,
                                     },
                                 ],
+                                "input_modalities": ["text"],
+                                "output_modalities": ["text"],
                             },
                         ],
                     },
@@ -1352,7 +1458,7 @@ EMBEDDED_MANIFEST: dict = {
         "id": "whisper",
         "vendor": "OpenAI",
         "description": "OpenAI Whisper automatic speech recognition models",
-        "modalities": ["audio"],
+        "task_taxonomy": ["audio"],
         "license": "mit",
         "homepage_url": "https://github.com/openai/whisper",
         "variants": {
@@ -1360,7 +1466,7 @@ EMBEDDED_MANIFEST: dict = {
                 "id": "whisper-tiny",
                 "parameter_count": "39M",
                 "context_length": None,
-                "modalities": ["audio"],
+                "task_taxonomy": ["audio"],
                 "quantizations": ["fp16"],
                 "versions": {
                     "1.0.0": {
@@ -1386,6 +1492,8 @@ EMBEDDED_MANIFEST: dict = {
                                         "required": True,
                                     },
                                 ],
+                                "input_modalities": ["audio"],
+                                "output_modalities": ["text"],
                             },
                             {
                                 "id": "pkg_whisper_tiny_gguf_fp16",
@@ -1403,6 +1511,8 @@ EMBEDDED_MANIFEST: dict = {
                                         "required": True,
                                     },
                                 ],
+                                "input_modalities": ["audio"],
+                                "output_modalities": ["text"],
                             },
                             {
                                 "id": "pkg_whisper_tiny_gguf_fp16",
@@ -1420,6 +1530,8 @@ EMBEDDED_MANIFEST: dict = {
                                         "required": True,
                                     },
                                 ],
+                                "input_modalities": ["audio"],
+                                "output_modalities": ["text"],
                             },
                             {
                                 "id": "pkg_whisper_tiny_gguf_fp16",
@@ -1437,6 +1549,8 @@ EMBEDDED_MANIFEST: dict = {
                                         "required": True,
                                     },
                                 ],
+                                "input_modalities": ["audio"],
+                                "output_modalities": ["text"],
                             },
                         ],
                     },
@@ -1446,7 +1560,7 @@ EMBEDDED_MANIFEST: dict = {
                 "id": "whisper-base",
                 "parameter_count": "74M",
                 "context_length": None,
-                "modalities": ["audio"],
+                "task_taxonomy": ["audio"],
                 "quantizations": ["fp16"],
                 "versions": {
                     "1.0.0": {
@@ -1472,6 +1586,8 @@ EMBEDDED_MANIFEST: dict = {
                                         "required": True,
                                     },
                                 ],
+                                "input_modalities": ["audio"],
+                                "output_modalities": ["text"],
                             },
                             {
                                 "id": "pkg_whisper_base_gguf_fp16",
@@ -1489,6 +1605,8 @@ EMBEDDED_MANIFEST: dict = {
                                         "required": True,
                                     },
                                 ],
+                                "input_modalities": ["audio"],
+                                "output_modalities": ["text"],
                             },
                             {
                                 "id": "pkg_whisper_base_gguf_fp16",
@@ -1506,6 +1624,8 @@ EMBEDDED_MANIFEST: dict = {
                                         "required": True,
                                     },
                                 ],
+                                "input_modalities": ["audio"],
+                                "output_modalities": ["text"],
                             },
                             {
                                 "id": "pkg_whisper_base_gguf_fp16",
@@ -1523,6 +1643,8 @@ EMBEDDED_MANIFEST: dict = {
                                         "required": True,
                                     },
                                 ],
+                                "input_modalities": ["audio"],
+                                "output_modalities": ["text"],
                             },
                         ],
                     },
@@ -1532,7 +1654,7 @@ EMBEDDED_MANIFEST: dict = {
                 "id": "whisper-large-v3",
                 "parameter_count": "1.5B",
                 "context_length": None,
-                "modalities": ["audio"],
+                "task_taxonomy": ["audio"],
                 "quantizations": ["fp16"],
                 "versions": {
                     "1.0.0": {
@@ -1558,6 +1680,8 @@ EMBEDDED_MANIFEST: dict = {
                                         "required": True,
                                     },
                                 ],
+                                "input_modalities": ["audio"],
+                                "output_modalities": ["text"],
                             },
                             {
                                 "id": "pkg_whisper_large_v3_gguf_fp16",
@@ -1575,6 +1699,8 @@ EMBEDDED_MANIFEST: dict = {
                                         "required": True,
                                     },
                                 ],
+                                "input_modalities": ["audio"],
+                                "output_modalities": ["text"],
                             },
                             {
                                 "id": "pkg_whisper_large_v3_gguf_fp16",
@@ -1592,6 +1718,8 @@ EMBEDDED_MANIFEST: dict = {
                                         "required": True,
                                     },
                                 ],
+                                "input_modalities": ["audio"],
+                                "output_modalities": ["text"],
                             },
                             {
                                 "id": "pkg_whisper_large_v3_gguf_fp16",
@@ -1609,6 +1737,8 @@ EMBEDDED_MANIFEST: dict = {
                                         "required": True,
                                     },
                                 ],
+                                "input_modalities": ["audio"],
+                                "output_modalities": ["text"],
                             },
                         ],
                     },
@@ -1619,8 +1749,8 @@ EMBEDDED_MANIFEST: dict = {
     "zipformer": {
         "id": "zipformer",
         "vendor": "k2-fsa",
-        "description": "Zipformer streaming speech recognition via sherpa-onnx — real-time live transcription",
-        "modalities": ["audio"],
+        "description": "Zipformer streaming speech recognition via sherpa-onnx \u2014 real-time live transcription",
+        "task_taxonomy": ["audio"],
         "license": "apache-2.0",
         "homepage_url": "https://github.com/k2-fsa/sherpa-onnx",
         "variants": {
@@ -1628,7 +1758,7 @@ EMBEDDED_MANIFEST: dict = {
                 "id": "zipformer-en-20m",
                 "parameter_count": "20M",
                 "context_length": None,
-                "modalities": ["audio"],
+                "task_taxonomy": ["audio"],
                 "quantizations": ["int8"],
                 "versions": {
                     "1.0.0": {
@@ -1676,6 +1806,8 @@ EMBEDDED_MANIFEST: dict = {
                                         "load_order": 3,
                                     },
                                 ],
+                                "input_modalities": ["audio"],
+                                "output_modalities": ["text"],
                             },
                             {
                                 "id": "pkg_zipformer_en_20m_onnx_int8",
@@ -1715,6 +1847,8 @@ EMBEDDED_MANIFEST: dict = {
                                         "load_order": 3,
                                     },
                                 ],
+                                "input_modalities": ["audio"],
+                                "output_modalities": ["text"],
                             },
                             {
                                 "id": "pkg_zipformer_en_20m_onnx_int8",
@@ -1754,6 +1888,8 @@ EMBEDDED_MANIFEST: dict = {
                                         "load_order": 3,
                                     },
                                 ],
+                                "input_modalities": ["audio"],
+                                "output_modalities": ["text"],
                             },
                             {
                                 "id": "pkg_zipformer_en_20m_onnx_int8",
@@ -1793,6 +1929,8 @@ EMBEDDED_MANIFEST: dict = {
                                         "load_order": 3,
                                     },
                                 ],
+                                "input_modalities": ["audio"],
+                                "output_modalities": ["text"],
                             },
                         ],
                     },
