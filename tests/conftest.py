@@ -983,21 +983,27 @@ def _moe_from_dict(d: Any) -> Any:
 
 def _entry_from_dict(d: dict) -> Any:
     """Hydrate a ModelEntry from a test fixture dict."""
-    from octomil.models.catalog import ModelEntry
+    from octomil.models.catalog import ModelEntry, _parse_modalities
 
     variants_raw = d.get("variants", {})
     variants = {k: _variant_from_dict(v) for k, v in variants_raw.items()}
     engines_raw = d.get("engines", [])
     engines = frozenset(engines_raw) if isinstance(engines_raw, list) else frozenset()
+    input_modalities = _parse_modalities(d.get("input_modalities"))
+    output_modalities = _parse_modalities(d.get("output_modalities"))
     return ModelEntry(
         publisher=d.get("publisher", ""),
         params=d.get("params", ""),
+        input_modalities=input_modalities,
+        output_modalities=output_modalities,
         default_quant=d.get("default_quant", "4bit"),
         variants=variants,
         engines=engines,
         architecture=d.get("architecture", "dense"),
         moe=_moe_from_dict(d.get("moe")),
         download_size=d.get("download_size"),
+        task_taxonomy=d.get("task_taxonomy", []),
+        engine_config=d.get("engine_config", {}),
     )
 
 

@@ -6,10 +6,12 @@ Do not edit manually -- re-run codegen from octomil-contracts instead.
 
 # Span-based telemetry (v1.2.0)
 from . import metric_views, span_attributes, span_event_attributes, span_event_names, span_names, span_status_mapping
+from .artifact_resource_kind import ArtifactResourceKind
 from .compatibility_level import CompatibilityLevel
 from .device_class import DeviceClass
 from .error_code import ErrorCode
 from .finish_reason import FinishReason
+from .modality import Modality
 from .model_status import ModelStatus
 from .otlp_resource_attributes import (
     OCTOMIL_ACCELERATORS,
@@ -37,10 +39,12 @@ from .telemetry_events import (
 )
 
 __all__ = [
+    "ArtifactResourceKind",
     "CompatibilityLevel",
     "DeviceClass",
     "ErrorCode",
     "FinishReason",
+    "Modality",
     "ModelStatus",
     # OTLP resource attributes
     "SERVICE_NAME",

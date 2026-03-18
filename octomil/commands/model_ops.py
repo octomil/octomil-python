@@ -514,13 +514,17 @@ def list_models_cmd(model_family: Optional[str]) -> None:
         cli_header("Model Catalog")
         name_w = max((len(n) for n in CATALOG), default=16)
         name_w = max(name_w + 2, 18)
-        cli_table_header(("MODEL", name_w), ("PUBLISHER", 14), ("PARAMS", 8), ("DEFAULT", 10), ("VARIANTS", 26))
+        cli_table_header(
+            ("MODEL", name_w), ("PUBLISHER", 14), ("PARAMS", 8), ("INPUT", 16), ("DEFAULT", 10), ("VARIANTS", 26)
+        )
         for name, entry in sorted(CATALOG.items()):
             variant_tags = ", ".join(sorted(entry.variants.keys()))
+            input_mods = ", ".join(m.value for m in entry.input_modalities)
             click.echo(
                 "    "
                 + click.style(name.ljust(name_w), fg="white", bold=True)
                 + f"{entry.publisher:<14s}{entry.params:<8s}"
+                + f"{input_mods:<16s}"
                 + f"{entry.default_quant:<10s}"
                 + click.style(variant_tags, dim=True)
             )
@@ -554,8 +558,12 @@ def list_models_cmd(model_family: Optional[str]) -> None:
         cli_header(f"{model_family}")
         cli_kv("Publisher", entry.publisher)
         cli_kv("Parameters", entry.params)
+        cli_kv("Input", ", ".join(m.value for m in entry.input_modalities))
+        cli_kv("Output", ", ".join(m.value for m in entry.output_modalities))
         cli_kv("Default", entry.default_quant)
         cli_kv("Engines", ", ".join(sorted(entry.engines)))
+        if entry.task_taxonomy:
+            cli_kv("Tasks", ", ".join(entry.task_taxonomy))
         click.echo()
 
         cli_section("Variants")
@@ -609,20 +617,22 @@ def models() -> None:
         cli_warn("No models available")
         return
 
-    rows: list[tuple[str, str, str, str]] = []
+    rows: list[tuple[str, str, str, str, str]] = []
     for name, entry in sorted(CATALOG.items()):
         size = entry.download_size or _estimate_download_size(entry.params, entry.default_quant)
-        rows.append((name, entry.publisher, entry.params, size))
+        input_mods = ", ".join(m.value for m in entry.input_modalities)
+        rows.append((name, entry.publisher, entry.params, input_mods, size))
 
     name_w = max(len(r[0]) for r in rows) + 2
     name_w = max(name_w, 14)
-    cli_table_header(("MODEL", name_w), ("BY", 12), ("PARAMS", 8), ("SIZE", 8))
-    for model_name, publisher, params, size in rows:
+    cli_table_header(("MODEL", name_w), ("BY", 12), ("PARAMS", 8), ("INPUT", 16), ("SIZE", 8))
+    for model_name, publisher, params, input_mods, size in rows:
         click.echo(
             "    "
             + click.style(model_name.ljust(name_w), fg="white", bold=True)
             + click.style(publisher.ljust(12), dim=True)
             + params.ljust(8)
+            + input_mods.ljust(16)
             + size
         )
     click.echo()

@@ -8,6 +8,7 @@ from typing import AsyncIterator
 import pytest
 
 from octomil._generated.delivery_mode import DeliveryMode
+from octomil._generated.modality import Modality
 from octomil._generated.model_capability import ModelCapability
 from octomil.manifest.catalog_service import ModelCatalogService
 from octomil.manifest.readiness_manager import ModelReadinessManager
@@ -21,6 +22,9 @@ from octomil.runtime.core.types import (
     RuntimeRequest,
     RuntimeResponse,
 )
+
+_TEXT = [Modality.TEXT]
+_AUDIO = [Modality.AUDIO]
 
 
 class _FakeRuntime(ModelRuntime):
@@ -50,6 +54,8 @@ class TestCatalogServiceBundled:
             id="test-model",
             capability=ModelCapability.CHAT,
             delivery=DeliveryMode.BUNDLED,
+            input_modalities=_TEXT,
+            output_modalities=_TEXT,
             bundled_path=str(model_file),
         )
         manifest = AppManifest(models=[entry])
@@ -69,6 +75,8 @@ class TestCatalogServiceBundled:
             id="test-model",
             capability=ModelCapability.CHAT,
             delivery=DeliveryMode.BUNDLED,
+            input_modalities=_TEXT,
+            output_modalities=_TEXT,
             bundled_path=None,
         )
         manifest = AppManifest(models=[entry])
@@ -82,6 +90,8 @@ class TestCatalogServiceBundled:
             id="test-model",
             capability=ModelCapability.CHAT,
             delivery=DeliveryMode.BUNDLED,
+            input_modalities=_TEXT,
+            output_modalities=_TEXT,
             bundled_path="/nonexistent/model.gguf",
         )
         manifest = AppManifest(models=[entry])
@@ -95,6 +105,8 @@ class TestCatalogServiceBundled:
             id="test-model",
             capability=ModelCapability.CHAT,
             delivery=DeliveryMode.BUNDLED,
+            input_modalities=_TEXT,
+            output_modalities=_TEXT,
             bundled_path=None,
             required=False,
         )
@@ -111,6 +123,8 @@ class TestCatalogServiceCloud:
             id="cloud-model",
             capability=ModelCapability.CHAT,
             delivery=DeliveryMode.CLOUD,
+            input_modalities=_TEXT,
+            output_modalities=_TEXT,
         )
         manifest = AppManifest(models=[entry])
         catalog = ModelCatalogService(
@@ -128,6 +142,8 @@ class TestCatalogServiceCloud:
             id="cloud-model",
             capability=ModelCapability.CHAT,
             delivery=DeliveryMode.CLOUD,
+            input_modalities=_TEXT,
+            output_modalities=_TEXT,
         )
         manifest = AppManifest(models=[entry])
         catalog = ModelCatalogService(
@@ -145,6 +161,8 @@ class TestCatalogServiceManaged:
             id="managed-model",
             capability=ModelCapability.TRANSCRIPTION,
             delivery=DeliveryMode.MANAGED,
+            input_modalities=_TEXT,
+            output_modalities=_TEXT,
             download_url="https://example.com/model.bin",
         )
         manifest = AppManifest(models=[entry])
@@ -164,6 +182,8 @@ class TestCatalogServiceManaged:
             id="managed-model",
             capability=ModelCapability.TRANSCRIPTION,
             delivery=DeliveryMode.MANAGED,
+            input_modalities=_TEXT,
+            output_modalities=_TEXT,
         )
         manifest = AppManifest(models=[entry])
         registry = ModelRuntimeRegistry()
@@ -185,6 +205,8 @@ class TestCatalogServiceResolution:
             id="test-model",
             capability=ModelCapability.CHAT,
             delivery=DeliveryMode.BUNDLED,
+            input_modalities=_TEXT,
+            output_modalities=_TEXT,
             bundled_path=str(model_file),
         )
         manifest = AppManifest(models=[entry])
@@ -204,6 +226,8 @@ class TestCatalogServiceResolution:
             id="test-model",
             capability=ModelCapability.CHAT,
             delivery=DeliveryMode.BUNDLED,
+            input_modalities=_TEXT,
+            output_modalities=_TEXT,
             bundled_path=str(model_file),
         )
         manifest = AppManifest(models=[entry])
