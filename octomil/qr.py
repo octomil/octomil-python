@@ -7,6 +7,14 @@ import sys
 import urllib.parse
 
 
+def _strip_api_prefix(host: str) -> str:
+    """Strip /api/v1 suffix — mobile SDKs append their own path prefix."""
+    for suffix in ("/api/v1", "/api/v1/"):
+        if host.endswith(suffix):
+            return host[: -len(suffix)]
+    return host
+
+
 def build_deep_link(token: str, host: str) -> str:
     """Build an ``octomil://`` deep link URL for QR code pairing.
 
@@ -14,19 +22,21 @@ def build_deep_link(token: str, host: str) -> str:
     the Android and iOS companion apps without requiring domain verification.
     A non-default host is appended as ``&host=`` so the app knows which server.
     """
-    default_host = "https://api.octomil.com/api/v1"
+    base = _strip_api_prefix(host)
+    default_base = "https://api.octomil.com"
     params = {"token": token}
-    if host != default_host:
-        params["host"] = host
+    if base != default_base:
+        params["host"] = base
     return f"octomil://pair?{urllib.parse.urlencode(params)}"
 
 
 def build_custom_scheme_link(token: str, host: str) -> str:
     """Build an ``octomil://`` deep link for manual opening."""
-    default_host = "https://api.octomil.com/api/v1"
+    base = _strip_api_prefix(host)
+    default_base = "https://api.octomil.com"
     params = {"token": token}
-    if host != default_host:
-        params["host"] = host
+    if base != default_base:
+        params["host"] = base
     return f"octomil://pair?{urllib.parse.urlencode(params)}"
 
 
