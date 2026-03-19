@@ -84,6 +84,14 @@ class ArtifactLoop:
     def _run(self) -> None:
         """Loop body. Polls for desired state and processes artifact operations."""
         logger.info("Artifact loop started")
+
+        # Immediate sync on startup — don't wait for first poll interval
+        try:
+            self._poll_desired_state()
+            self._last_poll_time = time.monotonic()
+        except Exception:
+            logger.warning("Startup poll failed", exc_info=True)
+
         while not self._stop_event.is_set():
             try:
                 # Recover any expired operation leases
@@ -174,6 +182,31 @@ class ArtifactLoop:
 
         return installed, active
 
+    def _handle_gc(self, gc_artifact_ids: list[str]) -> None:
+        """Mark server-designated artifacts as eligible for garbage collection.
+
+        Transitions artifacts to GC_ELIGIBLE status so the cleanup loop
+        can reclaim storage.  Skips artifacts that are currently ACTIVE
+        or DOWNLOADING as a safety guard.
+        """
+        for artifact_id in gc_artifact_ids:
+            existing = self._model_registry.get_artifact(artifact_id)
+            if existing is None:
+                continue
+            if existing["status"] in ("ACTIVE", "DOWNLOADING"):
+                continue
+            try:
+                self._model_registry.update_artifact_status(artifact_id, "GC_ELIGIBLE")
+                self._telemetry_store.append_auto(
+                    "artifact.gc_eligible",
+                    {"artifact_id": artifact_id},
+                    model_id=existing["model_id"],
+                    model_version=existing["version"],
+                )
+                logger.debug("Marked artifact %s as GC-eligible", artifact_id)
+            except Exception:
+                logger.debug("Failed to mark %s for GC", artifact_id, exc_info=True)
+
     def _poll_desired_state(self) -> None:
         """Check server for new desired model versions.
 
@@ -199,6 +232,16 @@ class ArtifactLoop:
         except Exception:
             logger.warning("Failed to poll desired state from server", exc_info=True)
             return
+
+        # Update poll interval from server hint
+        next_poll = getattr(self._server_client, "_last_next_poll_seconds", None)
+        if next_poll is not None and isinstance(next_poll, (int, float)) and next_poll > 0:
+            self._poll_interval = float(next_poll)
+
+        # Process GC-eligible artifacts
+        gc_ids = getattr(self._server_client, "_last_gc_eligible", None)
+        if gc_ids:
+            self._handle_gc(gc_ids)
 
         if not isinstance(desired, list):
             return

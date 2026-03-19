@@ -203,6 +203,7 @@ class OctomilControl:
         )
         self._last_raw_response = raw
         self._last_gc_eligible: list[str] = raw.get("gc_eligible_artifact_ids", [])
+        self._last_next_poll_seconds: Optional[int] = raw.get("next_poll_seconds")
 
         models = raw.get("models", [])
         if not isinstance(models, list):
