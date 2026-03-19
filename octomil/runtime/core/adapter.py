@@ -6,10 +6,13 @@ import json
 import logging
 from typing import AsyncIterator
 
+from octomil._generated.modality import Modality
+from octomil.runtime.core.chatml_renderer import render_chatml
 from octomil.runtime.core.model_runtime import ModelRuntime
 from octomil.runtime.core.types import (
     RuntimeCapabilities,
     RuntimeChunk,
+    RuntimeMessage,
     RuntimeRequest,
     RuntimeResponse,
     RuntimeUsage,
@@ -20,10 +23,7 @@ logger = logging.getLogger(__name__)
 
 
 class InferenceBackendAdapter(ModelRuntime):
-    """Bridges an existing InferenceBackend to the ModelRuntime protocol.
-
-    Zero changes to existing backend implementations.
-    """
+    """Bridges an existing InferenceBackend to the ModelRuntime protocol."""
 
     def __init__(
         self,
@@ -40,6 +40,7 @@ class InferenceBackendAdapter(ModelRuntime):
         return self._capabilities
 
     async def run(self, request: RuntimeRequest) -> RuntimeResponse:
+        _validate_request(request, self._capabilities)
         gen_request = self._to_generation_request(request)
         text, metrics = self._backend.generate(gen_request)  # type: ignore[attr-defined]
         usage = RuntimeUsage(
@@ -92,6 +93,7 @@ class InferenceBackendAdapter(ModelRuntime):
         )
 
     async def stream(self, request: RuntimeRequest) -> AsyncIterator[RuntimeChunk]:  # type: ignore[override]
+        _validate_request(request, self._capabilities)
         gen_request = self._to_generation_request(request)
         async for chunk in self._backend.generate_stream(gen_request):  # type: ignore[attr-defined]
             yield RuntimeChunk(
@@ -105,13 +107,108 @@ class InferenceBackendAdapter(ModelRuntime):
     def _to_generation_request(self, request: RuntimeRequest) -> object:
         from octomil.serve import GenerationRequest
 
+        if self._capabilities.supports_multimodal_input:
+            messages = _build_multimodal_messages(request.messages)
+        else:
+            # Text-only engine: render to ChatML string
+            prompt = render_chatml(request)
+            messages = [{"role": "user", "content": prompt}]
+
         return GenerationRequest(
             model=self._model_name,
-            messages=[{"role": "user", "content": request.prompt}],
-            max_tokens=request.max_tokens,
-            temperature=request.temperature,
-            top_p=request.top_p,
+            messages=messages,
+            max_tokens=request.generation_config.max_tokens,
+            temperature=request.generation_config.temperature,
+            top_p=request.generation_config.top_p,
         )
+
+
+def _validate_request(request: RuntimeRequest, capabilities: RuntimeCapabilities) -> None:
+    """Validate RuntimeRequest against engine capabilities.
+
+    Raises ValueError for capability mismatches.
+    """
+    for msg in request.messages:
+        media_count = 0
+        has_non_text = False
+        prev_type: Modality | None = None
+        interleaved = False
+
+        for part in msg.parts:
+            if part.type != Modality.TEXT:
+                if part.type not in capabilities.input_modalities:
+                    raise ValueError(
+                        f"Engine does not support {part.type.value} input. "
+                        f"Supported modalities: {', '.join(m.value for m in capabilities.input_modalities)}"
+                    )
+                media_count += 1
+                if has_non_text and prev_type == Modality.TEXT:
+                    interleaved = True
+                has_non_text = True
+            else:
+                if has_non_text:
+                    interleaved = True
+            prev_type = part.type
+
+        if media_count > 0 and capabilities.max_media_parts_per_message is not None:
+            if media_count > capabilities.max_media_parts_per_message:
+                raise ValueError(
+                    f"Message contains {media_count} media parts but engine supports "
+                    f"at most {capabilities.max_media_parts_per_message}"
+                )
+
+        if interleaved and not capabilities.supports_interleaved_content:
+            raise ValueError(
+                "Message contains interleaved text and media parts but engine does not support interleaved content"
+            )
+
+    # Check historical media
+    if not capabilities.supports_historical_media:
+        user_messages = [m for m in request.messages if m.role.value == "user"]
+        if len(user_messages) > 1:
+            for um in user_messages[:-1]:
+                for part in um.parts:
+                    if part.type != Modality.TEXT:
+                        raise ValueError(
+                            "Earlier user messages contain media but engine does not "
+                            "support historical media (supportsHistoricalMedia=false)"
+                        )
+
+
+def _build_multimodal_messages(messages: list[RuntimeMessage]) -> list[dict]:
+    """Build multimodal message dicts for engines that support structured input."""
+    result: list[dict] = []
+    for msg in messages:
+        content: list[dict] = []
+        for part in msg.parts:
+            if part.type == Modality.TEXT:
+                content.append({"type": "text", "text": part.text})
+            elif part.type == Modality.IMAGE:
+                content.append(
+                    {
+                        "type": "image",
+                        "data": part.data,
+                        "media_type": part.media_type,
+                    }
+                )
+            elif part.type == Modality.AUDIO:
+                content.append(
+                    {
+                        "type": "audio",
+                        "data": part.data,
+                        "media_type": part.media_type,
+                    }
+                )
+            elif part.type == Modality.VIDEO:
+                content.append(
+                    {
+                        "type": "video",
+                        "data": part.data,
+                        "media_type": part.media_type,
+                    }
+                )
+        result.append({"role": msg.role.value, "content": content})
+    return result
 
 
 def _build_tool_schemas(tool_definitions: list) -> dict[str, dict]:

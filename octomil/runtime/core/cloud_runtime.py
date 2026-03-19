@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import AsyncIterator
 
+from octomil.runtime.core.chatml_renderer import render_chatml
 from octomil.runtime.core.model_runtime import ModelRuntime
 from octomil.runtime.core.types import RuntimeCapabilities, RuntimeChunk, RuntimeRequest, RuntimeResponse
 
@@ -31,13 +32,15 @@ class CloudModelRuntime(ModelRuntime):
     async def run(self, request: RuntimeRequest) -> RuntimeResponse:
         from octomil.streaming import stream_inference
 
+        prompt = render_chatml(request)
+        gc = request.generation_config
         tokens = []
         for token in stream_inference(
             server_url=self._server_url,
             api_key=self._api_key,
             model_id="default",
-            input_data=request.prompt,
-            parameters={"max_tokens": request.max_tokens, "temperature": request.temperature},
+            input_data=prompt,
+            parameters={"max_tokens": gc.max_tokens, "temperature": gc.temperature},
         ):
             tokens.append(token.token)
         return RuntimeResponse(text="".join(tokens), finish_reason="stop")
@@ -45,12 +48,14 @@ class CloudModelRuntime(ModelRuntime):
     async def stream(self, request: RuntimeRequest) -> AsyncIterator[RuntimeChunk]:
         from octomil.streaming import stream_inference_async
 
+        prompt = render_chatml(request)
+        gc = request.generation_config
         async for token in stream_inference_async(
             server_url=self._server_url,
             api_key=self._api_key,
             model_id="default",
-            input_data=request.prompt,
-            parameters={"max_tokens": request.max_tokens, "temperature": request.temperature},
+            input_data=prompt,
+            parameters={"max_tokens": gc.max_tokens, "temperature": gc.temperature},
         ):
             yield RuntimeChunk(
                 text=token.token if not token.done else None,

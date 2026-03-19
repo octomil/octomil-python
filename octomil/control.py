@@ -280,7 +280,10 @@ class OctomilControl:
         """Unified sync: POST /devices/{id}/sync.
 
         Combines desired state fetch and observed state report in one
-        round-trip.  Returns the full sync response dict.
+        round-trip. Returns the full sync response dict.
+
+        Falls back to ``fetch_desired_state()`` if the server returns 404
+        (older servers without the sync endpoint).
         """
         effective_id = device_id or self._server_device_id
         if not effective_id:
@@ -362,10 +365,7 @@ class OctomilControl:
                 active_versions=active_versions,
             )
         except Exception:
-            logger.debug(
-                "sync() failed, falling back to fetch_desired_state()",
-                exc_info=True,
-            )
+            logger.debug("sync() failed, falling back to fetch_desired_state()", exc_info=True)
             return self.fetch_desired_state(
                 installed_models=installed_models,
                 active_versions=active_versions,

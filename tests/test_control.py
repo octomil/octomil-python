@@ -430,14 +430,7 @@ class TestOctomilControlSync(unittest.TestCase):
         ctrl.register(device_id="dev")
 
         ctrl.sync(
-            installed_models=[
-                {
-                    "model_id": "m1",
-                    "version": "v1",
-                    "artifact_id": "a1",
-                    "status": "ACTIVE",
-                }
-            ],
+            installed_models=[{"model_id": "m1", "version": "v1", "artifact_id": "a1", "status": "ACTIVE"}],
             known_state_version="5",
         )
 
@@ -468,14 +461,7 @@ class TestOctomilControlGetDesiredState(unittest.TestCase):
                         "version": "v2",
                         "format": "gguf",
                         "totalBytes": 5000,
-                        "chunks": [
-                            {
-                                "index": 0,
-                                "offset": 0,
-                                "size": 5000,
-                                "sha256": "abc",
-                            }
-                        ],
+                        "chunks": [{"index": 0, "offset": 0, "size": 5000, "sha256": "abc"}],
                     },
                 },
                 {

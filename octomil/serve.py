@@ -146,7 +146,7 @@ def resolve_model_name(name: str, backend: str) -> str:
 @dataclass
 class GenerationRequest:
     model: str
-    messages: list[dict[str, str]]
+    messages: list[dict[str, Any]]
     max_tokens: int = 512
     temperature: float = 0.7
     top_p: float = 1.0

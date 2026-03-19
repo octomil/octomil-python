@@ -28,11 +28,17 @@ class MockRuntime(ModelRuntime):
         return RuntimeCapabilities()
 
     async def run(self, request):
-        self.last_prompt = request.prompt
-        return RuntimeResponse(text=f"Reply to: {request.prompt[:50]}")
+        from octomil.runtime.core.chatml_renderer import render_chatml
+
+        prompt = render_chatml(request)
+        self.last_prompt = prompt
+        return RuntimeResponse(text=f"Reply to: {prompt[:50]}")
 
     async def stream(self, request):
-        self.last_prompt = request.prompt
+        from octomil.runtime.core.chatml_renderer import render_chatml
+
+        prompt = render_chatml(request)
+        self.last_prompt = prompt
         yield RuntimeChunk(text="chunk1")
         yield RuntimeChunk(text="chunk2", finish_reason="stop")
 

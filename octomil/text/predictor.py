@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+from octomil._generated.message_role import MessageRole
 from octomil.runtime.core.model_runtime import ModelRuntime
-from octomil.runtime.core.types import RuntimeRequest
+from octomil.runtime.core.types import GenerationConfig, RuntimeContentPart, RuntimeMessage, RuntimeRequest
 
 
 class OctomilPredictor:
@@ -38,9 +39,8 @@ class OctomilPredictor:
             List of completion suggestions.
         """
         request = RuntimeRequest(
-            prompt=prefix,
-            max_tokens=32,
-            temperature=0.3,
+            messages=[RuntimeMessage(role=MessageRole.USER, parts=[RuntimeContentPart.text_part(prefix)])],
+            generation_config=GenerationConfig(max_tokens=32, temperature=0.3),
         )
         response = await self._runtime.run(request)
         raw = [line.strip() for line in response.text.split("\n") if line.strip()]

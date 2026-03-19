@@ -93,7 +93,9 @@ class LlavaVisionRuntime(ModelRuntime):
         return RuntimeCapabilities(supports_streaming=False, supports_multimodal_input=True)
 
     async def run(self, request: RuntimeRequest) -> RuntimeResponse:
-        prompt = request.prompt
+        from octomil.runtime.core.chatml_renderer import render_chatml
+
+        prompt = render_chatml(request)
         image_path: Optional[str] = None
         if "[image:" in prompt:
             start = prompt.index("[image:") + 7
@@ -107,13 +109,14 @@ class LlavaVisionRuntime(ModelRuntime):
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
         text = result.stdout.strip()
         tokens = len(text.split())
+        prompt_tokens = len(prompt.split()) + (128 if image_path else 0)
         return RuntimeResponse(
             text=text,
             finish_reason="stop",
             usage=RuntimeUsage(
-                prompt_tokens=len(prompt.split()) + (128 if image_path else 0),
+                prompt_tokens=prompt_tokens,
                 completion_tokens=tokens,
-                total_tokens=len(prompt.split()) + tokens + (128 if image_path else 0),
+                total_tokens=prompt_tokens + tokens,
             ),
         )
 
