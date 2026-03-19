@@ -180,49 +180,112 @@ class OctomilControl:
             self._heartbeat_thread.join(timeout=5.0)
             self._heartbeat_thread = None
 
+    def get_desired_state(
+        self,
+        installed_models: Optional[list[dict[str, str]]] = None,
+        active_versions: Optional[list[dict[str, str]]] = None,
+    ) -> list[dict[str, Any]]:
+        """Return desired state as a list of per-model entries.
+
+        Adapter method that makes ``OctomilControl`` compatible with the
+        ``server_client`` interface expected by ``ArtifactLoop``.  Calls
+        ``fetch_desired_state()`` with device inventory and extracts the
+        ``models`` array (DesiredModelEntry), flattening each entry with
+        its nested ``artifactManifest`` into the flat dict format the
+        loop expects.
+
+        Side effect: stores ``_last_gc_eligible`` and ``_last_raw_response``
+        for the caller to consume.
+        """
+        raw = self.fetch_desired_state(
+            installed_models=installed_models,
+            active_versions=active_versions,
+        )
+        self._last_raw_response = raw
+        self._last_gc_eligible: list[str] = raw.get("gc_eligible_artifact_ids", [])
+        self._last_next_poll_seconds: Optional[int] = raw.get("next_poll_seconds")
+
+        models = raw.get("models", [])
+        if not isinstance(models, list):
+            return []
+        result: list[dict[str, Any]] = []
+        for entry in models:
+            manifest = entry.get("artifactManifest", {})
+            mapped: dict[str, Any] = {
+                "model_id": entry["modelId"],
+                "version": entry["desiredVersion"],
+                "artifact_id": manifest.get("artifactId", ""),
+                "manifest": manifest,
+                "total_bytes": manifest.get("totalBytes", 0),
+                "activation_policy": entry.get("activationPolicy", "immediate"),
+                "engine_policy": entry.get("enginePolicy", {}),
+            }
+            result.append(mapped)
+        return result
+
+    @property
+    def base_url(self) -> str:
+        """Expose the API base URL so ArtifactLoop can build download URLs."""
+        return getattr(self._api, "base_url", "")
+
     def fetch_desired_state(
         self,
         device_id: Optional[str] = None,
+        installed_models: Optional[list[dict[str, str]]] = None,
+        active_versions: Optional[list[dict[str, str]]] = None,
     ) -> dict[str, Any]:
-        """GET desired state for this device from the server.
+        """POST desired state request for this device, with optional inventory.
 
-        Conforms to ``devices.desired_state`` contract (1.4.0).  Returns the
-        target state the device should converge toward: artifacts to download,
-        policy config, federation offers, and GC-eligible artifact IDs.
+        Conforms to the ``devices.desired_state`` contract (1.12.0).
+        Sends device context (SDK version, platform, installed models)
+        so the server can compute the appropriate desired state.
 
         Args:
-            device_id: Explicit device id override.  Falls back to the
-                server-assigned id from ``register()``.
+            device_id: Explicit device id override.
+            installed_models: Models on disk: ``[{model_id, version}]``.
+            active_versions: Models currently loaded: ``[{model_id, version}]``.
 
         Returns:
-            Desired state dict containing ``artifacts``, ``policyConfig``,
-            ``federationOffers``, ``gcEligibleArtifactIds``, etc.
-
-        Raises:
-            RuntimeError: If no device id is available (not registered).
+            Desired state dict with ``models``, ``policyConfig``,
+            ``gcEligibleArtifactIds``, etc.
         """
         effective_id = device_id or self._server_device_id
         if not effective_id:
             raise RuntimeError("Device not registered. Call register() first.")
 
-        return self._api.get(f"/devices/{effective_id}/desired-state")
+        payload: dict[str, Any] = {
+            "deviceId": effective_id,
+            "sdkVersion": _get_sdk_version(),
+            "platform": "python",
+        }
+        if installed_models:
+            payload["installedModels"] = installed_models
+        if active_versions:
+            payload["activeVersions"] = active_versions
+
+        try:
+            return self._api.post(f"/devices/{effective_id}/desired-state", payload)
+        except Exception:
+            # Fall back to GET for older servers that don't accept POST
+            logger.debug("POST desired-state failed, falling back to GET", exc_info=True)
+            return self._api.get(f"/devices/{effective_id}/desired-state")
 
     def report_observed_state(
         self,
         device_id: Optional[str] = None,
-        artifact_statuses: Optional[list[dict[str, Any]]] = None,
+        models: Optional[list[dict[str, Any]]] = None,
     ) -> dict[str, Any]:
         """POST observed device state to the server.
 
-        Conforms to ``devices.observed_state`` contract (1.4.0).  Reports
-        artifact download progress, active model pointer, and runtime
-        metadata so the server can reconcile desired vs observed state.
+        Conforms to the ``ObservedState`` contract.  Reports per-model
+        observed state (installed version, active version, status, health)
+        so the server can reconcile desired vs observed state.
 
         Args:
             device_id: Explicit device id override.  Falls back to the
                 server-assigned id from ``register()``.
-            artifact_statuses: List of per-artifact status dicts, each
-                containing at minimum ``artifactId`` and ``status``.
+            models: List of per-model observed state dicts, each
+                containing at minimum ``modelId`` and ``status``.
 
         Returns:
             Server acknowledgement dict.
@@ -239,7 +302,7 @@ class OctomilControl:
             "schemaVersion": "1.4.0",
             "deviceId": effective_id,
             "reportedAt": now,
-            "artifactStatuses": artifact_statuses or [],
+            "models": models or [],
             "sdkVersion": _get_sdk_version(),
             "osVersion": platform.platform(),
         }

@@ -84,6 +84,14 @@ class ArtifactLoop:
     def _run(self) -> None:
         """Loop body. Polls for desired state and processes artifact operations."""
         logger.info("Artifact loop started")
+
+        # Immediate sync on startup — don't wait for first poll interval
+        try:
+            self._poll_desired_state()
+            self._last_poll_time = time.monotonic()
+        except Exception:
+            logger.warning("Startup poll failed", exc_info=True)
+
         while not self._stop_event.is_set():
             try:
                 # Recover any expired operation leases
@@ -111,45 +119,129 @@ class ArtifactLoop:
         logger.info("Artifact loop stopped")
 
     def _report_observed_state(self) -> None:
-        """Report current artifact statuses to the control plane via the callback.
+        """Report per-model observed state to the control plane via the callback.
 
-        Collects all tracked artifacts and their statuses from the local
-        registry and calls the ``observed_state_reporter`` callback (which
-        typically delegates to ``OctomilControl.report_observed_state()``).
+        Collects per-model status from the local registry and active
+        pointer table, building the ``models`` array conforming to the
+        ``ObservedState`` contract.  Calls the ``observed_state_reporter``
+        callback (which typically delegates to
+        ``OctomilControl.report_observed_state()``).
         """
         if self._observed_state_reporter is None:
             return
 
         try:
             db = self._model_registry._db
-            rows = db.execute("SELECT artifact_id, model_id, version, status FROM model_artifacts")
-            artifact_statuses: list[dict[str, Any]] = [
-                {
-                    "artifactId": row["artifact_id"],
-                    "modelId": row["model_id"],
-                    "version": row["version"],
-                    "status": row["status"],
+
+            # Build per-model observed state entries
+            # Group artifacts by model_id, pick the latest status
+            model_rows = db.execute("SELECT DISTINCT model_id FROM model_artifacts")
+            model_entries: list[dict[str, Any]] = []
+            for model_row in model_rows:
+                model_id = model_row["model_id"]
+
+                # Get the latest artifact status for this model
+                latest = db.execute_one(
+                    "SELECT version, status FROM model_artifacts WHERE model_id = ? ORDER BY updated_at DESC LIMIT 1",
+                    (model_id,),
+                )
+
+                # Get active version if any
+                active = db.execute_one(
+                    "SELECT active_version FROM active_model_pointer WHERE model_id = ?",
+                    (model_id,),
+                )
+
+                entry: dict[str, Any] = {
+                    "modelId": model_id,
+                    "status": latest["status"] if latest else "UNKNOWN",
                 }
-                for row in rows
-            ]
-            self._observed_state_reporter(artifact_statuses)
+                if latest:
+                    entry["installedVersion"] = latest["version"]
+                if active:
+                    entry["activeVersion"] = active["active_version"]
+                else:
+                    entry["activeVersion"] = None
+
+                model_entries.append(entry)
+
+            self._observed_state_reporter(model_entries)
         except Exception:
             logger.debug("Failed to report observed state", exc_info=True)
+
+    def _build_inventory(self) -> tuple[list[dict[str, str]], list[dict[str, str]]]:
+        """Build installed models and active versions from local DB."""
+        db = self._model_registry._db
+        rows = db.execute(
+            "SELECT DISTINCT model_id, version FROM model_artifacts " "WHERE status NOT IN ('REGISTERED')"
+        )
+        installed = [{"model_id": r["model_id"], "version": r["version"]} for r in rows]
+
+        active_rows = db.execute("SELECT model_id, active_version FROM active_model_pointer")
+        active = [{"model_id": r["model_id"], "version": r["active_version"]} for r in active_rows]
+
+        return installed, active
+
+    def _handle_gc(self, gc_artifact_ids: list[str]) -> None:
+        """Mark server-designated artifacts as eligible for garbage collection.
+
+        Transitions artifacts to GC_ELIGIBLE status so the cleanup loop
+        can reclaim storage.  Skips artifacts that are currently ACTIVE
+        or DOWNLOADING as a safety guard.
+        """
+        for artifact_id in gc_artifact_ids:
+            existing = self._model_registry.get_artifact(artifact_id)
+            if existing is None:
+                continue
+            if existing["status"] in ("ACTIVE", "DOWNLOADING"):
+                continue
+            try:
+                self._model_registry.update_artifact_status(artifact_id, "GC_ELIGIBLE")
+                self._telemetry_store.append_auto(
+                    "artifact.gc_eligible",
+                    {"artifact_id": artifact_id},
+                    model_id=existing["model_id"],
+                    model_version=existing["version"],
+                )
+                logger.debug("Marked artifact %s as GC-eligible", artifact_id)
+            except Exception:
+                logger.debug("Failed to mark %s for GC", artifact_id, exc_info=True)
 
     def _poll_desired_state(self) -> None:
         """Check server for new desired model versions.
 
         If a server_client is configured, fetches the desired state and
         registers any new artifacts that aren't already tracked locally.
+        Sends device inventory so the server can compute GC-eligible
+        artifacts and make informed rollout decisions.
         """
         if self._server_client is None:
             return
 
         try:
-            desired = self._server_client.get_desired_state()
+            installed, active = self._build_inventory()
+            get_fn = self._server_client.get_desired_state
+            # Pass inventory if the client supports it
+            import inspect
+
+            sig = inspect.signature(get_fn)
+            if "installed_models" in sig.parameters:
+                desired = get_fn(installed_models=installed, active_versions=active)
+            else:
+                desired = get_fn()
         except Exception:
             logger.warning("Failed to poll desired state from server", exc_info=True)
             return
+
+        # Update poll interval from server hint
+        next_poll = getattr(self._server_client, "_last_next_poll_seconds", None)
+        if next_poll is not None and isinstance(next_poll, (int, float)) and next_poll > 0:
+            self._poll_interval = float(next_poll)
+
+        # Process GC-eligible artifacts
+        gc_ids = getattr(self._server_client, "_last_gc_eligible", None)
+        if gc_ids:
+            self._handle_gc(gc_ids)
 
         if not isinstance(desired, list):
             return
@@ -160,6 +252,8 @@ class ArtifactLoop:
             artifact_id = entry.get("artifact_id")
             manifest = entry.get("manifest", {})
             total_bytes = entry.get("total_bytes", 0)
+            activation_policy = entry.get("activation_policy", "immediate")
+            engine_policy = entry.get("engine_policy", {})
 
             if not all([model_id, version, artifact_id]):
                 continue
@@ -171,12 +265,15 @@ class ArtifactLoop:
 
             # Register new artifact
             manifest_json = json.dumps(manifest)
+            engine_policy_json = json.dumps(engine_policy) if engine_policy else "{}"
             self._model_registry.register_artifact(
                 artifact_id=artifact_id,
                 model_id=model_id,
                 version=version,
                 manifest_json=manifest_json,
                 total_bytes=total_bytes,
+                activation_policy=activation_policy,
+                engine_policy_json=engine_policy_json,
             )
 
             self._telemetry_store.append_auto(

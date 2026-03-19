@@ -15,6 +15,7 @@ from typing import Any, Callable, Optional
 from .activation_manager import ActivationManager
 from .artifact_downloader import ArtifactDownloader
 from .artifact_verifier import ArtifactVerifier
+from .crash_detector import CrashDetector
 from .db.local_db import LocalDB
 from .inference_session_manager import InferenceSessionManager
 from .loops.activation_loop import ActivationLoop
@@ -121,10 +122,19 @@ class DeviceAgent:
         # so the server can reconcile desired vs observed state.
         observed_state_reporter: Optional[Callable[..., Any]] = None
         if self._control is not None:
-            observed_state_reporter = lambda statuses: self._control.report_observed_state(  # noqa: E731
+            observed_state_reporter = lambda model_entries: self._control.report_observed_state(  # noqa: E731
                 device_id=self._device_id,
-                artifact_statuses=statuses,
+                models=model_entries,
             )
+
+        # Use OctomilControl as the canonical sync source when no explicit
+        # server_client was provided. OctomilControl exposes a
+        # get_desired_state() method and base_url property that satisfy the
+        # duck-typed server_client interface used by ArtifactLoop.
+        effective_server_client = server_client if server_client is not None else self._control
+
+        # --- Crash detector ---
+        self._crash_detector = CrashDetector(self._db)
 
         # --- Loops ---
         self._inference_loop = InferenceLoop(
@@ -140,7 +150,7 @@ class DeviceAgent:
             policy_engine=self._policy_engine,
             operation_scheduler=self._scheduler,
             telemetry_store=self._telemetry_store,
-            server_client=server_client,
+            server_client=effective_server_client,
             observed_state_reporter=observed_state_reporter,
         )
         self._activation_loop = ActivationLoop(
@@ -172,12 +182,31 @@ class DeviceAgent:
     # ------------------------------------------------------------------
 
     def start(self) -> None:
-        """Start all background loops."""
+        """Start all background loops.
+
+        On startup, records a boot event and checks for crash loops.
+        If a model is in a crash loop, triggers auto-rollback before
+        starting the normal reconciliation loops.
+        """
         logger.info("DeviceAgent starting (device_id=%s, boot_id=%s)", self._device_id, self._boot_id)
+
+        # Record boot and check for crash loops
+        self._check_crash_loops_on_boot()
+
+        # Mark activation loop as in startup phase so next_launch policies
+        # are processed during the first reconciliation cycle.
+        self._activation_loop._is_startup = True
+
         self._inference_loop.start()
         self._artifact_loop.start()
         self._activation_loop.start()
         self._telemetry_loop.start()
+
+        # Run one immediate check for next_launch artifacts, then mark
+        # startup as complete so they won't re-trigger on subsequent ticks.
+        self._activation_loop._check_staged()
+        self._activation_loop.mark_startup_complete()
+
         logger.info("DeviceAgent started")
 
     def stop(self) -> None:
@@ -187,7 +216,46 @@ class DeviceAgent:
         self._artifact_loop.stop()
         self._activation_loop.stop()
         self._telemetry_loop.stop()
+        self._crash_detector.record_clean_shutdown(self._boot_id)
         logger.info("DeviceAgent stopped")
+
+    def _check_crash_loops_on_boot(self) -> None:
+        """Record boot event and check for crash loops on active models.
+
+        If a model is detected as crash-looping, triggers auto-rollback
+        via the activation manager before the reconciliation loops start.
+        """
+        # Determine current active model for crash tracking
+        active_model_id: Optional[str] = None
+        active_model_version: Optional[str] = None
+        rows = self._db.execute("SELECT model_id, active_version FROM active_model_pointer")
+        if rows:
+            active_model_id = rows[0]["model_id"]
+            active_model_version = rows[0]["active_version"]
+
+        self._crash_detector.record_boot(
+            boot_id=self._boot_id,
+            active_model_id=active_model_id,
+            active_model_version=active_model_version,
+        )
+
+        # Check all active models for crash loops
+        for row in rows:
+            model_id = row["model_id"]
+            should_rollback, reason = self._crash_detector.should_auto_rollback(model_id)
+            if should_rollback:
+                logger.warning("Crash loop detected for %s: %s — triggering rollback", model_id, reason)
+                rolled_back_to = self._activation_manager.auto_rollback(model_id, reason)
+                if rolled_back_to:
+                    logger.info("Rolled back %s to version %s", model_id, rolled_back_to)
+                    self._telemetry_store.append_auto(
+                        "crash_loop.rollback",
+                        {
+                            "model_id": model_id,
+                            "rolled_back_to": rolled_back_to,
+                            "reason": reason,
+                        },
+                    )
 
     # ------------------------------------------------------------------
     # Inference

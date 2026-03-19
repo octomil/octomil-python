@@ -92,15 +92,17 @@ class DeviceModelRegistry:
         version: str,
         manifest_json: str,
         total_bytes: int,
+        activation_policy: str = "immediate",
+        engine_policy_json: str = "{}",
     ) -> None:
         """Register a new artifact for download tracking."""
         now = _now_iso()
         self._db.execute(
             "INSERT INTO model_artifacts "
             "(artifact_id, model_id, version, status, manifest_json, "
-            " bytes_downloaded, total_bytes, updated_at) "
-            "VALUES (?, ?, ?, 'REGISTERED', ?, 0, ?, ?)",
-            (artifact_id, model_id, version, manifest_json, total_bytes, now),
+            " bytes_downloaded, total_bytes, activation_policy, engine_policy_json, updated_at) "
+            "VALUES (?, ?, ?, 'REGISTERED', ?, 0, ?, ?, ?, ?)",
+            (artifact_id, model_id, version, manifest_json, total_bytes, activation_policy, engine_policy_json, now),
         )
 
     def update_artifact_status(self, artifact_id: str, new_status: str, **kwargs: Any) -> None:
