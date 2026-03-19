@@ -461,7 +461,14 @@ class TestOctomilControlGetDesiredState(unittest.TestCase):
                         "version": "v2",
                         "format": "gguf",
                         "totalBytes": 5000,
-                        "chunks": [{"index": 0, "offset": 0, "size": 5000, "sha256": "abc"}],
+                        "chunks": [
+                            {
+                                "index": 0,
+                                "offset": 0,
+                                "size": 5000,
+                                "sha256": "abc",
+                            }
+                        ],
                     },
                 },
                 {
