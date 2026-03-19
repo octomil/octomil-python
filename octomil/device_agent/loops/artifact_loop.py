@@ -253,6 +253,7 @@ class ArtifactLoop:
             manifest = entry.get("manifest", {})
             total_bytes = entry.get("total_bytes", 0)
             activation_policy = entry.get("activation_policy", "immediate")
+            engine_policy = entry.get("engine_policy", {})
 
             if not all([model_id, version, artifact_id]):
                 continue
@@ -264,6 +265,7 @@ class ArtifactLoop:
 
             # Register new artifact
             manifest_json = json.dumps(manifest)
+            engine_policy_json = json.dumps(engine_policy) if engine_policy else "{}"
             self._model_registry.register_artifact(
                 artifact_id=artifact_id,
                 model_id=model_id,
@@ -271,6 +273,7 @@ class ArtifactLoop:
                 manifest_json=manifest_json,
                 total_bytes=total_bytes,
                 activation_policy=activation_policy,
+                engine_policy_json=engine_policy_json,
             )
 
             self._telemetry_store.append_auto(

@@ -45,12 +45,22 @@ class ActivationManager:
         """
         return self._transition(artifact_id, "STAGED", staged_at=_now_iso())
 
-    def warmup(self, artifact_id: str, warmup_fn: Any = None) -> bool:
+    def warmup(
+        self,
+        artifact_id: str,
+        warmup_fn: Any = None,
+        engine_policy: Optional[dict[str, Any]] = None,
+    ) -> bool:
         """Run warmup checks and transition to ACTIVE or FAILED_HEALTHCHECK.
 
         If warmup_fn is provided, it is called with the model path and must
         return True for the warmup to succeed. Otherwise, warmup always
         succeeds (useful for testing).
+
+        engine_policy: optional dict with ``allowed`` (list of executor names)
+        and ``forced`` (single executor name or None) constraints from the
+        server.  Passed through to warmup_fn as a keyword argument if
+        the callable accepts it.
         """
         if not self._transition(artifact_id, "WARMING"):
             return False
@@ -67,6 +77,12 @@ class ActivationManager:
         success = True
         if warmup_fn is not None:
             try:
+                if engine_policy:
+                    success = bool(warmup_fn(model_path, engine_policy=engine_policy))
+                else:
+                    success = bool(warmup_fn(model_path))
+            except TypeError:
+                # warmup_fn doesn't accept engine_policy kwarg
                 success = bool(warmup_fn(model_path))
             except Exception as exc:
                 logger.warning("Warmup failed for artifact %s: %s", artifact_id, exc)

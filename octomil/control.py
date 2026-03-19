@@ -218,6 +218,7 @@ class OctomilControl:
                 "manifest": manifest,
                 "total_bytes": manifest.get("totalBytes", 0),
                 "activation_policy": entry.get("activationPolicy", "immediate"),
+                "engine_policy": entry.get("enginePolicy", {}),
             }
             result.append(mapped)
         return result

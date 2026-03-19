@@ -6,9 +6,10 @@ refcount to reach zero before completing the transition.
 
 from __future__ import annotations
 
+import json
 import logging
 import threading
-from typing import Optional
+from typing import Any, Optional
 
 from ..activation_manager import ActivationManager
 from ..inference_session_manager import InferenceSessionManager
@@ -131,9 +132,15 @@ class ActivationLoop:
                 logger.debug("Warmup blocked for %s@%s: %s", model_id, new_version, reason)
                 continue
 
+            # Read engine policy constraints
+            engine_constraints = self._get_engine_policy(artifact_id)
+
             # Attempt warmup
             logger.info("Attempting warmup for %s@%s", model_id, new_version)
-            warmup_ok = self._activation_manager.warmup(artifact_id)
+            if engine_constraints:
+                warmup_ok = self._activation_manager.warmup(artifact_id, engine_policy=engine_constraints)
+            else:
+                warmup_ok = self._activation_manager.warmup(artifact_id)
 
             if not warmup_ok:
                 logger.warning("Warmup failed for %s@%s, triggering rollback", model_id, new_version)
@@ -204,6 +211,27 @@ class ActivationLoop:
                 "Unknown activation_policy '%s' for artifact %s, defaulting to immediate", policy, artifact_id
             )
             return True
+
+    def _get_engine_policy(self, artifact_id: str) -> Optional[dict[str, Any]]:
+        """Read engine policy constraints for an artifact.
+
+        Returns parsed engine_policy dict (with ``allowed`` and ``forced``
+        keys) or None if no policy is set.
+        """
+        db = self._model_registry._db
+        row = db.execute_one(
+            "SELECT engine_policy_json FROM model_artifacts WHERE artifact_id = ?",
+            (artifact_id,),
+        )
+        if row is None:
+            return None
+        raw = row["engine_policy_json"]
+        if not raw or raw == "{}":
+            return None
+        try:
+            return json.loads(raw)
+        except (json.JSONDecodeError, TypeError):
+            return None
 
     def _drain_old_version(self, model_id: str, old_version: str) -> None:
         """Wait for refcount=0 on old_version via session_manager, then unload.

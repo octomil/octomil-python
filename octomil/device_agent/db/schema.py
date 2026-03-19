@@ -18,6 +18,7 @@ SCHEMA_STATEMENTS: list[str] = [
         activated_at  TEXT,
         installed_at  INTEGER,
         activation_policy TEXT NOT NULL DEFAULT 'immediate',
+        engine_policy_json TEXT NOT NULL DEFAULT '{}',
         last_error    TEXT,
         retry_count   INTEGER NOT NULL DEFAULT 0,
         engine_benchmarks TEXT,
