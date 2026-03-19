@@ -154,24 +154,31 @@ _FAMILY_TO_PUBLISHER: dict[str, str] = {
     "qwen": "Alibaba",
     "qwen2": "Alibaba",
     "qwen2.5": "Alibaba",
+    "qwen2.5-coder": "Alibaba",
     "llama": "Meta",
     "llama-2": "Meta",
     "llama-3": "Meta",
     "llama-3.1": "Meta",
     "llama-3.2": "Meta",
+    "codellama": "Meta",
     "phi": "Microsoft",
     "phi-2": "Microsoft",
     "phi-3": "Microsoft",
     "phi-4": "Microsoft",
     "whisper": "OpenAI",
     "mistral": "Mistral AI",
+    "mistral-nemo": "Mistral AI",
     "mixtral": "Mistral AI",
     "deepseek": "DeepSeek",
     "deepseek-r1": "DeepSeek",
     "starcoder": "BigCode",
     "starcoder2": "BigCode",
+    "smollm2": "HuggingFace",
     "smolvlm2": "HuggingFace",
+    "tinyllama": "StatNLP",
     "ultravox": "Fixie AI",
+    "punct-en": "k2-fsa",
+    "zipformer": "k2-fsa",
 }
 
 
@@ -351,8 +358,8 @@ def _manifest_model_to_entry(model: dict) -> tuple[str, ModelEntry]:
     # Map the default quant to canonical form
     default_quant = _QUANT_TO_CANONICAL.get(default_quant_raw, default_quant_raw)
 
-    # Determine publisher from family
-    publisher = _FAMILY_TO_PUBLISHER.get(family, "Unknown")
+    # Determine publisher: prefer manifest vendor, fall back to family map
+    publisher = model.get("vendor") or _FAMILY_TO_PUBLISHER.get(family, "Unknown")
 
     # Extract task_taxonomy from model (renamed from legacy "modalities" field)
     task_taxonomy: list[str] = model.get("task_taxonomy", [])
@@ -477,6 +484,7 @@ def _hydrate_manifest(manifest: dict) -> dict[str, ModelEntry]:
             model: dict = {
                 "id": variant_name,
                 "family": family_name,
+                "vendor": family_data.get("vendor"),
                 "name": variant_name,
                 "parameter_count": variant_data.get("parameter_count", ""),
                 "default_quantization": default_quant,
