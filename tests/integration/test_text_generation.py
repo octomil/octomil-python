@@ -13,12 +13,15 @@ from typing import AsyncIterator, Optional
 
 import pytest
 
+from octomil._generated.message_role import MessageRole
 from octomil.responses.responses import OctomilResponses
 from octomil.responses.types import DoneEvent, ResponseRequest, TextOutput
 from octomil.runtime.core.model_runtime import ModelRuntime
 from octomil.runtime.core.types import (
     RuntimeCapabilities,
     RuntimeChunk,
+    RuntimeContentPart,
+    RuntimeMessage,
     RuntimeRequest,
     RuntimeResponse,
     RuntimeUsage,
@@ -61,21 +64,25 @@ class OllamaRuntime(ModelRuntime):
         return RuntimeCapabilities(supports_streaming=True)
 
     async def run(self, request: RuntimeRequest) -> RuntimeResponse:
+        from octomil.runtime.core.chatml_renderer import render_chatml
+
+        prompt = render_chatml(request)
         result = subprocess.run(
-            ["ollama", "run", self._model, request.prompt],
+            ["ollama", "run", self._model, prompt],
             capture_output=True,
             text=True,
             timeout=60,
         )
         text = result.stdout.strip()
         tokens = len(text.split())
+        prompt_tokens = len(prompt.split())
         return RuntimeResponse(
             text=text,
             finish_reason="stop",
             usage=RuntimeUsage(
-                prompt_tokens=len(request.prompt.split()),
+                prompt_tokens=prompt_tokens,
                 completion_tokens=tokens,
-                total_tokens=len(request.prompt.split()) + tokens,
+                total_tokens=prompt_tokens + tokens,
             ),
         )
 
@@ -93,7 +100,18 @@ class TestTextGeneration:
     def test_ollama_direct(self):
         """Verify ollama generates text directly."""
         runtime = OllamaRuntime("gemma2:2b")
-        response = asyncio.run(runtime.run(RuntimeRequest(prompt="What is 2+2? Answer with just the number.")))
+        response = asyncio.run(
+            runtime.run(
+                RuntimeRequest(
+                    messages=[
+                        RuntimeMessage(
+                            role=MessageRole.USER,
+                            parts=[RuntimeContentPart.text_part("What is 2+2? Answer with just the number.")],
+                        )
+                    ]
+                )
+            )
+        )
         assert "4" in response.text
 
     def test_text_via_responses_api(self):

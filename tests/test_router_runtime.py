@@ -4,15 +4,23 @@ from __future__ import annotations
 
 import pytest
 
+from octomil._generated.message_role import MessageRole
 from octomil.runtime.core.model_runtime import ModelRuntime
 from octomil.runtime.core.policy import RoutingPolicy
 from octomil.runtime.core.router import RouterModelRuntime
 from octomil.runtime.core.types import (
     RuntimeCapabilities,
     RuntimeChunk,
+    RuntimeContentPart,
+    RuntimeMessage,
     RuntimeRequest,
     RuntimeResponse,
 )
+
+
+def _text_request(text: str = "test") -> RuntimeRequest:
+    """Build a minimal text-only RuntimeRequest for tests."""
+    return RuntimeRequest(messages=[RuntimeMessage(role=MessageRole.USER, parts=[RuntimeContentPart.text_part(text)])])
 
 
 class StubRuntime(ModelRuntime):
@@ -36,7 +44,7 @@ async def test_auto_prefers_local():
         local_factory=lambda mid: StubRuntime("local"),
         cloud_factory=lambda mid: StubRuntime("cloud"),
     )
-    resp = await router.run(RuntimeRequest(prompt="test"))
+    resp = await router.run(_text_request())
     assert resp.text == "from-local"
 
 
@@ -46,7 +54,7 @@ async def test_auto_fallback_to_cloud():
         local_factory=lambda mid: None,
         cloud_factory=lambda mid: StubRuntime("cloud"),
     )
-    resp = await router.run(RuntimeRequest(prompt="test"))
+    resp = await router.run(_text_request())
     assert resp.text == "from-cloud"
 
 
@@ -57,7 +65,7 @@ async def test_local_only_raises_when_no_local():
         default_policy=RoutingPolicy.local_only(),
     )
     with pytest.raises(RuntimeError, match="No local runtime"):
-        await router.run(RuntimeRequest(prompt="test"))
+        await router.run(_text_request())
 
 
 @pytest.mark.asyncio
@@ -66,7 +74,7 @@ async def test_cloud_only_uses_cloud():
         cloud_factory=lambda mid: StubRuntime("cloud"),
         default_policy=RoutingPolicy.cloud_only(),
     )
-    resp = await router.run(RuntimeRequest(prompt="test"))
+    resp = await router.run(_text_request())
     assert resp.text == "from-cloud"
 
 
@@ -77,7 +85,7 @@ async def test_cloud_only_raises_when_no_cloud():
         default_policy=RoutingPolicy.cloud_only(),
     )
     with pytest.raises(RuntimeError, match="No cloud runtime"):
-        await router.run(RuntimeRequest(prompt="test"))
+        await router.run(_text_request())
 
 
 @pytest.mark.asyncio
@@ -87,7 +95,7 @@ async def test_auto_raises_when_no_runtime():
         cloud_factory=lambda mid: None,
     )
     with pytest.raises(RuntimeError, match="No runtime available"):
-        await router.run(RuntimeRequest(prompt="test"))
+        await router.run(_text_request())
 
 
 @pytest.mark.asyncio
@@ -97,7 +105,7 @@ async def test_stream_routes_correctly():
         cloud_factory=lambda mid: StubRuntime("cloud"),
     )
     chunks = []
-    async for chunk in router.stream(RuntimeRequest(prompt="test")):
+    async for chunk in router.stream(_text_request()):
         chunks.append(chunk)
     assert len(chunks) == 1
     assert chunks[0].text == "from-local"

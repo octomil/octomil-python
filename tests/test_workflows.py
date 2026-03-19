@@ -30,10 +30,16 @@ class EchoRuntime(ModelRuntime):
         return RuntimeCapabilities()
 
     async def run(self, request):
-        return RuntimeResponse(text=f"echo: {request.prompt[:30]}")
+        from octomil.runtime.core.chatml_renderer import render_chatml
+
+        prompt = render_chatml(request)
+        return RuntimeResponse(text=f"echo: {prompt[:30]}")
 
     async def stream(self, request):
-        yield RuntimeChunk(text=f"echo: {request.prompt[:30]}")
+        from octomil.runtime.core.chatml_renderer import render_chatml
+
+        prompt = render_chatml(request)
+        yield RuntimeChunk(text=f"echo: {prompt[:30]}")
 
 
 class ToolCallingRuntime(ModelRuntime):

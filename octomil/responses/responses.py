@@ -5,10 +5,13 @@
 
 from __future__ import annotations
 
+import base64
 import json
+import logging
 import uuid
 from typing import TYPE_CHECKING, AsyncIterator, Callable, Optional, Union
 
+from octomil._generated.message_role import MessageRole
 from octomil.model_ref import ModelRef, _ModelRefCapability, _ModelRefId
 from octomil.runtime.core.adapter import InferenceBackendAdapter
 from octomil.runtime.core.cloud_runtime import CloudModelRuntime
@@ -17,6 +20,9 @@ from octomil.runtime.core.policy import RoutingPolicy
 from octomil.runtime.core.registry import ModelRuntimeRegistry
 from octomil.runtime.core.router import LOCALITY_CLOUD, LOCALITY_ON_DEVICE, RouterModelRuntime
 from octomil.runtime.core.types import (
+    GenerationConfig,
+    RuntimeContentPart,
+    RuntimeMessage,
     RuntimeRequest,
     RuntimeToolDef,
     RuntimeUsage,
@@ -25,10 +31,12 @@ from octomil.runtime.core.types import (
     RuntimeResponse as _RuntimeResponse,
 )
 
-from .prompt_formatter import PromptFormatter
 from .types import (
     AssistantInput,
+    AudioContent,
     DoneEvent,
+    FileContent,
+    ImageContent,
     InputItem,
     JsonSchemaFormat,
     OutputItem,
@@ -38,17 +46,22 @@ from .types import (
     ResponseStreamEvent,
     ResponseToolCall,
     ResponseUsage,
+    SystemInput,
     TextContent,
     TextDeltaEvent,
     TextOutput,
     ToolCallDeltaEvent,
     ToolCallOutput,
+    ToolResultInput,
+    UserInput,
     system_input,
     text_input,
 )
 
 if TYPE_CHECKING:
     from octomil.manifest.catalog_service import ModelCatalogService
+
+logger = logging.getLogger(__name__)
 
 
 def _determine_locality(
@@ -78,7 +91,7 @@ class OctomilResponses:
     """Developer-facing Response API (Layer 2).
 
     Provides create() and stream() methods that resolve a ModelRuntime,
-    format the prompt, and return structured responses.
+    build structured RuntimeRequest messages, and return structured responses.
 
     Resolution order (3-step):
       1. ModelCatalogService (if configured)
@@ -289,11 +302,9 @@ class OctomilResponses:
         if request.instructions:
             input_items = [system_input(request.instructions)] + input_items
 
-        prompt = PromptFormatter.format(
-            input_items,
-            request.tools if request.tools else None,
-            request.tool_choice,
-        )
+        # Convert Layer 2 InputItems to Layer 1 RuntimeMessages
+        messages = _input_items_to_messages(input_items)
+
         tool_defs: Optional[list[RuntimeToolDef]] = None
         if request.tools:
             tool_defs = []
@@ -315,11 +326,13 @@ class OctomilResponses:
             json_schema = "{}"
 
         return RuntimeRequest(
-            prompt=prompt,
-            max_tokens=request.max_output_tokens or 512,
-            temperature=request.temperature or 0.7,
-            top_p=request.top_p or 1.0,
-            stop=request.stop,
+            messages=messages,
+            generation_config=GenerationConfig(
+                max_tokens=request.max_output_tokens or 512,
+                temperature=request.temperature or 0.7,
+                top_p=request.top_p or 1.0,
+                stop=request.stop,
+            ),
             tool_definitions=tool_defs,
             json_schema=json_schema,
         )
@@ -367,6 +380,96 @@ class OctomilResponses:
             usage=usage,
             locality=locality,
         )
+
+
+# -- Layer 2 → Layer 1 bridge --
+
+
+def _input_items_to_messages(input_items: list[InputItem]) -> list[RuntimeMessage]:
+    """Convert Layer 2 InputItems to Layer 1 RuntimeMessages.
+
+    Resolves base64 data to raw bytes for media parts.
+    Raises ValueError for unresolvable file types.
+    """
+    messages: list[RuntimeMessage] = []
+    for item in input_items:
+        if isinstance(item, SystemInput):
+            messages.append(
+                RuntimeMessage(
+                    role=MessageRole.SYSTEM,
+                    parts=[RuntimeContentPart.text_part(item.content)],
+                )
+            )
+        elif isinstance(item, UserInput):
+            parts = [_resolve_content_part(p) for p in item.content]
+            messages.append(RuntimeMessage(role=MessageRole.USER, parts=parts))
+        elif isinstance(item, AssistantInput):
+            asst_parts: list[RuntimeContentPart] = []
+            if item.content:
+                for p in item.content:
+                    if isinstance(p, TextContent):
+                        asst_parts.append(RuntimeContentPart.text_part(p.text))
+            if item.tool_calls:
+                for call in item.tool_calls:
+                    tc_json = json.dumps(
+                        {
+                            "type": "tool_call",
+                            "name": call.name,
+                            "arguments": json.loads(call.arguments),
+                        }
+                    )
+                    asst_parts.append(RuntimeContentPart.text_part(tc_json))
+            if not asst_parts:
+                asst_parts = [RuntimeContentPart.text_part("")]
+            messages.append(RuntimeMessage(role=MessageRole.ASSISTANT, parts=asst_parts))
+        elif isinstance(item, ToolResultInput):
+            messages.append(
+                RuntimeMessage(
+                    role=MessageRole.TOOL,
+                    parts=[RuntimeContentPart.text_part(item.content)],
+                )
+            )
+    return messages
+
+
+def _resolve_content_part(part: object) -> RuntimeContentPart:
+    """Convert a Layer 2 ContentPart to a Layer 1 RuntimeContentPart.
+
+    Decodes base64 data to raw bytes.
+    Raises ValueError for unsupported file media types.
+    """
+    if isinstance(part, TextContent):
+        return RuntimeContentPart.text_part(part.text)
+
+    if isinstance(part, ImageContent):
+        if part.data:
+            raw = base64.b64decode(part.data)
+            return RuntimeContentPart.image_part(raw, part.media_type or "image/png")
+        logger.warning("ImageContent without data — URL/assetId not resolved at runtime layer")
+        return RuntimeContentPart.text_part("[image: unresolved]")
+
+    if isinstance(part, AudioContent):
+        raw = base64.b64decode(part.data)
+        return RuntimeContentPart.audio_part(raw, part.media_type)
+
+    if isinstance(part, FileContent):
+        mt = part.media_type.lower()
+        raw = base64.b64decode(part.data)
+        if mt.startswith("image/"):
+            return RuntimeContentPart.image_part(raw, part.media_type)
+        if mt.startswith("audio/"):
+            return RuntimeContentPart.audio_part(raw, part.media_type)
+        if mt.startswith("video/"):
+            return RuntimeContentPart.video_part(raw, part.media_type)
+        raise ValueError(
+            f"Cannot resolve FileContent with mediaType '{part.media_type}' "
+            f"to a runtime content part. Supported prefixes: image/*, audio/*, video/*"
+        )
+
+    raise TypeError(f"Unknown content part type: {type(part)}")
+
+
+# -- Helpers --
 
 
 def _model_id_str(model: Union[str, ModelRef]) -> str:

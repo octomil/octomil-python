@@ -7,13 +7,24 @@ from dataclasses import dataclass
 
 import pytest
 
+from octomil._generated.message_role import MessageRole
 from octomil.runtime.core.adapter import InferenceBackendAdapter
 from octomil.runtime.core.types import (
     RuntimeCapabilities,
+    RuntimeContentPart,
+    RuntimeMessage,
     RuntimeRequest,
     RuntimeToolDef,
     ToolCallTier,
 )
+
+
+def _text_request(text: str = "test", **kwargs) -> RuntimeRequest:
+    """Build a minimal text-only RuntimeRequest for tests."""
+    return RuntimeRequest(
+        messages=[RuntimeMessage(role=MessageRole.USER, parts=[RuntimeContentPart.text_part(text)])],
+        **kwargs,
+    )
 
 
 @dataclass
@@ -52,7 +63,7 @@ async def test_text_json_tier_extracts_tool_call():
         model_name="test",
         capabilities=RuntimeCapabilities(tool_call_tier=ToolCallTier.TEXT_JSON),
     )
-    request = RuntimeRequest(prompt="test", tool_definitions=_tool_defs())
+    request = _text_request(tool_definitions=_tool_defs())
     response = await adapter.run(request)
 
     assert response.tool_calls is not None
@@ -70,7 +81,7 @@ async def test_none_tier_does_not_extract():
         model_name="test",
         capabilities=RuntimeCapabilities(tool_call_tier=ToolCallTier.NONE),
     )
-    request = RuntimeRequest(prompt="test", tool_definitions=_tool_defs())
+    request = _text_request(tool_definitions=_tool_defs())
     response = await adapter.run(request)
 
     assert response.tool_calls is None
@@ -86,7 +97,7 @@ async def test_raw_text_set_when_tools_present():
         model_name="test",
         capabilities=RuntimeCapabilities(tool_call_tier=ToolCallTier.TEXT_JSON),
     )
-    request = RuntimeRequest(prompt="test", tool_definitions=_tool_defs())
+    request = _text_request(tool_definitions=_tool_defs())
     response = await adapter.run(request)
 
     assert response.tool_calls is None
@@ -101,7 +112,7 @@ async def test_raw_text_none_without_tools():
         model_name="test",
         capabilities=RuntimeCapabilities(tool_call_tier=ToolCallTier.TEXT_JSON),
     )
-    request = RuntimeRequest(prompt="test")
+    request = _text_request()
     response = await adapter.run(request)
 
     assert response.raw_text is None

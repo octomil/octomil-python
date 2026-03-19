@@ -4,11 +4,12 @@ from __future__ import annotations
 
 from typing import Callable, Optional
 
+from octomil._generated.message_role import MessageRole
 from octomil._generated.model_capability import ModelCapability
 from octomil.audio.types import TranscriptionResult, TranscriptionSegment
 from octomil.model_ref import ModelRef, ModelRefFactory
 from octomil.runtime.core.model_runtime import ModelRuntime
-from octomil.runtime.core.types import RuntimeRequest
+from octomil.runtime.core.types import GenerationConfig, RuntimeContentPart, RuntimeMessage, RuntimeRequest
 
 
 class AudioTranscriptions:
@@ -55,9 +56,8 @@ class AudioTranscriptions:
             raise RuntimeError("No runtime available for transcription model")
 
         request = RuntimeRequest(
-            prompt=language or "",
-            max_tokens=0,
-            temperature=0.0,
+            messages=[RuntimeMessage(role=MessageRole.USER, parts=[RuntimeContentPart.text_part(language or "")])],
+            generation_config=GenerationConfig(max_tokens=0, temperature=0.0),
         )
         response = await runtime.run(request)
         return TranscriptionResult(text=response.text, language=language)
@@ -83,9 +83,8 @@ class AudioTranscriptions:
             raise RuntimeError("No runtime available for transcription model")
 
         request = RuntimeRequest(
-            prompt="",
-            max_tokens=0,
-            temperature=0.0,
+            messages=[RuntimeMessage(role=MessageRole.USER, parts=[RuntimeContentPart.text_part("")])],
+            generation_config=GenerationConfig(max_tokens=0, temperature=0.0),
         )
         segments: list[TranscriptionSegment] = []
         offset_ms = 0

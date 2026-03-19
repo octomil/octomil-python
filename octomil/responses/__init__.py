@@ -4,7 +4,6 @@ from __future__ import annotations
 
 # Re-export runtime and tools subpackages
 from . import runtime, tools
-from .prompt_formatter import PromptFormatter
 from .responses import OctomilResponses
 from .types import (
     ContentPart,
@@ -24,7 +23,6 @@ __all__ = [
     "InputItem",
     "OctomilResponses",
     "OutputItem",
-    "PromptFormatter",
     "Response",
     "ResponseFormat",
     "ResponseRequest",

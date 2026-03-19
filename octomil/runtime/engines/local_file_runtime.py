@@ -48,17 +48,21 @@ class LocalFileModelRuntime(ModelRuntime):
         return self._caps
 
     async def run(self, request: RuntimeRequest) -> RuntimeResponse:
+        from octomil.runtime.core.chatml_renderer import render_chatml
+
         backend = self._resolve_engine()
+        prompt = render_chatml(request)
+        gc = request.generation_config
         tokens: list[str] = []
 
-        for chunk in backend.generate_stream(request.prompt, max_tokens=request.max_tokens):
+        for chunk in backend.generate_stream(prompt, max_tokens=gc.max_tokens):
             if isinstance(chunk, str):
                 tokens.append(chunk)
             elif hasattr(chunk, "token"):
                 tokens.append(chunk.token)
 
         text = "".join(tokens)
-        prompt_tokens = len(request.prompt.split())
+        prompt_tokens = len(prompt.split())
         return RuntimeResponse(
             text=text,
             finish_reason="stop",
@@ -70,9 +74,13 @@ class LocalFileModelRuntime(ModelRuntime):
         )
 
     async def stream(self, request: RuntimeRequest) -> AsyncIterator[RuntimeChunk]:
-        backend = self._resolve_engine()
+        from octomil.runtime.core.chatml_renderer import render_chatml
 
-        for chunk in backend.generate_stream(request.prompt, max_tokens=request.max_tokens):
+        backend = self._resolve_engine()
+        prompt = render_chatml(request)
+        gc = request.generation_config
+
+        for chunk in backend.generate_stream(prompt, max_tokens=gc.max_tokens):
             text = chunk if isinstance(chunk, str) else getattr(chunk, "token", str(chunk))
             yield RuntimeChunk(text=text)
 

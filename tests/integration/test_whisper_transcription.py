@@ -15,12 +15,15 @@ import tempfile
 
 import pytest
 
+from octomil._generated.message_role import MessageRole
 from octomil.audio import OctomilAudio, TranscriptionResult
 from octomil.model_ref import ModelRef
 from octomil.runtime.core.model_runtime import ModelRuntime
 from octomil.runtime.core.types import (
     RuntimeCapabilities,
     RuntimeChunk,
+    RuntimeContentPart,
+    RuntimeMessage,
     RuntimeRequest,
     RuntimeResponse,
 )
@@ -119,7 +122,13 @@ class TestWhisperTranscription:
         """Transcribe through the ModelRuntime interface."""
         audio = _generate_speech_wav("Testing the Python SDK")
         runtime = WhisperAudioRuntime(WHISPER_CLI, WHISPER_MODEL, audio)
-        response = asyncio.run(runtime.run(RuntimeRequest(prompt="")))
+        response = asyncio.run(
+            runtime.run(
+                RuntimeRequest(
+                    messages=[RuntimeMessage(role=MessageRole.USER, parts=[RuntimeContentPart.text_part("")])]
+                )
+            )
+        )
         text = response.text.lower()
         assert "python" in text or "testing" in text
 

@@ -430,14 +430,7 @@ class TestOctomilControlSync(unittest.TestCase):
         ctrl.register(device_id="dev")
 
         ctrl.sync(
-            installed_models=[
-                {
-                    "model_id": "m1",
-                    "version": "v1",
-                    "artifact_id": "a1",
-                    "status": "ACTIVE",
-                }
-            ],
+            installed_models=[{"model_id": "m1", "version": "v1", "artifact_id": "a1", "status": "ACTIVE"}],
             known_state_version="5",
         )
 
