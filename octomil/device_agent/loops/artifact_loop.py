@@ -161,17 +161,41 @@ class ArtifactLoop:
         except Exception:
             logger.debug("Failed to report observed state", exc_info=True)
 
+    def _build_inventory(self) -> tuple[list[dict[str, str]], list[dict[str, str]]]:
+        """Build installed models and active versions from local DB."""
+        db = self._model_registry._db
+        rows = db.execute(
+            "SELECT DISTINCT model_id, version FROM model_artifacts " "WHERE status NOT IN ('REGISTERED')"
+        )
+        installed = [{"model_id": r["model_id"], "version": r["version"]} for r in rows]
+
+        active_rows = db.execute("SELECT model_id, active_version FROM active_model_pointer")
+        active = [{"model_id": r["model_id"], "version": r["active_version"]} for r in active_rows]
+
+        return installed, active
+
     def _poll_desired_state(self) -> None:
         """Check server for new desired model versions.
 
         If a server_client is configured, fetches the desired state and
         registers any new artifacts that aren't already tracked locally.
+        Sends device inventory so the server can compute GC-eligible
+        artifacts and make informed rollout decisions.
         """
         if self._server_client is None:
             return
 
         try:
-            desired = self._server_client.get_desired_state()
+            installed, active = self._build_inventory()
+            get_fn = self._server_client.get_desired_state
+            # Pass inventory if the client supports it
+            import inspect
+
+            sig = inspect.signature(get_fn)
+            if "installed_models" in sig.parameters:
+                desired = get_fn(installed_models=installed, active_versions=active)
+            else:
+                desired = get_fn()
         except Exception:
             logger.warning("Failed to poll desired state from server", exc_info=True)
             return

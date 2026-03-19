@@ -180,19 +180,30 @@ class OctomilControl:
             self._heartbeat_thread.join(timeout=5.0)
             self._heartbeat_thread = None
 
-    def get_desired_state(self) -> list[dict[str, Any]]:
+    def get_desired_state(
+        self,
+        installed_models: Optional[list[dict[str, str]]] = None,
+        active_versions: Optional[list[dict[str, str]]] = None,
+    ) -> list[dict[str, Any]]:
         """Return desired state as a list of per-model entries.
 
         Adapter method that makes ``OctomilControl`` compatible with the
         ``server_client`` interface expected by ``ArtifactLoop``.  Calls
-        ``fetch_desired_state()`` and extracts the ``models`` array
-        (DesiredModelEntry), flattening each entry with its nested
-        ``artifactManifest`` into the flat dict format the loop expects.
+        ``fetch_desired_state()`` with device inventory and extracts the
+        ``models`` array (DesiredModelEntry), flattening each entry with
+        its nested ``artifactManifest`` into the flat dict format the
+        loop expects.
 
-        Uses the canonical contract shape only — no backwards-compat
-        fallbacks for the old ``artifacts`` array.
+        Side effect: stores ``_last_gc_eligible`` and ``_last_raw_response``
+        for the caller to consume.
         """
-        raw = self.fetch_desired_state()
+        raw = self.fetch_desired_state(
+            installed_models=installed_models,
+            active_versions=active_versions,
+        )
+        self._last_raw_response = raw
+        self._last_gc_eligible: list[str] = raw.get("gc_eligible_artifact_ids", [])
+
         models = raw.get("models", [])
         if not isinstance(models, list):
             return []
@@ -218,30 +229,44 @@ class OctomilControl:
     def fetch_desired_state(
         self,
         device_id: Optional[str] = None,
+        installed_models: Optional[list[dict[str, str]]] = None,
+        active_versions: Optional[list[dict[str, str]]] = None,
     ) -> dict[str, Any]:
-        """GET desired state for this device from the server.
+        """POST desired state request for this device, with optional inventory.
 
-        Conforms to the ``DesiredState`` contract.  Returns the target state
-        the device should converge toward: per-model entries with delivery
-        mode and activation policy, policy config, federation offers, and
-        GC-eligible artifact IDs.
+        Conforms to the ``devices.desired_state`` contract (1.12.0).
+        Sends device context (SDK version, platform, installed models)
+        so the server can compute the appropriate desired state.
 
         Args:
-            device_id: Explicit device id override.  Falls back to the
-                server-assigned id from ``register()``.
+            device_id: Explicit device id override.
+            installed_models: Models on disk: ``[{model_id, version}]``.
+            active_versions: Models currently loaded: ``[{model_id, version}]``.
 
         Returns:
-            Desired state dict containing ``models``, ``policyConfig``,
-            ``federationOffers``, ``gcEligibleArtifactIds``, etc.
-
-        Raises:
-            RuntimeError: If no device id is available (not registered).
+            Desired state dict with ``models``, ``policyConfig``,
+            ``gcEligibleArtifactIds``, etc.
         """
         effective_id = device_id or self._server_device_id
         if not effective_id:
             raise RuntimeError("Device not registered. Call register() first.")
 
-        return self._api.get(f"/devices/{effective_id}/desired-state")
+        payload: dict[str, Any] = {
+            "deviceId": effective_id,
+            "sdkVersion": _get_sdk_version(),
+            "platform": "python",
+        }
+        if installed_models:
+            payload["installedModels"] = installed_models
+        if active_versions:
+            payload["activeVersions"] = active_versions
+
+        try:
+            return self._api.post(f"/devices/{effective_id}/desired-state", payload)
+        except Exception:
+            # Fall back to GET for older servers that don't accept POST
+            logger.debug("POST desired-state failed, falling back to GET", exc_info=True)
+            return self._api.get(f"/devices/{effective_id}/desired-state")
 
     def report_observed_state(
         self,

@@ -293,15 +293,15 @@ class TestOctomilControlFetchDesiredState(unittest.TestCase):
 
     def test_fetch_desired_state_calls_correct_endpoint(self):
         desired = {
-            "schema_version": "1.4.0",
+            "schema_version": "1.12.0",
             "device_id": "dev_ds",
-            "artifacts": [{"artifact_id": "model-1", "version": "2.0"}],
+            "models": [{"modelId": "m1", "desiredVersion": "2.0"}],
             "gc_eligible_artifact_ids": ["old-model"],
         }
         api = _StubApi(
             responses={
                 ("post", "/devices/register"): {"id": "dev_ds"},
-                ("get", "/devices/dev_ds/desired-state"): desired,
+                ("post", "/devices/dev_ds/desired-state"): desired,
             }
         )
         ctrl = OctomilControl(api=api, org_id="org_test")
@@ -310,16 +310,16 @@ class TestOctomilControlFetchDesiredState(unittest.TestCase):
         result = ctrl.fetch_desired_state()
 
         method, path, _ = api.calls[-1]
-        self.assertEqual(method, "get")
+        self.assertEqual(method, "post")
         self.assertEqual(path, "/devices/dev_ds/desired-state")
-        self.assertEqual(result["schema_version"], "1.4.0")
-        self.assertEqual(len(result["artifacts"]), 1)
+        self.assertEqual(result["schema_version"], "1.12.0")
+        self.assertEqual(len(result["models"]), 1)
 
     def test_fetch_desired_state_with_explicit_device_id(self):
-        desired = {"device_id": "explicit-dev", "artifacts": []}
+        desired = {"device_id": "explicit-dev", "models": []}
         api = _StubApi(
             responses={
-                ("get", "/devices/explicit-dev/desired-state"): desired,
+                ("post", "/devices/explicit-dev/desired-state"): desired,
             }
         )
         ctrl = OctomilControl(api=api, org_id="org_test")
@@ -417,7 +417,7 @@ class TestOctomilControlGetDesiredState(unittest.TestCase):
         api = _StubApi(
             responses={
                 ("post", "/devices/register"): {"id": "dev_gds"},
-                ("get", "/devices/dev_gds/desired-state"): raw_desired,
+                ("post", "/devices/dev_gds/desired-state"): raw_desired,
             }
         )
         ctrl = OctomilControl(api=api, org_id="org_test")
@@ -445,7 +445,7 @@ class TestOctomilControlGetDesiredState(unittest.TestCase):
         api = _StubApi(
             responses={
                 ("post", "/devices/register"): {"id": "dev_empty"},
-                ("get", "/devices/dev_empty/desired-state"): {"models": []},
+                ("post", "/devices/dev_empty/desired-state"): {"models": []},
             }
         )
         ctrl = OctomilControl(api=api, org_id="org_test")
@@ -458,7 +458,7 @@ class TestOctomilControlGetDesiredState(unittest.TestCase):
         api = _StubApi(
             responses={
                 ("post", "/devices/register"): {"id": "dev_noart"},
-                ("get", "/devices/dev_noart/desired-state"): {"policyConfig": {}},
+                ("post", "/devices/dev_noart/desired-state"): {"policyConfig": {}},
             }
         )
         ctrl = OctomilControl(api=api, org_id="org_test")
