@@ -375,17 +375,10 @@ class OctomilClient:
 
         t0 = time.monotonic()
         try:
-            model = self._registry.ensure_model(
-                name=name,
-                framework=framework,
-                use_case=use_case,
-                description=description,
-            )
-            # Use model name as identifier (v2 catalog flow).
-            # Server resolves name via _resolve_model_ref.
-            model_id = model.get("name") or model.get("id") or name
+            # v2 flow: pass model name directly — server creates v2 catalog
+            # entries via ensure_uploaded_model. No v1 Model record needed.
             result = self._registry.upload_version_from_path(
-                model_id=model_id,
+                model_id=name,
                 file_path=file_path,
                 version=version,
                 description=description,
