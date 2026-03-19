@@ -381,7 +381,9 @@ class OctomilClient:
                 use_case=use_case,
                 description=description,
             )
-            model_id = model["id"]
+            # Use model name as identifier (v2 catalog flow).
+            # Server resolves name via _resolve_model_ref.
+            model_id = model.get("name") or model.get("id") or name
             result = self._registry.upload_version_from_path(
                 model_id=model_id,
                 file_path=file_path,
