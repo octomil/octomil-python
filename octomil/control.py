@@ -187,23 +187,22 @@ class OctomilControl:
     ) -> list[dict[str, Any]]:
         """Return desired state as a list of per-model entries.
 
-        Adapter method that makes ``OctomilControl`` compatible with the
-        ``server_client`` interface expected by ``ArtifactLoop``.  Calls
-        ``fetch_desired_state()`` with device inventory and extracts the
+        Tries the unified ``sync()`` endpoint first; falls back to
+        ``fetch_desired_state()`` for older servers.  Extracts the
         ``models`` array (DesiredModelEntry), flattening each entry with
         its nested ``artifactManifest`` into the flat dict format the
         loop expects.
 
-        Side effect: stores ``_last_gc_eligible`` and ``_last_raw_response``
-        for the caller to consume.
+        Side effect: stores ``_last_gc_eligible``, ``_last_raw_response``,
+        and ``_last_next_poll_seconds`` for the caller to consume.
         """
-        raw = self.fetch_desired_state(
+        raw = self._fetch_via_sync_or_fallback(
             installed_models=installed_models,
             active_versions=active_versions,
         )
         self._last_raw_response = raw
-        self._last_gc_eligible: list[str] = raw.get("gc_eligible_artifact_ids", [])
-        self._last_next_poll_seconds: Optional[int] = raw.get("next_poll_seconds")
+        self._last_gc_eligible: list[str] = raw.get("gcEligibleArtifactIds", raw.get("gc_eligible_artifact_ids", []))
+        self._last_next_poll_seconds: Optional[int] = raw.get("nextPollIntervalSeconds", raw.get("next_poll_seconds"))
 
         models = raw.get("models", [])
         if not isinstance(models, list):
@@ -270,6 +269,48 @@ class OctomilControl:
             logger.debug("POST desired-state failed, falling back to GET", exc_info=True)
             return self._api.get(f"/devices/{effective_id}/desired-state")
 
+    def sync(
+        self,
+        device_id: Optional[str] = None,
+        installed_models: Optional[list[dict[str, str]]] = None,
+        active_versions: Optional[list[dict[str, str]]] = None,
+        known_state_version: Optional[str] = None,
+        available_storage_bytes: Optional[int] = None,
+    ) -> dict[str, Any]:
+        """Unified sync: POST /devices/{id}/sync.
+
+        Combines desired state fetch and observed state report in one
+        round-trip.  Returns the full sync response dict.
+        """
+        effective_id = device_id or self._server_device_id
+        if not effective_id:
+            raise RuntimeError("Device not registered. Call register() first.")
+
+        payload: dict[str, Any] = {
+            "schemaVersion": "1.12.0",
+            "deviceId": effective_id,
+            "sdkVersion": _get_sdk_version(),
+            "platform": "python",
+        }
+        if installed_models:
+            payload["modelInventory"] = [
+                {
+                    "modelId": m.get("model_id", ""),
+                    "version": m.get("version", ""),
+                    "artifactId": m.get("artifact_id"),
+                    "status": m.get("status", "UNKNOWN"),
+                }
+                for m in installed_models
+            ]
+        if active_versions:
+            payload["activeVersions"] = active_versions
+        if known_state_version is not None:
+            payload["knownStateVersion"] = known_state_version
+        if available_storage_bytes is not None:
+            payload["availableStorageBytes"] = available_storage_bytes
+
+        return self._api.post(f"/devices/{effective_id}/sync", payload)
+
     def report_observed_state(
         self,
         device_id: Optional[str] = None,
@@ -308,6 +349,27 @@ class OctomilControl:
         }
 
         return self._api.post(f"/devices/{effective_id}/observed-state", payload)
+
+    def _fetch_via_sync_or_fallback(
+        self,
+        installed_models: Optional[list[dict[str, str]]] = None,
+        active_versions: Optional[list[dict[str, str]]] = None,
+    ) -> dict[str, Any]:
+        """Try unified sync endpoint, fall back to fetch_desired_state()."""
+        try:
+            return self.sync(
+                installed_models=installed_models,
+                active_versions=active_versions,
+            )
+        except Exception:
+            logger.debug(
+                "sync() failed, falling back to fetch_desired_state()",
+                exc_info=True,
+            )
+            return self.fetch_desired_state(
+                installed_models=installed_models,
+                active_versions=active_versions,
+            )
 
     def _heartbeat_loop(self, interval: float) -> None:
         while not self._heartbeat_stop.wait(timeout=interval):

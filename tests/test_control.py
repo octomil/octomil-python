@@ -380,12 +380,83 @@ class TestOctomilControlReportObservedState(unittest.TestCase):
         self.assertEqual(payload["models"], [])
 
 
-class TestOctomilControlGetDesiredState(unittest.TestCase):
-    """Tests for the get_desired_state() adapter method."""
+class TestOctomilControlSync(unittest.TestCase):
+    """Tests for the sync() method."""
 
-    def test_get_desired_state_returns_mapped_list(self):
+    def test_sync_raises_when_not_registered(self):
+        api = _StubApi()
+        ctrl = OctomilControl(api=api, org_id="org_test")
+
+        with self.assertRaises(RuntimeError) as ctx:
+            ctrl.sync()
+        self.assertIn("not registered", str(ctx.exception).lower())
+
+    def test_sync_calls_correct_endpoint(self):
+        sync_resp = {
+            "schemaVersion": "1.12.0",
+            "deviceId": "dev_sync",
+            "stateChanged": True,
+            "models": [{"modelId": "m1", "desiredVersion": "v2"}],
+            "gcEligibleArtifactIds": ["old-1"],
+            "nextPollIntervalSeconds": 30,
+        }
+        api = _StubApi(
+            responses={
+                ("post", "/devices/register"): {"id": "dev_sync"},
+                ("post", "/devices/dev_sync/sync"): sync_resp,
+            }
+        )
+        ctrl = OctomilControl(api=api, org_id="org_test")
+        ctrl.register(device_id="dev")
+
+        result = ctrl.sync()
+
+        method, path, payload = api.calls[-1]
+        self.assertEqual(method, "post")
+        self.assertEqual(path, "/devices/dev_sync/sync")
+        self.assertEqual(payload["schemaVersion"], "1.12.0")
+        self.assertEqual(payload["deviceId"], "dev_sync")
+        self.assertEqual(result["stateChanged"], True)
+        self.assertEqual(len(result["models"]), 1)
+
+    def test_sync_sends_model_inventory(self):
+        api = _StubApi(
+            responses={
+                ("post", "/devices/register"): {"id": "dev_inv"},
+                ("post", "/devices/dev_inv/sync"): {"models": []},
+            }
+        )
+        ctrl = OctomilControl(api=api, org_id="org_test")
+        ctrl.register(device_id="dev")
+
+        ctrl.sync(
+            installed_models=[
+                {
+                    "model_id": "m1",
+                    "version": "v1",
+                    "artifact_id": "a1",
+                    "status": "ACTIVE",
+                }
+            ],
+            known_state_version="5",
+        )
+
+        _, _, payload = api.calls[-1]
+        self.assertEqual(len(payload["modelInventory"]), 1)
+        self.assertEqual(payload["modelInventory"][0]["modelId"], "m1")
+        self.assertEqual(payload["knownStateVersion"], "5")
+
+
+class TestOctomilControlGetDesiredState(unittest.TestCase):
+    """Tests for the get_desired_state() adapter method.
+
+    get_desired_state() now tries sync() first, falling back to
+    fetch_desired_state() if sync raises.
+    """
+
+    def test_get_desired_state_returns_mapped_list_via_sync(self):
         raw_desired = {
-            "schemaVersion": "1.4.0",
+            "schemaVersion": "1.12.0",
             "models": [
                 {
                     "modelId": "m1",
@@ -397,7 +468,14 @@ class TestOctomilControlGetDesiredState(unittest.TestCase):
                         "version": "v2",
                         "format": "gguf",
                         "totalBytes": 5000,
-                        "chunks": [{"index": 0, "offset": 0, "size": 5000, "sha256": "abc"}],
+                        "chunks": [
+                            {
+                                "index": 0,
+                                "offset": 0,
+                                "size": 5000,
+                                "sha256": "abc",
+                            }
+                        ],
                     },
                 },
                 {
@@ -413,11 +491,13 @@ class TestOctomilControlGetDesiredState(unittest.TestCase):
                     },
                 },
             ],
+            "gcEligibleArtifactIds": ["old-1"],
+            "nextPollIntervalSeconds": 30,
         }
         api = _StubApi(
             responses={
                 ("post", "/devices/register"): {"id": "dev_gds"},
-                ("post", "/devices/dev_gds/desired-state"): raw_desired,
+                ("post", "/devices/dev_gds/sync"): raw_desired,
             }
         )
         ctrl = OctomilControl(api=api, org_id="org_test")
@@ -441,11 +521,52 @@ class TestOctomilControlGetDesiredState(unittest.TestCase):
         self.assertEqual(result[1]["version"], "v1")
         self.assertEqual(result[1]["activation_policy"], "immediate")
 
+        # Side effects from sync response (camelCase keys)
+        self.assertEqual(ctrl._last_gc_eligible, ["old-1"])
+        self.assertEqual(ctrl._last_next_poll_seconds, 30)
+
+    def test_get_desired_state_fallback_to_fetch_desired_state(self):
+        """When sync() raises, falls back to fetch_desired_state()."""
+        raw_desired = {
+            "models": [
+                {
+                    "modelId": "m1",
+                    "desiredVersion": "v1",
+                    "artifactManifest": {"artifactId": "art-1", "totalBytes": 100},
+                },
+            ],
+            "gc_eligible_artifact_ids": ["fallback-gc"],
+            "next_poll_seconds": 45,
+        }
+
+        class _SyncFailApi(_StubApi):
+            def post(self_, path, payload=None):
+                if path.endswith("/sync"):
+                    raise ConnectionError("sync not available")
+                return super().post(path, payload)
+
+        api = _SyncFailApi(
+            responses={
+                ("post", "/devices/register"): {"id": "dev_fb"},
+                ("post", "/devices/dev_fb/desired-state"): raw_desired,
+            }
+        )
+        ctrl = OctomilControl(api=api, org_id="org_test")
+        ctrl.register(device_id="dev")
+
+        result = ctrl.get_desired_state()
+
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0]["model_id"], "m1")
+        # Side effects from fallback (snake_case keys)
+        self.assertEqual(ctrl._last_gc_eligible, ["fallback-gc"])
+        self.assertEqual(ctrl._last_next_poll_seconds, 45)
+
     def test_get_desired_state_empty_models(self):
         api = _StubApi(
             responses={
                 ("post", "/devices/register"): {"id": "dev_empty"},
-                ("post", "/devices/dev_empty/desired-state"): {"models": []},
+                ("post", "/devices/dev_empty/sync"): {"models": []},
             }
         )
         ctrl = OctomilControl(api=api, org_id="org_test")
@@ -458,7 +579,7 @@ class TestOctomilControlGetDesiredState(unittest.TestCase):
         api = _StubApi(
             responses={
                 ("post", "/devices/register"): {"id": "dev_noart"},
-                ("post", "/devices/dev_noart/desired-state"): {"policyConfig": {}},
+                ("post", "/devices/dev_noart/sync"): {"policyConfig": {}},
             }
         )
         ctrl = OctomilControl(api=api, org_id="org_test")
