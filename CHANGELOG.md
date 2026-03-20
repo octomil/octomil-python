@@ -5,6 +5,13 @@
 - Added `DeviceAuthClient` runtime auth helper for device token bootstrap, refresh, and revoke flows.
 - Added optional `auth` extra with `keyring` secure storage dependency.
 
+## 4.3.0 (2026-03-20)
+
+### Features
+
+- popularity sorting, pagination, and search for octomil models
+- popularity sorting, pagination, and search for octomil models (#328)
+
 ## 4.2.0 (2026-03-20)
 
 ### Features
