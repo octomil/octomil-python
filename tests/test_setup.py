@@ -52,7 +52,7 @@ class TestSetupState:
         state = SetupState(
             phase=PHASE_COMPLETE,
             engine="mlx-lm",
-            package="octomil-sdk[mlx,serve]",
+            package="octomil[mlx,serve]",
             engine_installed=True,
             model_key="qwen-coder-7b",
             model_downloaded=True,
@@ -347,12 +347,12 @@ class TestInstallEngine:
         (venv_dir / "bin").mkdir(parents=True)
 
         with patch("octomil.setup.VENV_DIR", venv_dir):
-            install_engine("octomil-sdk[mlx,serve]")
+            install_engine("octomil[mlx,serve]")
 
         mock_run.assert_called_once()
         args = mock_run.call_args[0][0]
         assert args[0] == "uv"
-        assert "octomil-sdk[mlx,serve]" in args
+        assert "octomil[mlx,serve]" in args
 
     @patch("octomil.setup._has_uv", return_value=False)
     @patch("subprocess.run")
@@ -361,12 +361,12 @@ class TestInstallEngine:
         (venv_dir / "bin").mkdir(parents=True)
 
         with patch("octomil.setup.VENV_DIR", venv_dir):
-            install_engine("octomil-sdk[llama,serve]")
+            install_engine("octomil[llama,serve]")
 
         # Two calls: pip upgrade + pip install
         assert mock_run.call_count == 2
         install_args = mock_run.call_args_list[1][0][0]
-        assert "octomil-sdk[llama,serve]" in install_args
+        assert "octomil[llama,serve]" in install_args
 
 
 # ---------------------------------------------------------------------------
@@ -406,7 +406,7 @@ class TestRunSetup:
     @patch("octomil.setup.download_model")
     @patch("octomil.setup.install_engine")
     @patch("octomil.setup.create_managed_venv", return_value="/venv/bin/python")
-    @patch("octomil.setup.detect_best_engine", return_value=("mlx-lm", "octomil-sdk[mlx,serve]"))
+    @patch("octomil.setup.detect_best_engine", return_value=("mlx-lm", "octomil[mlx,serve]"))
     @patch("octomil.setup.find_system_python", return_value="/usr/bin/python3")
     @patch("octomil.setup._get_recommended_model", return_value="qwen-coder-7b")
     def test_full_success(
@@ -430,7 +430,7 @@ class TestRunSetup:
         assert state.model_downloaded is True
         assert state.error is None
         mock_venv.assert_called_once_with("/usr/bin/python3")
-        mock_install.assert_called_once_with("octomil-sdk[mlx,serve]")
+        mock_install.assert_called_once_with("octomil[mlx,serve]")
         mock_download.assert_called_once_with("qwen-coder-7b")
 
     @patch("octomil.setup.find_system_python", return_value=None)
@@ -445,7 +445,7 @@ class TestRunSetup:
     @patch("octomil.setup.download_model")
     @patch("octomil.setup.install_engine", side_effect=RuntimeError("pip failed"))
     @patch("octomil.setup.create_managed_venv", return_value="/venv/bin/python")
-    @patch("octomil.setup.detect_best_engine", return_value=("mlx-lm", "octomil-sdk[mlx,serve]"))
+    @patch("octomil.setup.detect_best_engine", return_value=("mlx-lm", "octomil[mlx,serve]"))
     @patch("octomil.setup.find_system_python", return_value="/usr/bin/python3")
     def test_install_failure(self, mock_python, mock_engine, mock_venv, mock_install, mock_download, tmp_path: Path):
         state_file = tmp_path / "setup_state.json"
@@ -459,7 +459,7 @@ class TestRunSetup:
     @patch("octomil.setup.download_model", side_effect=RuntimeError("network error"))
     @patch("octomil.setup.install_engine")
     @patch("octomil.setup.create_managed_venv", return_value="/venv/bin/python")
-    @patch("octomil.setup.detect_best_engine", return_value=("mlx-lm", "octomil-sdk[mlx,serve]"))
+    @patch("octomil.setup.detect_best_engine", return_value=("mlx-lm", "octomil[mlx,serve]"))
     @patch("octomil.setup.find_system_python", return_value="/usr/bin/python3")
     @patch("octomil.setup._get_recommended_model", return_value="qwen-coder-7b")
     def test_download_failure_non_fatal(
@@ -495,7 +495,7 @@ class TestRunSetup:
     @patch("octomil.setup.download_model")
     @patch("octomil.setup.install_engine")
     @patch("octomil.setup.create_managed_venv", return_value="/venv/bin/python")
-    @patch("octomil.setup.detect_best_engine", return_value=("mlx-lm", "octomil-sdk[mlx,serve]"))
+    @patch("octomil.setup.detect_best_engine", return_value=("mlx-lm", "octomil[mlx,serve]"))
     @patch("octomil.setup.find_system_python", return_value="/usr/bin/python3")
     @patch("octomil.setup._get_recommended_model", return_value="qwen-coder-7b")
     def test_force_reruns_complete(
@@ -540,7 +540,7 @@ class TestSetupCLI:
         complete_state = SetupState(
             phase=PHASE_COMPLETE,
             engine="mlx-lm",
-            package="octomil-sdk[mlx,serve]",
+            package="octomil[mlx,serve]",
             engine_installed=True,
             model_key="qwen-coder-7b",
             model_downloaded=True,

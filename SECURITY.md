@@ -29,7 +29,7 @@ We take security seriously. If you discover a security vulnerability, please rep
 
 ### Scope
 
-- octomil-sdk Python package
+- octomil Python package
 - Federated learning client
 - Data loader and inference modules
 - API client and authentication

@@ -3,7 +3,7 @@
 Run LLMs on your laptop, phone, or edge device. One command. OpenAI-compatible API.
 
 [![CI](https://github.com/octomil/octomil-python/actions/workflows/ci.yml/badge.svg)](https://github.com/octomil/octomil-python/actions/workflows/ci.yml)
-[![PyPI](https://img.shields.io/pypi/v/octomil-sdk)](https://pypi.org/project/octomil-sdk/)
+[![PyPI](https://img.shields.io/pypi/v/octomil)](https://pypi.org/project/octomil/)
 [![License](https://img.shields.io/github/license/octomil/octomil-python)](https://github.com/octomil/octomil-python/blob/main/LICENSE)
 
 ## What is this?
@@ -192,16 +192,16 @@ octomil serve --models smollm-360m,phi-mini,llama-3b
 
 ## Supported engines
 
-| Engine                                                  | Platform            | Install                              |
-| ------------------------------------------------------- | ------------------- | ------------------------------------ |
-| [MLX](https://github.com/ml-explore/mlx)                | Apple Silicon Mac   | `pip install 'octomil-sdk[mlx]'`     |
-| [llama.cpp](https://github.com/ggerganov/llama.cpp)     | Mac, Linux, Windows | `pip install 'octomil-sdk[llama]'`   |
-| [ONNX Runtime](https://onnxruntime.ai/)                 | All platforms       | `pip install 'octomil-sdk[onnx]'`    |
-| [MLC-LLM](https://llm.mlc.ai/)                          | Mac, Linux, Android | auto-detected                        |
-| [MNN](https://github.com/alibaba/MNN)                   | All platforms       | auto-detected                        |
-| [ExecuTorch](https://pytorch.org/executorch/)           | Mobile              | auto-detected                        |
-| [Whisper.cpp](https://github.com/ggerganov/whisper.cpp) | All platforms       | `pip install 'octomil-sdk[whisper]'` |
-| [Ollama](https://ollama.com/)                           | Mac, Linux          | auto-detected if running             |
+| Engine                                                  | Platform            | Install                          |
+| ------------------------------------------------------- | ------------------- | -------------------------------- |
+| [MLX](https://github.com/ml-explore/mlx)                | Apple Silicon Mac   | `pip install 'octomil[mlx]'`     |
+| [llama.cpp](https://github.com/ggerganov/llama.cpp)     | Mac, Linux, Windows | `pip install 'octomil[llama]'`   |
+| [ONNX Runtime](https://onnxruntime.ai/)                 | All platforms       | `pip install 'octomil[onnx]'`    |
+| [MLC-LLM](https://llm.mlc.ai/)                          | Mac, Linux, Android | auto-detected                    |
+| [MNN](https://github.com/alibaba/MNN)                   | All platforms       | auto-detected                    |
+| [ExecuTorch](https://pytorch.org/executorch/)           | Mobile              | auto-detected                    |
+| [Whisper.cpp](https://github.com/ggerganov/whisper.cpp) | All platforms       | `pip install 'octomil[whisper]'` |
+| [Ollama](https://ollama.com/)                           | Mac, Linux          | auto-detected if running         |
 
 No engine installed? `octomil serve` tells you exactly what to install.
 
@@ -437,7 +437,7 @@ For a full guide including model name mapping, error code mapping, and a compari
 
 | SDK                                                   | Package                  | Status               | Inference Engine                                            |
 | ----------------------------------------------------- | ------------------------ | -------------------- | ----------------------------------------------------------- |
-| [Python](https://github.com/octomil/octomil-python)   | `octomil-sdk` (PyPI)     | Production (v2.10.1) | MLX, llama.cpp, ONNX, MLC, ExecuTorch, Whisper, MNN, Ollama |
+| [Python](https://github.com/octomil/octomil-python)   | `octomil` (PyPI)         | Production (v2.10.1) | MLX, llama.cpp, ONNX, MLC, ExecuTorch, Whisper, MNN, Ollama |
 | [Browser](https://github.com/octomil/octomil-browser) | `@octomil/browser` (npm) | Production (v1.0.0)  | ONNX Runtime Web (WebGPU + WASM)                            |
 | [iOS](https://github.com/octomil/octomil-ios)         | Swift Package Manager    | Production (v1.1.0)  | CoreML + MLX                                                |
 | [Android](https://github.com/octomil/octomil-android) | Maven (GitHub Packages)  | Production (v1.2.0)  | TFLite + vendor NPU                                         |

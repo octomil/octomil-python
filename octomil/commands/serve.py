@@ -426,7 +426,7 @@ def _prompt_engine_install() -> bool:
     # Build platform-specific recommendation list (best performance first)
     recommendations: list[tuple[str, str]] = []  # (label, install_cmd)
     if is_apple_silicon:
-        recommendations.append(("MLX — fastest on Apple Silicon", "pip install octomil-sdk[mlx]"))
+        recommendations.append(("MLX — fastest on Apple Silicon", "pip install octomil[mlx]"))
         recommendations.append(("llama.cpp — good alternative", "pip install llama-cpp-python"))
     elif system == "Darwin":
         recommendations.append(("llama.cpp", "pip install llama-cpp-python"))

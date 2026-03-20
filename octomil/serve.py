@@ -831,7 +831,7 @@ class EchoBackend(InferenceBackend):
         logger.warning(
             "No inference backend available. Using echo backend for '%s'. "
             "Install mlx-lm (Apple Silicon) or llama-cpp-python for real inference: "
-            "pip install 'octomil-sdk[mlx]' or pip install 'octomil-sdk[llama]'",
+            "pip install 'octomil[mlx]' or pip install 'octomil[llama]'",
             model_name,
         )
 
