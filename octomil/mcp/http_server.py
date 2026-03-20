@@ -898,8 +898,8 @@ def create_http_app(config: Optional[HTTPServerConfig] = None) -> FastAPI:
                 client = OctomilClient(
                     auth=OrgApiKeyAuth(api_key=api_key, org_id=os.getenv("OCTOMIL_ORG_ID", "default"))
                 )
-                result = client.chat(backend.model_name, messages)
-                text = result.get("message", {}).get("content", str(result))
+                completion = client.chat.create(backend.model_name, messages)
+                text = completion.message.get("content", "")
                 return JSONResponse(
                     content={
                         "text": text,

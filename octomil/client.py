@@ -724,13 +724,9 @@ class OctomilClient:
     def chat(self) -> "ChatClient":
         """Chat completions namespace (create, stream).
 
-        Also callable directly for backward compatibility::
+        Usage::
 
-            # New API
             result = client.chat.create(model="phi-4-mini", messages=[...])
-
-            # Legacy (still works)
-            result = client.chat("phi-4-mini", messages=[...])
         """
         if self._chat_ns is None:
             from .chat_client import ChatClient

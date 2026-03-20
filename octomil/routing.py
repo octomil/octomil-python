@@ -11,7 +11,7 @@ comparisons locally.  Complex scoring logic lives server-side.
 **Offline mode**: Apply cached policy with simple word-count / keyword
 thresholds.  Falls back to an embedded default policy on first use.
 
-Backward-compatible public API:
+Public API:
 - ``ModelInfo``, ``RoutingDecision``, ``DecomposedRoutingDecision``,
   ``DeterministicResult`` dataclasses
 - ``QueryRouter`` class with ``route()``, ``route_decomposed()``,

@@ -9,9 +9,6 @@ Wraps the existing ``OctomilClient`` chat methods behind an OpenAI-style
     async for chunk in client.chat.stream(model="phi-4-mini", messages=[...]):
         print(chunk)
 
-Backward compatibility: ``client.chat(...)`` still works because
-``ChatClient.__call__`` delegates to ``_chat_create()`` and returns a raw dict.
-
 Contract: ``chat.completions.create`` MUST delegate to ``responses.create``
 internally, not to a direct HTTP call.
 """
@@ -68,49 +65,10 @@ class ChatClient:
     Exposes ``create()`` for non-streaming and ``stream()`` for
     streaming chat completions.  Both delegate to ``OctomilResponses``
     per the SDK contract -- NOT to direct HTTP calls.
-
-    Also callable directly (``client.chat(...)``) for backward
-    compatibility -- returns the raw dict that the old ``chat()``
-    method returned.
     """
 
     def __init__(self, client: OctomilClient) -> None:
         self._client = client
-
-    # ------------------------------------------------------------------
-    # Backward-compat: client.chat(model_id, messages, ...) still works
-    # ------------------------------------------------------------------
-
-    def __call__(
-        self,
-        model_id: str,
-        messages: list[dict[str, str]],
-        *,
-        temperature: float | None = None,
-        max_tokens: int | None = None,
-        top_p: float | None = None,
-        timeout: float = 120.0,
-        **parameters: Any,
-    ) -> dict[str, Any]:
-        """Backward-compatible callable.
-
-        Returns the same raw dict that the old ``OctomilClient.chat()``
-        returned, so existing code like ``result = client.chat(...)``
-        continues to work.
-        """
-        return self._client._chat_create(
-            model_id,
-            messages,
-            temperature=temperature,
-            max_tokens=max_tokens,
-            top_p=top_p,
-            timeout=timeout,
-            **parameters,
-        )
-
-    # ------------------------------------------------------------------
-    # New facade API -- delegates to OctomilResponses per contract
-    # ------------------------------------------------------------------
 
     def create(
         self,
@@ -133,7 +91,7 @@ class ChatClient:
             temperature: Sampling temperature.
             max_tokens: Maximum tokens to generate.
             top_p: Nucleus sampling threshold.
-            timeout: HTTP timeout in seconds (unused -- kept for API compat).
+            timeout: HTTP timeout in seconds (reserved for future use).
             **parameters: Additional generation parameters (unused).
 
         Returns:
@@ -203,7 +161,7 @@ class ChatClient:
             temperature: Sampling temperature.
             max_tokens: Maximum tokens to generate.
             top_p: Nucleus sampling threshold.
-            timeout: HTTP timeout in seconds (unused -- kept for API compat).
+            timeout: HTTP timeout in seconds (reserved for future use).
             **parameters: Additional generation parameters (unused).
 
         Yields:

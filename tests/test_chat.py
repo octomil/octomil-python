@@ -2,15 +2,13 @@
 
 from __future__ import annotations
 
-import json
 from collections.abc import Sequence
 from typing import Any
 from unittest.mock import MagicMock, patch
 
-import pytest
 from click.testing import CliRunner
 
-from octomil.chat import run_chat_repl, stream_chat
+from octomil.chat import run_chat_repl
 from octomil.cli import main
 
 # ---------------------------------------------------------------------------
@@ -44,171 +42,54 @@ def _make_input_fn(inputs: Sequence[str | None]):
 
 
 # ---------------------------------------------------------------------------
-# stream_chat
-# ---------------------------------------------------------------------------
-
-
-class TestStreamChat:
-    @patch("octomil.chat.httpx.Client")
-    def test_yields_parsed_chunks(self, mock_client_cls: MagicMock) -> None:
-        chunks = [
-            _make_sse_chunk("Hello"),
-            _make_sse_chunk(" world"),
-        ]
-        sse_lines = [f"data: {json.dumps(c)}" for c in chunks] + ["data: [DONE]"]
-
-        mock_response = MagicMock()
-        mock_response.status_code = 200
-        mock_response.iter_lines.return_value = iter(sse_lines)
-
-        mock_stream = MagicMock()
-        mock_stream.__enter__ = MagicMock(return_value=mock_response)
-        mock_stream.__exit__ = MagicMock(return_value=False)
-
-        mock_client = MagicMock()
-        mock_client.stream.return_value = mock_stream
-        mock_client.__enter__ = MagicMock(return_value=mock_client)
-        mock_client.__exit__ = MagicMock(return_value=False)
-
-        mock_client_cls.return_value = mock_client
-
-        result = list(
-            stream_chat(
-                "http://localhost:8080",
-                "test-model",
-                [{"role": "user", "content": "hi"}],
-            )
-        )
-        assert len(result) == 2
-        assert result[0]["choices"][0]["delta"]["content"] == "Hello"
-        assert result[1]["choices"][0]["delta"]["content"] == " world"
-
-    @patch("octomil.chat.httpx.Client")
-    def test_raises_on_non_200(self, mock_client_cls: MagicMock) -> None:
-        mock_response = MagicMock()
-        mock_response.status_code = 500
-        mock_response.read.return_value = b"Internal Server Error"
-
-        mock_stream = MagicMock()
-        mock_stream.__enter__ = MagicMock(return_value=mock_response)
-        mock_stream.__exit__ = MagicMock(return_value=False)
-
-        mock_client = MagicMock()
-        mock_client.stream.return_value = mock_stream
-        mock_client.__enter__ = MagicMock(return_value=mock_client)
-        mock_client.__exit__ = MagicMock(return_value=False)
-
-        mock_client_cls.return_value = mock_client
-
-        with pytest.raises(RuntimeError, match="500"):
-            list(
-                stream_chat(
-                    "http://localhost:8080",
-                    "test-model",
-                    [{"role": "user", "content": "hi"}],
-                )
-            )
-
-    @patch("octomil.chat.httpx.Client")
-    def test_skips_non_data_lines(self, mock_client_cls: MagicMock) -> None:
-        sse_lines = [
-            "",
-            ": comment",
-            f"data: {json.dumps(_make_sse_chunk('ok'))}",
-            "data: [DONE]",
-        ]
-
-        mock_response = MagicMock()
-        mock_response.status_code = 200
-        mock_response.iter_lines.return_value = iter(sse_lines)
-
-        mock_stream = MagicMock()
-        mock_stream.__enter__ = MagicMock(return_value=mock_response)
-        mock_stream.__exit__ = MagicMock(return_value=False)
-
-        mock_client = MagicMock()
-        mock_client.stream.return_value = mock_stream
-        mock_client.__enter__ = MagicMock(return_value=mock_client)
-        mock_client.__exit__ = MagicMock(return_value=False)
-
-        mock_client_cls.return_value = mock_client
-
-        result = list(stream_chat("http://localhost:8080", "m", [{"role": "user", "content": "x"}]))
-        assert len(result) == 1
-
-    @patch("octomil.chat.httpx.Client")
-    def test_skips_malformed_json(self, mock_client_cls: MagicMock) -> None:
-        sse_lines = [
-            "data: {bad json",
-            f"data: {json.dumps(_make_sse_chunk('ok'))}",
-            "data: [DONE]",
-        ]
-
-        mock_response = MagicMock()
-        mock_response.status_code = 200
-        mock_response.iter_lines.return_value = iter(sse_lines)
-
-        mock_stream = MagicMock()
-        mock_stream.__enter__ = MagicMock(return_value=mock_response)
-        mock_stream.__exit__ = MagicMock(return_value=False)
-
-        mock_client = MagicMock()
-        mock_client.stream.return_value = mock_stream
-        mock_client.__enter__ = MagicMock(return_value=mock_client)
-        mock_client.__exit__ = MagicMock(return_value=False)
-
-        mock_client_cls.return_value = mock_client
-
-        result = list(stream_chat("http://localhost:8080", "m", [{"role": "user", "content": "x"}]))
-        assert len(result) == 1
-
-
-# ---------------------------------------------------------------------------
 # run_chat_repl
 # ---------------------------------------------------------------------------
 
 
 class TestRunChatRepl:
-    @patch("octomil.chat.stream_chat")
+    @patch("octomil.chat.stream_chat_via_responses")
     def test_exit_command(self, mock_stream: MagicMock) -> None:
         """Typing /exit breaks out of the REPL."""
         input_fn = _make_input_fn(["/exit"])
+        responses = MagicMock()
         run_chat_repl(
-            "http://localhost:8080",
             "test-model",
+            responses,
             _input_fn=input_fn,
         )
         mock_stream.assert_not_called()
 
-    @patch("octomil.chat.stream_chat")
+    @patch("octomil.chat.stream_chat_via_responses")
     def test_eof_exits(self, mock_stream: MagicMock) -> None:
         """None (EOF) breaks out of the REPL."""
         input_fn = _make_input_fn([])  # immediately returns None
+        responses = MagicMock()
         run_chat_repl(
-            "http://localhost:8080",
             "test-model",
+            responses,
             _input_fn=input_fn,
         )
         mock_stream.assert_not_called()
 
-    @patch("octomil.chat.stream_chat")
+    @patch("octomil.chat.stream_chat_via_responses")
     def test_empty_input_skipped(self, mock_stream: MagicMock) -> None:
         """Blank lines do not send a request."""
         input_fn = _make_input_fn(["", "   ", "/exit"])
+        responses = MagicMock()
         run_chat_repl(
-            "http://localhost:8080",
             "test-model",
+            responses,
             _input_fn=input_fn,
         )
         mock_stream.assert_not_called()
 
-    @patch("octomil.chat.stream_chat")
+    @patch("octomil.chat.stream_chat_via_responses")
     def test_clear_resets_messages(self, mock_stream: MagicMock) -> None:
         """The /clear command keeps only system messages."""
         # Track messages at each call since the list is mutable
         captured_messages: list[list[dict[str, str]]] = []
 
-        def _capture_stream(url, model, messages, **kwargs):
+        def _capture_stream(responses, model, messages, **kwargs):
             # Snapshot the messages at call time
             captured_messages.append([m.copy() for m in messages])
             return iter([_make_sse_chunk("response")])
@@ -218,9 +99,10 @@ class TestRunChatRepl:
         inputs = ["hello", "/clear", "world", "/exit"]
         input_fn = _make_input_fn(inputs)
 
+        responses = MagicMock()
         run_chat_repl(
-            "http://localhost:8080",
             "test-model",
+            responses,
             system_prompt="be helpful",
             _input_fn=input_fn,
         )
@@ -232,21 +114,22 @@ class TestRunChatRepl:
         assert roles == ["system", "user"]
         assert second_call_messages[1]["content"] == "world"
 
-    @patch("octomil.chat.stream_chat")
+    @patch("octomil.chat.stream_chat_via_responses")
     def test_streams_and_accumulates_response(self, mock_stream: MagicMock) -> None:
         """Response tokens are accumulated and appended as assistant message."""
         captured_messages: list[list[dict[str, str]]] = []
 
-        def _capture_stream(url, model, messages, **kwargs):
+        def _capture_stream(responses, model, messages, **kwargs):
             captured_messages.append([m.copy() for m in messages])
             return iter([_make_sse_chunk("Hello"), _make_sse_chunk(" there")])
 
         mock_stream.side_effect = _capture_stream
 
         input_fn = _make_input_fn(["hi", "/exit"])
+        responses = MagicMock()
         run_chat_repl(
-            "http://localhost:8080",
             "test-model",
+            responses,
             _input_fn=input_fn,
         )
 
@@ -254,21 +137,22 @@ class TestRunChatRepl:
         assert captured_messages[0][-1]["role"] == "user"
         assert captured_messages[0][-1]["content"] == "hi"
 
-    @patch("octomil.chat.stream_chat")
+    @patch("octomil.chat.stream_chat_via_responses")
     def test_multi_turn_history(self, mock_stream: MagicMock) -> None:
         """Messages accumulate across turns."""
         captured_messages: list[list[dict[str, str]]] = []
 
-        def _capture_stream(url, model, messages, **kwargs):
+        def _capture_stream(responses, model, messages, **kwargs):
             captured_messages.append([m.copy() for m in messages])
             return iter([_make_sse_chunk(f"reply-{len(captured_messages)}")])
 
         mock_stream.side_effect = _capture_stream
 
         input_fn = _make_input_fn(["a", "b", "/exit"])
+        responses = MagicMock()
         run_chat_repl(
-            "http://localhost:8080",
             "test-model",
+            responses,
             _input_fn=input_fn,
         )
 
@@ -277,21 +161,22 @@ class TestRunChatRepl:
         roles = [m["role"] for m in captured_messages[1]]
         assert roles == ["user", "assistant", "user"]
 
-    @patch("octomil.chat.stream_chat")
+    @patch("octomil.chat.stream_chat_via_responses")
     def test_system_prompt_preserved_after_clear(self, mock_stream: MagicMock) -> None:
         """After /clear, system prompt remains."""
         captured_messages: list[list[dict[str, str]]] = []
 
-        def _capture_stream(url, model, messages, **kwargs):
+        def _capture_stream(responses, model, messages, **kwargs):
             captured_messages.append([m.copy() for m in messages])
             return iter([_make_sse_chunk("ok")])
 
         mock_stream.side_effect = _capture_stream
 
         input_fn = _make_input_fn(["/clear", "question", "/exit"])
+        responses = MagicMock()
         run_chat_repl(
-            "http://localhost:8080",
             "test-model",
+            responses,
             system_prompt="you are a bot",
             _input_fn=input_fn,
         )
@@ -299,7 +184,7 @@ class TestRunChatRepl:
         assert len(captured_messages) == 1
         assert captured_messages[0][0] == {"role": "system", "content": "you are a bot"}
 
-    @patch("octomil.chat.stream_chat")
+    @patch("octomil.chat.stream_chat_via_responses")
     def test_metrics_displayed(self, mock_stream: MagicMock) -> None:
         """Token count and timing info are printed after each response."""
         mock_stream.return_value = iter(
@@ -311,36 +196,39 @@ class TestRunChatRepl:
         )
 
         input_fn = _make_input_fn(["hi", "/exit"])
+        responses = MagicMock()
         run_chat_repl(
-            "http://localhost:8080",
             "test-model",
+            responses,
             _input_fn=input_fn,
         )
-        # Verify stream_chat was called with the correct model
+        # Verify stream_chat_via_responses was called with the correct model
         assert mock_stream.call_count == 1
         assert mock_stream.call_args_list[0][0][1] == "test-model"
 
-    @patch("octomil.chat.stream_chat", side_effect=RuntimeError("connection failed"))
+    @patch("octomil.chat.stream_chat_via_responses", side_effect=RuntimeError("connection failed"))
     def test_connection_error_handled(self, mock_stream: MagicMock) -> None:
         """Connection errors are caught; the REPL continues."""
         input_fn = _make_input_fn(["hello", "/exit"])
+        responses = MagicMock()
         # Should not raise
         run_chat_repl(
-            "http://localhost:8080",
             "test-model",
+            responses,
             _input_fn=input_fn,
         )
         mock_stream.assert_called_once()
 
-    @patch("octomil.chat.stream_chat")
+    @patch("octomil.chat.stream_chat_via_responses")
     def test_temperature_and_max_tokens_passed(self, mock_stream: MagicMock) -> None:
-        """Custom temperature and max_tokens are forwarded to stream_chat."""
+        """Custom temperature and max_tokens are forwarded to stream_chat_via_responses."""
         mock_stream.return_value = iter([_make_sse_chunk("ok")])
 
         input_fn = _make_input_fn(["test", "/exit"])
+        responses = MagicMock()
         run_chat_repl(
-            "http://localhost:8080",
             "test-model",
+            responses,
             temperature=0.3,
             max_tokens=512,
             _input_fn=input_fn,

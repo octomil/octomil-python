@@ -235,13 +235,13 @@ class TestClientStreamPredict:
 
 
 # ---------------------------------------------------------------------------
-# 4. OctomilClient.chat() — collects stream into a dict
+# 4. OctomilClient._chat_create() — collects stream into a dict
 # ---------------------------------------------------------------------------
 
 
 class TestClientChat:
-    def test_chat_returns_dict_with_message(self):
-        """chat() should collect tokens and return {message, latency_ms}."""
+    def test_chat_create_returns_dict_with_message(self):
+        """_chat_create() should collect tokens and return {message, latency_ms}."""
         tokens = [
             StreamToken(token="Hello", done=False),
             StreamToken(token=" world", done=False),
@@ -252,7 +252,7 @@ class TestClientChat:
             client = OctomilClient(
                 auth=OrgApiKeyAuth(api_key="key", org_id="default", api_base="https://api.test.com/api/v1")
             )
-            result = client.chat(
+            result = client._chat_create(
                 "phi-4-mini",
                 [{"role": "user", "content": "hi"}],
                 max_tokens=50,
