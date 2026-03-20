@@ -244,6 +244,7 @@ _KNOWN_QUANT_SUFFIXES = frozenset(
         "fp16",
         "f16",
         "f32",
+        "cloud",
     }
 )
 
@@ -451,6 +452,12 @@ _KNOWN_MODEL_NAMES = frozenset(
         # GLM (Zhipu)
         "glm4",
         "glm-4.7",
+        # MiniMax (cloud)
+        "minimax-m2.5",
+        "minimax-m2.5:cloud",
+        # Kimi / Moonshot (cloud)
+        "kimi-k2.5",
+        "kimi-k2.5:cloud",
         # Granite (IBM)
         "granite-code",
         "granite3.2",

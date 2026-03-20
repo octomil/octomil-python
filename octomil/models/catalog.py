@@ -212,6 +212,12 @@ _FAMILY_TO_PUBLISHER: dict[str, str] = {
     "vicuna": "LMSYS",
     "rocket": "Arcee AI",
     "olmo": "AI2",
+    "minimax": "MiniMax",
+    "minimax-m2": "MiniMax",
+    "minimax-m2.5": "MiniMax",
+    "kimi": "Moonshot AI",
+    "kimi-k2": "Moonshot AI",
+    "kimi-k2.5": "Moonshot AI",
 }
 
 
