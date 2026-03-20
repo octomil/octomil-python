@@ -89,7 +89,7 @@ def push(
     # ── Local file or directory upload ────────────────────────────────
     if path and (os.path.isfile(path) or os.path.isdir(path)):
         if os.path.isdir(path):
-            from octomil.client import _find_model_file
+            from octomil.model_ops import _find_model_file
 
             model_file = _find_model_file(path)
             if not model_file:
