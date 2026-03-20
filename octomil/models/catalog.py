@@ -588,14 +588,18 @@ def _get_client() -> CatalogClientV2:
 
 
 def _get_catalog() -> dict[str, ModelEntry]:
-    """Fetch and hydrate the catalog from the v2 manifest (cached)."""
-    manifest = _get_client().get_manifest()
+    """Fetch and hydrate the catalog from the v2 manifest (cached).
+
+    Uses ``platform="all"`` because the CLI is a management tool that
+    deploys models to phones/devices — not just the local machine.
+    """
+    manifest = _get_client().get_manifest(platform="all")
     return _hydrate_manifest(manifest)
 
 
 def _get_aliases() -> dict[str, str]:
     """Build aliases from the v2 manifest (cached)."""
-    manifest = _get_client().get_manifest()
+    manifest = _get_client().get_manifest(platform="all")
     return _build_aliases(manifest)
 
 

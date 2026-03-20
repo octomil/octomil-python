@@ -600,10 +600,68 @@ def _estimate_download_size(params_str: str, quant: str) -> str:
     return f"~{size_bytes / 1e6:.0f} MB"
 
 
-@click.command()
-def models() -> None:
-    """List models available for local inference.
+# Popularity tiers — models are ranked by real-world usage/downloads.
+# Models not listed here sort alphabetically after the ranked ones.
+_POPULARITY_ORDER: list[str] = [
+    "llama-3.2",
+    "llama-3.1",
+    "llama-3",
+    "llama-3.3",
+    "llama-2",
+    "qwen2.5",
+    "qwen3",
+    "qwen2.5-coder",
+    "gemma-3",
+    "gemma-2",
+    "phi-4",
+    "phi-3",
+    "phi-3.5",
+    "deepseek-r1",
+    "mistral",
+    "mistral-nemo",
+    "mixtral",
+    "smollm2",
+    "codellama",
+    "starcoder2",
+    "whisper",
+    "tinyllama",
+    "deepseek-coder",
+    "yi",
+    "falcon",
+    "gemma",
+    "qwen2-vl",
+    "smolvlm2",
+    "llava",
+    "command-r",
+]
+_POPULARITY_RANK: dict[str, int] = {fam: i for i, fam in enumerate(_POPULARITY_ORDER)}
 
+_DEFAULT_PAGE_SIZE = 25
+
+
+def _popularity_key(name: str, family: str) -> tuple[int, str]:
+    """Sort key: ranked families first (by rank), then alphabetical."""
+    rank = _POPULARITY_RANK.get(family, len(_POPULARITY_ORDER))
+    return (rank, name)
+
+
+@click.command()
+@click.argument("search", required=False, default=None)
+@click.option("--all", "-a", "show_all", is_flag=True, help="Show all models (no pagination).")
+@click.option(
+    "--limit", "-n", default=_DEFAULT_PAGE_SIZE, help=f"Number of models to show (default: {_DEFAULT_PAGE_SIZE})."
+)
+def models(search: Optional[str], show_all: bool, limit: int) -> None:
+    """List models available for deployment.
+
+    \b
+    Search:
+        octomil models qwen
+        octomil models whisper
+        octomil models code
+    \b
+    Show all:
+        octomil models --all
     \b
     Run a model:
         octomil serve gemma-1b
@@ -617,16 +675,40 @@ def models() -> None:
         cli_warn("No models available")
         return
 
-    rows: list[tuple[str, str, str, str, str]] = []
-    for name, entry in sorted(CATALOG.items()):
+    # Build rows with family info for sorting
+    rows: list[tuple[str, str, str, str, str, str]] = []  # (name, publisher, params, input, size, family)
+    for name, entry in CATALOG.items():
+        # Derive family from name (strip trailing size suffix like "-7b", "-1.5b")
+        family = name
+        for fam in _POPULARITY_ORDER:
+            if name.startswith(fam):
+                family = fam
+                break
+
+        # Apply search filter
+        if search:
+            q = search.lower()
+            if q not in name.lower() and q not in entry.publisher.lower() and q not in family.lower():
+                continue
+
         size = entry.download_size or _estimate_download_size(entry.params, entry.default_quant)
         input_mods = ", ".join(m.value for m in entry.input_modalities)
-        rows.append((name, entry.publisher, entry.params, input_mods, size))
+        rows.append((name, entry.publisher, entry.params, input_mods, size, family))
 
-    name_w = max(len(r[0]) for r in rows) + 2
+    if not rows:
+        cli_warn(f"No models matching '{search}'")
+        return
+
+    # Sort by popularity, then alphabetical within unranked
+    rows.sort(key=lambda r: _popularity_key(r[0], r[5]))
+
+    total = len(rows)
+    display_rows = rows if show_all else rows[:limit]
+
+    name_w = max(len(r[0]) for r in display_rows) + 2
     name_w = max(name_w, 14)
     cli_table_header(("MODEL", name_w), ("BY", 12), ("PARAMS", 8), ("INPUT", 16), ("SIZE", 8))
-    for model_name, publisher, params, input_mods, size in rows:
+    for model_name, publisher, params, input_mods, size, _family in display_rows:
         click.echo(
             "    "
             + click.style(model_name.ljust(name_w), fg="white", bold=True)
@@ -636,6 +718,17 @@ def models() -> None:
             + size
         )
     click.echo()
+
+    remaining = total - len(display_rows)
+    if remaining > 0:
+        click.echo(
+            click.style(f"    Showing {len(display_rows)} of {total} models. ", dim=True)
+            + click.style("octomil models --all", bold=True)
+            + click.style(" to see all", dim=True)
+        )
+    elif search:
+        click.echo(click.style(f"    {total} models matching '{search}'", dim=True))
+
     click.echo(
         click.style("    Tip: ", dim=True)
         + click.style("octomil list <model>", bold=True)
