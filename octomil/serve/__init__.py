@@ -27,6 +27,7 @@ from .backends.mlx import _DRAFT_MODEL_MAP, MLXBackend
 from .config import MoEConfig, MultiModelServerState, ServerState
 from .detection import _detect_backend, _get_cache_manager, _log_startup_error
 from .grammar_helpers import _inject_json_system_prompt, _resolve_grammar
+from .instrumentation import InstrumentedBackend, unwrap_backend
 from .models import (
     _GGUF_MODELS,
     _MLX_MODELS,
@@ -57,6 +58,7 @@ __all__ = [
     "GenerationRequest",
     "InferenceBackend",
     "InferenceMetrics",
+    "InstrumentedBackend",
     "LlamaCppBackend",
     "MLXBackend",
     "MoEConfig",
@@ -79,6 +81,7 @@ __all__ = [
     "resolve_model_name",
     "run_multi_model_server",
     "run_server",
+    "unwrap_backend",
     "RuntimeEvent",
     "VerboseEventEmitter",
 ]

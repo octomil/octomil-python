@@ -211,7 +211,6 @@ class MLXEngine(EnginePlugin):
         backend = MLXBackend(
             cache_size_mb=kwargs.get("cache_size_mb", 2048),
             cache_enabled=kwargs.get("cache_enabled", True),
-            verbose_emitter=kwargs.get("verbose_emitter"),
         )
         backend.load_model(model_name)
         return backend

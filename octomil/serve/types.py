@@ -88,6 +88,16 @@ class InferenceBackend:
         raise NotImplementedError
         yield  # pragma: no cover -- makes this an async generator
 
+    def get_verbose_metadata(
+        self,
+        event_name: str,
+        *,
+        request: GenerationRequest | None = None,
+        metrics: InferenceMetrics | None = None,
+    ) -> dict[str, Any]:
+        """Override to provide engine-specific metadata for verbose events."""
+        return {}
+
     def list_models(self) -> list[str]:
         raise NotImplementedError
 

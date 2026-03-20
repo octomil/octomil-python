@@ -8,6 +8,7 @@ from typing import Any, Optional
 from ..errors import OctomilError, OctomilErrorCode
 from .backends.echo import EchoBackend
 from .backends.mlx import MLXBackend
+from .instrumentation import InstrumentedBackend, unwrap_backend
 from .types import InferenceBackend
 
 logger = logging.getLogger(__name__)
@@ -38,8 +39,11 @@ def _detect_backend(
         "cache_size_mb": cache_size_mb,
         "cache_enabled": cache_enabled,
     }
-    if verbose_emitter is not None:
-        backend_kwargs["verbose_emitter"] = verbose_emitter
+
+    def _maybe_wrap(backend: InferenceBackend) -> InferenceBackend:
+        if verbose_emitter is not None:
+            return InstrumentedBackend(backend, verbose_emitter)
+        return backend
 
     if engine_override:
         engine = registry.get_engine(engine_override)
@@ -50,7 +54,7 @@ def _detect_backend(
                 message=f"Unknown engine '{engine_override}'. Available: {', '.join(available)}",
             )
         backend: InferenceBackend = engine.create_backend(model_name, **backend_kwargs)
-        return backend
+        return _maybe_wrap(backend)
 
     # Detect all available engines for this model
     detections = registry.detect_all(model_name)
@@ -67,7 +71,7 @@ def _detect_backend(
     if not real_engines:
         echo = EchoBackend()
         echo.load_model(model_name)
-        return echo
+        return _maybe_wrap(echo)
 
     # Benchmark real engines and pick fastest
     ranked = registry.benchmark_all(model_name, n_tokens=32, engines=real_engines)
@@ -75,10 +79,10 @@ def _detect_backend(
     if best is None:
         echo = EchoBackend()
         echo.load_model(model_name)
-        return echo
+        return _maybe_wrap(echo)
 
     best_backend: InferenceBackend = best.engine.create_backend(model_name, **backend_kwargs)
-    return best_backend
+    return _maybe_wrap(best_backend)
 
 
 def _log_startup_error(model_name: str, exc: Exception) -> None:
@@ -115,6 +119,7 @@ def _log_startup_error(model_name: str, exc: Exception) -> None:
 
 def _get_cache_manager(backend: InferenceBackend) -> Any:
     """Extract the KVCacheManager from a backend, if available."""
-    if isinstance(backend, MLXBackend):
-        return backend.kv_cache
+    inner = unwrap_backend(backend)
+    if isinstance(inner, MLXBackend):
+        return inner.kv_cache
     return None

@@ -13,6 +13,7 @@ from .backends.llamacpp import LlamaCppBackend
 from .config import MultiModelServerState
 from .detection import _detect_backend, _log_startup_error
 from .grammar_helpers import _inject_json_system_prompt, _resolve_grammar
+from .instrumentation import unwrap_backend
 from .models import ChatCompletionBody
 from .streaming import _stream_response
 from .types import GenerationRequest, InferenceBackend
@@ -227,7 +228,7 @@ def create_multi_model_app(
             grammar_str, is_json = _resolve_grammar(body, state.default_json_mode)
 
             req_messages = list(messages)
-            uses_grammar_natively = isinstance(backend, LlamaCppBackend)
+            uses_grammar_natively = isinstance(unwrap_backend(backend), LlamaCppBackend)
             schema_for_prompt: Optional[dict[str, Any]] = None
             if is_json and not uses_grammar_natively:
                 rf = body.response_format or {}
@@ -459,7 +460,7 @@ def create_multi_model_app(
             sub_messages.append({"role": "user", "content": task.text})
 
             grammar_str, is_json = _resolve_grammar(body, mm_state.default_json_mode)
-            uses_grammar_natively = isinstance(backend, LlamaCppBackend)
+            uses_grammar_natively = isinstance(unwrap_backend(backend), LlamaCppBackend)
 
             req_messages = list(sub_messages)
             if is_json and not uses_grammar_natively:
