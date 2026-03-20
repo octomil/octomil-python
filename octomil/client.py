@@ -234,7 +234,7 @@ class OctomilClient:
         if self._responses is None:
             from .responses import OctomilResponses
 
-            self._responses = OctomilResponses(catalog=self._catalog)
+            self._responses = OctomilResponses(catalog=self._catalog, telemetry_reporter=self._reporter)
         return self._responses
 
     # ------------------------------------------------------------------
