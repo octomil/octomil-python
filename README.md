@@ -8,7 +8,7 @@ Run LLMs on your laptop, phone, or edge device. One command. OpenAI-compatible A
 
 ## What is this?
 
-Octomil is a CLI + Python SDK that serves open-weight LLMs locally with an OpenAI-compatible API. It auto-detects your hardware, picks the fastest inference engine, and gives you a drop-in replacement for cloud API calls -- works on Mac (MLX), Linux/Windows (llama.cpp), and deploys to phones.
+Octomil is a CLI + Python SDK for running open-weight models locally behind an OpenAI-compatible API. It detects your hardware, picks the fastest available engine, and gives you a local-first replacement for cloud API calls on Mac, Linux, and Windows.
 
 ## Quick start
 
@@ -24,7 +24,7 @@ Then start serving:
 octomil serve gemma-1b
 ```
 
-That's it. You now have an OpenAI-compatible server on `localhost:8080`:
+You now have an OpenAI-compatible server on `localhost:8080`:
 
 ```bash
 curl http://localhost:8080/v1/chat/completions \
@@ -46,7 +46,7 @@ print(r.choices[0].message.content)
 
 ## Native API
 
-The `responses` API is the primary Octomil interface. It gives you local inference, routing policies, multimodal inputs, and conversation threading — use it for all new code.
+The `responses` API is the primary Octomil interface for new code. It gives you local inference, routing, multimodal inputs, and conversation threading without going through the OpenAI compatibility layer.
 
 ### responses.create
 
