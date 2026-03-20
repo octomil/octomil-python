@@ -86,6 +86,8 @@ def create_multi_model_app(
 
     @asynccontextmanager
     async def lifespan(app: Any) -> Any:
+        from ..models.catalog import get_model as _get_catalog_model
+
         # Load all models
         for name in model_names:
             try:
@@ -98,6 +100,13 @@ def create_multi_model_app(
                 state.backends[name] = backend
                 state.routed_counts[name] = 0
                 logger.info("Loaded model: %s (engine: %s)", name, backend.name)
+
+                # Detect reasoning models (strip quant suffix for catalog lookup)
+                _catalog_lookup = name.split(":")[0] if ":" in name else name
+                _entry = _get_catalog_model(_catalog_lookup)
+                if _entry and "reasoning" in _entry.capabilities:
+                    state.reasoning_models.add(name)
+                    logger.info("Model %s detected as reasoning model", name)
             except Exception as exc:
                 _log_startup_error(name, exc)
                 raise
@@ -271,6 +280,7 @@ def create_multi_model_app(
                         gen_req,
                         req_id,
                         session_id,
+                        is_reasoning=model_name in state.reasoning_models,
                     ),
                     media_type="text/event-stream",
                     headers=headers,
@@ -339,6 +349,15 @@ def create_multi_model_app(
                 except Exception:
                     pass
 
+            msg: dict[str, Any] = {"role": "assistant", "content": text}
+            if model_name in state.reasoning_models:
+                from .thinking import strip_thinking
+
+                content, reasoning = strip_thinking(text)
+                msg["content"] = content
+                if reasoning:
+                    msg["reasoning_content"] = reasoning
+
             response_data = {
                 "id": req_id,
                 "object": "chat.completion",
@@ -347,7 +366,7 @@ def create_multi_model_app(
                 "choices": [
                     {
                         "index": 0,
-                        "message": {"role": "assistant", "content": text},
+                        "message": msg,
                         "finish_reason": "stop",
                     }
                 ],

@@ -42,6 +42,7 @@ class MLXBackend(InferenceBackend):
         self,
         cache_size_mb: int = 2048,
         cache_enabled: bool = True,
+        verbose_emitter: Any = None,
     ) -> None:
         super().__init__()
         self._model: Any = None
@@ -50,6 +51,7 @@ class MLXBackend(InferenceBackend):
         self._model_name: str = ""
         self._repo_id: str = ""
         self._cache_enabled = cache_enabled
+        self._verbose = verbose_emitter  # VerboseEventEmitter or None
         # Multi-entry KV cache pool -- LRU eviction by both entry count and size.
         from ...cache import KVCacheManager
 
@@ -64,8 +66,13 @@ class MLXBackend(InferenceBackend):
         self._model_name = model_name
         self._repo_id = resolve_model_name(model_name, "mlx")
 
+        if self._verbose:
+            self._verbose.emit("model.load_started", model=model_name, repo_id=self._repo_id, engine="mlx-lm")
+
+        load_start = time.time()
         logger.info("Loading %s (%s) with mlx-lm...", model_name, self._repo_id)
         self._model, self._tokenizer, *_ = mlx_lm.load(self._repo_id)
+        load_elapsed_ms = (time.time() - load_start) * 1000
         logger.info("Model loaded: %s", self._repo_id)
 
         # Set Metal buffer cache limit to prevent unbounded growth
@@ -98,6 +105,27 @@ class MLXBackend(InferenceBackend):
         # the KV cache so the first real request doesn't pay cold-start cost.
         self.warmup()
 
+        if self._verbose:
+            # Collect memory info if available
+            mem_info: dict[str, Any] = {}
+            try:
+                import mlx.core as mx  # type: ignore[import-untyped]
+
+                mem_info["active_memory_mb"] = round(mx.metal.get_active_memory() / (1024 * 1024), 1)
+                mem_info["peak_memory_mb"] = round(mx.metal.get_peak_memory() / (1024 * 1024), 1)
+            except Exception:
+                pass
+            self._verbose.emit(
+                "model.load_completed",
+                model=model_name,
+                repo_id=self._repo_id,
+                engine="mlx-lm",
+                load_duration_ms=round(load_elapsed_ms, 1),
+                has_draft_model=self._draft_model is not None,
+                cache_enabled=self._cache_enabled,
+                **mem_info,
+            )
+
     def warmup(self) -> None:
         """Run a single prefill+decode to compile Metal shaders and prime KV cache."""
         import mlx_lm  # type: ignore[import-untyped]
@@ -126,10 +154,13 @@ class MLXBackend(InferenceBackend):
         elapsed = (time.perf_counter() - warmup_start) * 1000
         logger.info("MLX warmup complete: %.0fms (Metal shaders compiled, KV cache primed)", elapsed)
 
-    def _apply_chat_template(self, messages: list[dict[str, str]]) -> str:
+    def _apply_chat_template(self, messages: list[dict[str, str]], *, enable_thinking: bool | None = None) -> str:
         """Format messages using the model's chat template."""
         try:
-            result: str = self._tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+            kwargs: dict[str, Any] = {"tokenize": False, "add_generation_prompt": True}
+            if enable_thinking is not None:
+                kwargs["enable_thinking"] = enable_thinking
+            result: str = self._tokenizer.apply_chat_template(messages, **kwargs)
             return result
         except Exception:
             # Fallback for models without a chat template
@@ -212,7 +243,7 @@ class MLXBackend(InferenceBackend):
     def generate(self, request: GenerationRequest) -> tuple[str, InferenceMetrics]:
         import mlx_lm  # type: ignore[import-untyped]
 
-        prompt = self._apply_chat_template(request.messages)
+        prompt = self._apply_chat_template(request.messages, enable_thinking=request.enable_thinking)
         prompt_token_ids = self._tokenizer.encode(prompt)
         prompt_tokens = len(prompt_token_ids)
         sampler = self._make_sampler(request.temperature, request.top_p)
@@ -277,7 +308,7 @@ class MLXBackend(InferenceBackend):
 
         t_start = time.perf_counter()
 
-        prompt = self._apply_chat_template(request.messages)
+        prompt = self._apply_chat_template(request.messages, enable_thinking=request.enable_thinking)
         t_template = time.perf_counter()
 
         prompt_token_ids = self._tokenizer.encode(prompt)
@@ -348,6 +379,9 @@ class MLXBackend(InferenceBackend):
         # Store latest timings for the debug endpoint
         self._last_timings = timings
 
+        if self._verbose:
+            self._verbose.emit("inference.pre_generation", **timings)
+
         try:
             while True:
                 response = await queue.get()
@@ -385,6 +419,17 @@ class MLXBackend(InferenceBackend):
                 self._last_timings["prefill_ms"] = (t_first_token - t_post_submit) * 1000
                 self._last_timings["total_ttft_ms"] = (t_first_token - t_start) * 1000
             logger.info("MLX full timings: %s", self._last_timings)
+
+            if self._verbose:
+                mem_info: dict[str, Any] = {}
+                try:
+                    import mlx.core as mx  # type: ignore[import-untyped]
+
+                    mem_info["active_memory_mb"] = round(mx.metal.get_active_memory() / (1024 * 1024), 1)
+                    mem_info["peak_memory_mb"] = round(mx.metal.get_peak_memory() / (1024 * 1024), 1)
+                except Exception:
+                    pass
+                self._verbose.emit("inference.stream_completed", **self._last_timings, **mem_info)
 
     @property
     def kv_cache(self) -> Any:

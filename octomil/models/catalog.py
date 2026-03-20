@@ -102,6 +102,7 @@ class ModelEntry:
     moe: Optional[MoEMetadata] = None  # populated when architecture == "moe"
     download_size: Optional[str] = None  # human-readable, e.g. "1.7 GB"
     task_taxonomy: list[str] = field(default_factory=list)
+    capabilities: list[str] = field(default_factory=list)
     engine_config: dict[str, Any] = field(default_factory=dict)
     resource_bindings: list[ResourceBindingSpec] = field(default_factory=list)
 
@@ -471,6 +472,8 @@ def _manifest_model_to_entry(model: dict) -> tuple[str, ModelEntry]:
             source_repo=merged_source,
         )
 
+    capabilities: list[str] = model.get("capabilities", [])
+
     return model_id, ModelEntry(
         publisher=publisher,
         params=param_count,
@@ -480,6 +483,7 @@ def _manifest_model_to_entry(model: dict) -> tuple[str, ModelEntry]:
         variants=variants,
         engines=frozenset(engine_names),
         task_taxonomy=task_taxonomy,
+        capabilities=capabilities,
         engine_config=merged_engine_config,
         resource_bindings=all_resource_bindings,
     )
@@ -513,6 +517,9 @@ def _hydrate_manifest(manifest: dict) -> dict[str, ModelEntry]:
                 "task_taxonomy", variant_data.get("modalities", family_task_taxonomy)
             )
 
+            # Capabilities: variant-level overrides family-level
+            variant_capabilities: list[str] = variant_data.get("capabilities", family_data.get("capabilities", []))
+
             model: dict = {
                 "id": variant_name,
                 "family": family_name,
@@ -522,6 +529,7 @@ def _hydrate_manifest(manifest: dict) -> dict[str, ModelEntry]:
                 "default_quantization": default_quant,
                 "packages": packages,
                 "task_taxonomy": variant_task_taxonomy,
+                "capabilities": variant_capabilities,
             }
             try:
                 key, entry = _manifest_model_to_entry(model)

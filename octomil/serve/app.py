@@ -42,6 +42,7 @@ def create_app(
     compression_threshold: int = 256,
     tool_use: bool = False,
     early_exit_config: Optional["EarlyExitConfig"] = None,
+    verbose: bool = False,
 ) -> Any:
     """Create a FastAPI app with OpenAI-compatible endpoints.
 
@@ -77,6 +78,9 @@ def create_app(
     early_exit_config:
         Configuration for early exit / adaptive computation depth.
         When ``None`` or not enabled, early exit monitoring is disabled.
+    verbose:
+        When ``True``, emit rich low-level runtime events for debugging.
+        Events are logged locally and posted to the server (if api_key set).
     """
     from contextlib import asynccontextmanager
 
@@ -87,11 +91,17 @@ def create_app(
     from ..errors import OctomilError, OctomilErrorCode  # noqa: F811
 
     # Detect MoE model from catalog
-    from ..models.catalog import get_moe_metadata
+    from ..models.catalog import get_model, get_moe_metadata
     from ..models.catalog import is_moe_model as _is_moe
 
     _moe_detected = _is_moe(model_name)
     _moe_meta = get_moe_metadata(model_name)
+
+    # Detect reasoning model from catalog capabilities
+    # Strip quant suffix (e.g. "qwen3-4b:q2_k" -> "qwen3-4b") for catalog lookup
+    _catalog_lookup = model_name.split(":")[0] if ":" in model_name else model_name
+    _catalog_entry = get_model(_catalog_lookup)
+    _is_reasoning = bool(_catalog_entry and "reasoning" in _catalog_entry.capabilities)
 
     # Build compressor if enabled
     _compressor = None
@@ -123,10 +133,26 @@ def create_app(
         compressor=_compressor,
         early_exit_config=early_exit_config,
         tool_use=tool_use,
+        is_reasoning_model=_is_reasoning,
+        verbose_runtime_logs=verbose,
     )
 
     @asynccontextmanager
     async def lifespan(app: Any) -> Any:
+        # Initialise verbose runtime event emitter early (before backend
+        # detection) so model load events are captured.
+        if state.verbose_runtime_logs:
+            from ..telemetry import _generate_device_id
+            from .verbose_events import VerboseEventEmitter
+
+            state.verbose_emitter = VerboseEventEmitter(
+                api_key=state.api_key,
+                api_base=state.api_base,
+                device_id=_generate_device_id(),
+                model_name=model_name,
+            )
+            logger.info("Verbose runtime logging enabled")
+
         if state.is_moe_model and state.moe_metadata and state.moe_config.enabled:
             _m = state.moe_metadata
             logger.info(
@@ -160,12 +186,22 @@ def create_app(
                     cache_size_mb=state.cache_size_mb,
                     cache_enabled=state.cache_enabled,
                     engine_override=state.engine_override,
+                    verbose_emitter=state.verbose_emitter,
                 )
             except Exception as exc:
                 _log_startup_error(model_name, exc)
                 raise
             state.engine_name = state.backend.name if state.backend else "none"
         state.start_time = time.time()
+
+        if state.verbose_emitter is not None:
+            state.verbose_emitter.emit(
+                "server.started",
+                model=model_name,
+                engine=state.engine_name,
+                cache_enabled=state.cache_enabled,
+                cache_size_mb=state.cache_size_mb,
+            )
 
         # Initialise early exit monitor
         if state.early_exit_config is not None and state.early_exit_config.enabled:
@@ -202,6 +238,10 @@ def create_app(
                 logger.warning("Failed to initialise telemetry: %s", exc)
 
         yield
+
+        # Graceful shutdown: stop verbose emitter
+        if state.verbose_emitter is not None:
+            state.verbose_emitter.close()
 
         # Graceful shutdown: stop request queue
         if state.request_queue is not None:
@@ -374,6 +414,9 @@ def create_app(
                 schema_for_prompt = raw.get("schema", raw) if raw else None
             messages = _inject_json_system_prompt(messages, schema_for_prompt)
 
+        # Extract enable_thinking from the request body (Qwen3 / OpenClaw convention)
+        _enable_thinking: Optional[bool] = getattr(body, "enable_thinking", None)
+
         gen_req = GenerationRequest(
             model=body.model or state.model_name,
             messages=messages,
@@ -383,6 +426,7 @@ def create_app(
             stream=body.stream,
             grammar=grammar_str if uses_grammar_natively else None,
             json_mode=is_json,
+            enable_thinking=_enable_thinking,
         )
 
         state.request_count += 1
@@ -422,15 +466,43 @@ def create_app(
         _queue = state.request_queue
 
         if gen_req.stream:
+            _is_reasoning_stream = state.is_reasoning_model
             if _queue is not None:
                 # Stream through the request queue
                 return StreamingResponse(
-                    _queued_stream_response(state, gen_req, req_id, session_id, _queue),
+                    _queued_stream_response(
+                        state,
+                        gen_req,
+                        req_id,
+                        session_id,
+                        _queue,
+                        is_reasoning=_is_reasoning_stream,
+                    ),
                     media_type="text/event-stream",
                 )
             return StreamingResponse(
-                _stream_response(state, gen_req, req_id, session_id),
+                _stream_response(
+                    state,
+                    gen_req,
+                    req_id,
+                    session_id,
+                    is_reasoning=_is_reasoning_stream,
+                ),
                 media_type="text/event-stream",
+            )
+
+        _verbose = state.verbose_emitter
+        if _verbose is not None:
+            _verbose.emit(
+                "inference.request_received",
+                request_id=req_id,
+                model=gen_req.model,
+                prompt_messages=len(gen_req.messages),
+                max_tokens=gen_req.max_tokens,
+                temperature=gen_req.temperature,
+                stream=gen_req.stream,
+                json_mode=gen_req.json_mode,
+                engine=state.engine_name,
             )
 
         gen_start = time.monotonic()
@@ -530,6 +602,26 @@ def create_app(
             except Exception:
                 pass
 
+        # Verbose runtime event (after generation)
+        if _verbose is not None:
+            total_tokens = metrics.total_tokens
+            throughput = total_tokens / (gen_elapsed_ms / 1000) if gen_elapsed_ms > 0 else 0.0
+            _verbose.emit(
+                "inference.completed",
+                request_id=req_id,
+                model=gen_req.model,
+                engine=state.engine_name,
+                prompt_tokens=metrics.prompt_tokens,
+                completion_tokens=total_tokens,
+                ttfc_ms=round(metrics.ttfc_ms, 2),
+                total_duration_ms=round(gen_elapsed_ms, 2),
+                tokens_per_second=round(metrics.tokens_per_second, 2)
+                if metrics.tokens_per_second
+                else round(throughput, 2),
+                cache_hit=metrics.cache_hit,
+                attention_backend=metrics.attention_backend,
+            )
+
         usage: dict[str, Any] = {
             "prompt_tokens": metrics.prompt_tokens,
             "completion_tokens": metrics.total_tokens,
@@ -549,6 +641,15 @@ def create_app(
         if ee_metrics_dict is not None:
             usage["early_exit"] = ee_metrics_dict
 
+        response_msg: dict[str, Any] = {"role": "assistant", "content": text}
+        if state.is_reasoning_model:
+            from .thinking import strip_thinking
+
+            content, reasoning = strip_thinking(text)
+            response_msg["content"] = content
+            if reasoning:
+                response_msg["reasoning_content"] = reasoning
+
         return {
             "id": req_id,
             "object": "chat.completion",
@@ -557,7 +658,7 @@ def create_app(
             "choices": [
                 {
                     "index": 0,
-                    "message": {"role": "assistant", "content": text},
+                    "message": response_msg,
                     "finish_reason": "stop",
                 }
             ],
@@ -601,6 +702,16 @@ def create_app(
         if hasattr(state.backend, "_last_timings"):
             return state.backend._last_timings
         return {"error": "No timings available (not an MLX backend or no requests yet)"}
+
+    @app.get("/v1/debug/runtime-events")
+    async def runtime_events() -> dict[str, Any]:
+        """Return recent verbose runtime events (only populated with -v)."""
+        if state.verbose_emitter is None:
+            return {"enabled": False, "events": []}
+        return {
+            "enabled": True,
+            "events": state.verbose_emitter.recent_events(),
+        }
 
     @app.get("/v1/queue/stats")
     async def queue_stats() -> dict[str, Any]:
@@ -760,6 +871,7 @@ def run_server(
     compression_threshold: int = 256,
     tool_use: bool = False,
     early_exit_config: Optional["EarlyExitConfig"] = None,
+    verbose: bool = False,
 ) -> None:
     """Start the inference server (blocking).
 
@@ -790,6 +902,8 @@ def run_server(
         Pre-load coding agent tool schemas for structured output.
     early_exit_config:
         Configuration for early exit / adaptive computation depth.
+    verbose:
+        When ``True``, emit verbose runtime events for debugging.
     """
     import uvicorn
 
@@ -810,5 +924,6 @@ def run_server(
         compression_threshold=compression_threshold,
         tool_use=tool_use,
         early_exit_config=early_exit_config,
+        verbose=verbose,
     )
     uvicorn.run(app, host=host, port=port, log_level="info")

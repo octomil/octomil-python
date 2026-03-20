@@ -58,8 +58,14 @@ class ResolvedModel:
     raw: str = ""
     architecture: str = "dense"
     moe: Optional[MoEMetadata] = None
+    capabilities: list[str] = field(default_factory=list)  # type: ignore[assignment]
     engine_config: dict[str, Any] = field(default_factory=dict)  # type: ignore[assignment]
     resource_bindings: list[ResourceBindingSpec] = field(default_factory=list)  # type: ignore[assignment]
+
+    @property
+    def is_reasoning(self) -> bool:
+        """True if this model emits separable thinking tokens."""
+        return "reasoning" in self.capabilities
 
     @property
     def is_gguf(self) -> bool:
@@ -163,12 +169,15 @@ def _find_manifest_model(manifest: dict, family: str, model_id: str | None = Non
             packages.extend(ver_data.get("packages", []))
         quants = vdata.get("quantizations", [])
         default_quant = quants[0].lower() if quants else "q4_k_m"
+        # Look up family-level capabilities as fallback
+        family_caps = manifest.get(fname, {}).get("capabilities", []) if fname in manifest else []
         return {
             "id": vname,
             "family": fname,
             "parameter_count": vdata.get("parameter_count", ""),
             "default_quantization": default_quant,
             "packages": packages,
+            "capabilities": vdata.get("capabilities", family_caps),
         }
 
     # Collect all (family_name, variant_name, variant_data) tuples
@@ -374,6 +383,8 @@ def _resolve_from_manifest(
     pkg_engine_config: dict[str, Any] = selected.get("engine_config") or {}
     pkg_resource_bindings = _build_resource_bindings(selected)
 
+    manifest_capabilities: list[str] = manifest_model.get("capabilities", [])
+
     return ResolvedModel(
         family=model_id,
         quant=resolved_quant,
@@ -385,6 +396,7 @@ def _resolve_from_manifest(
         mlx_repo=mlx_repo,
         source_repo=None,
         raw=name,
+        capabilities=manifest_capabilities,
         engine_config=pkg_engine_config,
         resource_bindings=pkg_resource_bindings,
     )
@@ -594,6 +606,7 @@ def resolve(
         mlx_repo=mlx_repo,
         source_repo=variant.source_repo,
         raw=name,
+        capabilities=entry.capabilities,
         architecture=entry.architecture,
         moe=entry.moe,
         engine_config=entry.engine_config,

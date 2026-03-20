@@ -136,6 +136,15 @@ def register(cli: click.Group) -> None:
     "fast: aggressive (threshold=0.5). "
     "Overridden by --early-exit-threshold if both are set.",
 )
+@click.option(
+    "--verbose",
+    "-v",
+    is_flag=True,
+    help="Enable verbose runtime logging. Emits rich low-level events "
+    "(model load, engine selection, timing breakdowns, memory, cache stats) "
+    "for debugging local inference. Events appear in the web portal's "
+    "device activity feed when connected to the server.",
+)
 def serve(
     model: str,
     port: int,
@@ -158,6 +167,7 @@ def serve(
     tool_use: bool,
     early_exit_threshold: float | None,
     speed_quality: str | None,
+    verbose: bool,
 ) -> None:
     """Start a local OpenAI-compatible inference server.
 
@@ -312,6 +322,10 @@ def serve(
         )
         cli_kv("Early exit stats", f"http://localhost:{port}/v1/early-exit/stats")
 
+    if verbose:
+        cli_kv("Verbose logging", "enabled")
+        cli_kv("Runtime events", f"http://localhost:{port}/v1/debug/runtime-events")
+
     if benchmark:
         click.echo(click.style("  Benchmark mode: will run latency test after model loads.", dim=True))
 
@@ -338,6 +352,7 @@ def serve(
         compression_threshold=compression_threshold,
         tool_use=tool_use,
         early_exit_config=ee_config if ee_config.enabled else None,
+        verbose=verbose,
     )
 
 

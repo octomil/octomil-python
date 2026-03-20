@@ -55,6 +55,9 @@ class ServerState:
     early_exit_config: Optional["EarlyExitConfig"] = None
     early_exit_monitor: Optional["EarlyExitMonitor"] = None
     tool_use: bool = False  # pre-load coding agent tool schemas
+    is_reasoning_model: bool = False  # model emits <think>...</think>
+    verbose_runtime_logs: bool = False  # emit rich runtime events when -v is used
+    verbose_emitter: Any = None  # VerboseEventEmitter instance
 
 
 @dataclass
@@ -76,4 +79,5 @@ class MultiModelServerState:
     engine_override: Optional[str] = None
     reporter: Optional["TelemetryReporter"] = None
     route_strategy: str = "complexity"
+    reasoning_models: set[str] = field(default_factory=set)
     compressor: Any = None  # PromptCompressor instance
