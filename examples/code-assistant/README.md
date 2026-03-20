@@ -1,6 +1,6 @@
 # Octomil Code Assistant
 
-A fully on-device code assistant that runs through Octomil. Zero cloud API calls, zero cost, complete data privacy.
+A terminal code assistant that runs entirely through local Octomil inference. No cloud API calls, no hosted model dependency.
 
 ## Quick Start
 
@@ -12,7 +12,7 @@ pip install octomil[serve]
 octomil demo code-assistant
 ```
 
-That's it. The demo will:
+The demo will:
 
 1. Download and load a local LLM (Gemma 2B by default)
 2. Start an OpenAI-compatible inference server
@@ -47,7 +47,7 @@ you> Write a Python function to merge two sorted lists
   [142 tokens · 38.4 tok/s · 3694ms  TTFC: 412ms · cloud calls: 0 · saved: $0.0014]
 ```
 
-Every response shows:
+Each response shows:
 
 - **Token count** and **throughput** (tokens/second)
 - **Latency** and **time to first chunk** (TTFC)
@@ -117,16 +117,16 @@ Network calls: 0
 Data sent to cloud: 0 bytes
 ```
 
-## For Design Partners
+## Why this demo matters
 
-This demo showcases the Octomil inference pipeline. The same `octomil serve` backend powers:
+This demo shows the same local inference path that Octomil uses elsewhere:
 
 - **Local development**: Run models on your laptop
 - **Phone deployment**: `octomil deploy --phone` sends the model to your phone
 - **Fleet deployment**: `octomil deploy --rollout 10%` for production device fleets
 - **Dashboard**: `octomil dashboard` shows metrics across all devices
 
-To start a pilot:
+If you want to extend the flow:
 
 ```bash
 # 1. Run the demo locally
