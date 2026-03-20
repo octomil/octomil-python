@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING, Any, Optional
 
 from ..errors import OctomilError
 from .backends.llamacpp import LlamaCppBackend
-from .config import MoEConfig, ServerState
+from .config import CloudConfig, MoEConfig, ServerState
 from .detection import _detect_backend, _get_cache_manager, _log_startup_error
 from .grammar_helpers import _inject_json_system_prompt, _resolve_grammar
 from .models import ChatCompletionBody
@@ -43,6 +43,7 @@ def create_app(
     tool_use: bool = False,
     early_exit_config: Optional["EarlyExitConfig"] = None,
     verbose: bool = False,
+    cloud_config: Optional[CloudConfig] = None,
 ) -> Any:
     """Create a FastAPI app with OpenAI-compatible endpoints.
 
@@ -135,6 +136,7 @@ def create_app(
         tool_use=tool_use,
         is_reasoning_model=_is_reasoning,
         verbose_runtime_logs=verbose,
+        cloud_config=cloud_config,
     )
 
     @asynccontextmanager
@@ -179,6 +181,19 @@ def create_app(
                 raise
             state.whisper_backend = whisper_backend
             state.engine_name = "whisper.cpp"
+        elif state.cloud_config is not None and state.engine_override is None:
+            # Cloud-only mode: use CloudInferenceBackend directly
+            from .backends.cloud import CloudInferenceBackend
+
+            cloud_backend = CloudInferenceBackend(
+                base_url=state.cloud_config.base_url,
+                api_key=state.cloud_config.api_key,
+                model=state.cloud_config.model,
+            )
+            cloud_backend.load_model(state.cloud_config.model)
+            state.backend = cloud_backend
+            state.engine_name = "cloud"
+            state.model_name = state.cloud_config.model
         else:
             try:
                 state.backend = _detect_backend(
@@ -872,6 +887,7 @@ def run_server(
     tool_use: bool = False,
     early_exit_config: Optional["EarlyExitConfig"] = None,
     verbose: bool = False,
+    cloud_config: Optional[CloudConfig] = None,
 ) -> None:
     """Start the inference server (blocking).
 
@@ -904,6 +920,8 @@ def run_server(
         Configuration for early exit / adaptive computation depth.
     verbose:
         When ``True``, emit verbose runtime events for debugging.
+    cloud_config:
+        Cloud provider configuration. When set, serves via cloud backend.
     """
     import uvicorn
 
@@ -925,5 +943,6 @@ def run_server(
         tool_use=tool_use,
         early_exit_config=early_exit_config,
         verbose=verbose,
+        cloud_config=cloud_config,
     )
     uvicorn.run(app, host=host, port=port, log_level="info")

@@ -14,6 +14,15 @@ if TYPE_CHECKING:
 
 
 @dataclass
+class CloudConfig:
+    """Configuration for cloud provider routing."""
+
+    base_url: str
+    api_key: str
+    model: str
+
+
+@dataclass
 class MoEConfig:
     """Configuration for Mixture of Experts models.
 
@@ -58,6 +67,7 @@ class ServerState:
     is_reasoning_model: bool = False  # model emits <think>...</think>
     verbose_runtime_logs: bool = False  # emit rich runtime events when -v is used
     verbose_emitter: Any = None  # VerboseEventEmitter instance
+    cloud_config: Optional["CloudConfig"] = None  # cloud provider for --cloud mode
 
 
 @dataclass
