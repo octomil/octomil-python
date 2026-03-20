@@ -32,6 +32,7 @@ class LlamaCppBackend(InferenceBackend):
         self,
         cache_size_mb: int = 2048,
         cache_enabled: bool = True,
+        verbose_emitter: Any = None,
     ) -> None:
         super().__init__()
         self._llm: Any = None
@@ -39,6 +40,7 @@ class LlamaCppBackend(InferenceBackend):
         self._cache_size_mb = cache_size_mb
         self._cache_enabled = cache_enabled
         self._llama_cache: Any = None
+        self._verbose = verbose_emitter
 
     def _attach_cache(self) -> None:
         """Attach a LlamaCache to the loaded model if caching is enabled."""
@@ -54,10 +56,25 @@ class LlamaCppBackend(InferenceBackend):
         except (ImportError, AttributeError, TypeError) as exc:
             logger.debug("LlamaCache not available: %s", exc)
 
+    def _emit_load_completed(self, load_start: float) -> None:
+        """Emit model.load_completed verbose event if emitter is active."""
+        if self._verbose:
+            load_elapsed_ms = (time.monotonic() - load_start) * 1000
+            self._verbose.emit(
+                "model.load_completed",
+                model=self._model_name,
+                engine="llama.cpp",
+                load_time_ms=round(load_elapsed_ms, 1),
+                cache_enabled=self._cache_enabled,
+            )
+
     def load_model(self, model_name: str) -> None:
         from llama_cpp import Llama  # type: ignore[import-untyped]
 
         self._model_name = model_name
+        if self._verbose:
+            self._verbose.emit("model.load_started", model=model_name, engine="llama.cpp")
+        load_start = time.monotonic()
 
         # Local GGUF file path
         if model_name.endswith(".gguf"):
@@ -71,6 +88,7 @@ class LlamaCppBackend(InferenceBackend):
                 verbose=False,
             )
             self._attach_cache()
+            self._emit_load_completed(load_start)
             return
 
         # Full HuggingFace repo ID (user/repo)
@@ -93,6 +111,7 @@ class LlamaCppBackend(InferenceBackend):
                         verbose=False,
                     )
                     self._attach_cache()
+                    self._emit_load_completed(load_start)
                     return
                 except ValueError as exc:
                     last_err = exc
@@ -123,6 +142,7 @@ class LlamaCppBackend(InferenceBackend):
                     verbose=False,
                 )
                 self._attach_cache()
+                self._emit_load_completed(load_start)
                 return
         except _NewResolutionError:
             pass
@@ -148,6 +168,7 @@ class LlamaCppBackend(InferenceBackend):
             verbose=False,
         )
         self._attach_cache()
+        self._emit_load_completed(load_start)
         logger.info("Model loaded: %s", model_name)
 
     def _grammar_arg(self, request: GenerationRequest) -> dict[str, Any]:
@@ -163,6 +184,13 @@ class LlamaCppBackend(InferenceBackend):
             return {}
 
     def generate(self, request: GenerationRequest) -> tuple[str, InferenceMetrics]:
+        if self._verbose:
+            self._verbose.emit(
+                "inference.pre_generation",
+                engine="llama.cpp",
+                model=self._model_name,
+                max_tokens=request.max_tokens,
+            )
         start = time.monotonic()
         grammar_kw = self._grammar_arg(request)
         result = self._llm.create_chat_completion(
@@ -177,11 +205,22 @@ class LlamaCppBackend(InferenceBackend):
         usage = result.get("usage", {})
         prompt_tokens = usage.get("prompt_tokens", 0)
         completion_tokens = usage.get("completion_tokens", 0)
+        tps = completion_tokens / elapsed if elapsed > 0 else 0
+
+        if self._verbose:
+            self._verbose.emit(
+                "inference.completed",
+                engine="llama.cpp",
+                prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens,
+                tokens_per_second=round(tps, 1),
+                duration_ms=round(elapsed * 1000, 1),
+            )
 
         return text, InferenceMetrics(
             prompt_tokens=prompt_tokens,
             total_tokens=completion_tokens,
-            tokens_per_second=completion_tokens / elapsed if elapsed > 0 else 0,
+            tokens_per_second=tps,
             total_duration_ms=elapsed * 1000,
             attention_backend="flash_attention",
         )
@@ -192,7 +231,18 @@ class LlamaCppBackend(InferenceBackend):
     ) -> AsyncIterator[GenerationChunk]:
         import asyncio
 
+        if self._verbose:
+            self._verbose.emit(
+                "inference.pre_generation",
+                engine="llama.cpp",
+                model=self._model_name,
+                max_tokens=request.max_tokens,
+                stream=True,
+            )
+
         loop = asyncio.get_event_loop()
+        start = time.monotonic()
+        tokens_generated = 0
 
         grammar_kw = self._grammar_arg(request)
         # create_chat_completion with stream=True returns a sync iterator
@@ -210,15 +260,28 @@ class LlamaCppBackend(InferenceBackend):
             except StopIteration:
                 return None
 
-        while True:
-            chunk = await loop.run_in_executor(self._executor, _next_chunk)
-            if chunk is None:
-                break
-            delta = chunk["choices"][0].get("delta", {})
-            content = delta.get("content", "")
-            finish = chunk["choices"][0].get("finish_reason")
-            if content or finish:
-                yield GenerationChunk(text=content, finish_reason=finish)
+        try:
+            while True:
+                chunk = await loop.run_in_executor(self._executor, _next_chunk)
+                if chunk is None:
+                    break
+                delta = chunk["choices"][0].get("delta", {})
+                content = delta.get("content", "")
+                finish = chunk["choices"][0].get("finish_reason")
+                if content or finish:
+                    tokens_generated += 1
+                    yield GenerationChunk(text=content, finish_reason=finish)
+        finally:
+            if self._verbose:
+                elapsed = time.monotonic() - start
+                tps = tokens_generated / elapsed if elapsed > 0 else 0
+                self._verbose.emit(
+                    "inference.stream_completed",
+                    engine="llama.cpp",
+                    tokens_generated=tokens_generated,
+                    tokens_per_second=round(tps, 1),
+                    duration_ms=round(elapsed * 1000, 1),
+                )
 
     def list_models(self) -> list[str]:
         return [self._model_name] if self._model_name else []
