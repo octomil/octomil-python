@@ -14,6 +14,7 @@ from .backends.llamacpp import LlamaCppBackend
 from .config import CloudConfig, MoEConfig, ServerState
 from .detection import _detect_backend, _get_cache_manager, _log_startup_error
 from .grammar_helpers import _inject_json_system_prompt, _resolve_grammar
+from .instrumentation import unwrap_backend
 from .models import ChatCompletionBody
 from .streaming import _queued_stream_response, _stream_response
 from .types import GenerationRequest
@@ -420,7 +421,7 @@ def create_app(
 
         # For backends without native grammar support (MLX, echo),
         # inject a system prompt nudging JSON output when json_mode is on.
-        uses_grammar_natively = isinstance(state.backend, LlamaCppBackend)
+        uses_grammar_natively = isinstance(unwrap_backend(state.backend), LlamaCppBackend)
         schema_for_prompt: Optional[dict[str, Any]] = None
         if is_json and not uses_grammar_natively:
             rf = body.response_format or {}

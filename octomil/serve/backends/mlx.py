@@ -42,7 +42,6 @@ class MLXBackend(InferenceBackend):
         self,
         cache_size_mb: int = 2048,
         cache_enabled: bool = True,
-        verbose_emitter: Any = None,
     ) -> None:
         super().__init__()
         self._model: Any = None
@@ -51,7 +50,6 @@ class MLXBackend(InferenceBackend):
         self._model_name: str = ""
         self._repo_id: str = ""
         self._cache_enabled = cache_enabled
-        self._verbose = verbose_emitter  # VerboseEventEmitter or None
         # Multi-entry KV cache pool -- LRU eviction by both entry count and size.
         from ...cache import KVCacheManager
 
@@ -65,9 +63,6 @@ class MLXBackend(InferenceBackend):
 
         self._model_name = model_name
         self._repo_id = resolve_model_name(model_name, "mlx")
-
-        if self._verbose:
-            self._verbose.emit("model.load_started", model=model_name, repo_id=self._repo_id, engine="mlx-lm")
 
         load_start = time.time()
         logger.info("Loading %s (%s) with mlx-lm...", model_name, self._repo_id)
@@ -105,26 +100,8 @@ class MLXBackend(InferenceBackend):
         # the KV cache so the first real request doesn't pay cold-start cost.
         self.warmup()
 
-        if self._verbose:
-            # Collect memory info if available
-            mem_info: dict[str, Any] = {}
-            try:
-                import mlx.core as mx  # type: ignore[import-untyped]
-
-                mem_info["active_memory_mb"] = round(mx.metal.get_active_memory() / (1024 * 1024), 1)
-                mem_info["peak_memory_mb"] = round(mx.metal.get_peak_memory() / (1024 * 1024), 1)
-            except Exception:
-                pass
-            self._verbose.emit(
-                "model.load_completed",
-                model=model_name,
-                repo_id=self._repo_id,
-                engine="mlx-lm",
-                load_duration_ms=round(load_elapsed_ms, 1),
-                has_draft_model=self._draft_model is not None,
-                cache_enabled=self._cache_enabled,
-                **mem_info,
-            )
+        # Store load elapsed for get_verbose_metadata() hook
+        self._load_elapsed_ms = load_elapsed_ms
 
     def warmup(self) -> None:
         """Run a single prefill+decode to compile Metal shaders and prime KV cache."""
@@ -379,9 +356,6 @@ class MLXBackend(InferenceBackend):
         # Store latest timings for the debug endpoint
         self._last_timings = timings
 
-        if self._verbose:
-            self._verbose.emit("inference.pre_generation", **timings)
-
         try:
             while True:
                 response = await queue.get()
@@ -420,16 +394,44 @@ class MLXBackend(InferenceBackend):
                 self._last_timings["total_ttft_ms"] = (t_first_token - t_start) * 1000
             logger.info("MLX full timings: %s", self._last_timings)
 
-            if self._verbose:
-                mem_info: dict[str, Any] = {}
-                try:
-                    import mlx.core as mx  # type: ignore[import-untyped]
+    def get_verbose_metadata(
+        self,
+        event_name: str,
+        *,
+        request: GenerationRequest | None = None,
+        metrics: InferenceMetrics | None = None,
+    ) -> dict[str, Any]:
+        meta: dict[str, Any] = {}
+        if event_name == "backend.load_started":
+            meta["repo_id"] = self._repo_id
+            draft_repo = _DRAFT_MODEL_MAP.get(self._model_name)
+            if draft_repo:
+                meta["draft_model"] = draft_repo
+        elif event_name == "backend.load_completed":
+            meta["repo_id"] = self._repo_id
+            meta["has_draft_model"] = self._draft_model is not None
+            meta["cache_enabled"] = self._cache_enabled
+            try:
+                import mlx.core as mx  # type: ignore[import-untyped]
 
-                    mem_info["active_memory_mb"] = round(mx.metal.get_active_memory() / (1024 * 1024), 1)
-                    mem_info["peak_memory_mb"] = round(mx.metal.get_peak_memory() / (1024 * 1024), 1)
-                except Exception:
-                    pass
-                self._verbose.emit("inference.stream_completed", **self._last_timings, **mem_info)
+                meta["active_memory_mb"] = round(mx.metal.get_active_memory() / (1024 * 1024), 1)
+                meta["peak_memory_mb"] = round(mx.metal.get_peak_memory() / (1024 * 1024), 1)
+            except Exception:
+                pass
+        elif event_name == "backend.stream_completed":
+            if hasattr(self, "_last_timings"):
+                meta.update(self._last_timings)
+            try:
+                import mlx.core as mx  # type: ignore[import-untyped]
+
+                meta["active_memory_mb"] = round(mx.metal.get_active_memory() / (1024 * 1024), 1)
+                meta["peak_memory_mb"] = round(mx.metal.get_peak_memory() / (1024 * 1024), 1)
+            except Exception:
+                pass
+        elif event_name == "backend.generate_completed" and metrics is not None:
+            meta["attention_backend"] = metrics.attention_backend
+            meta["cache_hit"] = metrics.cache_hit
+        return meta
 
     @property
     def kv_cache(self) -> Any:
