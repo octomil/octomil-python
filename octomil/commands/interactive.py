@@ -60,6 +60,7 @@ def chat(
         start_serve_background,
     )
     from octomil.chat import run_chat_repl
+    from octomil.responses.responses import OctomilResponses
 
     if model is None:
         model = _auto_select_model()
@@ -74,11 +75,11 @@ def chat(
     else:
         click.echo(f"Using existing server at localhost:{port}\n")
 
-    url = f"http://localhost:{port}"
+    responses = OctomilResponses()
     try:
         run_chat_repl(
-            url,
             model,
+            responses,
             system_prompt=system,
             temperature=temperature,
             max_tokens=max_tokens,

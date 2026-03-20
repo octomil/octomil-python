@@ -81,12 +81,11 @@ def _get_preset_min_layers_fraction() -> dict[SpeedQualityPreset, float]:
     return _load_early_exit_presets()[1]
 
 
-# Public aliases for backward compatibility — these are now functions
-# that lazily fetch from the server.  Code that reads them at module level
-# (e.g. ``PRESET_THRESHOLDS[SpeedQualityPreset.FAST]``) must be updated
-# to call the getter instead, or import the getter directly.
-PRESET_THRESHOLDS: dict[SpeedQualityPreset, float] = {}  # populated lazily
-PRESET_MIN_LAYERS_FRACTION: dict[SpeedQualityPreset, float] = {}  # populated lazily
+# Module-level dicts populated lazily on first access via _ensure_presets_loaded().
+# Prefer calling _get_preset_thresholds() or _get_preset_min_layers_fraction()
+# directly instead of reading these dicts.
+PRESET_THRESHOLDS: dict[SpeedQualityPreset, float] = {}
+PRESET_MIN_LAYERS_FRACTION: dict[SpeedQualityPreset, float] = {}
 
 
 def _ensure_presets_loaded() -> None:

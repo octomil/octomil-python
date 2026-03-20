@@ -101,7 +101,7 @@ def http_request(
 
 
 def _get_api_key() -> str:
-    """Read API key from env or ~/.octomil/credentials (JSON or legacy format)."""
+    """Read API key from env or ~/.octomil/credentials (JSON)."""
     import json
 
     key = os.environ.get("OCTOMIL_API_KEY", "")
@@ -116,10 +116,7 @@ def _get_api_key() -> str:
                 data = json.loads(raw)
                 key = data.get("api_key", "")
             except (json.JSONDecodeError, ValueError):
-                for line in raw.splitlines():
-                    if line.startswith("api_key="):
-                        key = line.split("=", 1)[1].strip()
-                        break
+                pass
     return key
 
 

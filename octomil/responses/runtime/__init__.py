@@ -1,4 +1,4 @@
-"""Backward-compatible re-exports — use octomil.runtime.core instead."""
+"""Re-exports from octomil.runtime.core for convenience."""
 
 from octomil.runtime.core.adapter import InferenceBackendAdapter
 from octomil.runtime.core.cloud_runtime import CloudModelRuntime

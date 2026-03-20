@@ -11,7 +11,6 @@ from octomil.capabilities_client import CapabilitiesClient, CapabilityProfile, _
 from octomil.chat_client import ChatChunk, ChatCompletion
 from octomil.model import Model, ModelMetadata
 from octomil.serve import GenerationRequest, InferenceMetrics
-from octomil.streaming import StreamToken
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -138,22 +137,6 @@ class TestChatClientCreate:
             top_p=0.9,
         )
         assert isinstance(result, ChatCompletion)
-
-
-class TestChatClientBackwardCompat:
-    def test_callable_returns_dict(self):
-        """client.chat(...) should still return a raw dict for backward compat."""
-        tokens = [
-            StreamToken(token="Hello", done=False),
-            StreamToken(token=" world", done=True),
-        ]
-        with patch("octomil.streaming.stream_inference", return_value=iter(tokens)):
-            client = _make_client()
-            result = client.chat("phi-4-mini", [{"role": "user", "content": "hi"}])
-        assert isinstance(result, dict)
-        assert result["message"]["role"] == "assistant"
-        assert result["message"]["content"] == "Hello world"
-        assert "latency_ms" in result
 
 
 class TestChatClientStream:

@@ -140,7 +140,8 @@ class TestCredentialLoading:
         )
         assert _get_api_key() == "edg_json_key"
 
-    def test_reads_legacy_format(self, tmp_path, monkeypatch):
+    def test_non_json_credentials_ignored(self, tmp_path, monkeypatch):
+        """Non-JSON credentials files are ignored (legacy format removed)."""
         from octomil.cli_helpers import _get_api_key
 
         monkeypatch.delenv("OCTOMIL_API_KEY", raising=False)
@@ -151,7 +152,7 @@ class TestCredentialLoading:
             "octomil.cli_helpers.os.path.expanduser",
             lambda x: str(cred_dir / "credentials"),
         )
-        assert _get_api_key() == "edg_legacy_key"
+        assert _get_api_key() == ""
 
     def test_env_var_takes_priority_over_file(self, tmp_path, monkeypatch):
         from octomil.cli_helpers import _get_api_key

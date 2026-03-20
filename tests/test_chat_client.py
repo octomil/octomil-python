@@ -254,26 +254,3 @@ class TestChatClientStream:
 
         text_chunks = [c for c in chunks if not c.done]
         assert [c.index for c in text_chunks] == [0, 1, 2]
-
-
-# ---------------------------------------------------------------------------
-# Backward compat: __call__ still routes through _chat_create
-# ---------------------------------------------------------------------------
-
-
-class TestChatClientBackwardCompat:
-    def test_call_still_uses_chat_create(self) -> None:
-        """client.chat(model, messages) still calls _chat_create for compat."""
-        responses_mock = MagicMock()
-        client = _make_mock_client(responses_mock)
-        client._chat_create.return_value = {
-            "message": {"role": "assistant", "content": "ok"},
-            "latency_ms": 10.0,
-        }
-
-        chat = ChatClient(client)
-        result = chat("test-model", [{"role": "user", "content": "hi"}])
-
-        client._chat_create.assert_called_once()
-        responses_mock.create.assert_not_called()
-        assert result["message"]["content"] == "ok"

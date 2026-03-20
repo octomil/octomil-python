@@ -36,8 +36,8 @@ class TestGetApiKey:
         monkeypatch.setattr("octomil.cli_helpers.os.path.expanduser", lambda x: str(cred_dir / "credentials"))
         assert _get_api_key() == "file-key-456"
 
-    def test_from_credentials_file_legacy(self, monkeypatch, tmp_path):
-        """Backward compat: reads legacy key=value format."""
+    def test_from_credentials_file_non_json_returns_empty(self, monkeypatch, tmp_path):
+        """Non-JSON credentials files are ignored (legacy format removed)."""
         monkeypatch.delenv("OCTOMIL_API_KEY", raising=False)
         cred_dir = tmp_path / ".octomil"
         cred_dir.mkdir()
@@ -45,7 +45,7 @@ class TestGetApiKey:
         cred_file.write_text("api_key=legacy-key-789\n")
 
         monkeypatch.setattr("octomil.cli_helpers.os.path.expanduser", lambda x: str(cred_dir / "credentials"))
-        assert _get_api_key() == "legacy-key-789"
+        assert _get_api_key() == ""
 
     def test_env_takes_priority(self, monkeypatch):
         monkeypatch.setenv("OCTOMIL_API_KEY", "env-key")

@@ -1,74 +1,24 @@
-"""Interactive chat REPL for octomil (compatibility shim).
+"""Interactive chat REPL for octomil.
 
 Provides ``run_chat_repl()`` which drives a terminal conversation against
 a local ``octomil serve`` instance.  Inference is delegated to an
-``OctomilResponses`` instance when provided, falling back to direct HTTP
-streaming via ``/v1/chat/completions`` for backward compatibility.
+``OctomilResponses`` instance via ``stream_chat_via_responses()``.
 """
 
 from __future__ import annotations
 
 import asyncio
-import json
 import time
-from typing import TYPE_CHECKING, Any, Iterator, Optional
+from typing import TYPE_CHECKING, Any, Iterator
 
 import click
-import httpx
 
 if TYPE_CHECKING:
     from .responses.responses import OctomilResponses
 
 
 # ---------------------------------------------------------------------------
-# Legacy HTTP streaming (backward-compatible fallback)
-# ---------------------------------------------------------------------------
-
-
-def stream_chat(
-    url: str,
-    model: str,
-    messages: list[dict[str, str]],
-    *,
-    temperature: float = 0.7,
-    max_tokens: int = 2048,
-) -> Iterator[dict[str, Any]]:
-    """Stream chat completions from local octomil serve.
-
-    Yields parsed SSE ``data:`` frames from ``/v1/chat/completions``.
-    Adapted from ``octomil/demos/code_assistant.py``.
-    """
-    payload = {
-        "model": model,
-        "messages": messages,
-        "temperature": temperature,
-        "max_tokens": max_tokens,
-        "stream": True,
-    }
-    with httpx.Client(timeout=None) as client:
-        with client.stream(
-            "POST",
-            f"{url}/v1/chat/completions",
-            json=payload,
-        ) as response:
-            if response.status_code != 200:
-                raise RuntimeError(
-                    f"Server returned {response.status_code}: {response.read().decode(errors='replace')}"
-                )
-            for line in response.iter_lines():
-                if not line.startswith("data: "):
-                    continue
-                data = line[6:]
-                if data.strip() == "[DONE]":
-                    break
-                try:
-                    yield json.loads(data)
-                except json.JSONDecodeError:
-                    continue
-
-
-# ---------------------------------------------------------------------------
-# Responses-backed chat (compatibility shim)
+# Responses-backed chat streaming
 # ---------------------------------------------------------------------------
 
 
@@ -111,7 +61,7 @@ def stream_chat_via_responses(
     temperature: float = 0.7,
     max_tokens: int = 2048,
 ) -> Iterator[dict[str, Any]]:
-    """Stream chat completions via OctomilResponses (compatibility shim).
+    """Stream chat completions via OctomilResponses.
 
     Converts chat messages to a ResponseRequest, streams via
     ``responses.stream()``, and yields OpenAI-compatible SSE chunk dicts.
@@ -157,23 +107,22 @@ def _read_input() -> str | None:
 
 
 def run_chat_repl(
-    url: str,
     model: str,
+    responses: OctomilResponses,
     *,
-    system_prompt: Optional[str] = None,
+    system_prompt: str | None = None,
     temperature: float = 0.7,
     max_tokens: int = 2048,
     _input_fn: Any = None,
-    responses: Optional[OctomilResponses] = None,
 ) -> None:
     """Main interactive REPL loop.
 
     Parameters
     ----------
-    url:
-        Base URL of the octomil serve instance (e.g. ``http://localhost:8080``).
     model:
         Model name to pass in the completions request.
+    responses:
+        ``OctomilResponses`` instance used for inference.
     system_prompt:
         Optional system message prepended to the conversation.
     temperature:
@@ -182,9 +131,6 @@ def run_chat_repl(
         Max tokens per assistant turn.
     _input_fn:
         Override for ``_read_input`` (used in tests).
-    responses:
-        Optional ``OctomilResponses`` instance.  When provided, inference
-        is delegated through the Responses API instead of raw HTTP.
     """
     read_input = _input_fn or _read_input
 
@@ -219,22 +165,13 @@ def run_chat_repl(
         token_count = 0
 
         try:
-            if responses is not None:
-                chunk_iter = stream_chat_via_responses(
-                    responses,
-                    model,
-                    messages,
-                    temperature=temperature,
-                    max_tokens=max_tokens,
-                )
-            else:
-                chunk_iter = stream_chat(
-                    url,
-                    model,
-                    messages,
-                    temperature=temperature,
-                    max_tokens=max_tokens,
-                )
+            chunk_iter = stream_chat_via_responses(
+                responses,
+                model,
+                messages,
+                temperature=temperature,
+                max_tokens=max_tokens,
+            )
             for chunk in chunk_iter:
                 delta = chunk.get("choices", [{}])[0].get("delta", {})
                 content = delta.get("content", "")
@@ -242,7 +179,7 @@ def run_chat_repl(
                     click.echo(content, nl=False)
                     full_response += content
                     token_count += 1
-        except (httpx.ConnectError, httpx.RemoteProtocolError, RuntimeError) as exc:
+        except RuntimeError as exc:
             click.secho(f"\nError: {exc}", fg="red", err=True)
             # Remove the unanswered user message so conversation stays clean
             messages.pop()
