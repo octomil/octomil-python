@@ -242,6 +242,15 @@ def deploy(
                                 model_has_versions = True
                     break
         if not model_found or not model_has_versions:
+            # Check catalog manifest — model may exist via catalog seed or prior push
+            from octomil.models.catalog import CATALOG, _resolve_alias
+
+            canonical = _resolve_alias(name)
+            if name in CATALOG or canonical in CATALOG:
+                model_found = True
+                model_has_versions = True
+
+        if not model_found or not model_has_versions:
             click.echo(click.style(f"  Model '{name}' not in registry — importing...", dim=True))
             client = _get_client()
             effective_version = version or "1.0.0"

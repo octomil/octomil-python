@@ -111,6 +111,8 @@ def _manifest_to_aliases(manifest: dict) -> Dict[str, Dict[str, Union[str, Dict[
                                     hf_alias["projector_filename"] = pf or None
                                 break
                         model_aliases["hf"] = hf_alias
+                    elif uri.startswith("s3://") and "server" not in model_aliases:
+                        model_aliases["server"] = variant_name
 
             if model_aliases:
                 aliases[variant_name] = model_aliases
@@ -120,7 +122,7 @@ def _manifest_to_aliases(manifest: dict) -> Dict[str, Dict[str, Union[str, Dict[
 
 def _get_model_aliases() -> Dict[str, Dict[str, Union[str, Dict[str, Any]]]]:
     """Fetch source-level model aliases from the v2 manifest (cached)."""
-    manifest = _get_v2_client().get_manifest()
+    manifest = _get_v2_client().get_manifest(platform="all")
     return _manifest_to_aliases(manifest)
 
 
@@ -259,6 +261,12 @@ def resolve_and_download(name: str) -> str:
             result = _try_source("kaggle", str(aliases["kaggle"]))
             if result:
                 return result.path
+
+        if "server" in aliases and not any(k in aliases for k in ("ollama", "hf", "kaggle")):
+            raise RuntimeError(
+                f"Model '{name}' exists on the server but has no downloadable source. "
+                f"Use 'octomil deploy {name} --fleet' or re-push with 'octomil push'."
+            )
 
         raise RuntimeError(f"Could not download '{name}' from any source. Tried: {', '.join(aliases.keys())}")
 
