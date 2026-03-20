@@ -196,7 +196,7 @@ class TelemetryReporter:
         return {
             "attributes": _to_kv_list(
                 {
-                    _res_attrs.SERVICE_NAME: "octomil-sdk",
+                    _res_attrs.SERVICE_NAME: "octomil",
                     _res_attrs.SERVICE_VERSION: sdk_version,
                     _res_attrs.TELEMETRY_SDK_NAME: "octomil",
                     _res_attrs.TELEMETRY_SDK_LANGUAGE: "python",

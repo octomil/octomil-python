@@ -177,7 +177,7 @@ def serve(
         import uvicorn as _uv  # noqa: F401
     except ImportError:
         click.echo("Error: fastapi and uvicorn are required for the HTTP server.", err=True)
-        click.echo("Install with: pip install 'octomil-sdk[serve]'", err=True)
+        click.echo("Install with: pip install 'octomil[serve]'", err=True)
         raise SystemExit(1)
 
     from octomil.mcp.http_server import HTTPServerConfig, create_http_app

@@ -117,7 +117,7 @@ class DeviceContext:
         from octomil import __version__
 
         attrs: dict[str, str] = {
-            "service.name": "octomil-sdk",
+            "service.name": "octomil",
             "service.version": __version__,
             "telemetry.sdk.name": "octomil",
             "telemetry.sdk.language": "python",

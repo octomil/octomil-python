@@ -158,7 +158,7 @@ class TestTelemetryV2Envelope:
         assert "attributes" in resource
         # Convert OTLP KV list to dict for easier assertion
         attrs = parse_otlp_kv(resource["attributes"])
-        assert attrs["service.name"] == "octomil-sdk"
+        assert attrs["service.name"] == "octomil"
         assert attrs["telemetry.sdk.language"] == "python"
         assert attrs["octomil.device.id"] == "dev-abc"
         assert attrs["octomil.platform"] == sys.platform
