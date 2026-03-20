@@ -145,6 +145,31 @@ def register(cli: click.Group) -> None:
     "for debugging local inference. Events appear in the web portal's "
     "device activity feed when connected to the server.",
 )
+@click.option(
+    "--cloud",
+    is_flag=True,
+    help="Cloud-only mode: skip local engine detection and serve via a cloud provider. "
+    "Requires --cloud-url and --cloud-key (or OCTOMIL_CLOUD_BASE_URL / OCTOMIL_CLOUD_API_KEY env vars).",
+)
+@click.option(
+    "--cloud-url",
+    default=None,
+    envvar="OCTOMIL_CLOUD_BASE_URL",
+    help="Cloud provider base URL (e.g. https://api.openai.com/v1). " "Also reads from OCTOMIL_CLOUD_BASE_URL env var.",
+)
+@click.option(
+    "--cloud-key",
+    default=None,
+    envvar="OCTOMIL_CLOUD_API_KEY",
+    help="Cloud provider API key. Also reads from OCTOMIL_CLOUD_API_KEY env var.",
+)
+@click.option(
+    "--cloud-model",
+    default=None,
+    envvar="OCTOMIL_CLOUD_MODEL",
+    help="Cloud model ID to request (e.g. gpt-4o-mini). "
+    "Defaults to the positional MODEL arg. Also reads from OCTOMIL_CLOUD_MODEL env var.",
+)
 def serve(
     model: str,
     port: int,
@@ -168,6 +193,10 @@ def serve(
     early_exit_threshold: float | None,
     speed_quality: str | None,
     verbose: bool,
+    cloud: bool,
+    cloud_url: str | None,
+    cloud_key: str | None,
+    cloud_model: str | None,
 ) -> None:
     """Start a local OpenAI-compatible inference server.
 
@@ -332,6 +361,25 @@ def serve(
     if share and not api_key:
         cli_warn("--share requires an API key. Run `octomil login` or set OCTOMIL_API_KEY.")
 
+    # Build cloud config if --cloud mode is requested
+    _cloud_config = None
+    if cloud:
+        if not cloud_url:
+            click.echo("Error: --cloud requires --cloud-url or OCTOMIL_CLOUD_BASE_URL.", err=True)
+            sys.exit(1)
+        if not cloud_key:
+            click.echo("Error: --cloud requires --cloud-key or OCTOMIL_CLOUD_API_KEY.", err=True)
+            sys.exit(1)
+        from octomil.serve.config import CloudConfig
+
+        _cloud_config = CloudConfig(
+            base_url=cloud_url,
+            api_key=cloud_key,
+            model=cloud_model or model,
+        )
+        cli_kv("Cloud provider", cloud_url)
+        cli_kv("Cloud model", _cloud_config.model)
+
     from octomil.serve import run_server
 
     run_server(
@@ -353,6 +401,7 @@ def serve(
         tool_use=tool_use,
         early_exit_config=ee_config if ee_config.enabled else None,
         verbose=verbose,
+        cloud_config=_cloud_config,
     )
 
 

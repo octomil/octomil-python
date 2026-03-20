@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Optional
 
 from octomil.runtime.core.adapter import InferenceBackendAdapter
-from octomil.runtime.core.model_runtime import ModelRuntime
+from octomil.runtime.core.model_runtime import ModelRuntime, RuntimeFactory
 from octomil.runtime.core.types import RuntimeCapabilities, ToolCallTier
 
 _runtime_cache: dict[str, ModelRuntime] = {}
@@ -55,3 +55,18 @@ def engine_registry_factory(model_id: str) -> Optional[ModelRuntime]:
         return adapter
     except (ValueError, RuntimeError, ImportError):
         return None
+
+
+def cloud_runtime_factory(base_url: str, api_key: str, model: str) -> RuntimeFactory:
+    """RuntimeFactory that creates CloudModelRuntime for cloud inference."""
+    _cached: Optional[ModelRuntime] = None
+
+    def factory(model_id: str) -> Optional[ModelRuntime]:
+        nonlocal _cached
+        if _cached is None:
+            from octomil.runtime.core.cloud_runtime import CloudModelRuntime
+
+            _cached = CloudModelRuntime(base_url, api_key, model)
+        return _cached
+
+    return factory
