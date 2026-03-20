@@ -87,11 +87,17 @@ def create_app(
     from ..errors import OctomilError, OctomilErrorCode  # noqa: F811
 
     # Detect MoE model from catalog
-    from ..models.catalog import get_moe_metadata
+    from ..models.catalog import get_model, get_moe_metadata
     from ..models.catalog import is_moe_model as _is_moe
 
     _moe_detected = _is_moe(model_name)
     _moe_meta = get_moe_metadata(model_name)
+
+    # Detect reasoning model from catalog capabilities
+    # Strip quant suffix (e.g. "qwen3-4b:q2_k" -> "qwen3-4b") for catalog lookup
+    _catalog_lookup = model_name.split(":")[0] if ":" in model_name else model_name
+    _catalog_entry = get_model(_catalog_lookup)
+    _is_reasoning = bool(_catalog_entry and "reasoning" in _catalog_entry.capabilities)
 
     # Build compressor if enabled
     _compressor = None
@@ -123,6 +129,7 @@ def create_app(
         compressor=_compressor,
         early_exit_config=early_exit_config,
         tool_use=tool_use,
+        is_reasoning_model=_is_reasoning,
     )
 
     @asynccontextmanager
@@ -422,14 +429,28 @@ def create_app(
         _queue = state.request_queue
 
         if gen_req.stream:
+            _is_reasoning_stream = state.is_reasoning_model
             if _queue is not None:
                 # Stream through the request queue
                 return StreamingResponse(
-                    _queued_stream_response(state, gen_req, req_id, session_id, _queue),
+                    _queued_stream_response(
+                        state,
+                        gen_req,
+                        req_id,
+                        session_id,
+                        _queue,
+                        is_reasoning=_is_reasoning_stream,
+                    ),
                     media_type="text/event-stream",
                 )
             return StreamingResponse(
-                _stream_response(state, gen_req, req_id, session_id),
+                _stream_response(
+                    state,
+                    gen_req,
+                    req_id,
+                    session_id,
+                    is_reasoning=_is_reasoning_stream,
+                ),
                 media_type="text/event-stream",
             )
 
@@ -549,6 +570,15 @@ def create_app(
         if ee_metrics_dict is not None:
             usage["early_exit"] = ee_metrics_dict
 
+        response_msg: dict[str, Any] = {"role": "assistant", "content": text}
+        if state.is_reasoning_model:
+            from .thinking import strip_thinking
+
+            content, reasoning = strip_thinking(text)
+            response_msg["content"] = content
+            if reasoning:
+                response_msg["reasoning_content"] = reasoning
+
         return {
             "id": req_id,
             "object": "chat.completion",
@@ -557,7 +587,7 @@ def create_app(
             "choices": [
                 {
                     "index": 0,
-                    "message": {"role": "assistant", "content": text},
+                    "message": response_msg,
                     "finish_reason": "stop",
                 }
             ],

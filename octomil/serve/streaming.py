@@ -16,9 +16,12 @@ async def _stream_response(
     request: GenerationRequest,
     req_id: str,
     session_id: str = "",
+    is_reasoning: bool = False,
 ) -> AsyncIterator[str]:
     """Yield SSE chunks in OpenAI streaming format."""
     assert state.backend is not None
+
+    from .thinking import ThinkingStreamParser
 
     _reporter = state.reporter
     model_version = "latest"
@@ -27,6 +30,7 @@ async def _stream_response(
     first_chunk_time: Optional[float] = None
     prev_chunk_time = stream_start
     failed = False
+    parser = ThinkingStreamParser() if is_reasoning else None
 
     try:
         async for chunk in state.backend.generate_stream(request):
@@ -57,20 +61,52 @@ async def _stream_response(
                     pass
                 chunk_index += 1
 
-            data = {
-                "id": req_id,
-                "object": "chat.completion.chunk",
-                "created": int(time.time()),
-                "model": request.model,
-                "choices": [
-                    {
-                        "index": 0,
-                        "delta": {"content": chunk.text} if chunk.text else {},
-                        "finish_reason": chunk.finish_reason,
+            if parser and chunk.text:
+                for field, text in parser.feed(chunk.text):
+                    delta = {field: text}
+                    data = {
+                        "id": req_id,
+                        "object": "chat.completion.chunk",
+                        "created": int(time.time()),
+                        "model": request.model,
+                        "choices": [{"index": 0, "delta": delta, "finish_reason": None}],
                     }
-                ],
-            }
-            yield f"data: {json.dumps(data)}\n\n"
+                    yield f"data: {json.dumps(data)}\n\n"
+                if chunk.finish_reason:
+                    # Flush parser and emit finish
+                    for field, text in parser.flush():
+                        delta = {field: text}
+                        data = {
+                            "id": req_id,
+                            "object": "chat.completion.chunk",
+                            "created": int(time.time()),
+                            "model": request.model,
+                            "choices": [{"index": 0, "delta": delta, "finish_reason": None}],
+                        }
+                        yield f"data: {json.dumps(data)}\n\n"
+                    data = {
+                        "id": req_id,
+                        "object": "chat.completion.chunk",
+                        "created": int(time.time()),
+                        "model": request.model,
+                        "choices": [{"index": 0, "delta": {}, "finish_reason": chunk.finish_reason}],
+                    }
+                    yield f"data: {json.dumps(data)}\n\n"
+            else:
+                data = {
+                    "id": req_id,
+                    "object": "chat.completion.chunk",
+                    "created": int(time.time()),
+                    "model": request.model,
+                    "choices": [
+                        {
+                            "index": 0,
+                            "delta": {"content": chunk.text} if chunk.text else {},
+                            "finish_reason": chunk.finish_reason,
+                        }
+                    ],
+                }
+                yield f"data: {json.dumps(data)}\n\n"
     except Exception:
         failed = True
         if _reporter is not None:
@@ -83,6 +119,19 @@ async def _stream_response(
             except Exception:
                 pass
         raise
+
+    # Flush any remaining buffered text from the parser
+    if parser:
+        for field, text in parser.flush():
+            delta = {field: text}
+            data = {
+                "id": req_id,
+                "object": "chat.completion.chunk",
+                "created": int(time.time()),
+                "model": request.model,
+                "choices": [{"index": 0, "delta": delta, "finish_reason": None}],
+            }
+            yield f"data: {json.dumps(data)}\n\n"
 
     yield "data: [DONE]\n\n"
 
@@ -112,6 +161,7 @@ async def _queued_stream_response(
     req_id: str,
     session_id: str,
     queue: Any,
+    is_reasoning: bool = False,
 ) -> AsyncIterator[str]:
     """Yield SSE chunks after waiting in the request queue.
 
@@ -121,6 +171,7 @@ async def _queued_stream_response(
     feedback even on a streaming connection.
     """
     from ..batch import QueueFullError, QueueTimeoutError
+    from .thinking import ThinkingStreamParser
 
     assert state.backend is not None
 
@@ -129,6 +180,7 @@ async def _queued_stream_response(
     stream_start = time.monotonic()
     first_chunk_time: Optional[float] = None
     prev_chunk_time = stream_start
+    parser = ThinkingStreamParser() if is_reasoning else None
 
     try:
         chunk_iter = queue.submit_generate_stream(request, state.backend.generate_stream)
@@ -161,21 +213,65 @@ async def _queued_stream_response(
                 except Exception:
                     pass
 
-            data = {
-                "id": req_id,
-                "object": "chat.completion.chunk",
-                "created": int(time.time()),
-                "model": request.model,
-                "choices": [
-                    {
-                        "index": 0,
-                        "delta": {"content": chunk.text} if chunk.text else {},
-                        "finish_reason": chunk.finish_reason,
+            if parser and chunk.text:
+                for field, text in parser.feed(chunk.text):
+                    delta = {field: text}
+                    data = {
+                        "id": req_id,
+                        "object": "chat.completion.chunk",
+                        "created": int(time.time()),
+                        "model": request.model,
+                        "choices": [{"index": 0, "delta": delta, "finish_reason": None}],
                     }
-                ],
-            }
-            yield f"data: {json.dumps(data)}\n\n"
+                    yield f"data: {json.dumps(data)}\n\n"
+                if chunk.finish_reason:
+                    for field, text in parser.flush():
+                        delta = {field: text}
+                        data = {
+                            "id": req_id,
+                            "object": "chat.completion.chunk",
+                            "created": int(time.time()),
+                            "model": request.model,
+                            "choices": [{"index": 0, "delta": delta, "finish_reason": None}],
+                        }
+                        yield f"data: {json.dumps(data)}\n\n"
+                    data = {
+                        "id": req_id,
+                        "object": "chat.completion.chunk",
+                        "created": int(time.time()),
+                        "model": request.model,
+                        "choices": [{"index": 0, "delta": {}, "finish_reason": chunk.finish_reason}],
+                    }
+                    yield f"data: {json.dumps(data)}\n\n"
+            else:
+                data = {
+                    "id": req_id,
+                    "object": "chat.completion.chunk",
+                    "created": int(time.time()),
+                    "model": request.model,
+                    "choices": [
+                        {
+                            "index": 0,
+                            "delta": {"content": chunk.text} if chunk.text else {},
+                            "finish_reason": chunk.finish_reason,
+                        }
+                    ],
+                }
+                yield f"data: {json.dumps(data)}\n\n"
             chunk_index += 1
+
+        # Flush parser at end of stream
+        if parser:
+            for field, text in parser.flush():
+                delta = {field: text}
+                data = {
+                    "id": req_id,
+                    "object": "chat.completion.chunk",
+                    "created": int(time.time()),
+                    "model": request.model,
+                    "choices": [{"index": 0, "delta": delta, "finish_reason": None}],
+                }
+                yield f"data: {json.dumps(data)}\n\n"
 
         yield "data: [DONE]\n\n"
 

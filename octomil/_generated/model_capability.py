@@ -16,3 +16,5 @@ class ModelCapability(str, Enum):
     """Vector encoding for similarity search and retrieval."""
     CLASSIFICATION = "classification"
     """Categorization of text or images into labels."""
+    REASONING = "reasoning"
+    """Chain-of-thought reasoning with separable thinking tokens (e.g. Qwen3, DeepSeek-R1)."""
