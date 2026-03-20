@@ -1,28 +1,75 @@
-"""CloudModelRuntime — wraps cloud SSE inference as a ModelRuntime."""
+"""CloudModelRuntime — OpenAI-compatible cloud inference as a ModelRuntime."""
 
 from __future__ import annotations
 
-from typing import AsyncIterator
+import asyncio
+import json
+import logging
+from typing import Any, AsyncIterator, Optional
 
-from octomil.runtime.core.chatml_renderer import render_chatml
+from octomil.runtime.core.cloud_client import CloudClient
 from octomil.runtime.core.model_runtime import ModelRuntime
-from octomil.runtime.core.types import RuntimeCapabilities, RuntimeChunk, RuntimeRequest, RuntimeResponse
+from octomil.runtime.core.types import (
+    RuntimeCapabilities,
+    RuntimeChunk,
+    RuntimeRequest,
+    RuntimeResponse,
+    RuntimeToolCall,
+    RuntimeToolCallDelta,
+    RuntimeUsage,
+    ToolCallTier,
+)
+
+logger = logging.getLogger(__name__)
+
+
+def _messages_to_openai(request: RuntimeRequest) -> list[dict[str, Any]]:
+    """Convert RuntimeRequest messages to OpenAI chat messages format."""
+    from octomil._generated.modality import Modality
+
+    messages: list[dict[str, Any]] = []
+    for msg in request.messages:
+        text_parts: list[str] = []
+        for part in msg.parts:
+            if part.type == Modality.TEXT:
+                text_parts.append(part.text or "")
+            else:
+                text_parts.append(f"[{part.type.value}]")
+        messages.append({"role": msg.role.value, "content": "".join(text_parts)})
+    return messages
+
+
+def _tools_to_openai(request: RuntimeRequest) -> Optional[list[dict[str, Any]]]:
+    """Convert RuntimeToolDef list to OpenAI tools format."""
+    if not request.tool_definitions:
+        return None
+    tools: list[dict[str, Any]] = []
+    for td in request.tool_definitions:
+        func: dict[str, Any] = {
+            "name": td.name,
+            "description": td.description,
+        }
+        if td.parameters_schema:
+            try:
+                func["parameters"] = json.loads(td.parameters_schema)
+            except (json.JSONDecodeError, ValueError):
+                pass
+        tools.append({"type": "function", "function": func})
+    return tools
 
 
 class CloudModelRuntime(ModelRuntime):
-    """ModelRuntime that delegates to a cloud inference endpoint.
+    """ModelRuntime that delegates to an OpenAI-compatible cloud endpoint.
 
-    Uses octomil.streaming under the hood for SSE token streaming.
+    Uses CloudClient for HTTP transport, SSE parsing, and retry logic.
     """
 
-    def __init__(self, server_url: str, api_key: str) -> None:
-        self._server_url = server_url
-        self._api_key = api_key
+    def __init__(self, base_url: str, api_key: str, model: str) -> None:
+        self._client = CloudClient(base_url, api_key, model)
+        self._model = model
 
     @property
     def capabilities(self) -> RuntimeCapabilities:
-        from octomil.runtime.core.types import ToolCallTier
-
         return RuntimeCapabilities(
             tool_call_tier=ToolCallTier.NATIVE,
             supports_structured_output=True,
@@ -30,37 +77,104 @@ class CloudModelRuntime(ModelRuntime):
         )
 
     async def run(self, request: RuntimeRequest) -> RuntimeResponse:
-        from octomil.streaming import stream_inference
-
-        prompt = render_chatml(request)
+        messages = _messages_to_openai(request)
+        tools = _tools_to_openai(request)
         gc = request.generation_config
-        tokens = []
-        for token in stream_inference(
-            server_url=self._server_url,
-            api_key=self._api_key,
-            model_id="default",
-            input_data=prompt,
-            parameters={"max_tokens": gc.max_tokens, "temperature": gc.temperature},
-        ):
-            tokens.append(token.token)
-        return RuntimeResponse(text="".join(tokens), finish_reason="stop")
+
+        result = await self._client.chat(
+            messages,
+            max_tokens=gc.max_tokens,
+            temperature=gc.temperature,
+            top_p=gc.top_p,
+            tools=tools,
+        )
+
+        choice = result.get("choices", [{}])[0]
+        message = choice.get("message", {})
+        text = message.get("content") or ""
+        finish_reason = choice.get("finish_reason", "stop")
+
+        # Parse tool calls from response
+        tool_calls: Optional[list[RuntimeToolCall]] = None
+        if message.get("tool_calls"):
+            tool_calls = []
+            for tc in message["tool_calls"]:
+                fn = tc.get("function", {})
+                tool_calls.append(
+                    RuntimeToolCall(
+                        id=tc.get("id", ""),
+                        name=fn.get("name", ""),
+                        arguments=fn.get("arguments", ""),
+                    )
+                )
+
+        # Parse usage
+        usage: Optional[RuntimeUsage] = None
+        if result.get("usage"):
+            u = result["usage"]
+            usage = RuntimeUsage(
+                prompt_tokens=u.get("prompt_tokens", 0),
+                completion_tokens=u.get("completion_tokens", 0),
+                total_tokens=u.get("total_tokens", 0),
+            )
+
+        return RuntimeResponse(
+            text=text,
+            tool_calls=tool_calls,
+            finish_reason=finish_reason,
+            usage=usage,
+        )
 
     async def stream(self, request: RuntimeRequest) -> AsyncIterator[RuntimeChunk]:
-        from octomil.streaming import stream_inference_async
-
-        prompt = render_chatml(request)
+        messages = _messages_to_openai(request)
+        tools = _tools_to_openai(request)
         gc = request.generation_config
-        async for token in stream_inference_async(
-            server_url=self._server_url,
-            api_key=self._api_key,
-            model_id="default",
-            input_data=prompt,
-            parameters={"max_tokens": gc.max_tokens, "temperature": gc.temperature},
+
+        async for chunk in self._client.chat_stream(
+            messages,
+            max_tokens=gc.max_tokens,
+            temperature=gc.temperature,
+            top_p=gc.top_p,
+            tools=tools,
         ):
+            choice = chunk.get("choices", [{}])[0]
+            delta = choice.get("delta", {})
+            finish_reason = choice.get("finish_reason")
+
+            text = delta.get("content")
+
+            # Parse streaming tool call deltas
+            tc_delta: Optional[RuntimeToolCallDelta] = None
+            if delta.get("tool_calls"):
+                tc = delta["tool_calls"][0]
+                fn = tc.get("function", {})
+                tc_delta = RuntimeToolCallDelta(
+                    index=tc.get("index", 0),
+                    id=tc.get("id"),
+                    name=fn.get("name"),
+                    arguments_delta=fn.get("arguments"),
+                )
+
+            # Parse usage from final chunk
+            usage: Optional[RuntimeUsage] = None
+            if chunk.get("usage"):
+                u = chunk["usage"]
+                usage = RuntimeUsage(
+                    prompt_tokens=u.get("prompt_tokens", 0),
+                    completion_tokens=u.get("completion_tokens", 0),
+                    total_tokens=u.get("total_tokens", 0),
+                )
+
             yield RuntimeChunk(
-                text=token.token if not token.done else None,
-                finish_reason="stop" if token.done else None,
+                text=text,
+                tool_call_delta=tc_delta,
+                finish_reason=finish_reason,
+                usage=usage,
             )
 
     def close(self) -> None:
-        pass
+        try:
+            loop = asyncio.get_running_loop()
+            loop.create_task(self._client.close())
+        except RuntimeError:
+            asyncio.run(self._client.close())
