@@ -729,8 +729,15 @@ def models(search: Optional[str], show_all: bool, limit: int) -> None:
     elif search:
         click.echo(click.style(f"    {total} models matching '{search}'", dim=True))
 
+    if not search:
+        click.echo(
+            click.style("    Search: ", dim=True)
+            + click.style("octomil models <query>", bold=True)
+            + click.style("  e.g. ", dim=True)
+            + click.style("octomil models whisper", bold=True)
+        )
     click.echo(
-        click.style("    Tip: ", dim=True)
+        click.style("    Detail: ", dim=True)
         + click.style("octomil list <model>", bold=True)
-        + click.style(" for full variant details", dim=True)
+        + click.style("  for variants and engine artifacts", dim=True)
     )
