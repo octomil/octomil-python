@@ -56,6 +56,8 @@ class ServerState:
     early_exit_monitor: Optional["EarlyExitMonitor"] = None
     tool_use: bool = False  # pre-load coding agent tool schemas
     is_reasoning_model: bool = False  # model emits <think>...</think>
+    verbose_runtime_logs: bool = False  # emit rich runtime events when -v is used
+    verbose_emitter: Any = None  # VerboseEventEmitter instance
 
 
 @dataclass

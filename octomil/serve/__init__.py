@@ -47,6 +47,7 @@ from .types import (
     InferenceMetrics,
     StreamableState,
 )
+from .verbose_events import RuntimeEvent, VerboseEventEmitter
 
 __all__ = [
     "ChatCompletionBody",
@@ -78,4 +79,6 @@ __all__ = [
     "resolve_model_name",
     "run_multi_model_server",
     "run_server",
+    "RuntimeEvent",
+    "VerboseEventEmitter",
 ]

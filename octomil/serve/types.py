@@ -19,6 +19,7 @@ class GenerationRequest:
     stream: bool = False
     grammar: Optional[str] = None
     json_mode: bool = False
+    enable_thinking: Optional[bool] = None
 
 
 @dataclass

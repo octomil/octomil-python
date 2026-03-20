@@ -19,6 +19,7 @@ def _detect_backend(
     cache_size_mb: int = 2048,
     cache_enabled: bool = True,
     engine_override: Optional[str] = None,
+    verbose_emitter: Any = None,
 ) -> InferenceBackend:
     """Auto-detect engines, benchmark each, and return the fastest backend.
 
@@ -33,10 +34,12 @@ def _detect_backend(
 
     registry = get_registry()
 
-    backend_kwargs = {
+    backend_kwargs: dict[str, Any] = {
         "cache_size_mb": cache_size_mb,
         "cache_enabled": cache_enabled,
     }
+    if verbose_emitter is not None:
+        backend_kwargs["verbose_emitter"] = verbose_emitter
 
     if engine_override:
         engine = registry.get_engine(engine_override)
