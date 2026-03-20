@@ -573,7 +573,10 @@ def list_models_cmd(model_family: Optional[str]) -> None:
             if variant.mlx:
                 click.echo(f"      {click.style('mlx-lm', dim=True)}    {variant.mlx}")
             if variant.gguf:
-                click.echo(f"      {click.style('llama.cpp', dim=True)} {variant.gguf.repo} ({variant.gguf.filename})")
+                gguf_label = variant.gguf.repo
+                if variant.gguf.filename:
+                    gguf_label += f" ({variant.gguf.filename})"
+                click.echo(f"      {click.style('llama.cpp', dim=True)} {gguf_label}")
             if variant.source_repo:
                 click.echo(f"      {click.style('source', dim=True)}    {variant.source_repo}")
             click.echo()
