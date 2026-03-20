@@ -1,4 +1,4 @@
-.PHONY: dev install lint test sync-catalog bench bench-update
+.PHONY: dev install lint test bench bench-update
 
 dev:
 	doppler run -- uvicorn app.main:app --reload --port 8000
@@ -11,9 +11,6 @@ lint:
 
 test:
 	doppler run -- pytest
-
-sync-catalog:
-	python3 scripts/sync_embedded_catalog.py --from-seed ../octomil-server/server/app/services/catalog_seed.py
 
 bench:
 	python3 scripts/run_benchmark.py --iterations 30 --warmup 3

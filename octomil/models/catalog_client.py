@@ -8,7 +8,7 @@ and enhanced: ``_ServerFetcher`` now supports query params via ``fetch()``.
 
 Pattern follows ``PolicyClient`` in ``octomil.routing``:
 - ETag-based conditional requests for bandwidth efficiency
-- Disk cache in ``~/.cache/octomil/`` for offline use
+- Disk cache in ``~/.cache/octomil/`` for resilience
 - TTL-based expiration with graceful degradation
 """
 
@@ -21,8 +21,6 @@ import sys
 import time
 from pathlib import Path
 from typing import Any, Optional
-
-from ._embedded_catalog import EMBEDDED_MANIFEST
 
 logger = logging.getLogger(__name__)
 
@@ -149,9 +147,9 @@ class _ServerFetcher:
             )
             return self._cached.data
 
-        # Fall back to minimal embedded default
-        logger.debug(
-            "Using default embedded %s (no cache, server unreachable)",
+        # No server, no cache — return empty default
+        logger.warning(
+            "No cached %s and server unreachable — model resolution will fail",
             self._cache_filename,
         )
         self._cached = CachedData(
@@ -276,8 +274,8 @@ class CatalogClientV2:
     The manifest contains all models, packages, engine mappings, and aliases
     in a single response, replacing the 5 separate v1 endpoints.
 
-    Falls back to :data:`EMBEDDED_MANIFEST` when the server is unreachable
-    and no disk cache exists.
+    Falls back to disk cache when the server is unreachable. Returns an
+    empty dict if both server and disk cache are unavailable.
     """
 
     _MANIFEST_ENDPOINT = "/api/v2/catalog/manifest"
@@ -299,7 +297,7 @@ class CatalogClientV2:
         self._fetcher = _ServerFetcher(
             endpoint=self._MANIFEST_ENDPOINT,
             cache_filename=self._CACHE_FILENAME,
-            default_data=EMBEDDED_MANIFEST,
+            default_data={},
             api_base=fetcher_base,
         )
 

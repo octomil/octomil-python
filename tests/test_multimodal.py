@@ -26,7 +26,6 @@ from octomil._generated.delivery_mode import DeliveryMode
 from octomil._generated.modality import Modality
 from octomil._generated.model_capability import ModelCapability
 from octomil.manifest.types import AppModelEntry, ResourceBinding
-from octomil.models._embedded_catalog import EMBEDDED_MANIFEST
 from octomil.models.catalog import (
     CATALOG,
     ModelEntry,
@@ -37,10 +36,6 @@ from octomil.models.catalog import (
     _parse_modalities,
 )
 from octomil.models.resolver import ResolvedModel, resolve
-
-# Hydrate the embedded manifest directly so tests are not affected by
-# stale disk-cache data that may lack the new modality fields.
-_EMBEDDED_CATALOG = _hydrate_manifest(EMBEDDED_MANIFEST)
 
 _TEXT = [Modality.TEXT]
 _IMAGE = [Modality.IMAGE]
@@ -596,114 +591,12 @@ class TestHydrateManifestTaskTaxonomy:
 
 
 # =====================================================================
-# Embedded catalog multimodal verification
-# =====================================================================
-
-
-class TestEmbeddedCatalogMultimodal:
-    """Verify the embedded catalog has correct modality information.
-
-    Uses ``_EMBEDDED_CATALOG`` (hydrated directly from the compiled-in
-    manifest) so results are not affected by stale disk-cache data.
-    """
-
-    EXPECTED_TEXT_MODELS = [
-        "gemma-2-2b",
-        "llama-3.2-1b",
-        "llama-3.2-3b",
-        "phi-4-mini",
-        "qwen2.5-1.5b",
-        "qwen2.5-3b",
-    ]
-
-    EXPECTED_VL_MODELS = [
-        "gemma3-1b",
-        "gemma3-4b",
-        "gemma3-12b",
-        "gemma3-27b",
-        "smolvlm2-256m",
-        "smolvlm2-500m",
-    ]
-
-    EXPECTED_AUDIO_MODELS = [
-        "whisper-tiny",
-        "whisper-base",
-    ]
-
-    def test_text_models_have_text_input(self) -> None:
-        for name in self.EXPECTED_TEXT_MODELS:
-            if name not in _EMBEDDED_CATALOG:
-                continue
-            entry = _EMBEDDED_CATALOG[name]
-            assert (
-                Modality.TEXT in entry.input_modalities
-            ), f"{name} should have text input modality, got {entry.input_modalities}"
-
-    def test_vl_models_have_image_input(self) -> None:
-        for name in self.EXPECTED_VL_MODELS:
-            if name not in _EMBEDDED_CATALOG:
-                continue
-            entry = _EMBEDDED_CATALOG[name]
-            assert (
-                Modality.IMAGE in entry.input_modalities
-            ), f"{name} should have image input modality, got {entry.input_modalities}"
-            assert Modality.TEXT in entry.input_modalities, f"{name} should also have text input modality"
-
-    def test_audio_models_have_audio_input(self) -> None:
-        for name in self.EXPECTED_AUDIO_MODELS:
-            if name not in _EMBEDDED_CATALOG:
-                continue
-            entry = _EMBEDDED_CATALOG[name]
-            assert (
-                Modality.AUDIO in entry.input_modalities
-            ), f"{name} should have audio input modality, got {entry.input_modalities}"
-
-    def test_all_models_have_output_modalities(self) -> None:
-        """Every model must have at least one output modality."""
-        for name, entry in _EMBEDDED_CATALOG.items():
-            assert len(entry.output_modalities) > 0, f"{name} has no output modalities"
-
-    def test_all_models_have_input_modalities(self) -> None:
-        """Every model must have at least one input modality."""
-        for name, entry in _EMBEDDED_CATALOG.items():
-            assert len(entry.input_modalities) > 0, f"{name} has no input modalities"
-
-    def test_all_models_have_task_taxonomy(self) -> None:
-        """Every model must have a non-empty task_taxonomy list."""
-        for name, entry in _EMBEDDED_CATALOG.items():
-            assert isinstance(entry.task_taxonomy, list), f"{name} task_taxonomy is not a list"
-
-
-# =====================================================================
 # Resolve multimodal models
 # =====================================================================
 
 
 class TestResolveMultimodal:
-    """Test that resolve() propagates modality info through resolution.
-
-    Tests that depend on specific model modalities (VL, audio) use
-    ``_EMBEDDED_CATALOG`` to verify the ModelEntry, since ``resolve()``
-    goes through the lazy ``CATALOG`` which may be served from a stale
-    disk cache.
-    """
-
-    def test_embedded_text_entry_has_text_modalities(self) -> None:
-        """Verify the embedded catalog entry for a text model has text-only input."""
-        entry = _EMBEDDED_CATALOG["gemma-2-2b"]
-        assert entry.input_modalities == [Modality.TEXT]
-        assert entry.output_modalities == [Modality.TEXT]
-
-    def test_embedded_vl_entry_has_image_modalities(self) -> None:
-        """Verify the embedded catalog entry for a VL model carries image input."""
-        entry = _EMBEDDED_CATALOG["gemma3-4b"]
-        assert Modality.IMAGE in entry.input_modalities
-        assert Modality.TEXT in entry.input_modalities
-
-    def test_embedded_audio_entry_has_audio_modalities(self) -> None:
-        """Verify the embedded catalog entry for an audio model carries audio input."""
-        entry = _EMBEDDED_CATALOG["whisper-base"]
-        assert Modality.AUDIO in entry.input_modalities
+    """Test that resolve() propagates modality info through resolution."""
 
     def test_passthrough_defaults_to_text(self) -> None:
         r = resolve("user/custom-model")
