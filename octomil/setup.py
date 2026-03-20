@@ -5,8 +5,8 @@ calls ``octomil setup --foreground`` which:
 
 1. Finds a system Python with venv support.
 2. Creates ``~/.octomil/engines/venv/``.
-3. Installs ``octomil-sdk[mlx,serve]`` (Apple Silicon) or
-   ``octomil-sdk[llama,serve]`` (elsewhere).
+3. Installs ``octomil[mlx,serve]`` (Apple Silicon) or
+   ``octomil[llama,serve]`` (elsewhere).
 4. Downloads the recommended model via huggingface_hub.
 
 When ``octomil serve`` runs from the frozen binary and finds no native
@@ -197,15 +197,15 @@ def detect_best_engine() -> tuple[str, str]:
     """Detect the best engine for this platform.
 
     Returns:
-        (engine_name, pip_package) — e.g. ("mlx-lm", "octomil-sdk[mlx,serve]")
+        (engine_name, pip_package) — e.g. ("mlx-lm", "octomil[mlx,serve]")
     """
     system = platform.system()
     machine = platform.machine()
 
     if system == "Darwin" and machine == "arm64":
-        return ("mlx-lm", "octomil-sdk[mlx,serve]")
+        return ("mlx-lm", "octomil[mlx,serve]")
     else:
-        return ("llama.cpp", "octomil-sdk[llama,serve]")
+        return ("llama.cpp", "octomil[llama,serve]")
 
 
 # ---------------------------------------------------------------------------

@@ -275,7 +275,7 @@ class _ORTBackend:
             self._use_genai = False
             logger.info("Loaded %s with ONNX Runtime InferenceSession", model_name)
         else:
-            raise RuntimeError("onnxruntime is not installed. Install with: pip install 'octomil-sdk[onnx]'")
+            raise RuntimeError("onnxruntime is not installed. Install with: pip install 'octomil[onnx]'")
 
     def generate(self, request: Any) -> tuple[str, Any]:
         from octomil.serve import InferenceMetrics

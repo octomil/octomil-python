@@ -3,8 +3,8 @@ requires = ["setuptools>=68.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "octomil-sdk"
-version = "4.1.2"
+name = "octomil"
+version = "4.2.0"
 description = "Octomil — serve, deploy, and observe ML models on edge devices"
 readme = "README.md"
 requires-python = ">=3.9"

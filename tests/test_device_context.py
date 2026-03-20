@@ -72,7 +72,7 @@ class TestDeviceContext(unittest.TestCase):
     def test_telemetry_resource_keys(self):
         ctx = DeviceContext(org_id="org_test", server_device_id="dev_123")
         resource = ctx.telemetry_resource()
-        self.assertEqual(resource["service.name"], "octomil-sdk")
+        self.assertEqual(resource["service.name"], "octomil")
         self.assertEqual(resource["telemetry.sdk.language"], "python")
         self.assertEqual(resource["octomil.org_id"], "org_test")
         self.assertEqual(resource["octomil.device_id"], "dev_123")

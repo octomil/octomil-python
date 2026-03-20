@@ -5,6 +5,85 @@
 - Added `DeviceAuthClient` runtime auth helper for device token bootstrap, refresh, and revoke flows.
 - Added optional `auth` extra with `keyring` secure storage dependency.
 
+## 4.2.0 (2026-03-20)
+
+### Features
+
+- text-based tool call extraction and input_schema normalization (#296)
+- add RemoteToolExecutor, AgentSession, and CLI agent command
+- add RemoteToolExecutor, AgentSession, and CLI agent command (#298)
+- add ToolCallTier, strict tool-call parser, capability-aware adapter
+- use presigned S3 upload for files >100MB
+- add sync_embedded_catalog.py generation script
+- regenerate embedded catalog with gemma-3 variants
+- complete training module with tests
+- add tests for all device agent core components
+- add tests for telemetry store, uploader, policy engine, bandwidth budget
+- add runtime updater, crash detector, and storage GC
+- implement 4 core loop bodies
+- add DeviceAgent top-level entrypoint
+- support multimodal models with projector resources
+- silent device registration with DeviceContext and AuthConfig (#307)
+- emit locality and fallback span attributes on inference
+- add report_observed_state() to OctomilControl
+- sync generated enums for GAP-09, GAP-10, GAP-14
+- sync generated enums for GAP-09, GAP-10, GAP-14
+- Phase 1 manifest-driven runtime surface for Python SDK (#309)
+- add heartbeat telemetry span (GAP-12)
+- add PublishableKeyAuth class with restricted scopes and header generation
+- wire artifact loop to report_observed_state after reconciliation
+- wire routing.policy metadata from ResponseRequest to RouterModelRuntime
+- generate and persist install_id on first SDK init
+- complete benchmark regression gate for release CI
+- add fetch_desired_state and report_observed_state methods (#315)
+- sync embedded catalog with new models (#316)
+- add multimodal support types and update catalog schema
+- propagate multimodal fields through resolver and CLI
+- complete agent wiring with tests
+- POST device inventory with desired-state request
+- GC handling, dynamic poll interval, startup sync
+- store and pass engine policy constraints through activation
+- add sync() to OctomilControl, try sync-first in get_desired_state
+- add sync() to OctomilControl, try sync-first in get_desired_state (#321)
+- replace prompt string with structured RuntimeRequest messages
+- use model name as identifier for v2 catalog flow (#323)
+- skip ensure_model, pass name directly to v2 upload flow (#324)
+- expand embedded catalog to 57 families / 107 variants (#325)
+
+### Fixes
+
+- send org_id as query param on model create (#297)
+- use query-param deep links matching SDK parsers (#299)
+- check model versions before pairing, add deploy trigger, use octomil:// scheme
+- increase upload timeout to 600s for large model files
+- show upload progress message during push
+- fix indentation of 'not in registry' message
+- set network_type=wifi in artifact reconcile tests
+- use typing.Union for runtime type aliases (Python 3.9 compat)
+- add mcp importorskip and missing test dependencies
+- remove mcp[cli] from test deps to avoid CI hang
+- delegate chat.completions.create to responses.create per contract
+- correct get_registry patch path in MCP platform and HTTP tests
+- skip build config tests when release artifacts absent
+- update telemetry event extraction to use OTLP envelope format
+- update resource attribute keys in test_resource_fields
+- add octomil.install.id to expected required keys
+- update federated telemetry tests to parse OTLP envelope format
+- mock responses API in facade wiring tests instead of stream_inference
+- update MoE routing test to use prefixed OTLP resource attribute keys
+- update manifest structure in HF resolver tests to v2 nested format
+- update registry upload tests for presigned URL flow
+- update deploy phone test for model list + QR pairing flow
+- update deploy CLI tests for new defaults and strategy choices
+- update ollama deploy tests for model list + versions flow
+- mock browser login in federation create API key test
+- make multi-turn integration test resilient to LLM variance
+- fix 51 failing tests and omit \_generated/ from coverage
+- update all tests for required multimodal fields
+- hard cutover to models array, remove backwards compat
+- resolve vendor from manifest, add missing family publishers
+- strip /api/v1 from deep link host parameter
+
 ## 4.1.2 (2026-03-14)
 
 ### Fixes

@@ -192,9 +192,9 @@ class EngineRegistry:
             raise OctomilError(
                 code=OctomilErrorCode.RUNTIME_UNAVAILABLE,
                 message="No inference engines available. Install one of:\n"
-                "  pip install 'octomil-sdk[mlx]'     # Apple Silicon\n"
-                "  pip install 'octomil-sdk[llama]'    # Cross-platform\n"
-                "  pip install 'octomil-sdk[onnx]'     # ONNX Runtime",
+                "  pip install 'octomil[mlx]'     # Apple Silicon\n"
+                "  pip install 'octomil[llama]'    # Cross-platform\n"
+                "  pip install 'octomil[onnx]'     # ONNX Runtime",
             )
 
         best = self.select_best(ranked)
