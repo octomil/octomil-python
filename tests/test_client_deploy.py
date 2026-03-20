@@ -899,7 +899,7 @@ class TestCLIRollback:
 
 class TestParsingHelpers:
     def test_parse_deployment_result_with_id_key(self):
-        from octomil.client import _parse_deployment_result
+        from octomil.model_ops import _parse_deployment_result
 
         resp = {
             "id": "dep-alt",
@@ -912,14 +912,14 @@ class TestParsingHelpers:
         assert result.deployment_id == "dep-alt"
 
     def test_parse_deployment_result_empty_statuses(self):
-        from octomil.client import _parse_deployment_result
+        from octomil.model_ops import _parse_deployment_result
 
         resp = {"deployment_id": "dep-x", "status": "empty"}
         result = _parse_deployment_result(resp, "m", "1")
         assert result.device_statuses == []
 
     def test_parse_deployment_plan_missing_fields(self):
-        from octomil.client import _parse_deployment_plan
+        from octomil.model_ops import _parse_deployment_plan
 
         resp = {
             "deployments": [
