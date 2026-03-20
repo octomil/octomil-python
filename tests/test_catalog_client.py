@@ -18,7 +18,6 @@ from unittest.mock import patch
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from octomil.models._embedded_catalog import EMBEDDED_MANIFEST
 from octomil.models.catalog_client import (
     CachedData,
     CatalogClientV2,
@@ -186,34 +185,14 @@ class TestServerFetcher:
 class TestCatalogClientV2:
     """Tests for the v2 catalog client."""
 
-    def test_get_manifest_returns_embedded_fallback(self) -> None:
-        """When server unreachable, should return embedded manifest."""
+    def test_get_manifest_returns_empty_when_no_server(self) -> None:
+        """When server unreachable and no cache, should return empty dict."""
         client = CatalogClientV2(base_url="https://api.example.com")
 
         with patch.dict("sys.modules", {"httpx": None}):
             manifest = client.get_manifest(platform="all")
 
-        # Canonical nested format: top-level keys are family names
-        assert "gemma-2" in manifest
-        assert "variants" in manifest["gemma-2"]
-
-    def test_manifest_has_nested_families(self) -> None:
-        """get_manifest() should return nested dict keyed by family name."""
-        client = CatalogClientV2(base_url="https://api.example.com")
-
-        with patch.dict("sys.modules", {"httpx": None}):
-            manifest = client.get_manifest(platform="all")
-
-        assert isinstance(manifest, dict)
-        assert "gemma-2" in manifest
-        assert "gemma-3" in manifest
-        assert "qwen2.5" in manifest
-        assert "whisper" in manifest
-        # Each family has variants
-        assert "gemma-2-2b" in manifest["gemma-2"]["variants"]
-        assert "gemma3-1b" in manifest["gemma-3"]["variants"]
-        assert "qwen2.5-3b" in manifest["qwen2.5"]["variants"]
-        assert "whisper-large-v3" in manifest["whisper"]["variants"]
+        assert manifest == {}
 
     def test_invalidate_cache(self) -> None:
         """invalidate_cache() should clear the fetcher cache."""
@@ -224,24 +203,6 @@ class TestCatalogClientV2:
 
         client.invalidate_cache()
         assert client._fetcher._cached is None
-
-    def test_embedded_manifest_has_blessed_models(self) -> None:
-        """Embedded manifest should contain the 6 blessed model families."""
-        assert "gemma-2" in EMBEDDED_MANIFEST
-        assert "gemma-3" in EMBEDDED_MANIFEST
-        assert "llama-3.2" in EMBEDDED_MANIFEST
-        assert "phi-4" in EMBEDDED_MANIFEST
-        assert "qwen2.5" in EMBEDDED_MANIFEST
-        assert "whisper" in EMBEDDED_MANIFEST
-
-    def test_embedded_manifest_models_have_packages(self) -> None:
-        """Each embedded model variant should have at least one package."""
-        for family_name, family_data in EMBEDDED_MANIFEST.items():
-            if not isinstance(family_data, dict) or "variants" not in family_data:
-                continue
-            for variant_name, variant_data in family_data["variants"].items():
-                pkg_count = sum(len(ver.get("packages", [])) for ver in variant_data.get("versions", {}).values())
-                assert pkg_count >= 1, f"Variant {variant_name} has no packages"
 
     def test_base_url_strips_api_v1_suffix(self) -> None:
         """CatalogClientV2 should strip /api/v1 from OCTOMIL_API_BASE."""
