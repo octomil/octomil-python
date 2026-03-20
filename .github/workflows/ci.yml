@@ -101,4 +101,4 @@ jobs:
         run: |
           pip install pip-audit
           pip install -e .
-          pip-audit || true
+          pip-audit
