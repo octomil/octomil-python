@@ -29,6 +29,9 @@ class InstrumentedBackend(InferenceBackend):
         # owns the ThreadPoolExecutor; creating a second one wastes resources.
         self._inner = backend
         self._emitter = emitter
+        # Shadow class-level attrs so __getattr__ isn't needed for these
+        self.name = backend.name  # type: ignore[assignment]
+        self.attention_backend = backend.attention_backend  # type: ignore[assignment]
 
     # --- Proxy properties ---------------------------------------------------
 
