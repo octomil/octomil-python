@@ -109,6 +109,7 @@ _ENGINE_ALIASES: dict[str, str] = {
     "whispercpp": "whisper.cpp",
     "ollama": "ollama",
     "echo": "echo",
+    "cloud": "cloud",
 }
 
 # Reverse map: canonical engine name -> v2 manifest runtime_executor names
@@ -123,6 +124,7 @@ _ENGINE_TO_EXECUTORS: dict[str, list[str]] = {
     "mnn": ["mnn"],
     "executorch": ["executorch"],
     "cactus": ["cactus"],
+    "cloud": ["cloud"],
 }
 
 # Backward-compatible module-level name for direct imports.
@@ -335,6 +337,22 @@ def _resolve_from_manifest(
     if engine:
         resolved_engine = _normalize_engine(engine)
 
+    # Cloud packages have no downloadable artifact — short-circuit before weights search.
+    if executor == "cloud":
+        cloud_ec = selected.get("engine_config") or {}
+        return ResolvedModel(
+            family=manifest_model.get("id", canonical),
+            quant="cloud",
+            engine="cloud",
+            hf_repo="",
+            input_modalities=_parse_modalities(selected.get("input_modalities")),
+            output_modalities=_parse_modalities(selected.get("output_modalities")),
+            raw=name,
+            capabilities=manifest_model.get("capabilities", []),
+            engine_config=cloud_ec,
+            resource_bindings=_build_resource_bindings(selected),
+        )
+
     fmt = selected.get("artifact_format", "")
     weights = None
     for res in selected.get("resources", []):
@@ -423,6 +441,8 @@ def _pick_engine(
     for engine_name in engine_priority:
         if engine_name not in normalized_available:
             continue
+        if engine_name == "cloud" and "cloud" in entry.engines:
+            return engine_name
         if engine_name == "ollama" and variant.ollama:
             return engine_name
         if engine_name not in entry.engines:
@@ -581,6 +601,19 @@ def resolve(
         hf_repo = variant.ort
     elif resolved_engine == "ollama" and variant.ollama:
         hf_repo = variant.ollama
+    elif resolved_engine == "cloud":
+        return ResolvedModel(
+            family=canonical,
+            quant=quant,
+            engine="cloud",
+            hf_repo="",
+            input_modalities=entry.input_modalities,
+            output_modalities=entry.output_modalities,
+            raw=name,
+            capabilities=entry.capabilities,
+            engine_config=entry.engine_config,
+            resource_bindings=entry.resource_bindings,
+        )
     elif variant.gguf:
         hf_repo = variant.gguf.repo
         filename = variant.gguf.filename
