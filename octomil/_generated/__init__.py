@@ -28,15 +28,6 @@ from .otlp_resource_attributes import (
     TELEMETRY_SDK_NAME,
     TELEMETRY_SDK_VERSION,
 )
-from .telemetry_events import (
-    DEPLOY_COMPLETED,
-    DEPLOY_STARTED,
-    EVENT_REQUIRED_ATTRIBUTES,
-    INFERENCE_CHUNK_PRODUCED,
-    INFERENCE_COMPLETED,
-    INFERENCE_FAILED,
-    INFERENCE_STARTED,
-)
 
 __all__ = [
     "ArtifactResourceKind",
@@ -60,14 +51,6 @@ __all__ = [
     "OCTOMIL_AVAILABLE_RUNTIMES",
     "OCTOMIL_ACCELERATORS",
     "REQUIRED_KEYS",
-    # Telemetry events
-    "INFERENCE_STARTED",
-    "INFERENCE_COMPLETED",
-    "INFERENCE_FAILED",
-    "INFERENCE_CHUNK_PRODUCED",
-    "DEPLOY_STARTED",
-    "DEPLOY_COMPLETED",
-    "EVENT_REQUIRED_ATTRIBUTES",
     # Span-based telemetry modules
     "span_names",
     "span_attributes",
