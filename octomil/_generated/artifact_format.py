@@ -18,3 +18,5 @@ class ArtifactFormat(str, Enum):
     """MNN optimized model (.mnn)"""
     TRANSFORMERSJS = "transformersjs"
     """Transformers.js package (ONNX + tokenizer bundle)"""
+    CLOUD = "cloud"
+    """Cloud-hosted inference endpoint. No local artifact."""

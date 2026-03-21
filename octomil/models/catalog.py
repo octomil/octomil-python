@@ -144,6 +144,7 @@ _EXECUTOR_TO_ENGINE: dict[str, str] = {
     "mnn": "mnn",
     "executorch": "executorch",
     "cactus": "cactus",
+    "cloud": "cloud",
 }
 
 # Maps v2 manifest family names to publisher names for ModelEntry.
