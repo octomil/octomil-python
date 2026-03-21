@@ -148,27 +148,30 @@ def register(cli: click.Group) -> None:
 @click.option(
     "--cloud",
     is_flag=True,
-    help="Cloud-only mode: skip local engine detection and serve via a cloud provider. "
-    "Requires --cloud-url and --cloud-key (or OCTOMIL_CLOUD_BASE_URL / OCTOMIL_CLOUD_API_KEY env vars).",
+    help="Cloud-only mode: route inference through the Octomil cloud gateway. "
+    "Uses your org's BYOK or managed credentials (configured in the web dashboard). "
+    "Requires `octomil login`. For direct provider access, use --cloud-url + --cloud-key.",
 )
 @click.option(
     "--cloud-url",
     default=None,
     envvar="OCTOMIL_CLOUD_BASE_URL",
-    help="Cloud provider base URL (e.g. https://api.openai.com/v1). " "Also reads from OCTOMIL_CLOUD_BASE_URL env var.",
+    help="Developer override: direct provider base URL (e.g. https://api.openai.com/v1). "
+    "Bypasses the Octomil gateway. Also reads OCTOMIL_CLOUD_BASE_URL.",
 )
 @click.option(
     "--cloud-key",
     default=None,
     envvar="OCTOMIL_CLOUD_API_KEY",
-    help="Cloud provider API key. Also reads from OCTOMIL_CLOUD_API_KEY env var.",
+    help="Developer override: provider API key for direct access. "
+    "Only used with --cloud-url. Also reads OCTOMIL_CLOUD_API_KEY.",
 )
 @click.option(
     "--cloud-model",
     default=None,
     envvar="OCTOMIL_CLOUD_MODEL",
     help="Cloud model ID to request (e.g. gpt-4o-mini). "
-    "Defaults to the positional MODEL arg. Also reads from OCTOMIL_CLOUD_MODEL env var.",
+    "Defaults to the positional MODEL arg. Also reads OCTOMIL_CLOUD_MODEL.",
 )
 def serve(
     model: str,
@@ -230,7 +233,7 @@ def serve(
     Use --json-mode to default all responses to valid JSON output:
         octomil serve gemma-1b --json-mode
     """
-    api_key = _get_api_key() if share else None
+    api_key = _get_api_key() if (share or cloud) else None
     api_base: str = (
         os.environ.get("OCTOMIL_API_URL") or os.environ.get("OCTOMIL_API_BASE") or "https://api.octomil.com/api/v1"
     )
@@ -403,20 +406,34 @@ def serve(
         cli_kv("Cloud provider", _catalog_cloud_config.base_url)
         cli_kv("Cloud model", _catalog_cloud_config.model)
     elif cloud:
-        if not cloud_url:
-            click.echo("Error: --cloud requires --cloud-url or OCTOMIL_CLOUD_BASE_URL.", err=True)
-            sys.exit(1)
-        if not cloud_key:
-            click.echo("Error: --cloud requires --cloud-key or OCTOMIL_CLOUD_API_KEY.", err=True)
-            sys.exit(1)
         from octomil.serve.config import CloudConfig
 
-        _cloud_config = CloudConfig(
-            base_url=cloud_url,
-            api_key=cloud_key,
-            model=cloud_model or model,
-        )
-        cli_kv("Cloud provider", cloud_url)
+        if cloud_url and cloud_key:
+            # Developer override: direct provider access
+            _cloud_config = CloudConfig(
+                base_url=cloud_url,
+                api_key=cloud_key,
+                model=cloud_model or model,
+            )
+            cli_kv("Cloud mode", "direct (developer override)")
+            cli_kv("Cloud provider", cloud_url)
+        else:
+            # Product mode: Octomil gateway
+            if not api_key:
+                click.echo(
+                    "Error: --cloud (gateway mode) requires an API key. "
+                    "Run `octomil login` or set OCTOMIL_API_KEY. "
+                    "For direct provider access, use --cloud-url + --cloud-key.",
+                    err=True,
+                )
+                sys.exit(1)
+            _cloud_config = CloudConfig.gateway(
+                api_base=api_base,
+                api_key=api_key,
+                model=cloud_model or model,
+            )
+            cli_kv("Cloud mode", "gateway (Octomil-managed)")
+            cli_kv("Gateway", _cloud_config.base_url)
         cli_kv("Cloud model", _cloud_config.model)
 
     from octomil.serve import run_server

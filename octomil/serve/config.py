@@ -15,11 +15,38 @@ if TYPE_CHECKING:
 
 @dataclass
 class CloudConfig:
-    """Configuration for cloud provider routing."""
+    """Configuration for cloud provider routing.
+
+    Two construction paths:
+
+    - **Product mode (gateway)**: ``CloudConfig.gateway(api_base, api_key, model)``
+      Points at the Octomil cloud gateway.  Credentials are resolved
+      server-side via BYOK / managed pool.
+
+    - **Developer override (direct)**: ``CloudConfig(base_url, api_key, model)``
+      Points directly at a provider endpoint (OpenAI, Anthropic, etc.).
+      Non-canonical escape hatch for local development.
+    """
 
     base_url: str
     api_key: str
     model: str
+    is_gateway: bool = False
+
+    @classmethod
+    def gateway(
+        cls,
+        api_base: str,
+        api_key: str,
+        model: str,
+    ) -> CloudConfig:
+        """Construct a CloudConfig targeting the Octomil cloud gateway.
+
+        ``api_base`` is the Octomil server base (e.g. https://api.octomil.com/api/v1).
+        The gateway URL is derived as ``{api_base}/cloud``.
+        """
+        gateway_url = f"{api_base.rstrip('/')}/cloud"
+        return cls(base_url=gateway_url, api_key=api_key, model=model, is_gateway=True)
 
 
 @dataclass

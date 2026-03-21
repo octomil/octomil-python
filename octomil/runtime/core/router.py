@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import AsyncIterator, Optional
 
+from octomil._generated.routing_policy import RoutingPolicy as ContractRoutingPolicy
 from octomil.runtime.core.model_runtime import ModelRuntime, RuntimeFactory
 from octomil.runtime.core.policy import RoutingPolicy
 from octomil.runtime.core.types import RuntimeCapabilities, RuntimeChunk, RuntimeRequest, RuntimeResponse
@@ -57,17 +58,20 @@ class RouterModelRuntime(ModelRuntime):
     ) -> tuple[ModelRuntime, tuple[str, bool]]:
         """Select the runtime and return (runtime, (locality, is_fallback))."""
         policy = policy_override or self._default_policy
-        if policy.mode == "local_only":
+
+        if policy.mode == ContractRoutingPolicy.LOCAL_ONLY:
             local = self._local_factory("local") if self._local_factory else None
             if local is None:
                 raise RuntimeError("No local runtime available")
             return local, (LOCALITY_ON_DEVICE, False)
-        if policy.mode == "cloud_only":
+
+        if policy.mode == ContractRoutingPolicy.CLOUD_ONLY:
             cloud = self._cloud_factory("cloud") if self._cloud_factory else None
             if cloud is None:
                 raise RuntimeError("No cloud runtime available")
             return cloud, (LOCALITY_CLOUD, False)
-        # auto mode — prefer local, fall back to cloud
+
+        # local_first and auto both prefer local, fall back to cloud
         local = self._local_factory("local") if self._local_factory else None
         if local is not None:
             return local, (LOCALITY_ON_DEVICE, False)
