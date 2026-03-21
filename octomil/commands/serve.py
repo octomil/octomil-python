@@ -276,15 +276,50 @@ def serve(
 
     is_whisper = is_whisper_model(model)
 
+    # --- Cloud model auto-detection (before auto-optimize / engine detection) ---
+    _catalog_cloud_config = None
+    _is_catalog_cloud = False
+    if not cloud and model.endswith(":cloud"):
+        from octomil.models.resolver import resolve as _resolve_model
+
+        _resolved = _resolve_model(model)
+        if _resolved.engine == "cloud":
+            ec = _resolved.engine_config
+            if not ec or "base_url" not in ec:
+                click.echo(
+                    f"Error: Cloud model '{model}' resolved but has no provider config "
+                    f"(missing engine_config.base_url in catalog). "
+                    f"Use --cloud --cloud-url --cloud-key for manual cloud routing.",
+                    err=True,
+                )
+                sys.exit(1)
+            api_key_env = ec.get("api_key_env", "OCTOMIL_CLOUD_API_KEY")
+            resolved_key = os.environ.get(api_key_env) or os.environ.get("OCTOMIL_CLOUD_API_KEY")
+            if not resolved_key:
+                click.echo(f"Error: Set {api_key_env} or OCTOMIL_CLOUD_API_KEY.", err=True)
+                sys.exit(1)
+            if engine:
+                click.echo("Error: --engine is not compatible with cloud models.", err=True)
+                sys.exit(1)
+            from octomil.serve.config import CloudConfig as _CatalogCloudConfig
+
+            _catalog_cloud_config = _CatalogCloudConfig(
+                base_url=ec["base_url"],
+                api_key=resolved_key,
+                model=ec.get("cloud_model_id", model.rsplit(":", 1)[0]),
+            )
+            _is_catalog_cloud = True
+
     # Auto-optimize: pick best quantization for hardware if not explicit
-    if not is_whisper and not _has_explicit_quant(model):
+    if not _is_catalog_cloud and not is_whisper and not _has_explicit_quant(model):
         best_quant = _auto_optimize(model, context_length=cache_size)
         if best_quant:
             model = f"{model}:{best_quant.lower()}"
             click.echo(f"    Serving as: {model}")
 
     # Single-model mode (original behaviour)
-    _print_engine_detection(model, engine)
+    if not _is_catalog_cloud:
+        _print_engine_detection(model, engine)
 
     cli_header(f"Serve — {model}")
     if is_whisper:
@@ -361,9 +396,13 @@ def serve(
     if share and not api_key:
         cli_warn("--share requires an API key. Run `octomil login` or set OCTOMIL_API_KEY.")
 
-    # Build cloud config if --cloud mode is requested
-    _cloud_config = None
-    if cloud:
+    # Build cloud config — from catalog auto-detection or explicit --cloud flags
+    _cloud_config = _catalog_cloud_config
+    if _is_catalog_cloud:
+        assert _catalog_cloud_config is not None
+        cli_kv("Cloud provider", _catalog_cloud_config.base_url)
+        cli_kv("Cloud model", _catalog_cloud_config.model)
+    elif cloud:
         if not cloud_url:
             click.echo("Error: --cloud requires --cloud-url or OCTOMIL_CLOUD_BASE_URL.", err=True)
             sys.exit(1)
