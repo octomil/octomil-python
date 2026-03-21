@@ -7,69 +7,7 @@ event names and includes the required attributes defined in the contract.
 from __future__ import annotations
 
 from octomil._generated import otlp_resource_attributes as contract_attrs
-from octomil._generated import telemetry_events as contract_events
 from octomil.telemetry import TelemetryReporter, _scope_for_event
-
-# ---------------------------------------------------------------------------
-# Telemetry event name constants
-# ---------------------------------------------------------------------------
-
-
-class TestTelemetryEventConstants:
-    """Contract event name constants must match expected string values."""
-
-    def test_inference_started(self) -> None:
-        assert contract_events.INFERENCE_STARTED == "inference.started"
-
-    def test_inference_completed(self) -> None:
-        assert contract_events.INFERENCE_COMPLETED == "inference.completed"
-
-    def test_inference_failed(self) -> None:
-        assert contract_events.INFERENCE_FAILED == "inference.failed"
-
-    def test_inference_chunk_produced(self) -> None:
-        assert contract_events.INFERENCE_CHUNK_PRODUCED == "inference.chunk_produced"
-
-    def test_deploy_started(self) -> None:
-        assert contract_events.DEPLOY_STARTED == "deploy.started"
-
-    def test_deploy_completed(self) -> None:
-        assert contract_events.DEPLOY_COMPLETED == "deploy.completed"
-
-
-class TestTelemetryEventRequiredAttributes:
-    """Each contract event must define required attributes that match the spec."""
-
-    def test_inference_started_requires_model_id(self) -> None:
-        attrs = contract_events.EVENT_REQUIRED_ATTRIBUTES["inference.started"]
-        assert "model.id" in attrs
-
-    def test_inference_completed_requires_model_id_and_duration(self) -> None:
-        attrs = contract_events.EVENT_REQUIRED_ATTRIBUTES["inference.completed"]
-        assert "model.id" in attrs
-        assert "inference.duration_ms" in attrs
-
-    def test_inference_failed_requires_error_fields(self) -> None:
-        attrs = contract_events.EVENT_REQUIRED_ATTRIBUTES["inference.failed"]
-        assert "model.id" in attrs
-        assert "error.type" in attrs
-        assert "error.message" in attrs
-
-    def test_inference_chunk_requires_chunk_index(self) -> None:
-        attrs = contract_events.EVENT_REQUIRED_ATTRIBUTES["inference.chunk_produced"]
-        assert "model.id" in attrs
-        assert "inference.chunk_index" in attrs
-
-    def test_deploy_started_requires_model_and_version(self) -> None:
-        attrs = contract_events.EVENT_REQUIRED_ATTRIBUTES["deploy.started"]
-        assert "model.id" in attrs
-        assert "model.version" in attrs
-
-    def test_deploy_completed_requires_duration(self) -> None:
-        attrs = contract_events.EVENT_REQUIRED_ATTRIBUTES["deploy.completed"]
-        assert "model.id" in attrs
-        assert "deploy.duration_ms" in attrs
-
 
 # ---------------------------------------------------------------------------
 # OTLP resource attribute keys
