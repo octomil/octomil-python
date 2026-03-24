@@ -20,6 +20,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, AsyncIterator
 
 if TYPE_CHECKING:
+    from .chat.thread_client import ThreadClient
     from .client import OctomilClient
 
 
@@ -69,6 +70,17 @@ class ChatClient:
 
     def __init__(self, client: OctomilClient) -> None:
         self._client = client
+
+    @property
+    def threads(self) -> "ThreadClient":
+        """Access the thread management client."""
+        if not hasattr(self, "_threads"):
+            from .chat.thread_client import ThreadClient
+
+            server_url = getattr(self._client, "_api_base", "") or ""
+            api_key = getattr(self._client, "_api_key", "") or ""
+            self._threads = ThreadClient(server_url=server_url, api_key=api_key)
+        return self._threads
 
     def create(
         self,
