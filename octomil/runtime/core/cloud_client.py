@@ -189,6 +189,9 @@ class CloudClient:
                 self._client.build_request("POST", path, json=body),
                 stream=True,
             )
+            if not response.is_success:
+                await response.aread()
+                await response.aclose()
             _raise_for_status(response)
             return response
         except (httpx.ConnectError, httpx.TimeoutException):
@@ -198,6 +201,9 @@ class CloudClient:
                 self._client.build_request("POST", path, json=body),
                 stream=True,
             )
+            if not response.is_success:
+                await response.aread()
+                await response.aclose()
             _raise_for_status(response)
             return response
 
