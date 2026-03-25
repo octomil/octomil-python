@@ -12,7 +12,6 @@ import click
 from octomil.cli_helpers import (
     _complete_model_name,
     _get_client,
-    _get_org_id,
     _get_telemetry_reporter,
     _require_api_key,
     cli_header,
@@ -207,50 +206,13 @@ def deploy(
         dashboard_url = os.environ.get("OCTOMIL_DASHBOARD_URL", "https://app.octomil.com")
         headers = {"Authorization": f"Bearer {api_key}"}
 
-        # Ensure model exists in registry — auto-download, convert, push if needed.
-        # The /models/{id} endpoint only accepts UUIDs, so we search by name
-        # via the list endpoint instead.
-        org_id = _get_org_id() or "default"
-        list_params: dict[str, str] = {"org_id": org_id}
-        check_resp = http_request(
-            "GET",
-            f"{api_base}/models",
-            headers=headers,
-            params=list_params,
-            timeout=10.0,
-        )
-        model_found = False
-        model_has_versions = False
-        if check_resp.status_code == 200:
-            for m in check_resp.json().get("models", []):
-                m_name = m.get("name") or m.get("model_id") or ""
-                if m_name.lower() == name.lower():
-                    model_found = True
-                    # Check if model has at least one version
-                    m_id = m.get("id", "")
-                    if m_id:
-                        ver_resp = http_request(
-                            "GET",
-                            f"{api_base}/models/{m_id}/versions",
-                            headers=headers,
-                            timeout=10.0,
-                        )
-                        if ver_resp.status_code == 200:
-                            ver_data = ver_resp.json()
-                            versions = ver_data if isinstance(ver_data, list) else ver_data.get("versions", [])
-                            if versions:
-                                model_has_versions = True
-                    break
-        if not model_found or not model_has_versions:
-            # Check catalog manifest — model may exist via catalog seed or prior push
-            from octomil.models.catalog import CATALOG, _resolve_alias
+        # Ensure model exists in v2 catalog — auto-download, convert, push if needed.
+        from octomil.models.catalog import CATALOG, _resolve_alias
 
-            canonical = _resolve_alias(name)
-            if name in CATALOG or canonical in CATALOG:
-                model_found = True
-                model_has_versions = True
+        canonical = _resolve_alias(name)
+        model_found = name in CATALOG or canonical in CATALOG
 
-        if not model_found or not model_has_versions:
+        if not model_found:
             click.echo(click.style(f"  Model '{name}' not in registry — importing...", dim=True))
             client = _get_client()
             effective_version = version or "1.0.0"
