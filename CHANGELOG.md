@@ -5,6 +5,27 @@
 - Added `DeviceAuthClient` runtime auth helper for device token bootstrap, refresh, and revoke flows.
 - Added optional `auth` extra with `keyring` secure storage dependency.
 
+## 4.6.0 (2026-03-25)
+
+### Features
+
+- verbose runtime event emitter for all backends (#334)
+- first-party cloud routing via OpenAI-compatible APIs (#336)
+- add Ollama cloud model support for minimax-m2.5 and kimi-k2.5 (#337)
+- catalog-driven cloud model resolution (#340)
+- gateway-first cloud mode + remove deprecated v1 telemetry (#341)
+
+### Fixes
+
+- fetch all platforms — CLI is a deployment tool, not a runtime
+- show search hint in models footer
+- hide empty parens for repo-level GGUF entries in octomil list (#331)
+- wire telemetry reporter into OctomilResponses + hard-fail pip-audit
+- resolve models with s3:// URIs from CLI push (#339)
+- remove v1 registry check, use v2 catalog only
+- read streaming response body before raising HTTP errors (#346)
+- support native tool calling in OpenAI-compatible API messages
+
 ## 4.5.0 (2026-03-25)
 
 ### Features

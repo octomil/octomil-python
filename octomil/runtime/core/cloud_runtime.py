@@ -24,7 +24,13 @@ logger = logging.getLogger(__name__)
 
 
 def _messages_to_openai(request: RuntimeRequest) -> list[dict[str, Any]]:
-    """Convert RuntimeRequest messages to OpenAI chat messages format."""
+    """Convert RuntimeRequest messages to OpenAI chat messages format.
+
+    Handles native tool calling: assistant messages with tool_calls get the
+    OpenAI ``tool_calls`` field, and tool-result messages include
+    ``tool_call_id``.
+    """
+    from octomil._generated.message_role import MessageRole
     from octomil._generated.modality import Modality
 
     messages: list[dict[str, Any]] = []
@@ -35,7 +41,40 @@ def _messages_to_openai(request: RuntimeRequest) -> list[dict[str, Any]]:
                 text_parts.append(part.text or "")
             else:
                 text_parts.append(f"[{part.type.value}]")
-        messages.append({"role": msg.role.value, "content": "".join(text_parts)})
+        content = "".join(text_parts)
+
+        # Assistant message with native tool calls
+        if msg.role == MessageRole.ASSISTANT and msg.tool_calls:
+            openai_msg: dict[str, Any] = {
+                "role": "assistant",
+                "content": content or None,
+                "tool_calls": [
+                    {
+                        "id": tc.id,
+                        "type": "function",
+                        "function": {
+                            "name": tc.name,
+                            "arguments": tc.arguments,
+                        },
+                    }
+                    for tc in msg.tool_calls
+                ],
+            }
+            messages.append(openai_msg)
+            continue
+
+        # Tool result message with tool_call_id
+        if msg.role == MessageRole.TOOL and msg.tool_call_id:
+            messages.append(
+                {
+                    "role": "tool",
+                    "content": content,
+                    "tool_call_id": msg.tool_call_id,
+                }
+            )
+            continue
+
+        messages.append({"role": msg.role.value, "content": content})
     return messages
 
 
