@@ -24,6 +24,7 @@ from octomil.runtime.core.types import (
     RuntimeContentPart,
     RuntimeMessage,
     RuntimeRequest,
+    RuntimeToolCall,
     RuntimeToolDef,
     RuntimeUsage,
 )
@@ -409,24 +410,34 @@ def _input_items_to_messages(input_items: list[InputItem]) -> list[RuntimeMessag
                 for p in item.content:
                     if isinstance(p, TextContent):
                         asst_parts.append(RuntimeContentPart.text_part(p.text))
+            # Preserve tool calls as structured metadata instead of
+            # serializing to text — this lets runtimes with native tool
+            # calling (e.g. CloudModelRuntime) emit the correct wire format.
+            rt_tool_calls: Optional[list[RuntimeToolCall]] = None
             if item.tool_calls:
-                for call in item.tool_calls:
-                    tc_json = json.dumps(
-                        {
-                            "type": "tool_call",
-                            "name": call.name,
-                            "arguments": json.loads(call.arguments),
-                        }
+                rt_tool_calls = [
+                    RuntimeToolCall(
+                        id=call.id,
+                        name=call.name,
+                        arguments=call.arguments,
                     )
-                    asst_parts.append(RuntimeContentPart.text_part(tc_json))
+                    for call in item.tool_calls
+                ]
             if not asst_parts:
                 asst_parts = [RuntimeContentPart.text_part("")]
-            messages.append(RuntimeMessage(role=MessageRole.ASSISTANT, parts=asst_parts))
+            messages.append(
+                RuntimeMessage(
+                    role=MessageRole.ASSISTANT,
+                    parts=asst_parts,
+                    tool_calls=rt_tool_calls,
+                )
+            )
         elif isinstance(item, ToolResultInput):
             messages.append(
                 RuntimeMessage(
                     role=MessageRole.TOOL,
                     parts=[RuntimeContentPart.text_part(item.content)],
+                    tool_call_id=item.tool_call_id,
                 )
             )
     return messages

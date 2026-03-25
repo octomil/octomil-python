@@ -61,6 +61,8 @@ class RuntimeMessage:
 
     role: MessageRole
     parts: list[RuntimeContentPart]
+    tool_calls: Optional[list[RuntimeToolCall]] = None
+    tool_call_id: Optional[str] = None
 
 
 @dataclass
