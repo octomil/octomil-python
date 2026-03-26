@@ -49,6 +49,7 @@ class CloudClient:
         temperature: float = 0.7,
         top_p: float = 1.0,
         tools: Optional[list[dict[str, Any]]] = None,
+        model: Optional[str] = None,
     ) -> dict[str, Any]:
         """Non-streaming chat completion. Returns parsed JSON response.
 
@@ -61,6 +62,7 @@ class CloudClient:
             top_p=top_p,
             tools=tools,
             stream=False,
+            model=model,
         )
 
         response = await self._post_with_retry("/chat/completions", body)
@@ -74,6 +76,7 @@ class CloudClient:
         temperature: float = 0.7,
         top_p: float = 1.0,
         tools: Optional[list[dict[str, Any]]] = None,
+        model: Optional[str] = None,
     ) -> AsyncIterator[dict[str, Any]]:
         """Streaming chat completion. Yields parsed delta dicts from SSE.
 
@@ -86,6 +89,7 @@ class CloudClient:
             top_p=top_p,
             tools=tools,
             stream=True,
+            model=model,
         )
 
         response: Optional[httpx.Response] = None
@@ -129,9 +133,10 @@ class CloudClient:
         top_p: float,
         tools: Optional[list[dict[str, Any]]],
         stream: bool,
+        model: Optional[str] = None,
     ) -> dict[str, Any]:
         body: dict[str, Any] = {
-            "model": self._model,
+            "model": model or self._model,
             "messages": messages,
             "max_tokens": max_tokens,
             "temperature": temperature,

@@ -126,6 +126,7 @@ class CloudModelRuntime(ModelRuntime):
             temperature=gc.temperature,
             top_p=gc.top_p,
             tools=tools,
+            model=request.model,  # Per-request model override
         )
 
         choice = result.get("choices", [{}])[0]
@@ -175,6 +176,7 @@ class CloudModelRuntime(ModelRuntime):
             temperature=gc.temperature,
             top_p=gc.top_p,
             tools=tools,
+            model=request.model,  # Per-request model override
         ):
             choice = chunk.get("choices", [{}])[0]
             delta = choice.get("delta", {})
