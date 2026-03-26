@@ -336,6 +336,7 @@ class OctomilResponses:
             ),
             tool_definitions=tool_defs,
             json_schema=json_schema,
+            model=request.model,  # Propagate model for per-request override
         )
 
     def _build_response(

@@ -122,6 +122,7 @@ class RuntimeRequest:
     generation_config: GenerationConfig = field(default_factory=GenerationConfig)
     tool_definitions: Optional[list[RuntimeToolDef]] = None
     json_schema: Optional[str] = None
+    model: Optional[str] = None  # Per-request model override
 
 
 @dataclass
