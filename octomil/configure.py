@@ -18,6 +18,7 @@ Usage::
 from __future__ import annotations
 
 import logging
+import platform as _platform
 import random
 import threading
 import time
@@ -27,6 +28,7 @@ import httpx
 
 from .auth_config import AnonymousAuth, BootstrapTokenAuth, DeviceAuthConfig, PublishableKeyAuth
 from .device_context import DeviceContext, RegistrationState, TokenState
+from .device_info import DeviceInfo, get_battery_level, is_charging
 from .monitoring_config import MonitoringConfig
 
 logger = logging.getLogger(__name__)
@@ -157,10 +159,20 @@ def _do_register(
     elif isinstance(auth, BootstrapTokenAuth):
         headers["Authorization"] = f"Bearer {auth.token}"
 
+    hw = DeviceInfo().collect_device_info()
     payload: dict[str, object] = {
         "installation_id": ctx.installation_id,
         "platform": "python",
         "sdk_version": _get_sdk_version(),
+        "os_version": f"{_platform.system()} {_platform.release()}",
+        "manufacturer": hw.get("manufacturer"),
+        "model": hw.get("model"),
+        "cpu_architecture": hw.get("cpu_architecture"),
+        "gpu_available": hw.get("gpu_available"),
+        "total_memory_mb": hw.get("total_memory_mb"),
+        "available_storage_mb": hw.get("available_storage_mb"),
+        "battery_pct": get_battery_level(),
+        "charging": is_charging(),
     }
     if ctx.org_id:
         payload["org_id"] = ctx.org_id
