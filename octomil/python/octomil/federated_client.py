@@ -18,7 +18,7 @@ from typing import (
     Union,
 )
 
-from octomil.device_info import get_battery_level, is_charging
+from octomil.device_info import DeviceInfo, get_battery_level, is_charging
 
 from .api_client import OctomilClientError, _ApiClient
 from .control_plane import ExperimentsAPI, RolloutsAPI
@@ -177,16 +177,10 @@ class FederatedClient:
         if self.device_id:
             return self.device_id
 
-        payload: Dict[str, Any] = {
-            "device_identifier": self.device_identifier,
-            "org_id": self.org_id,
-            "platform": self.platform,
-            "os_version": "macos",
-            "sdk_version": _get_sdk_version(),
-            "app_version": "0.1.0",
-            "metadata": {"client": "python-sdk"},
-            "capabilities": {"training": True},
-        }
+        payload: Dict[str, Any] = DeviceInfo().to_registration_dict()
+        payload["device_identifier"] = self.device_identifier
+        payload["org_id"] = self.org_id
+        payload["sdk_version"] = _get_sdk_version()
         if feature_schema:
             payload["feature_schema"] = feature_schema
 

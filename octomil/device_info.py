@@ -286,14 +286,12 @@ class DeviceInfo:
 
     def collect_capabilities(self) -> Dict[str, Any]:
         """
-        Collect ML capabilities.
+        Collect runtime capabilities (non-hardware).
 
         Returns:
-            Dictionary with ML framework availability.
+            Dictionary with runtime info.
         """
         return {
-            "cpu_architecture": platform.machine(),
-            "gpu_available": detect_gpu(),
             "python_version": platform.python_version(),
         }
 
@@ -301,18 +299,24 @@ class DeviceInfo:
         """
         Create registration payload for Octomil API.
 
-        Returns:
-            Complete registration dictionary with all device information.
+        Returns flat dict with all device information at top level.
         """
+        hw = self.collect_device_info()
         return {
             "device_identifier": self.device_id,
             "platform": _canonical_platform(),
             "os_version": f"{platform.system()} {platform.release()}",
-            "device_info": self.collect_device_info(),
-            "locale": "en_US",  # Can be enhanced with locale detection
-            "region": "US",  # Can be enhanced with region detection
+            "manufacturer": hw.get("manufacturer"),
+            "model": hw.get("model"),
+            "cpu_architecture": hw.get("cpu_architecture"),
+            "gpu_available": hw.get("gpu_available"),
+            "total_memory_mb": hw.get("total_memory_mb"),
+            "available_storage_mb": hw.get("available_storage_mb"),
+            "battery_pct": get_battery_level(),
+            "charging": is_charging(),
+            "locale": "en_US",
+            "region": "US",
             "timezone": get_timezone(),
-            "metadata": self.collect_metadata(),
             "capabilities": self.collect_capabilities(),
         }
 

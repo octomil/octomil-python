@@ -416,20 +416,16 @@ class TestDeviceInfo(unittest.TestCase):
         self.assertEqual(result["network_type"], "wifi")
 
     @patch("octomil.device_info.platform.python_version", return_value="3.11.5")
-    @patch("octomil.device_info.detect_gpu", return_value=False)
-    @patch("octomil.device_info.platform.machine", return_value="x86_64")
-    def test_collect_capabilities_keys_and_values(self, mock_machine, mock_gpu, mock_python):
+    def test_collect_capabilities_keys_and_values(self, mock_python):
         info = DeviceInfo()
         result = info.collect_capabilities()
 
-        expected_keys = {"cpu_architecture", "gpu_available", "python_version"}
+        expected_keys = {"python_version"}
         self.assertEqual(set(result.keys()), expected_keys)
-        self.assertEqual(result["cpu_architecture"], "x86_64")
-        self.assertFalse(result["gpu_available"])
         self.assertEqual(result["python_version"], "3.11.5")
 
     @patch("octomil.device_info.get_timezone", return_value="US/Pacific")
-    @patch("octomil.device_info.get_network_type", return_value="wifi")
+    @patch("octomil.device_info.is_charging", return_value=False)
     @patch("octomil.device_info.get_battery_level", return_value=50)
     @patch("octomil.device_info.platform.python_version", return_value="3.11.5")
     @patch("octomil.device_info.detect_gpu", return_value=True)
@@ -454,7 +450,7 @@ class TestDeviceInfo(unittest.TestCase):
         mock_gpu,
         mock_python,
         mock_battery,
-        mock_network,
+        mock_charging,
         mock_timezone,
     ):
         info = DeviceInfo()
@@ -464,23 +460,36 @@ class TestDeviceInfo(unittest.TestCase):
             "device_identifier",
             "platform",
             "os_version",
-            "device_info",
+            "manufacturer",
+            "model",
+            "cpu_architecture",
+            "gpu_available",
+            "total_memory_mb",
+            "available_storage_mb",
+            "battery_pct",
+            "charging",
             "locale",
             "region",
             "timezone",
-            "metadata",
             "capabilities",
         }
         self.assertEqual(set(result.keys()), expected_top_keys)
         self.assertEqual(result["device_identifier"], "test-device-id")
         self.assertEqual(result["platform"], "macos")
         self.assertEqual(result["os_version"], "Darwin 23.1.0")
+        self.assertEqual(result["manufacturer"], "Apple")
+        self.assertEqual(result["model"], "MacBookPro18,3")
+        self.assertEqual(result["cpu_architecture"], "arm64")
+        self.assertTrue(result["gpu_available"])
+        self.assertEqual(result["total_memory_mb"], 16384)
+        self.assertEqual(result["available_storage_mb"], 51200)
+        self.assertEqual(result["battery_pct"], 50)
+        self.assertFalse(result["charging"])
         self.assertEqual(result["locale"], "en_US")
         self.assertEqual(result["region"], "US")
         self.assertEqual(result["timezone"], "US/Pacific")
-        self.assertIsInstance(result["device_info"], dict)
-        self.assertIsInstance(result["metadata"], dict)
         self.assertIsInstance(result["capabilities"], dict)
+        self.assertEqual(result["capabilities"]["python_version"], "3.11.5")
 
     @patch("octomil.device_info.get_network_type", return_value="wifi")
     @patch("octomil.device_info.get_battery_level", return_value=42)
