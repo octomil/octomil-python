@@ -77,7 +77,22 @@ def _manifest_to_aliases(manifest: dict) -> Dict[str, Dict[str, Union[str, Dict[
                         if res.get("kind") == "weights":
                             weights = res
                             break
+
                     if weights is None:
+                        # Multi-resource package (e.g. sherpa encoder/decoder/joiner/tokens).
+                        # Extract the common HF repo from the first hf:// resource.
+                        if "hf" not in model_aliases:
+                            hf_resources = [r for r in pkg.get("resources", []) if r.get("uri", "").startswith("hf://")]
+                            if hf_resources:
+                                repo, _ = _parse_hf_uri(hf_resources[0]["uri"])
+                                model_aliases["hf"] = {
+                                    "repo_id": repo,
+                                    "filename": None,
+                                    "revision": None,
+                                    "quantization_hint": quantization.lower() if quantization else None,
+                                    "artifact_format": artifact_format or None,
+                                    "uri_type": "directory",
+                                }
                         continue
 
                     uri: str = weights.get("uri", "")
