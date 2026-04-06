@@ -105,16 +105,18 @@ class OctomilResponses:
         runtime_resolver: Optional[Callable[[str], Optional[ModelRuntime]]] = None,
         catalog: Optional[ModelCatalogService] = None,
         telemetry_reporter: Optional[object] = None,
+        default_routing_policy: Optional[RoutingPolicy] = None,
     ) -> None:
         self._runtime_resolver = runtime_resolver
         self._catalog = catalog
         self._response_cache: dict[str, Response] = {}
         self._telemetry = telemetry_reporter
+        self._default_routing_policy = default_routing_policy
 
     async def create(self, request: ResponseRequest) -> Response:
         runtime = self._resolve_runtime(request.model)
         model_id = _model_id_str(request.model)
-        routing_policy = RoutingPolicy.from_metadata(request.metadata)
+        routing_policy = RoutingPolicy.from_metadata(request.metadata) or self._default_routing_policy
         locality, is_fallback = _determine_locality(runtime, model_id, routing_policy)
 
         if is_fallback and self._telemetry is not None:
@@ -139,7 +141,7 @@ class OctomilResponses:
     async def stream(self, request: ResponseRequest) -> AsyncIterator[ResponseStreamEvent]:
         runtime = self._resolve_runtime(request.model)
         model_id = _model_id_str(request.model)
-        routing_policy = RoutingPolicy.from_metadata(request.metadata)
+        routing_policy = RoutingPolicy.from_metadata(request.metadata) or self._default_routing_policy
         locality, is_fallback = _determine_locality(runtime, model_id, routing_policy)
 
         if is_fallback and self._telemetry is not None:
