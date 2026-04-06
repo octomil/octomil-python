@@ -673,5 +673,89 @@ class TestDataclasses(unittest.TestCase):
         self.assertEqual(sr.fetched_at, "2026-03-12T12:00:00.000Z")
 
 
+class TestOnDesiredStateCallback(unittest.TestCase):
+    """Tests for the on_desired_state callback in OctomilControl."""
+
+    def test_callback_invoked_with_entries(self):
+        """on_desired_state callback receives mapped entries from get_desired_state."""
+        captured: list[list[dict]] = []
+
+        def capture_entries(entries):
+            captured.append(entries)
+
+        raw_desired = {
+            "models": [
+                {
+                    "modelId": "m1",
+                    "desiredVersion": "v2",
+                    "artifactManifest": {"artifactId": "a1", "totalBytes": 100},
+                    "routingPolicy": "local_only",
+                },
+            ],
+        }
+        api = _StubApi(
+            responses={
+                ("post", "/devices/register"): {"id": "dev_cb"},
+                ("post", "/devices/dev_cb/sync"): raw_desired,
+            }
+        )
+        ctrl = OctomilControl(api=api, org_id="org_test", on_desired_state=capture_entries)
+        ctrl.register(device_id="dev")
+
+        ctrl.get_desired_state()
+
+        self.assertEqual(len(captured), 1)
+        self.assertEqual(len(captured[0]), 1)
+        self.assertEqual(captured[0][0]["routing_policy"], "local_only")
+
+    def test_callback_not_invoked_for_empty_entries(self):
+        """on_desired_state callback is NOT invoked when entries are empty."""
+        captured: list[list[dict]] = []
+
+        def capture_entries(entries):
+            captured.append(entries)
+
+        api = _StubApi(
+            responses={
+                ("post", "/devices/register"): {"id": "dev_empty2"},
+                ("post", "/devices/dev_empty2/sync"): {"models": []},
+            }
+        )
+        ctrl = OctomilControl(api=api, org_id="org_test", on_desired_state=capture_entries)
+        ctrl.register(device_id="dev")
+
+        ctrl.get_desired_state()
+
+        self.assertEqual(len(captured), 0)
+
+    def test_callback_error_does_not_break_get_desired_state(self):
+        """on_desired_state callback errors are swallowed."""
+
+        def failing_callback(entries):
+            raise ValueError("callback broke")
+
+        raw_desired = {
+            "models": [
+                {
+                    "modelId": "m1",
+                    "desiredVersion": "v1",
+                    "artifactManifest": {"artifactId": "a1", "totalBytes": 50},
+                },
+            ],
+        }
+        api = _StubApi(
+            responses={
+                ("post", "/devices/register"): {"id": "dev_fail"},
+                ("post", "/devices/dev_fail/sync"): raw_desired,
+            }
+        )
+        ctrl = OctomilControl(api=api, org_id="org_test", on_desired_state=failing_callback)
+        ctrl.register(device_id="dev")
+
+        # Should not raise
+        result = ctrl.get_desired_state()
+        self.assertEqual(len(result), 1)
+
+
 if __name__ == "__main__":
     unittest.main()

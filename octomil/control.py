@@ -67,7 +67,13 @@ class OctomilControl:
     - heartbeat() -> HeartbeatResponse
     """
 
-    def __init__(self, api: _ApiClient, org_id: str, telemetry: Any = None) -> None:
+    def __init__(
+        self,
+        api: _ApiClient,
+        org_id: str,
+        telemetry: Any = None,
+        on_desired_state: Any = None,
+    ) -> None:
         self._api = api
         self._org_id = org_id
         self._device_info = DeviceInfo()
@@ -76,6 +82,7 @@ class OctomilControl:
         self._heartbeat_stop: threading.Event = threading.Event()
         self._telemetry = telemetry
         self._heartbeat_sequence: int = 0
+        self._on_desired_state = on_desired_state
 
     def refresh(self) -> ControlSyncResult:
         """Fetch latest assignments and rollout state from server.
@@ -225,6 +232,11 @@ class OctomilControl:
                 "cloud_fallback": entry.get("cloudFallback"),
             }
             result.append(mapped)
+        if self._on_desired_state and result:
+            try:
+                self._on_desired_state(result)
+            except Exception:
+                logger.debug("on_desired_state callback failed", exc_info=True)
         return result
 
     @property

@@ -32,6 +32,7 @@ if TYPE_CHECKING:
     from .models_namespace import OctomilModels
     from .responses.responses import OctomilResponses
     from .runtime.core.model_runtime import ModelRuntime
+    from .runtime.core.policy import RoutingPolicy
     from .serve import GenerationChunk
     from .streaming import StreamToken
     from .telemetry import TelemetryReporter
@@ -104,6 +105,9 @@ class OctomilClient(ModelOpsMixin):
             api_base=self._api_base,
         )
         self._rollouts = RolloutsAPI(self._api)
+
+        # Routing policy derived from desired state (set automatically via control sync)
+        self._default_routing_policy: "RoutingPolicy | None" = None
 
         # Lazy-initialised response, workflow, control, and models namespace APIs
         self._responses: OctomilResponses | None = None
@@ -206,7 +210,11 @@ class OctomilClient(ModelOpsMixin):
         if self._responses is None:
             from .responses import OctomilResponses
 
-            self._responses = OctomilResponses(catalog=self._catalog, telemetry_reporter=self._reporter)
+            self._responses = OctomilResponses(
+                catalog=self._catalog,
+                telemetry_reporter=self._reporter,
+                default_routing_policy=self._default_routing_policy,
+            )
         return self._responses
 
     # ------------------------------------------------------------------
@@ -236,8 +244,20 @@ class OctomilClient(ModelOpsMixin):
                 api=self._api,
                 org_id=self._org_id,
                 telemetry=self._reporter,
+                on_desired_state=self._apply_routing_from_desired_state,
             )
         return self._control
+
+    def _apply_routing_from_desired_state(self, entries: list[dict]) -> None:
+        """Extract routing policy from desired state and apply to responses API."""
+        from .runtime.core.policy import RoutingPolicy
+
+        for entry in entries:
+            policy = RoutingPolicy.from_desired_state_entry(entry)
+            if policy is not None:
+                self._default_routing_policy = policy
+                self._responses = None  # Reset so it picks up new policy
+                break
 
     # ------------------------------------------------------------------
     # Audio namespace — transcription APIs

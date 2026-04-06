@@ -385,3 +385,76 @@ class TestClientListModels:
         c = OctomilClient(auth=OrgApiKeyAuth(api_key="key", org_id="default"))
         result = c.list_models()
         assert result["models"][0]["name"] == "m1"
+
+
+class TestClientDesiredStateRouting:
+    """OctomilClient automatically applies routing policy from desired state."""
+
+    @patch("octomil.client.RolloutsAPI")
+    @patch("octomil.client.ModelRegistry")
+    @patch("octomil.client._ApiClient")
+    def test_desired_state_sets_routing_policy_on_responses(self, mock_api_cls, mock_registry, mock_rollouts):
+        from octomil.client import OctomilClient
+
+        mock_api = mock_api_cls.return_value
+
+        # Simulate sync() returning desired state with routing fields
+        raw_desired = {
+            "models": [
+                {
+                    "modelId": "m1",
+                    "desiredVersion": "v2",
+                    "artifactManifest": {"artifactId": "a1", "totalBytes": 100},
+                    "routingPreference": "quality",
+                    "cloudFallback": {"enabled": True},
+                },
+            ],
+        }
+        mock_api.post.return_value = raw_desired
+
+        c = OctomilClient(auth=OrgApiKeyAuth(api_key="key", org_id="default"))
+        # Force registration so get_desired_state works
+        c.control._server_device_id = "dev-test"
+
+        # Before sync: no routing policy
+        assert c._default_routing_policy is None
+
+        # Fetch desired state — should trigger routing callback
+        entries = c.control.get_desired_state()
+        assert len(entries) == 1
+
+        # Routing policy should now be set
+        assert c._default_routing_policy is not None
+        assert c._default_routing_policy.prefer_local is False  # quality preset
+
+        # Responses API picks it up
+        assert c._responses is None  # reset by callback
+        responses = c.responses
+        assert responses._default_routing_policy is not None
+        assert responses._default_routing_policy.prefer_local is False
+
+    @patch("octomil.client.RolloutsAPI")
+    @patch("octomil.client.ModelRegistry")
+    @patch("octomil.client._ApiClient")
+    def test_desired_state_without_routing_fields_leaves_policy_none(self, mock_api_cls, mock_registry, mock_rollouts):
+        from octomil.client import OctomilClient
+
+        mock_api = mock_api_cls.return_value
+        raw_desired = {
+            "models": [
+                {
+                    "modelId": "m1",
+                    "desiredVersion": "v1",
+                    "artifactManifest": {"artifactId": "a1", "totalBytes": 100},
+                },
+            ],
+        }
+        mock_api.post.return_value = raw_desired
+
+        c = OctomilClient(auth=OrgApiKeyAuth(api_key="key", org_id="default"))
+        c.control._server_device_id = "dev-test"
+
+        c.control.get_desired_state()
+
+        # No routing fields in desired state — policy stays None
+        assert c._default_routing_policy is None
