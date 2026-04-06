@@ -71,14 +71,24 @@ class RouterModelRuntime(ModelRuntime):
                 raise RuntimeError("No cloud runtime available")
             return cloud, (LOCALITY_CLOUD, False)
 
-        # local_first and auto both prefer local, fall back to cloud
-        local = self._local_factory("local") if self._local_factory else None
-        if local is not None:
-            return local, (LOCALITY_ON_DEVICE, False)
-        if policy.fallback == "cloud":
+        # LOCAL_FIRST always prefers local; AUTO depends on prefer_local.
+        if policy.mode == ContractRoutingPolicy.LOCAL_FIRST or policy.prefer_local:
+            # Try local first, fall back to cloud
+            local = self._local_factory("local") if self._local_factory else None
+            if local is not None:
+                return local, (LOCALITY_ON_DEVICE, False)
+            if policy.fallback == "cloud":
+                cloud = self._cloud_factory("cloud") if self._cloud_factory else None
+                if cloud is not None:
+                    return cloud, (LOCALITY_CLOUD, True)
+        else:
+            # prefer_local=False (quality preset): try cloud first, fall back to local
             cloud = self._cloud_factory("cloud") if self._cloud_factory else None
             if cloud is not None:
-                return cloud, (LOCALITY_CLOUD, True)
+                return cloud, (LOCALITY_CLOUD, False)
+            local = self._local_factory("local") if self._local_factory else None
+            if local is not None:
+                return local, (LOCALITY_ON_DEVICE, True)
         raise RuntimeError("No runtime available")
 
     def close(self) -> None:

@@ -217,3 +217,57 @@ class TestFromDesiredStateEntry:
         policy = RoutingPolicy.from_desired_state_entry(entry)
         assert policy is not None
         assert policy.fallback == "cloud"
+
+
+# ---------------------------------------------------------------------------
+# Runtime decision tests: quality vs balanced behavior
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_quality_prefers_cloud_when_both_available():
+    """Quality preset (prefer_local=False) should pick cloud over local."""
+    router = RouterModelRuntime(
+        local_factory=lambda mid: StubRuntime("local"),
+        cloud_factory=lambda mid: StubRuntime("cloud"),
+        default_policy=RoutingPolicy.auto(prefer_local=False),
+    )
+    resp = await router.run(_text_request())
+    assert resp.text == "from-cloud"
+
+
+@pytest.mark.asyncio
+async def test_quality_falls_back_to_local_when_no_cloud():
+    """Quality preset falls back to local when cloud is unavailable."""
+    router = RouterModelRuntime(
+        local_factory=lambda mid: StubRuntime("local"),
+        cloud_factory=lambda mid: None,
+        default_policy=RoutingPolicy.auto(prefer_local=False),
+    )
+    resp = await router.run(_text_request())
+    assert resp.text == "from-local"
+
+
+@pytest.mark.asyncio
+async def test_balanced_still_prefers_local():
+    """Balanced preset (prefer_local=True) should pick local first."""
+    router = RouterModelRuntime(
+        local_factory=lambda mid: StubRuntime("local"),
+        cloud_factory=lambda mid: StubRuntime("cloud"),
+        default_policy=RoutingPolicy.auto(prefer_local=True),
+    )
+    resp = await router.run(_text_request())
+    assert resp.text == "from-local"
+
+
+@pytest.mark.asyncio
+async def test_quality_resolve_locality():
+    """resolve_locality with quality preset returns cloud, is_fallback=False."""
+    router = RouterModelRuntime(
+        local_factory=lambda mid: StubRuntime("local"),
+        cloud_factory=lambda mid: StubRuntime("cloud"),
+        default_policy=RoutingPolicy.auto(prefer_local=False),
+    )
+    locality, is_fallback = router.resolve_locality()
+    assert locality == "cloud"
+    assert is_fallback is False
