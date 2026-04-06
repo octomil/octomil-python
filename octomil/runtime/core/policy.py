@@ -76,7 +76,11 @@ class RoutingPolicy:
         rp = entry.get("routing_policy")
         pref = entry.get("routing_preference")
         cf = entry.get("cloud_fallback")
-        fallback = "cloud" if (cf and cf.get("enabled", True)) else "none"
+        # Default to cloud fallback when cloud_fallback key is absent or enabled=True
+        if cf is None:
+            fallback = "cloud"
+        else:
+            fallback = "cloud" if cf.get("enabled", True) else "none"
 
         if rp == "local_only":
             return cls.local_only()
