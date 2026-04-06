@@ -581,6 +581,51 @@ class TestOctomilControlGetDesiredState(unittest.TestCase):
         result = ctrl.get_desired_state()
         self.assertEqual(result, [])
 
+    def test_get_desired_state_includes_routing_fields(self):
+        """Routing fields from desired state compiler are forwarded."""
+        raw_desired = {
+            "schemaVersion": "1.12.0",
+            "models": [
+                {
+                    "modelId": "m1",
+                    "desiredVersion": "v2",
+                    "artifactManifest": {"artifactId": "art-1", "totalBytes": 100},
+                    "deploymentId": "dep-123",
+                    "routingPolicy": "local_only",
+                    "routingPreference": "local",
+                    "cloudFallback": {"enabled": False},
+                },
+                {
+                    "modelId": "m2",
+                    "desiredVersion": "v1",
+                    "artifactManifest": {"artifactId": "art-2", "totalBytes": 200},
+                    # No routing fields — should be None
+                },
+            ],
+        }
+        api = _StubApi(
+            responses={
+                ("post", "/devices/register"): {"id": "dev_rt"},
+                ("post", "/devices/dev_rt/sync"): raw_desired,
+            }
+        )
+        ctrl = OctomilControl(api=api, org_id="org_test")
+        ctrl.register(device_id="dev")
+
+        result = ctrl.get_desired_state()
+
+        self.assertEqual(len(result), 2)
+        # First entry has routing fields
+        self.assertEqual(result[0]["deployment_id"], "dep-123")
+        self.assertEqual(result[0]["routing_policy"], "local_only")
+        self.assertEqual(result[0]["routing_preference"], "local")
+        self.assertEqual(result[0]["cloud_fallback"], {"enabled": False})
+        # Second entry — routing fields default to None
+        self.assertIsNone(result[1]["deployment_id"])
+        self.assertIsNone(result[1]["routing_policy"])
+        self.assertIsNone(result[1]["routing_preference"])
+        self.assertIsNone(result[1]["cloud_fallback"])
+
     def test_base_url_property(self):
         api = _StubApi()
         api.base_url = "https://api.octomil.com"

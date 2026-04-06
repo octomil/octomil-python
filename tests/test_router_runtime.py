@@ -150,3 +150,70 @@ def test_from_metadata_returns_none_for_missing():
 
 def test_from_metadata_returns_none_for_unknown_mode():
     assert RoutingPolicy.from_metadata({"routing.policy": "unknown_mode"}) is None
+
+
+# ---------------------------------------------------------------------------
+# from_desired_state_entry
+# ---------------------------------------------------------------------------
+
+
+class TestFromDesiredStateEntry:
+    """Verify RoutingPolicy.from_desired_state_entry maps all 5 routing presets."""
+
+    def test_private_local_only(self):
+        entry = {"routing_policy": "local_only"}
+        policy = RoutingPolicy.from_desired_state_entry(entry)
+        assert policy is not None
+        assert policy.mode == "local_only"
+
+    def test_cloud_only(self):
+        entry = {"routing_policy": "cloud_only"}
+        policy = RoutingPolicy.from_desired_state_entry(entry)
+        assert policy is not None
+        assert policy.mode == "cloud_only"
+
+    def test_local_first_preference(self):
+        entry = {"routing_preference": "local", "cloud_fallback": {"enabled": True}}
+        policy = RoutingPolicy.from_desired_state_entry(entry)
+        assert policy is not None
+        assert policy.mode == "local_first"
+        assert policy.prefer_local is True
+        assert policy.fallback == "cloud"
+
+    def test_balanced_preference(self):
+        entry = {"routing_preference": "balanced", "cloud_fallback": {"enabled": True}}
+        policy = RoutingPolicy.from_desired_state_entry(entry)
+        assert policy is not None
+        assert policy.mode == "auto"
+        assert policy.prefer_local is True
+        assert policy.fallback == "cloud"
+
+    def test_quality_preference(self):
+        entry = {"routing_preference": "quality", "cloud_fallback": {"enabled": True}}
+        policy = RoutingPolicy.from_desired_state_entry(entry)
+        assert policy is not None
+        assert policy.mode == "auto"
+        assert policy.prefer_local is False
+        assert policy.fallback == "cloud"
+
+    def test_local_only_disables_fallback(self):
+        entry = {"routing_policy": "local_only"}
+        policy = RoutingPolicy.from_desired_state_entry(entry)
+        assert policy is not None
+        assert policy.mode == "local_only"
+
+    def test_no_routing_fields_returns_none(self):
+        policy = RoutingPolicy.from_desired_state_entry({})
+        assert policy is None
+
+    def test_fallback_disabled(self):
+        entry = {"routing_preference": "local", "cloud_fallback": {"enabled": False}}
+        policy = RoutingPolicy.from_desired_state_entry(entry)
+        assert policy is not None
+        assert policy.fallback == "none"
+
+    def test_no_cloud_fallback_key_defaults_cloud(self):
+        entry = {"routing_preference": "balanced"}
+        policy = RoutingPolicy.from_desired_state_entry(entry)
+        assert policy is not None
+        assert policy.fallback == "cloud"

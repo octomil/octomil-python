@@ -218,6 +218,11 @@ class OctomilControl:
                 "total_bytes": manifest.get("totalBytes", 0),
                 "activation_policy": entry.get("activationPolicy", "immediate"),
                 "engine_policy": entry.get("enginePolicy", {}),
+                # Routing fields emitted by desired state compiler
+                "deployment_id": entry.get("deploymentId"),
+                "routing_policy": entry.get("routingPolicy"),
+                "routing_preference": entry.get("routingPreference"),
+                "cloud_fallback": entry.get("cloudFallback"),
             }
             result.append(mapped)
         return result
