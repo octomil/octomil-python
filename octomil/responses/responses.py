@@ -105,16 +105,44 @@ class OctomilResponses:
         runtime_resolver: Optional[Callable[[str], Optional[ModelRuntime]]] = None,
         catalog: Optional[ModelCatalogService] = None,
         telemetry_reporter: Optional[object] = None,
+        routing_policies: Optional[dict[str, RoutingPolicy]] = None,
+        model_deployment_map: Optional[dict[str, str]] = None,
+        default_routing_policy: Optional[RoutingPolicy] = None,
     ) -> None:
         self._runtime_resolver = runtime_resolver
         self._catalog = catalog
         self._response_cache: dict[str, Response] = {}
         self._telemetry = telemetry_reporter
+        self._routing_policies = routing_policies or {}
+        self._model_deployment_map = model_deployment_map or {}
+        self._default_routing_policy = default_routing_policy
+
+    def _resolve_routing_policy(
+        self,
+        model: Union[str, ModelRef],
+        metadata: Optional[dict[str, str]],
+    ) -> Optional[RoutingPolicy]:
+        """Resolve routing policy: per-request metadata > deployment map > model map > default."""
+        explicit = RoutingPolicy.from_metadata(metadata)
+        if explicit is not None:
+            return explicit
+        # Explicit deployment_id in metadata
+        if metadata and self._routing_policies:
+            dep_id = metadata.get("deployment_id")
+            if dep_id and dep_id in self._routing_policies:
+                return self._routing_policies[dep_id]
+        # Auto-resolve: model_id → deployment_id → policy
+        if self._model_deployment_map and self._routing_policies:
+            model_id = _model_id_str(model)
+            dep_id = self._model_deployment_map.get(model_id)
+            if dep_id and dep_id in self._routing_policies:
+                return self._routing_policies[dep_id]
+        return self._default_routing_policy
 
     async def create(self, request: ResponseRequest) -> Response:
         runtime = self._resolve_runtime(request.model)
         model_id = _model_id_str(request.model)
-        routing_policy = RoutingPolicy.from_metadata(request.metadata)
+        routing_policy = self._resolve_routing_policy(request.model, request.metadata)
         locality, is_fallback = _determine_locality(runtime, model_id, routing_policy)
 
         if is_fallback and self._telemetry is not None:
@@ -139,7 +167,7 @@ class OctomilResponses:
     async def stream(self, request: ResponseRequest) -> AsyncIterator[ResponseStreamEvent]:
         runtime = self._resolve_runtime(request.model)
         model_id = _model_id_str(request.model)
-        routing_policy = RoutingPolicy.from_metadata(request.metadata)
+        routing_policy = self._resolve_routing_policy(request.model, request.metadata)
         locality, is_fallback = _determine_locality(runtime, model_id, routing_policy)
 
         if is_fallback and self._telemetry is not None:

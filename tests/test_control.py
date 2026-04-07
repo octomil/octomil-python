@@ -581,6 +581,51 @@ class TestOctomilControlGetDesiredState(unittest.TestCase):
         result = ctrl.get_desired_state()
         self.assertEqual(result, [])
 
+    def test_get_desired_state_includes_routing_fields(self):
+        """Routing fields from desired state compiler are forwarded."""
+        raw_desired = {
+            "schemaVersion": "1.12.0",
+            "models": [
+                {
+                    "modelId": "m1",
+                    "desiredVersion": "v2",
+                    "artifactManifest": {"artifactId": "art-1", "totalBytes": 100},
+                    "deploymentId": "dep-123",
+                    "routingPolicy": "local_only",
+                    "routingPreference": "local",
+                    "cloudFallback": {"enabled": False},
+                },
+                {
+                    "modelId": "m2",
+                    "desiredVersion": "v1",
+                    "artifactManifest": {"artifactId": "art-2", "totalBytes": 200},
+                    # No routing fields — should be None
+                },
+            ],
+        }
+        api = _StubApi(
+            responses={
+                ("post", "/devices/register"): {"id": "dev_rt"},
+                ("post", "/devices/dev_rt/sync"): raw_desired,
+            }
+        )
+        ctrl = OctomilControl(api=api, org_id="org_test")
+        ctrl.register(device_id="dev")
+
+        result = ctrl.get_desired_state()
+
+        self.assertEqual(len(result), 2)
+        # First entry has routing fields
+        self.assertEqual(result[0]["deployment_id"], "dep-123")
+        self.assertEqual(result[0]["routing_policy"], "local_only")
+        self.assertEqual(result[0]["routing_preference"], "local")
+        self.assertEqual(result[0]["cloud_fallback"], {"enabled": False})
+        # Second entry — routing fields default to None
+        self.assertIsNone(result[1]["deployment_id"])
+        self.assertIsNone(result[1]["routing_policy"])
+        self.assertIsNone(result[1]["routing_preference"])
+        self.assertIsNone(result[1]["cloud_fallback"])
+
     def test_base_url_property(self):
         api = _StubApi()
         api.base_url = "https://api.octomil.com"
@@ -626,6 +671,90 @@ class TestDataclasses(unittest.TestCase):
         self.assertTrue(sr.assignments_changed)
         self.assertFalse(sr.rollouts_changed)
         self.assertEqual(sr.fetched_at, "2026-03-12T12:00:00.000Z")
+
+
+class TestOnDesiredStateCallback(unittest.TestCase):
+    """Tests for the on_desired_state callback in OctomilControl."""
+
+    def test_callback_invoked_with_entries(self):
+        """on_desired_state callback receives mapped entries from get_desired_state."""
+        captured: list[list[dict]] = []
+
+        def capture_entries(entries):
+            captured.append(entries)
+
+        raw_desired = {
+            "models": [
+                {
+                    "modelId": "m1",
+                    "desiredVersion": "v2",
+                    "artifactManifest": {"artifactId": "a1", "totalBytes": 100},
+                    "routingPolicy": "local_only",
+                },
+            ],
+        }
+        api = _StubApi(
+            responses={
+                ("post", "/devices/register"): {"id": "dev_cb"},
+                ("post", "/devices/dev_cb/sync"): raw_desired,
+            }
+        )
+        ctrl = OctomilControl(api=api, org_id="org_test", on_desired_state=capture_entries)
+        ctrl.register(device_id="dev")
+
+        ctrl.get_desired_state()
+
+        self.assertEqual(len(captured), 1)
+        self.assertEqual(len(captured[0]), 1)
+        self.assertEqual(captured[0][0]["routing_policy"], "local_only")
+
+    def test_callback_not_invoked_for_empty_entries(self):
+        """on_desired_state callback is NOT invoked when entries are empty."""
+        captured: list[list[dict]] = []
+
+        def capture_entries(entries):
+            captured.append(entries)
+
+        api = _StubApi(
+            responses={
+                ("post", "/devices/register"): {"id": "dev_empty2"},
+                ("post", "/devices/dev_empty2/sync"): {"models": []},
+            }
+        )
+        ctrl = OctomilControl(api=api, org_id="org_test", on_desired_state=capture_entries)
+        ctrl.register(device_id="dev")
+
+        ctrl.get_desired_state()
+
+        self.assertEqual(len(captured), 0)
+
+    def test_callback_error_does_not_break_get_desired_state(self):
+        """on_desired_state callback errors are swallowed."""
+
+        def failing_callback(entries):
+            raise ValueError("callback broke")
+
+        raw_desired = {
+            "models": [
+                {
+                    "modelId": "m1",
+                    "desiredVersion": "v1",
+                    "artifactManifest": {"artifactId": "a1", "totalBytes": 50},
+                },
+            ],
+        }
+        api = _StubApi(
+            responses={
+                ("post", "/devices/register"): {"id": "dev_fail"},
+                ("post", "/devices/dev_fail/sync"): raw_desired,
+            }
+        )
+        ctrl = OctomilControl(api=api, org_id="org_test", on_desired_state=failing_callback)
+        ctrl.register(device_id="dev")
+
+        # Should not raise
+        result = ctrl.get_desired_state()
+        self.assertEqual(len(result), 1)
 
 
 if __name__ == "__main__":

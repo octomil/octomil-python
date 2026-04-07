@@ -150,3 +150,124 @@ def test_from_metadata_returns_none_for_missing():
 
 def test_from_metadata_returns_none_for_unknown_mode():
     assert RoutingPolicy.from_metadata({"routing.policy": "unknown_mode"}) is None
+
+
+# ---------------------------------------------------------------------------
+# from_desired_state_entry
+# ---------------------------------------------------------------------------
+
+
+class TestFromDesiredStateEntry:
+    """Verify RoutingPolicy.from_desired_state_entry maps all 5 routing presets."""
+
+    def test_private_local_only(self):
+        entry = {"routing_policy": "local_only"}
+        policy = RoutingPolicy.from_desired_state_entry(entry)
+        assert policy is not None
+        assert policy.mode == "local_only"
+
+    def test_cloud_only(self):
+        entry = {"routing_policy": "cloud_only"}
+        policy = RoutingPolicy.from_desired_state_entry(entry)
+        assert policy is not None
+        assert policy.mode == "cloud_only"
+
+    def test_local_first_preference(self):
+        entry = {"routing_preference": "local", "cloud_fallback": {"enabled": True}}
+        policy = RoutingPolicy.from_desired_state_entry(entry)
+        assert policy is not None
+        assert policy.mode == "local_first"
+        assert policy.prefer_local is True
+        assert policy.fallback == "cloud"
+
+    def test_balanced_preference(self):
+        entry = {"routing_preference": "balanced", "cloud_fallback": {"enabled": True}}
+        policy = RoutingPolicy.from_desired_state_entry(entry)
+        assert policy is not None
+        assert policy.mode == "auto"
+        assert policy.prefer_local is True
+        assert policy.fallback == "cloud"
+
+    def test_quality_preference(self):
+        entry = {"routing_preference": "quality", "cloud_fallback": {"enabled": True}}
+        policy = RoutingPolicy.from_desired_state_entry(entry)
+        assert policy is not None
+        assert policy.mode == "auto"
+        assert policy.prefer_local is False
+        assert policy.fallback == "cloud"
+
+    def test_local_only_disables_fallback(self):
+        entry = {"routing_policy": "local_only"}
+        policy = RoutingPolicy.from_desired_state_entry(entry)
+        assert policy is not None
+        assert policy.mode == "local_only"
+
+    def test_no_routing_fields_returns_none(self):
+        policy = RoutingPolicy.from_desired_state_entry({})
+        assert policy is None
+
+    def test_fallback_disabled(self):
+        entry = {"routing_preference": "local", "cloud_fallback": {"enabled": False}}
+        policy = RoutingPolicy.from_desired_state_entry(entry)
+        assert policy is not None
+        assert policy.fallback == "none"
+
+    def test_no_cloud_fallback_key_defaults_cloud(self):
+        entry = {"routing_preference": "balanced"}
+        policy = RoutingPolicy.from_desired_state_entry(entry)
+        assert policy is not None
+        assert policy.fallback == "cloud"
+
+
+# ---------------------------------------------------------------------------
+# Runtime decision tests: quality vs balanced behavior
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_quality_prefers_cloud_when_both_available():
+    """Quality preset (prefer_local=False) should pick cloud over local."""
+    router = RouterModelRuntime(
+        local_factory=lambda mid: StubRuntime("local"),
+        cloud_factory=lambda mid: StubRuntime("cloud"),
+        default_policy=RoutingPolicy.auto(prefer_local=False),
+    )
+    resp = await router.run(_text_request())
+    assert resp.text == "from-cloud"
+
+
+@pytest.mark.asyncio
+async def test_quality_falls_back_to_local_when_no_cloud():
+    """Quality preset falls back to local when cloud is unavailable."""
+    router = RouterModelRuntime(
+        local_factory=lambda mid: StubRuntime("local"),
+        cloud_factory=lambda mid: None,
+        default_policy=RoutingPolicy.auto(prefer_local=False),
+    )
+    resp = await router.run(_text_request())
+    assert resp.text == "from-local"
+
+
+@pytest.mark.asyncio
+async def test_balanced_still_prefers_local():
+    """Balanced preset (prefer_local=True) should pick local first."""
+    router = RouterModelRuntime(
+        local_factory=lambda mid: StubRuntime("local"),
+        cloud_factory=lambda mid: StubRuntime("cloud"),
+        default_policy=RoutingPolicy.auto(prefer_local=True),
+    )
+    resp = await router.run(_text_request())
+    assert resp.text == "from-local"
+
+
+@pytest.mark.asyncio
+async def test_quality_resolve_locality():
+    """resolve_locality with quality preset returns cloud, is_fallback=False."""
+    router = RouterModelRuntime(
+        local_factory=lambda mid: StubRuntime("local"),
+        cloud_factory=lambda mid: StubRuntime("cloud"),
+        default_policy=RoutingPolicy.auto(prefer_local=False),
+    )
+    locality, is_fallback = router.resolve_locality()
+    assert locality == "cloud"
+    assert is_fallback is False

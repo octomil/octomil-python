@@ -32,6 +32,7 @@ if TYPE_CHECKING:
     from .models_namespace import OctomilModels
     from .responses.responses import OctomilResponses
     from .runtime.core.model_runtime import ModelRuntime
+    from .runtime.core.policy import RoutingPolicy
     from .serve import GenerationChunk
     from .streaming import StreamToken
     from .telemetry import TelemetryReporter
@@ -104,6 +105,11 @@ class OctomilClient(ModelOpsMixin):
             api_base=self._api_base,
         )
         self._rollouts = RolloutsAPI(self._api)
+
+        # Per-deployment routing policies from desired state (set automatically via control sync)
+        self._routing_policies: dict[str, "RoutingPolicy"] = {}
+        self._model_deployment_map: dict[str, str] = {}  # model_id → deployment_id
+        self._default_routing_policy: "RoutingPolicy | None" = None
 
         # Lazy-initialised response, workflow, control, and models namespace APIs
         self._responses: OctomilResponses | None = None
@@ -206,7 +212,13 @@ class OctomilClient(ModelOpsMixin):
         if self._responses is None:
             from .responses import OctomilResponses
 
-            self._responses = OctomilResponses(catalog=self._catalog, telemetry_reporter=self._reporter)
+            self._responses = OctomilResponses(
+                catalog=self._catalog,
+                telemetry_reporter=self._reporter,
+                routing_policies=self._routing_policies,
+                model_deployment_map=self._model_deployment_map,
+                default_routing_policy=self._default_routing_policy,
+            )
         return self._responses
 
     # ------------------------------------------------------------------
@@ -236,8 +248,61 @@ class OctomilClient(ModelOpsMixin):
                 api=self._api,
                 org_id=self._org_id,
                 telemetry=self._reporter,
+                on_desired_state=self._apply_routing_from_desired_state,
             )
         return self._control
+
+    def _apply_routing_from_desired_state(self, entries: list[dict]) -> None:
+        """Extract per-deployment routing policies from desired state.
+
+        Builds a ``deployment_id → RoutingPolicy`` map so multi-deployment
+        clients route each request correctly.  Also builds a
+        ``model_id → deployment_id`` map for automatic resolution from
+        request model names.
+
+        When the same model_id appears under multiple deployments with
+        different routing policies, that model_id is excluded from
+        auto-resolution (ambiguous).  Callers must pass explicit
+        ``metadata={"deployment_id": "..."}`` to disambiguate.
+        """
+        from .runtime.core.policy import RoutingPolicy
+
+        policies: dict[str, RoutingPolicy] = {}
+        model_map: dict[str, str] = {}
+        model_policies: dict[str, RoutingPolicy] = {}  # track policy per model_id
+        ambiguous: set[str] = set()
+        first_policy: RoutingPolicy | None = None
+        for entry in entries:
+            policy = RoutingPolicy.from_desired_state_entry(entry)
+            if policy is None:
+                continue
+            dep_id = entry.get("deployment_id")
+            model_id = entry.get("model_id")
+            if dep_id:
+                policies[dep_id] = policy
+                if model_id:
+                    if model_id in model_policies:
+                        if model_policies[model_id] != policy:
+                            ambiguous.add(model_id)
+                    else:
+                        model_policies[model_id] = policy
+                        model_map[model_id] = dep_id
+            if first_policy is None:
+                first_policy = policy
+
+        # Remove model_ids with conflicting routing — can't auto-resolve
+        for mid in ambiguous:
+            model_map.pop(mid, None)
+            logger.debug(
+                "Model %s has multiple deployments with different routing; "
+                "pass deployment_id in metadata to disambiguate",
+                mid,
+            )
+
+        self._routing_policies = policies
+        self._model_deployment_map = model_map
+        self._default_routing_policy = first_policy
+        self._responses = None  # Reset so it picks up new policies
 
     # ------------------------------------------------------------------
     # Audio namespace — transcription APIs
