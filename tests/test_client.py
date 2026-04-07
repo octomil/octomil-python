@@ -493,6 +493,60 @@ class TestClientDesiredStateRouting:
     @patch("octomil.client.RolloutsAPI")
     @patch("octomil.client.ModelRegistry")
     @patch("octomil.client._ApiClient")
+    def test_same_model_multiple_deployments_excluded_from_model_map(self, mock_api_cls, mock_registry, mock_rollouts):
+        """Same model_id under two deployments with different routing is ambiguous."""
+        from octomil.client import OctomilClient
+
+        mock_api = mock_api_cls.return_value
+        raw_desired = {
+            "models": [
+                {
+                    "modelId": "shared-model",
+                    "desiredVersion": "v1",
+                    "deploymentId": "dep_a",
+                    "artifactManifest": {"artifactId": "a1", "totalBytes": 100},
+                    "routingPolicy": "local_only",
+                },
+                {
+                    "modelId": "shared-model",
+                    "desiredVersion": "v2",
+                    "deploymentId": "dep_b",
+                    "artifactManifest": {"artifactId": "a2", "totalBytes": 200},
+                    "routingPreference": "quality",
+                    "cloudFallback": {"enabled": True},
+                },
+                {
+                    "modelId": "unique-model",
+                    "desiredVersion": "v1",
+                    "deploymentId": "dep_c",
+                    "artifactManifest": {"artifactId": "a3", "totalBytes": 300},
+                    "routingPreference": "local",
+                    "cloudFallback": {"enabled": True},
+                },
+            ],
+        }
+        mock_api.post.return_value = raw_desired
+
+        c = OctomilClient(auth=OrgApiKeyAuth(api_key="key", org_id="default"))
+        c.control._server_device_id = "dev-test"
+        c.control.get_desired_state()
+
+        # All 3 deployments have policies
+        assert len(c._routing_policies) == 3
+
+        # shared-model is excluded from model map (ambiguous)
+        assert "shared-model" not in c._model_deployment_map
+
+        # unique-model is still in the model map
+        assert c._model_deployment_map == {"unique-model": "dep_c"}
+
+        # Per-deployment lookup still works via explicit deployment_id
+        assert c._routing_policies["dep_a"].mode == "local_only"
+        assert c._routing_policies["dep_b"].prefer_local is False
+
+    @patch("octomil.client.RolloutsAPI")
+    @patch("octomil.client.ModelRegistry")
+    @patch("octomil.client._ApiClient")
     def test_desired_state_without_routing_fields_leaves_policy_none(self, mock_api_cls, mock_registry, mock_rollouts):
         from octomil.client import OctomilClient
 

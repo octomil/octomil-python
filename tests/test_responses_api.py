@@ -466,3 +466,46 @@ async def test_model_based_auto_routing():
     )
     assert result_override.output[0].text == "from-cloud"
     assert result_override.locality == "cloud"
+
+
+@pytest.mark.asyncio
+async def test_ambiguous_model_falls_through_to_default():
+    """Model not in model_deployment_map falls through to default routing."""
+    router = _make_router()
+    # Simulate: "shared-model" was excluded from model map due to ambiguity,
+    # but per-deployment policies still exist for explicit lookup.
+    responses = OctomilResponses(
+        runtime_resolver=lambda _: router,
+        routing_policies={
+            "dep_a": RoutingPolicy.local_only(),
+            "dep_b": RoutingPolicy.auto(prefer_local=False),
+        },
+        model_deployment_map={},  # shared-model excluded (ambiguous)
+        default_routing_policy=RoutingPolicy.auto(prefer_local=True),
+    )
+
+    # No model map entry → falls through to default (balanced/local)
+    result = await responses.create(ResponseRequest(model="shared-model", input=[text_input("Hi")]))
+    assert result.output[0].text == "from-local"
+    assert result.locality == "on_device"
+
+    # Explicit deployment_id still works for disambiguation
+    result_a = await responses.create(
+        ResponseRequest(
+            model="shared-model",
+            input=[text_input("Hi")],
+            metadata={"deployment_id": "dep_a"},
+        )
+    )
+    assert result_a.output[0].text == "from-local"  # local_only
+    assert result_a.locality == "on_device"
+
+    result_b = await responses.create(
+        ResponseRequest(
+            model="shared-model",
+            input=[text_input("Hi")],
+            metadata={"deployment_id": "dep_b"},
+        )
+    )
+    assert result_b.output[0].text == "from-cloud"  # quality/cloud
+    assert result_b.locality == "cloud"

@@ -256,14 +256,20 @@ class OctomilClient(ModelOpsMixin):
         """Extract per-deployment routing policies from desired state.
 
         Builds a ``deployment_id → RoutingPolicy`` map so multi-deployment
-        clients route each request correctly.  Also sets a single
-        ``_default_routing_policy`` as fallback (the first policy found,
-        or the sole policy when there is only one deployment).
+        clients route each request correctly.  Also builds a
+        ``model_id → deployment_id`` map for automatic resolution from
+        request model names.
+
+        When the same model_id appears under multiple deployments with
+        different routing policies, that model_id is excluded from
+        auto-resolution (ambiguous).  Callers must pass explicit
+        ``metadata={"deployment_id": "..."}`` to disambiguate.
         """
         from .runtime.core.policy import RoutingPolicy
 
         policies: dict[str, RoutingPolicy] = {}
         model_map: dict[str, str] = {}
+        ambiguous: set[str] = set()
         first_policy: RoutingPolicy | None = None
         for entry in entries:
             policy = RoutingPolicy.from_desired_state_entry(entry)
@@ -274,9 +280,21 @@ class OctomilClient(ModelOpsMixin):
             if dep_id:
                 policies[dep_id] = policy
                 if model_id:
-                    model_map[model_id] = dep_id
+                    if model_id in model_map and model_map[model_id] != dep_id:
+                        ambiguous.add(model_id)
+                    else:
+                        model_map[model_id] = dep_id
             if first_policy is None:
                 first_policy = policy
+
+        # Remove ambiguous model_ids — can't auto-resolve these
+        for mid in ambiguous:
+            del model_map[mid]
+            logger.debug(
+                "Model %s has multiple deployments with different routing; "
+                "pass deployment_id in metadata to disambiguate",
+                mid,
+            )
 
         self._routing_policies = policies
         self._model_deployment_map = model_map
