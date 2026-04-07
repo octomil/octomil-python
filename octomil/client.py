@@ -269,6 +269,7 @@ class OctomilClient(ModelOpsMixin):
 
         policies: dict[str, RoutingPolicy] = {}
         model_map: dict[str, str] = {}
+        model_policies: dict[str, RoutingPolicy] = {}  # track policy per model_id
         ambiguous: set[str] = set()
         first_policy: RoutingPolicy | None = None
         for entry in entries:
@@ -280,16 +281,18 @@ class OctomilClient(ModelOpsMixin):
             if dep_id:
                 policies[dep_id] = policy
                 if model_id:
-                    if model_id in model_map and model_map[model_id] != dep_id:
-                        ambiguous.add(model_id)
+                    if model_id in model_policies:
+                        if model_policies[model_id] != policy:
+                            ambiguous.add(model_id)
                     else:
+                        model_policies[model_id] = policy
                         model_map[model_id] = dep_id
             if first_policy is None:
                 first_policy = policy
 
-        # Remove ambiguous model_ids — can't auto-resolve these
+        # Remove model_ids with conflicting routing — can't auto-resolve
         for mid in ambiguous:
-            del model_map[mid]
+            model_map.pop(mid, None)
             logger.debug(
                 "Model %s has multiple deployments with different routing; "
                 "pass deployment_id in metadata to disambiguate",

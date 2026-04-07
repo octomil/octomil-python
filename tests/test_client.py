@@ -547,6 +547,42 @@ class TestClientDesiredStateRouting:
     @patch("octomil.client.RolloutsAPI")
     @patch("octomil.client.ModelRegistry")
     @patch("octomil.client._ApiClient")
+    def test_same_model_same_routing_stays_in_model_map(self, mock_api_cls, mock_registry, mock_rollouts):
+        """Same model_id under two deployments with identical routing is NOT ambiguous."""
+        from octomil.client import OctomilClient
+
+        mock_api = mock_api_cls.return_value
+        raw_desired = {
+            "models": [
+                {
+                    "modelId": "shared-model",
+                    "desiredVersion": "v1",
+                    "deploymentId": "dep_a",
+                    "artifactManifest": {"artifactId": "a1", "totalBytes": 100},
+                    "routingPolicy": "local_only",
+                },
+                {
+                    "modelId": "shared-model",
+                    "desiredVersion": "v2",
+                    "deploymentId": "dep_b",
+                    "artifactManifest": {"artifactId": "a2", "totalBytes": 200},
+                    "routingPolicy": "local_only",
+                },
+            ],
+        }
+        mock_api.post.return_value = raw_desired
+
+        c = OctomilClient(auth=OrgApiKeyAuth(api_key="key", org_id="default"))
+        c.control._server_device_id = "dev-test"
+        c.control.get_desired_state()
+
+        # Same routing on both → model stays in map (maps to first deployment seen)
+        assert "shared-model" in c._model_deployment_map
+        assert c._model_deployment_map["shared-model"] == "dep_a"
+
+    @patch("octomil.client.RolloutsAPI")
+    @patch("octomil.client.ModelRegistry")
+    @patch("octomil.client._ApiClient")
     def test_desired_state_without_routing_fields_leaves_policy_none(self, mock_api_cls, mock_registry, mock_rollouts):
         from octomil.client import OctomilClient
 
