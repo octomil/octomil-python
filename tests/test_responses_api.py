@@ -370,3 +370,55 @@ async def test_from_desired_state_entry_local_first():
     result = await responses.create(ResponseRequest(model="test", input=[text_input("Hi")]))
     assert result.output[0].text == "from-local"
     assert result.locality == "on_device"
+
+
+@pytest.mark.asyncio
+async def test_per_deployment_routing_policy():
+    """Per-deployment routing resolves by metadata deployment_id."""
+    router = _make_router()
+    responses = OctomilResponses(
+        runtime_resolver=lambda _: router,
+        routing_policies={
+            "dep_local": RoutingPolicy.local_only(),
+            "dep_cloud": RoutingPolicy.auto(prefer_local=False),
+        },
+        default_routing_policy=RoutingPolicy.auto(prefer_local=True),
+    )
+
+    # Request with dep_cloud deployment_id → cloud routing
+    result_cloud = await responses.create(
+        ResponseRequest(
+            model="test",
+            input=[text_input("Hi")],
+            metadata={"deployment_id": "dep_cloud"},
+        )
+    )
+    assert result_cloud.output[0].text == "from-cloud"
+    assert result_cloud.locality == "cloud"
+
+    # Request with dep_local deployment_id → local routing
+    result_local = await responses.create(
+        ResponseRequest(
+            model="test",
+            input=[text_input("Hi")],
+            metadata={"deployment_id": "dep_local"},
+        )
+    )
+    assert result_local.output[0].text == "from-local"
+    assert result_local.locality == "on_device"
+
+    # Request with no deployment_id → default (balanced/local)
+    result_default = await responses.create(ResponseRequest(model="test", input=[text_input("Hi")]))
+    assert result_default.output[0].text == "from-local"
+    assert result_default.locality == "on_device"
+
+    # Request with unknown deployment_id → default fallback
+    result_unknown = await responses.create(
+        ResponseRequest(
+            model="test",
+            input=[text_input("Hi")],
+            metadata={"deployment_id": "dep_unknown"},
+        )
+    )
+    assert result_unknown.output[0].text == "from-local"
+    assert result_unknown.locality == "on_device"

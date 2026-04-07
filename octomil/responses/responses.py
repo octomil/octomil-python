@@ -105,18 +105,31 @@ class OctomilResponses:
         runtime_resolver: Optional[Callable[[str], Optional[ModelRuntime]]] = None,
         catalog: Optional[ModelCatalogService] = None,
         telemetry_reporter: Optional[object] = None,
+        routing_policies: Optional[dict[str, RoutingPolicy]] = None,
         default_routing_policy: Optional[RoutingPolicy] = None,
     ) -> None:
         self._runtime_resolver = runtime_resolver
         self._catalog = catalog
         self._response_cache: dict[str, Response] = {}
         self._telemetry = telemetry_reporter
+        self._routing_policies = routing_policies or {}
         self._default_routing_policy = default_routing_policy
+
+    def _resolve_routing_policy(self, metadata: Optional[dict[str, str]]) -> Optional[RoutingPolicy]:
+        """Resolve routing policy: per-request metadata > per-deployment map > global default."""
+        explicit = RoutingPolicy.from_metadata(metadata)
+        if explicit is not None:
+            return explicit
+        if metadata and self._routing_policies:
+            dep_id = metadata.get("deployment_id")
+            if dep_id and dep_id in self._routing_policies:
+                return self._routing_policies[dep_id]
+        return self._default_routing_policy
 
     async def create(self, request: ResponseRequest) -> Response:
         runtime = self._resolve_runtime(request.model)
         model_id = _model_id_str(request.model)
-        routing_policy = RoutingPolicy.from_metadata(request.metadata) or self._default_routing_policy
+        routing_policy = self._resolve_routing_policy(request.metadata)
         locality, is_fallback = _determine_locality(runtime, model_id, routing_policy)
 
         if is_fallback and self._telemetry is not None:
@@ -141,7 +154,7 @@ class OctomilResponses:
     async def stream(self, request: ResponseRequest) -> AsyncIterator[ResponseStreamEvent]:
         runtime = self._resolve_runtime(request.model)
         model_id = _model_id_str(request.model)
-        routing_policy = RoutingPolicy.from_metadata(request.metadata) or self._default_routing_policy
+        routing_policy = self._resolve_routing_policy(request.metadata)
         locality, is_fallback = _determine_locality(runtime, model_id, routing_policy)
 
         if is_fallback and self._telemetry is not None:

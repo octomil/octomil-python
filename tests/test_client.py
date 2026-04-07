@@ -404,6 +404,7 @@ class TestClientDesiredStateRouting:
                 {
                     "modelId": "m1",
                     "desiredVersion": "v2",
+                    "deploymentId": "dep_1",
                     "artifactManifest": {"artifactId": "a1", "totalBytes": 100},
                     "routingPreference": "quality",
                     "cloudFallback": {"enabled": True},
@@ -418,20 +419,69 @@ class TestClientDesiredStateRouting:
 
         # Before sync: no routing policy
         assert c._default_routing_policy is None
+        assert c._routing_policies == {}
 
         # Fetch desired state — should trigger routing callback
         entries = c.control.get_desired_state()
         assert len(entries) == 1
 
-        # Routing policy should now be set
-        assert c._default_routing_policy is not None
-        assert c._default_routing_policy.prefer_local is False  # quality preset
+        # Per-deployment policy should be set
+        assert "dep_1" in c._routing_policies
+        assert c._routing_policies["dep_1"].prefer_local is False  # quality preset
 
-        # Responses API picks it up
+        # Default fallback also set (first policy found)
+        assert c._default_routing_policy is not None
+        assert c._default_routing_policy.prefer_local is False
+
+        # Responses API picks up both
         assert c._responses is None  # reset by callback
         responses = c.responses
         assert responses._default_routing_policy is not None
-        assert responses._default_routing_policy.prefer_local is False
+        assert "dep_1" in responses._routing_policies
+
+    @patch("octomil.client.RolloutsAPI")
+    @patch("octomil.client.ModelRegistry")
+    @patch("octomil.client._ApiClient")
+    def test_multi_deployment_desired_state_stores_per_deployment_policies(
+        self, mock_api_cls, mock_registry, mock_rollouts
+    ):
+        """Multiple deployments with different routing get distinct policies."""
+        from octomil.client import OctomilClient
+
+        mock_api = mock_api_cls.return_value
+        raw_desired = {
+            "models": [
+                {
+                    "modelId": "m1",
+                    "desiredVersion": "v1",
+                    "deploymentId": "dep_local",
+                    "artifactManifest": {"artifactId": "a1", "totalBytes": 100},
+                    "routingPolicy": "local_only",
+                },
+                {
+                    "modelId": "m2",
+                    "desiredVersion": "v1",
+                    "deploymentId": "dep_cloud",
+                    "artifactManifest": {"artifactId": "a2", "totalBytes": 200},
+                    "routingPreference": "quality",
+                    "cloudFallback": {"enabled": True},
+                },
+            ],
+        }
+        mock_api.post.return_value = raw_desired
+
+        c = OctomilClient(auth=OrgApiKeyAuth(api_key="key", org_id="default"))
+        c.control._server_device_id = "dev-test"
+        c.control.get_desired_state()
+
+        # Both deployments stored with distinct policies
+        assert len(c._routing_policies) == 2
+        assert c._routing_policies["dep_local"].mode == "local_only"
+        assert c._routing_policies["dep_cloud"].prefer_local is False
+
+        # Default fallback is the first one found
+        assert c._default_routing_policy is not None
+        assert c._default_routing_policy.mode == "local_only"
 
     @patch("octomil.client.RolloutsAPI")
     @patch("octomil.client.ModelRegistry")
@@ -458,3 +508,4 @@ class TestClientDesiredStateRouting:
 
         # No routing fields in desired state — policy stays None
         assert c._default_routing_policy is None
+        assert c._routing_policies == {}

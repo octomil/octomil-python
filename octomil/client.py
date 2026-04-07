@@ -106,7 +106,8 @@ class OctomilClient(ModelOpsMixin):
         )
         self._rollouts = RolloutsAPI(self._api)
 
-        # Routing policy derived from desired state (set automatically via control sync)
+        # Per-deployment routing policies from desired state (set automatically via control sync)
+        self._routing_policies: dict[str, "RoutingPolicy"] = {}
         self._default_routing_policy: "RoutingPolicy | None" = None
 
         # Lazy-initialised response, workflow, control, and models namespace APIs
@@ -213,6 +214,7 @@ class OctomilClient(ModelOpsMixin):
             self._responses = OctomilResponses(
                 catalog=self._catalog,
                 telemetry_reporter=self._reporter,
+                routing_policies=self._routing_policies,
                 default_routing_policy=self._default_routing_policy,
             )
         return self._responses
@@ -249,15 +251,30 @@ class OctomilClient(ModelOpsMixin):
         return self._control
 
     def _apply_routing_from_desired_state(self, entries: list[dict]) -> None:
-        """Extract routing policy from desired state and apply to responses API."""
+        """Extract per-deployment routing policies from desired state.
+
+        Builds a ``deployment_id → RoutingPolicy`` map so multi-deployment
+        clients route each request correctly.  Also sets a single
+        ``_default_routing_policy`` as fallback (the first policy found,
+        or the sole policy when there is only one deployment).
+        """
         from .runtime.core.policy import RoutingPolicy
 
+        policies: dict[str, RoutingPolicy] = {}
+        first_policy: RoutingPolicy | None = None
         for entry in entries:
             policy = RoutingPolicy.from_desired_state_entry(entry)
-            if policy is not None:
-                self._default_routing_policy = policy
-                self._responses = None  # Reset so it picks up new policy
-                break
+            if policy is None:
+                continue
+            dep_id = entry.get("deployment_id")
+            if dep_id:
+                policies[dep_id] = policy
+            if first_policy is None:
+                first_policy = policy
+
+        self._routing_policies = policies
+        self._default_routing_policy = first_policy
+        self._responses = None  # Reset so it picks up new policies
 
     # ------------------------------------------------------------------
     # Audio namespace — transcription APIs
