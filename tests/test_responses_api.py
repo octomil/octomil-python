@@ -422,3 +422,47 @@ async def test_per_deployment_routing_policy():
     )
     assert result_unknown.output[0].text == "from-local"
     assert result_unknown.locality == "on_device"
+
+
+@pytest.mark.asyncio
+async def test_model_based_auto_routing():
+    """Model name automatically resolves to deployment routing — no metadata needed."""
+    router = _make_router()
+    responses = OctomilResponses(
+        runtime_resolver=lambda _: router,
+        routing_policies={
+            "dep_local": RoutingPolicy.local_only(),
+            "dep_cloud": RoutingPolicy.auto(prefer_local=False),
+        },
+        model_deployment_map={
+            "chat-model": "dep_cloud",
+            "private-model": "dep_local",
+        },
+        default_routing_policy=RoutingPolicy.auto(prefer_local=True),
+    )
+
+    # "chat-model" → dep_cloud → cloud routing (no metadata)
+    result_cloud = await responses.create(ResponseRequest(model="chat-model", input=[text_input("Hi")]))
+    assert result_cloud.output[0].text == "from-cloud"
+    assert result_cloud.locality == "cloud"
+
+    # "private-model" → dep_local → local routing (no metadata)
+    result_local = await responses.create(ResponseRequest(model="private-model", input=[text_input("Hi")]))
+    assert result_local.output[0].text == "from-local"
+    assert result_local.locality == "on_device"
+
+    # Unknown model → default fallback (balanced/local)
+    result_default = await responses.create(ResponseRequest(model="unknown-model", input=[text_input("Hi")]))
+    assert result_default.output[0].text == "from-local"
+    assert result_default.locality == "on_device"
+
+    # Explicit metadata still takes precedence over model-based lookup
+    result_override = await responses.create(
+        ResponseRequest(
+            model="private-model",
+            input=[text_input("Hi")],
+            metadata={"routing.policy": "cloud_only"},
+        )
+    )
+    assert result_override.output[0].text == "from-cloud"
+    assert result_override.locality == "cloud"

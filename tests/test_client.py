@@ -479,9 +479,16 @@ class TestClientDesiredStateRouting:
         assert c._routing_policies["dep_local"].mode == "local_only"
         assert c._routing_policies["dep_cloud"].prefer_local is False
 
+        # Model → deployment map built
+        assert c._model_deployment_map == {"m1": "dep_local", "m2": "dep_cloud"}
+
         # Default fallback is the first one found
         assert c._default_routing_policy is not None
         assert c._default_routing_policy.mode == "local_only"
+
+        # Responses API has the model map for automatic resolution
+        responses = c.responses
+        assert responses._model_deployment_map == {"m1": "dep_local", "m2": "dep_cloud"}
 
     @patch("octomil.client.RolloutsAPI")
     @patch("octomil.client.ModelRegistry")

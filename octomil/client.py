@@ -108,6 +108,7 @@ class OctomilClient(ModelOpsMixin):
 
         # Per-deployment routing policies from desired state (set automatically via control sync)
         self._routing_policies: dict[str, "RoutingPolicy"] = {}
+        self._model_deployment_map: dict[str, str] = {}  # model_id → deployment_id
         self._default_routing_policy: "RoutingPolicy | None" = None
 
         # Lazy-initialised response, workflow, control, and models namespace APIs
@@ -215,6 +216,7 @@ class OctomilClient(ModelOpsMixin):
                 catalog=self._catalog,
                 telemetry_reporter=self._reporter,
                 routing_policies=self._routing_policies,
+                model_deployment_map=self._model_deployment_map,
                 default_routing_policy=self._default_routing_policy,
             )
         return self._responses
@@ -261,18 +263,23 @@ class OctomilClient(ModelOpsMixin):
         from .runtime.core.policy import RoutingPolicy
 
         policies: dict[str, RoutingPolicy] = {}
+        model_map: dict[str, str] = {}
         first_policy: RoutingPolicy | None = None
         for entry in entries:
             policy = RoutingPolicy.from_desired_state_entry(entry)
             if policy is None:
                 continue
             dep_id = entry.get("deployment_id")
+            model_id = entry.get("model_id")
             if dep_id:
                 policies[dep_id] = policy
+                if model_id:
+                    model_map[model_id] = dep_id
             if first_policy is None:
                 first_policy = policy
 
         self._routing_policies = policies
+        self._model_deployment_map = model_map
         self._default_routing_policy = first_policy
         self._responses = None  # Reset so it picks up new policies
 
