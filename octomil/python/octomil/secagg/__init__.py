@@ -30,7 +30,7 @@ Shared utilities: Shamir secret sharing, field-element encoding, mask
 derivation, and quantization.
 
 This package is a refactored version of the original ``secagg.py`` monolith.
-All public symbols are re-exported here for backward compatibility.
+Sub-modules: client, crypto, encoding, plus_client, quantization, shamir.
 """
 
 from .client import SecAggClient, SecAggConfig  # noqa: F401
@@ -40,7 +40,6 @@ from .crypto import (  # noqa: F401
     HKDF_INFO_SHARE_ENCRYPTION,
     ECDHKeyPair,
     ECKeyPair,
-    _pseudo_rand_gen,
     compute_shared_secret,
     decrypt_share,
     derive_pairwise_mask,
@@ -50,7 +49,6 @@ from .crypto import (  # noqa: F401
     generate_shared_key,
 )
 from .encoding import (  # noqa: F401
-    _derive_mask_elements,
     field_elements_to_model_bytes,
     model_bytes_to_field_elements,
 )
@@ -60,7 +58,6 @@ from .shamir import (  # noqa: F401
     DEFAULT_FIELD_SIZE,
     ByteShamirShare,
     ShamirShare,
-    _mod_inverse,
     combine_shares_bytes,
     create_shares_bytes,
     generate_shares,
@@ -76,11 +73,9 @@ __all__ = [
     "reconstruct_secret",
     "create_shares_bytes",
     "combine_shares_bytes",
-    "_mod_inverse",
     # Encoding
     "model_bytes_to_field_elements",
     "field_elements_to_model_bytes",
-    "_derive_mask_elements",
     # Quantization
     "quantize",
     "dequantize",
@@ -94,7 +89,6 @@ __all__ = [
     "compute_shared_secret",
     "generate_pairwise_key",
     "generate_share_encryption_key",
-    "_pseudo_rand_gen",
     "derive_pairwise_mask",
     "encrypt_share",
     "decrypt_share",
