@@ -94,3 +94,17 @@ session = AgentSession(
 2. Explicit `deployment_id` in request metadata -> per-deployment policy
 3. Model name -> deployment lookup -> per-deployment policy (automatic)
 4. Global default (first policy from desired state)
+
+## Cross-SDK parity
+
+All SDKs follow the same `preferExplicit` contract with the routing server:
+
+| SDK     | `deployment_id`                                         | `prefer` behavior                                               |
+| ------- | ------------------------------------------------------- | --------------------------------------------------------------- |
+| Python  | Resolved from model→deployment map or explicit metadata | Resolved at SDK level via `RoutingPolicy`                       |
+| Node    | `deploymentId` option on `OctomilClient`                | Omitted when `deploymentId` set and `prefer` not explicit       |
+| Browser | Same as Node                                            | Same as Node                                                    |
+| iOS     | `deploymentId` on `RoutingConfig`                       | Omitted when `deploymentId` set and `preferExplicit` is `false` |
+| Android | `deploymentId` on `RoutingConfig`                       | Omitted when `deploymentId` set and `preferExplicit` is `false` |
+
+When `prefer` is omitted, the server applies the deployment's `routing_preference` (from the `Deployment` model). When `prefer` is present, it overrides the deployment's policy for that request.
