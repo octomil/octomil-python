@@ -66,12 +66,12 @@ class TestClientPush:
     @patch("octomil.client.ModelRegistry")
     @patch("octomil.client._ApiClient")
     def test_push_calls_registry(self, mock_api, mock_registry_cls, mock_rollouts):
+        """push() uploads via v2 flow: model name passed directly as model_id."""
         from octomil.client import OctomilClient
 
         mock_registry = mock_registry_cls.return_value
-        mock_registry.ensure_model.return_value = {"id": "model-abc"}
         mock_registry.upload_version_from_path.return_value = {
-            "model_id": "model-abc",
+            "model_id": "test",
             "version": "1.0.0",
             "formats": {"onnx": "ok"},
         }
@@ -79,14 +79,10 @@ class TestClientPush:
         c = OctomilClient(auth=OrgApiKeyAuth(api_key="key", org_id="default"))
         result = c.push("model.pt", name="test", version="1.0.0")
 
-        mock_registry.ensure_model.assert_called_once_with(
-            name="test",
-            framework="pytorch",
-            use_case="other",
-            description=None,
-        )
+        # v2 flow: no ensure_model call — model name goes directly to upload
+        mock_registry.ensure_model.assert_not_called()
         mock_registry.upload_version_from_path.assert_called_once_with(
-            model_id="model-abc",
+            model_id="test",
             file_path="model.pt",
             version="1.0.0",
             description=None,
@@ -98,10 +94,10 @@ class TestClientPush:
     @patch("octomil.client.ModelRegistry")
     @patch("octomil.client._ApiClient")
     def test_push_with_all_options(self, mock_api, mock_registry_cls, mock_rollouts):
+        """push() forwards description and formats to upload_version_from_path."""
         from octomil.client import OctomilClient
 
         mock_registry = mock_registry_cls.return_value
-        mock_registry.ensure_model.return_value = {"id": "model-xyz"}
         mock_registry.upload_version_from_path.return_value = {"ok": True}
 
         c = OctomilClient(auth=OrgApiKeyAuth(api_key="key", org_id="default"))
@@ -115,14 +111,10 @@ class TestClientPush:
             use_case="nlp",
         )
 
-        mock_registry.ensure_model.assert_called_once_with(
-            name="test",
-            framework="tensorflow",
-            use_case="nlp",
-            description="A test model",
-        )
+        # v2 flow: no ensure_model call
+        mock_registry.ensure_model.assert_not_called()
         mock_registry.upload_version_from_path.assert_called_once_with(
-            model_id="model-xyz",
+            model_id="test",
             file_path="model.pt",
             version="2.0.0",
             description="A test model",
