@@ -225,11 +225,9 @@ class OctomilControl:
                 "total_bytes": manifest.get("totalBytes", 0),
                 "activation_policy": entry.get("activationPolicy", "immediate"),
                 "engine_policy": entry.get("enginePolicy", {}),
-                # Routing fields emitted by desired state compiler
+                # Serving policy (contract 1.16.0)
                 "deployment_id": entry.get("deploymentId"),
-                "routing_policy": entry.get("routingPolicy"),
-                "routing_preference": entry.get("routingPreference"),
-                "cloud_fallback": entry.get("cloudFallback"),
+                "serving_policy": entry.get("servingPolicy"),
             }
             result.append(mapped)
         if self._on_desired_state and result:

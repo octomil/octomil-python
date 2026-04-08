@@ -61,45 +61,39 @@ class RoutingPolicy:
     def from_desired_state_entry(cls, entry: dict[str, Any]) -> Optional[RoutingPolicy]:
         """Build a RoutingPolicy from a desired-state model entry.
 
-        Reads ``routing_policy`` (routing_mode from deployment) and
-        ``routing_preference`` / ``cloud_fallback`` fields emitted by
-        the desired state compiler.
+        Reads the ``serving_policy`` dict emitted by the desired state
+        compiler (contract 1.16.0).  The dict contains ``routing_mode``,
+        ``routing_preference``, and ``fallback.allow_cloud_fallback``.
 
         Mapping:
-          routing_policy=local_only           → LOCAL_ONLY
-          routing_policy=cloud_only           → CLOUD_ONLY
-          routing_preference=local            → LOCAL_FIRST, fallback=cloud
-          routing_preference=balanced         → AUTO, prefer_local=True
-          routing_preference=quality          → AUTO, prefer_local=False (cloud-biased)
+          routing_mode=local_only             → LOCAL_ONLY
+          routing_mode=cloud_only             → CLOUD_ONLY
+          routing_preference=local            → LOCAL_FIRST
+          routing_preference=performance      → AUTO, prefer_local=True
+          routing_preference=quality          → AUTO, prefer_local=False
+          routing_preference=cloud            → AUTO, prefer_local=False
           (none of the above)                 → AUTO (default)
         """
-        rp = entry.get("routing_policy")
-        pref = entry.get("routing_preference")
-        cf = entry.get("cloud_fallback")
-        # Default to cloud fallback when cloud_fallback key is absent or enabled=True
-        if cf is None:
-            fallback = "cloud"
-        else:
-            fallback = "cloud" if cf.get("enabled", True) else "none"
-
-        if rp == "local_only":
-            return cls.local_only()
-        if rp == "cloud_only":
-            return cls.cloud_only()
-
-        # routing_preference drives the AUTO/LOCAL_FIRST split
-        if pref == "local":
-            return cls.local_first(fallback=fallback)
-        if pref == "quality":
-            return cls.auto(prefer_local=False, fallback=fallback)
-        if pref == "balanced":
-            return cls.auto(prefer_local=True, fallback=fallback)
-
-        # No routing fields set → caller should use default policy
-        if rp is None and pref is None:
+        sp = entry.get("serving_policy")
+        if not sp:
             return None
+        rm = sp.get("routing_mode", "auto")
+        rp = sp.get("routing_preference")
+        fb = sp.get("fallback") or {}
+        fallback = "cloud" if fb.get("allow_cloud_fallback", True) else "none"
 
-        # Unrecognized routing_policy → auto
+        if rm == "local_only":
+            return cls.local_only()
+        if rm == "cloud_only":
+            return cls.cloud_only()
+        if rp == "local":
+            return cls.local_first(fallback=fallback)
+        if rp == "performance":
+            return cls.auto(prefer_local=True, fallback=fallback)
+        if rp == "quality":
+            return cls.auto(prefer_local=False, fallback=fallback)
+        if rp == "cloud":
+            return cls.auto(prefer_local=False, fallback=fallback)
         return cls.auto(fallback=fallback)
 
     @classmethod
