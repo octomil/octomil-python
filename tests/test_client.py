@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from unittest.mock import patch
+import asyncio
+from unittest.mock import AsyncMock, patch
 
 from octomil.auth import OrgApiKeyAuth
 
@@ -606,3 +607,303 @@ class TestClientDesiredStateRouting:
         # No routing fields in desired state — policy stays None
         assert c._default_routing_policy is None
         assert c._routing_policies == {}
+
+
+class TestClientProductionPaths:
+    """End-to-end tests proving client.chat.create / client.chat.stream
+    get correct routing from desired state through to OctomilResponses."""
+
+    @patch("octomil.client.RolloutsAPI")
+    @patch("octomil.client.ModelRegistry")
+    @patch("octomil.client._ApiClient")
+    def test_chat_create_uses_desired_state_routing(self, mock_api_cls, mock_registry, mock_rollouts):
+        """client.chat.create() delegates to responses.create() with correct routing policies."""
+        from octomil.client import OctomilClient
+        from octomil.responses.types import Response, ResponseUsage, TextOutput
+
+        mock_api = mock_api_cls.return_value
+
+        # Desired state with routingPreference=quality on dep_1 for chat-model
+        raw_desired = {
+            "models": [
+                {
+                    "modelId": "chat-model",
+                    "desiredVersion": "v1",
+                    "deploymentId": "dep_1",
+                    "artifactManifest": {"artifactId": "a1", "totalBytes": 100},
+                    "routingPreference": "quality",
+                    "cloudFallback": {"enabled": True},
+                },
+            ],
+        }
+        mock_api.post.return_value = raw_desired
+
+        c = OctomilClient(auth=OrgApiKeyAuth(api_key="key", org_id="default"))
+        c.control._server_device_id = "dev-test"
+        c.control.get_desired_state()
+
+        # Verify routing was applied
+        assert "dep_1" in c._routing_policies
+        assert c._model_deployment_map == {"chat-model": "dep_1"}
+
+        # Mock OctomilResponses.create to capture the call without actually running inference
+        fake_response = Response(
+            id="resp_test123",
+            model="chat-model",
+            output=[TextOutput(text="Hello from mock")],
+            finish_reason="stop",
+            usage=ResponseUsage(prompt_tokens=10, completion_tokens=5, total_tokens=15),
+        )
+
+        # Bind mock directly to the responses instance
+        mock_create = AsyncMock(return_value=fake_response)
+        original_create = c.responses.create
+        c.responses.create = mock_create
+
+        try:
+            result = c.chat.create(model="chat-model", messages=[{"role": "user", "content": "Hi"}])
+
+            # Verify responses.create was called
+            mock_create.assert_called_once()
+            request = mock_create.call_args[0][0]
+            assert request.model == "chat-model"
+
+            # Verify the OctomilResponses instance has correct routing config
+            responses = c.responses
+            assert "dep_1" in responses._routing_policies
+            assert responses._routing_policies["dep_1"].prefer_local is False  # quality preset
+            assert responses._model_deployment_map == {"chat-model": "dep_1"}
+            assert responses._default_routing_policy is not None
+
+            # Verify the ChatCompletion result
+            assert result.message["role"] == "assistant"
+            assert result.message["content"] == "Hello from mock"
+            assert result.usage["total_tokens"] == 15
+        finally:
+            c.responses.create = original_create
+
+    @patch("octomil.client.RolloutsAPI")
+    @patch("octomil.client.ModelRegistry")
+    @patch("octomil.client._ApiClient")
+    def test_chat_stream_uses_desired_state_routing(self, mock_api_cls, mock_registry, mock_rollouts):
+        """client.chat.stream() delegates to responses.stream() with correct routing policies."""
+        from octomil.client import OctomilClient
+        from octomil.responses.types import (
+            DoneEvent,
+            Response,
+            TextDeltaEvent,
+            TextOutput,
+        )
+
+        mock_api = mock_api_cls.return_value
+
+        raw_desired = {
+            "models": [
+                {
+                    "modelId": "stream-model",
+                    "desiredVersion": "v1",
+                    "deploymentId": "dep_stream",
+                    "artifactManifest": {"artifactId": "a1", "totalBytes": 100},
+                    "routingPreference": "local",
+                    "cloudFallback": {"enabled": True},
+                },
+            ],
+        }
+        mock_api.post.return_value = raw_desired
+
+        c = OctomilClient(auth=OrgApiKeyAuth(api_key="key", org_id="default"))
+        c.control._server_device_id = "dev-test"
+        c.control.get_desired_state()
+
+        # Verify routing was applied
+        assert "dep_stream" in c._routing_policies
+        assert c._model_deployment_map == {"stream-model": "dep_stream"}
+
+        # Create an async generator that yields stream events
+        async def fake_stream(request):
+            yield TextDeltaEvent(delta="Hello ")
+            yield TextDeltaEvent(delta="world")
+            yield DoneEvent(
+                response=Response(
+                    id="resp_stream_test",
+                    model="stream-model",
+                    output=[TextOutput(text="Hello world")],
+                    finish_reason="stop",
+                )
+            )
+
+        # Replace stream on the responses instance
+        responses_instance = c.responses
+        original_stream = responses_instance.stream
+        responses_instance.stream = fake_stream
+
+        # Run the async stream and collect chunks
+        async def collect_chunks():
+            chunks = []
+            async for chunk in c.chat.stream(
+                model="stream-model",
+                messages=[{"role": "user", "content": "Hi"}],
+            ):
+                chunks.append(chunk)
+            return chunks
+
+        loop = asyncio.new_event_loop()
+        try:
+            chunks = loop.run_until_complete(collect_chunks())
+        finally:
+            loop.close()
+
+        # Verify we got the expected chunks
+        assert len(chunks) == 3
+        assert chunks[0].content == "Hello "
+        assert chunks[0].done is False
+        assert chunks[1].content == "world"
+        assert chunks[1].done is False
+        assert chunks[2].done is True
+
+        # Verify the OctomilResponses instance has correct routing config
+        assert "dep_stream" in responses_instance._routing_policies
+        assert responses_instance._routing_policies["dep_stream"].prefer_local is True  # local preset
+        assert responses_instance._model_deployment_map == {"stream-model": "dep_stream"}
+
+        # Restore
+        responses_instance.stream = original_stream
+
+    @patch("octomil.client.RolloutsAPI")
+    @patch("octomil.client.ModelRegistry")
+    @patch("octomil.client._ApiClient")
+    def test_duplicate_model_identical_policy_auto_resolves(self, mock_api_cls, mock_registry, mock_rollouts):
+        """Two deployments, same model_id, both local_only -> model stays in model_deployment_map."""
+        from octomil.client import OctomilClient
+
+        mock_api = mock_api_cls.return_value
+        raw_desired = {
+            "models": [
+                {
+                    "modelId": "shared-llm",
+                    "desiredVersion": "v1",
+                    "deploymentId": "dep_x",
+                    "artifactManifest": {"artifactId": "a1", "totalBytes": 100},
+                    "routingPolicy": "local_only",
+                },
+                {
+                    "modelId": "shared-llm",
+                    "desiredVersion": "v2",
+                    "deploymentId": "dep_y",
+                    "artifactManifest": {"artifactId": "a2", "totalBytes": 200},
+                    "routingPolicy": "local_only",
+                },
+            ],
+        }
+        mock_api.post.return_value = raw_desired
+
+        c = OctomilClient(auth=OrgApiKeyAuth(api_key="key", org_id="default"))
+        c.control._server_device_id = "dev-test"
+        c.control.get_desired_state()
+
+        # Both deployments have policies
+        assert len(c._routing_policies) == 2
+        assert "dep_x" in c._routing_policies
+        assert "dep_y" in c._routing_policies
+
+        # Same policy on both -> model is NOT excluded (auto-resolved to first deployment seen)
+        assert "shared-llm" in c._model_deployment_map
+        assert c._model_deployment_map["shared-llm"] == "dep_x"
+
+        # The responses instance also sees this
+        responses = c.responses
+        assert "shared-llm" in responses._model_deployment_map
+        assert responses._model_deployment_map["shared-llm"] == "dep_x"
+
+        # Both policies are local_only
+        assert c._routing_policies["dep_x"].mode.value == "local_only"
+        assert c._routing_policies["dep_y"].mode.value == "local_only"
+
+    @patch("octomil.client.RolloutsAPI")
+    @patch("octomil.client.ModelRegistry")
+    @patch("octomil.client._ApiClient")
+    def test_duplicate_model_conflicting_policy_requires_explicit_deployment_id(
+        self, mock_api_cls, mock_registry, mock_rollouts
+    ):
+        """Two deployments, same model_id, one local_only and one quality -> model excluded from
+        auto-resolution but both per-deployment policies exist."""
+        from octomil.client import OctomilClient
+
+        mock_api = mock_api_cls.return_value
+        raw_desired = {
+            "models": [
+                {
+                    "modelId": "ambiguous-model",
+                    "desiredVersion": "v1",
+                    "deploymentId": "dep_local",
+                    "artifactManifest": {"artifactId": "a1", "totalBytes": 100},
+                    "routingPolicy": "local_only",
+                },
+                {
+                    "modelId": "ambiguous-model",
+                    "desiredVersion": "v2",
+                    "deploymentId": "dep_quality",
+                    "artifactManifest": {"artifactId": "a2", "totalBytes": 200},
+                    "routingPreference": "quality",
+                    "cloudFallback": {"enabled": True},
+                },
+            ],
+        }
+        mock_api.post.return_value = raw_desired
+
+        c = OctomilClient(auth=OrgApiKeyAuth(api_key="key", org_id="default"))
+        c.control._server_device_id = "dev-test"
+        c.control.get_desired_state()
+
+        # Both deployment policies exist
+        assert len(c._routing_policies) == 2
+        assert "dep_local" in c._routing_policies
+        assert "dep_quality" in c._routing_policies
+
+        # Model is excluded from model_deployment_map due to conflicting policies
+        assert "ambiguous-model" not in c._model_deployment_map
+
+        # Per-deployment policies have correct values
+        assert c._routing_policies["dep_local"].mode.value == "local_only"
+        assert c._routing_policies["dep_quality"].prefer_local is False  # quality preset
+
+        # The responses instance also reflects this exclusion
+        responses = c.responses
+        assert "ambiguous-model" not in responses._model_deployment_map
+
+        # But responses still has both deployment policies for explicit lookup
+        assert "dep_local" in responses._routing_policies
+        assert "dep_quality" in responses._routing_policies
+
+    @patch("octomil.client.RolloutsAPI")
+    @patch("octomil.client.ModelRegistry")
+    @patch("octomil.client._ApiClient")
+    def test_agent_session_inherits_routing(self, mock_api_cls, mock_registry, mock_rollouts):
+        """client.agent_session() returns a session with the client's routing."""
+        from octomil.client import OctomilClient
+
+        mock_api = mock_api_cls.return_value
+        raw_desired = {
+            "models": [
+                {
+                    "modelId": "agent-model",
+                    "desiredVersion": "v1",
+                    "deploymentId": "dep_agent",
+                    "artifactManifest": {"artifactId": "a1", "totalBytes": 100},
+                    "routingPreference": "quality",
+                    "cloudFallback": {"enabled": True},
+                },
+            ],
+        }
+        mock_api.post.return_value = raw_desired
+
+        c = OctomilClient(auth=OrgApiKeyAuth(api_key="key", org_id="default"))
+        c.control._server_device_id = "dev-test"
+        c.control.get_desired_state()
+
+        session = c.agent_session()
+
+        # Session's responses instance is the same as client's — shares routing
+        assert session._responses is c.responses
+        assert "dep_agent" in session._responses._routing_policies
+        assert session._responses._model_deployment_map == {"agent-model": "dep_agent"}

@@ -21,6 +21,7 @@ import logging
 from typing import TYPE_CHECKING, Any, AsyncIterator, Iterator, Optional
 
 if TYPE_CHECKING:
+    from .agents.session import AgentSession
     from .audio import OctomilAudio
     from .capabilities_client import CapabilitiesClient
     from .chat_client import ChatClient
@@ -303,6 +304,27 @@ class OctomilClient(ModelOpsMixin):
         self._model_deployment_map = model_map
         self._default_routing_policy = first_policy
         self._responses = None  # Reset so it picks up new policies
+
+    # ------------------------------------------------------------------
+    # Agent session factory
+    # ------------------------------------------------------------------
+
+    def agent_session(
+        self,
+        base_url: str | None = None,
+        *,
+        max_iterations: int = 10,
+    ) -> "AgentSession":
+        """Create an :class:`AgentSession` pre-wired with this client's
+        responses instance (and therefore its desired-state routing)."""
+        from .agents.session import AgentSession
+
+        return AgentSession(
+            base_url=base_url or self._api_base,
+            auth_token=self._api_key,
+            responses=self.responses,
+            max_iterations=max_iterations,
+        )
 
     # ------------------------------------------------------------------
     # Audio namespace — transcription APIs

@@ -101,7 +101,20 @@ def agent(
 
 
 async def _run(base_url: str, token: str, agent_type: str, query: str, model: str):
-    from octomil.agents.session import AgentSession
+    from octomil.auth import OrgApiKeyAuth
+    from octomil.client import OctomilClient
 
-    session = AgentSession(base_url=base_url, auth_token=token)
+    org_id = os.environ.get("OCTOMIL_ORG_ID", "default")
+    client = OctomilClient(
+        auth=OrgApiKeyAuth(api_key=token, org_id=org_id, api_base=base_url),
+    )
+
+    # Fetch desired state so routing policies are applied automatically
+    try:
+        client.control.register()
+        client.control.get_desired_state()
+    except Exception:
+        pass  # best-effort — agent still works without managed routing
+
+    session = client.agent_session(base_url=base_url)
     return await session.run(agent_type, query, model=model)
