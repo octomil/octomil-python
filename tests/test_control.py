@@ -581,25 +581,27 @@ class TestOctomilControlGetDesiredState(unittest.TestCase):
         result = ctrl.get_desired_state()
         self.assertEqual(result, [])
 
-    def test_get_desired_state_includes_routing_fields(self):
-        """Routing fields from desired state compiler are forwarded."""
+    def test_get_desired_state_includes_serving_policy(self):
+        """ServingPolicy from desired state compiler is forwarded."""
         raw_desired = {
-            "schemaVersion": "1.12.0",
+            "schemaVersion": "1.16.0",
             "models": [
                 {
                     "modelId": "m1",
                     "desiredVersion": "v2",
                     "artifactManifest": {"artifactId": "art-1", "totalBytes": 100},
                     "deploymentId": "dep-123",
-                    "routingPolicy": "local_only",
-                    "routingPreference": "local",
-                    "cloudFallback": {"enabled": False},
+                    "servingPolicy": {
+                        "routing_mode": "auto",
+                        "routing_preference": "local",
+                        "fallback": {"allow_cloud_fallback": False},
+                    },
                 },
                 {
                     "modelId": "m2",
                     "desiredVersion": "v1",
                     "artifactManifest": {"artifactId": "art-2", "totalBytes": 200},
-                    # No routing fields — should be None
+                    # No serving policy — should be None
                 },
             ],
         }
@@ -615,16 +617,19 @@ class TestOctomilControlGetDesiredState(unittest.TestCase):
         result = ctrl.get_desired_state()
 
         self.assertEqual(len(result), 2)
-        # First entry has routing fields
+        # First entry has serving_policy
         self.assertEqual(result[0]["deployment_id"], "dep-123")
-        self.assertEqual(result[0]["routing_policy"], "local_only")
-        self.assertEqual(result[0]["routing_preference"], "local")
-        self.assertEqual(result[0]["cloud_fallback"], {"enabled": False})
-        # Second entry — routing fields default to None
+        self.assertEqual(
+            result[0]["serving_policy"],
+            {
+                "routing_mode": "auto",
+                "routing_preference": "local",
+                "fallback": {"allow_cloud_fallback": False},
+            },
+        )
+        # Second entry — serving_policy is None
         self.assertIsNone(result[1]["deployment_id"])
-        self.assertIsNone(result[1]["routing_policy"])
-        self.assertIsNone(result[1]["routing_preference"])
-        self.assertIsNone(result[1]["cloud_fallback"])
+        self.assertIsNone(result[1]["serving_policy"])
 
     def test_base_url_property(self):
         api = _StubApi()
@@ -689,7 +694,7 @@ class TestOnDesiredStateCallback(unittest.TestCase):
                     "modelId": "m1",
                     "desiredVersion": "v2",
                     "artifactManifest": {"artifactId": "a1", "totalBytes": 100},
-                    "routingPolicy": "local_only",
+                    "servingPolicy": {"routing_mode": "local_only"},
                 },
             ],
         }
@@ -706,7 +711,7 @@ class TestOnDesiredStateCallback(unittest.TestCase):
 
         self.assertEqual(len(captured), 1)
         self.assertEqual(len(captured[0]), 1)
-        self.assertEqual(captured[0][0]["routing_policy"], "local_only")
+        self.assertEqual(captured[0][0]["serving_policy"], {"routing_mode": "local_only"})
 
     def test_callback_not_invoked_for_empty_entries(self):
         """on_desired_state callback is NOT invoked when entries are empty."""

@@ -338,7 +338,13 @@ async def test_default_routing_policy_stream():
 @pytest.mark.asyncio
 async def test_from_desired_state_entry_to_responses():
     """End-to-end: from_desired_state_entry → OctomilResponses with RouterModelRuntime."""
-    entry = {"routing_preference": "quality", "cloud_fallback": {"enabled": True}}
+    entry = {
+        "serving_policy": {
+            "routing_mode": "auto",
+            "routing_preference": "quality",
+            "fallback": {"allow_cloud_fallback": True},
+        }
+    }
     policy = RoutingPolicy.from_desired_state_entry(entry)
     assert policy is not None
     assert policy.prefer_local is False
@@ -357,7 +363,13 @@ async def test_from_desired_state_entry_to_responses():
 @pytest.mark.asyncio
 async def test_from_desired_state_entry_local_first():
     """End-to-end: local_first preset routes to local."""
-    entry = {"routing_preference": "local", "cloud_fallback": {"enabled": True}}
+    entry = {
+        "serving_policy": {
+            "routing_mode": "auto",
+            "routing_preference": "local",
+            "fallback": {"allow_cloud_fallback": True},
+        }
+    }
     policy = RoutingPolicy.from_desired_state_entry(entry)
     assert policy is not None
 
