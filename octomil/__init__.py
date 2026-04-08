@@ -48,6 +48,8 @@ from .enterprise import (
     save_config,
 )
 from .errors import OctomilError, OctomilErrorCode
+from .facade import Octomil as Octomil  # noqa: F811 — unified facade re-export
+from .facade import OctomilNotInitializedError
 from .model import Model, ModelMetadata, Prediction
 from .models import (
     DeploymentPlan,
@@ -101,7 +103,6 @@ try:
         FilterRegistry,
         FilterResult,
         ModelRegistry,
-        Octomil,
         OctomilClientError,
         RolloutsAPI,
         SecAggClient,
@@ -110,6 +111,9 @@ try:
         SecAggPlusConfig,
         apply_filters,
         compute_state_dict_delta,
+    )
+    from .python.octomil import (
+        Octomil as LegacyOctomil,
     )
 except ImportError:
     if not _FROZEN:
@@ -262,6 +266,8 @@ __all__ = [
     "RollbackResult",
     "TrainingSession",
     "Octomil",
+    "LegacyOctomil",
+    "OctomilNotInitializedError",
     "OctomilClientError",
     "Federation",
     "FederatedClient",

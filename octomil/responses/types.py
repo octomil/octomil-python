@@ -172,6 +172,15 @@ class Response:
     usage: Optional[ResponseUsage] = None
     locality: Optional[str] = None
 
+    @property
+    def output_text(self) -> str:
+        """Concatenate all text-type output items."""
+        parts = []
+        for item in self.output:
+            if isinstance(item, TextOutput):
+                parts.append(item.text)
+        return "".join(parts)
+
 
 # -- Stream Events --
 
