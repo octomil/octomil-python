@@ -399,8 +399,11 @@ class TestClientDesiredStateRouting:
                     "desiredVersion": "v2",
                     "deploymentId": "dep_1",
                     "artifactManifest": {"artifactId": "a1", "totalBytes": 100},
-                    "routingPreference": "quality",
-                    "cloudFallback": {"enabled": True},
+                    "servingPolicy": {
+                        "routing_mode": "auto",
+                        "routing_preference": "quality",
+                        "fallback": {"allow_cloud_fallback": True},
+                    },
                 },
             ],
         }
@@ -449,15 +452,18 @@ class TestClientDesiredStateRouting:
                     "desiredVersion": "v1",
                     "deploymentId": "dep_local",
                     "artifactManifest": {"artifactId": "a1", "totalBytes": 100},
-                    "routingPolicy": "local_only",
+                    "servingPolicy": {"routing_mode": "local_only"},
                 },
                 {
                     "modelId": "m2",
                     "desiredVersion": "v1",
                     "deploymentId": "dep_cloud",
                     "artifactManifest": {"artifactId": "a2", "totalBytes": 200},
-                    "routingPreference": "quality",
-                    "cloudFallback": {"enabled": True},
+                    "servingPolicy": {
+                        "routing_mode": "auto",
+                        "routing_preference": "quality",
+                        "fallback": {"allow_cloud_fallback": True},
+                    },
                 },
             ],
         }
@@ -498,23 +504,29 @@ class TestClientDesiredStateRouting:
                     "desiredVersion": "v1",
                     "deploymentId": "dep_a",
                     "artifactManifest": {"artifactId": "a1", "totalBytes": 100},
-                    "routingPolicy": "local_only",
+                    "servingPolicy": {"routing_mode": "local_only"},
                 },
                 {
                     "modelId": "shared-model",
                     "desiredVersion": "v2",
                     "deploymentId": "dep_b",
                     "artifactManifest": {"artifactId": "a2", "totalBytes": 200},
-                    "routingPreference": "quality",
-                    "cloudFallback": {"enabled": True},
+                    "servingPolicy": {
+                        "routing_mode": "auto",
+                        "routing_preference": "quality",
+                        "fallback": {"allow_cloud_fallback": True},
+                    },
                 },
                 {
                     "modelId": "unique-model",
                     "desiredVersion": "v1",
                     "deploymentId": "dep_c",
                     "artifactManifest": {"artifactId": "a3", "totalBytes": 300},
-                    "routingPreference": "local",
-                    "cloudFallback": {"enabled": True},
+                    "servingPolicy": {
+                        "routing_mode": "auto",
+                        "routing_preference": "local",
+                        "fallback": {"allow_cloud_fallback": True},
+                    },
                 },
             ],
         }
@@ -552,14 +564,14 @@ class TestClientDesiredStateRouting:
                     "desiredVersion": "v1",
                     "deploymentId": "dep_a",
                     "artifactManifest": {"artifactId": "a1", "totalBytes": 100},
-                    "routingPolicy": "local_only",
+                    "servingPolicy": {"routing_mode": "local_only"},
                 },
                 {
                     "modelId": "shared-model",
                     "desiredVersion": "v2",
                     "deploymentId": "dep_b",
                     "artifactManifest": {"artifactId": "a2", "totalBytes": 200},
-                    "routingPolicy": "local_only",
+                    "servingPolicy": {"routing_mode": "local_only"},
                 },
             ],
         }
@@ -615,7 +627,7 @@ class TestClientProductionPaths:
 
         mock_api = mock_api_cls.return_value
 
-        # Desired state with routingPreference=quality on dep_1 for chat-model
+        # Desired state with servingPolicy quality on dep_1 for chat-model
         raw_desired = {
             "models": [
                 {
@@ -623,8 +635,11 @@ class TestClientProductionPaths:
                     "desiredVersion": "v1",
                     "deploymentId": "dep_1",
                     "artifactManifest": {"artifactId": "a1", "totalBytes": 100},
-                    "routingPreference": "quality",
-                    "cloudFallback": {"enabled": True},
+                    "servingPolicy": {
+                        "routing_mode": "auto",
+                        "routing_preference": "quality",
+                        "fallback": {"allow_cloud_fallback": True},
+                    },
                 },
             ],
         }
@@ -696,8 +711,11 @@ class TestClientProductionPaths:
                     "desiredVersion": "v1",
                     "deploymentId": "dep_stream",
                     "artifactManifest": {"artifactId": "a1", "totalBytes": 100},
-                    "routingPreference": "local",
-                    "cloudFallback": {"enabled": True},
+                    "servingPolicy": {
+                        "routing_mode": "auto",
+                        "routing_preference": "local",
+                        "fallback": {"allow_cloud_fallback": True},
+                    },
                 },
             ],
         }
@@ -776,14 +794,14 @@ class TestClientProductionPaths:
                     "desiredVersion": "v1",
                     "deploymentId": "dep_x",
                     "artifactManifest": {"artifactId": "a1", "totalBytes": 100},
-                    "routingPolicy": "local_only",
+                    "servingPolicy": {"routing_mode": "local_only"},
                 },
                 {
                     "modelId": "shared-llm",
                     "desiredVersion": "v2",
                     "deploymentId": "dep_y",
                     "artifactManifest": {"artifactId": "a2", "totalBytes": 200},
-                    "routingPolicy": "local_only",
+                    "servingPolicy": {"routing_mode": "local_only"},
                 },
             ],
         }
@@ -829,15 +847,18 @@ class TestClientProductionPaths:
                     "desiredVersion": "v1",
                     "deploymentId": "dep_local",
                     "artifactManifest": {"artifactId": "a1", "totalBytes": 100},
-                    "routingPolicy": "local_only",
+                    "servingPolicy": {"routing_mode": "local_only"},
                 },
                 {
                     "modelId": "ambiguous-model",
                     "desiredVersion": "v2",
                     "deploymentId": "dep_quality",
                     "artifactManifest": {"artifactId": "a2", "totalBytes": 200},
-                    "routingPreference": "quality",
-                    "cloudFallback": {"enabled": True},
+                    "servingPolicy": {
+                        "routing_mode": "auto",
+                        "routing_preference": "quality",
+                        "fallback": {"allow_cloud_fallback": True},
+                    },
                 },
             ],
         }
@@ -882,8 +903,11 @@ class TestClientProductionPaths:
                     "desiredVersion": "v1",
                     "deploymentId": "dep_agent",
                     "artifactManifest": {"artifactId": "a1", "totalBytes": 100},
-                    "routingPreference": "quality",
-                    "cloudFallback": {"enabled": True},
+                    "servingPolicy": {
+                        "routing_mode": "auto",
+                        "routing_preference": "quality",
+                        "fallback": {"allow_cloud_fallback": True},
+                    },
                 },
             ],
         }
