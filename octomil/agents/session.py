@@ -31,6 +31,14 @@ class AgentSession:
 
         session = AgentSession(base_url="https://api.octomil.com", auth_token="...")
         result = await session.run("deployment_advisor", "Deploy phi-mini to iOS staging")
+
+    For managed deployment routing, pass ``client.responses`` so the
+    session inherits desired-state-derived routing policies::
+
+        session = AgentSession(
+            base_url="...", auth_token="...",
+            responses=client.responses,
+        )
     """
 
     def __init__(

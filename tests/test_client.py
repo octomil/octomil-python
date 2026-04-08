@@ -874,3 +874,36 @@ class TestClientProductionPaths:
         # But responses still has both deployment policies for explicit lookup
         assert "dep_local" in responses._routing_policies
         assert "dep_quality" in responses._routing_policies
+
+    @patch("octomil.client.RolloutsAPI")
+    @patch("octomil.client.ModelRegistry")
+    @patch("octomil.client._ApiClient")
+    def test_agent_session_inherits_routing(self, mock_api_cls, mock_registry, mock_rollouts):
+        """client.agent_session() returns a session with the client's routing."""
+        from octomil.client import OctomilClient
+
+        mock_api = mock_api_cls.return_value
+        raw_desired = {
+            "models": [
+                {
+                    "modelId": "agent-model",
+                    "desiredVersion": "v1",
+                    "deploymentId": "dep_agent",
+                    "artifactManifest": {"artifactId": "a1", "totalBytes": 100},
+                    "routingPreference": "quality",
+                    "cloudFallback": {"enabled": True},
+                },
+            ],
+        }
+        mock_api.post.return_value = raw_desired
+
+        c = OctomilClient(auth=OrgApiKeyAuth(api_key="key", org_id="default"))
+        c.control._server_device_id = "dev-test"
+        c.control.get_desired_state()
+
+        session = c.agent_session()
+
+        # Session's responses instance is the same as client's — shares routing
+        assert session._responses is c.responses
+        assert "dep_agent" in session._responses._routing_policies
+        assert session._responses._model_deployment_map == {"agent-model": "dep_agent"}

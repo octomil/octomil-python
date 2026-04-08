@@ -2,7 +2,9 @@
 
 ## How it works
 
-When an `OctomilClient` fetches desired state via `control.get_desired_state()`, deployment routing policies are automatically applied to all inference requests.
+When an `OctomilClient` fetches desired state via `control.get_desired_state()`, deployment routing policies are automatically applied to inference requests made through `client.responses` and `client.chat`.
+
+> **Scope:** Automatic routing applies to `responses.create()`, `responses.stream()`, `chat.create()`, `chat.stream()`, and any code that goes through `OctomilResponses` (including `WorkflowRunner` and `ToolRunner`). It does **not** apply to `client.text`, `client.audio`, or other namespaces that resolve runtimes directly.
 
 Each deployment carries:
 
@@ -64,6 +66,27 @@ result = await client.responses.create(ResponseRequest(
 ```
 
 When routing policies are identical across deployments of the same model, auto-resolution works normally.
+
+## Agent sessions
+
+`AgentSession` is standalone and does not inherit routing by default. Use `client.agent_session()` to create a session pre-wired with the client's routing:
+
+```python
+session = client.agent_session()
+result = await session.run("deployment_advisor", "Deploy phi-mini to iOS staging")
+```
+
+Or pass `responses=client.responses` manually:
+
+```python
+from octomil.agents.session import AgentSession
+
+session = AgentSession(
+    base_url="https://api.octomil.com",
+    auth_token="...",
+    responses=client.responses,
+)
+```
 
 ## Resolution order
 
