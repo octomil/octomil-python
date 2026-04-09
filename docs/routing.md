@@ -9,7 +9,7 @@ When an `OctomilClient` fetches desired state via `control.get_desired_state()`,
 Each deployment carries:
 
 - `routing_mode`: `auto`, `local_only`, or `cloud_only`
-- `routing_preference`: `local`, `balanced`, or `quality` (within `auto` mode)
+- `routing_preference`: `local`, `balanced`, or `cloud` (within `auto` mode)
 
 These map to SDK routing behavior:
 

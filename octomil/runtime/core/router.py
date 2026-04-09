@@ -82,7 +82,7 @@ class RouterModelRuntime(ModelRuntime):
                 if cloud is not None:
                     return cloud, (LOCALITY_CLOUD, True)
         else:
-            # prefer_local=False (quality preset): try cloud first, fall back to local
+            # prefer_local=False (cloud-first behavior): try cloud first, fall back to local
             cloud = self._cloud_factory("cloud") if self._cloud_factory else None
             if cloud is not None:
                 return cloud, (LOCALITY_CLOUD, False)

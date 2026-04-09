@@ -10,8 +10,6 @@ class ServingPolicyPreset(str, Enum):
     """Prefer on-device; allow cloud fallback."""
     PERFORMANCE_FIRST = "performance_first"
     """Minimize latency; allow cloud fallback."""
-    QUALITY_FIRST = "quality_first"
-    """Maximize output quality; allow cloud fallback."""
     CLOUD_FIRST = "cloud_first"
     """Prefer cloud inference. Routing engine uses local engines when cloud unavailable."""
     CLOUD_ONLY = "cloud_only"

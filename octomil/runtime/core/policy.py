@@ -70,8 +70,8 @@ class RoutingPolicy:
           routing_mode=cloud_only             → CLOUD_ONLY
           routing_preference=local            → LOCAL_FIRST
           routing_preference=performance      → AUTO, prefer_local=True
-          routing_preference=quality          → AUTO, prefer_local=False
           routing_preference=cloud            → AUTO, prefer_local=False
+          routing_preference=quality          → AUTO, prefer_local=False (legacy alias)
           (none of the above)                 → AUTO (default)
         """
         sp = entry.get("serving_policy")
@@ -90,9 +90,7 @@ class RoutingPolicy:
             return cls.local_first(fallback=fallback)
         if rp == "performance":
             return cls.auto(prefer_local=True, fallback=fallback)
-        if rp == "quality":
-            return cls.auto(prefer_local=False, fallback=fallback)
-        if rp == "cloud":
+        if rp in {"quality", "cloud"}:
             return cls.auto(prefer_local=False, fallback=fallback)
         return cls.auto(fallback=fallback)
 
