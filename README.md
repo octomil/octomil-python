@@ -61,6 +61,17 @@ async def main():
 asyncio.run(main())
 ```
 
+Embeddings are available through the same facade:
+
+```python
+# Embeddings
+result = await client.embeddings.create(
+    model="nomic-embed-text-v1.5",
+    input="On-device AI inference at scale",
+)
+print(result.embeddings[0][:5])
+```
+
 ### Migrating from OctomilClient
 
 `OctomilClient` and the low-level `OctomilResponses` / `ResponseRequest` APIs still work exactly as before. The `Octomil` facade is a convenience wrapper for the common path — it delegates to the same underlying client internally.

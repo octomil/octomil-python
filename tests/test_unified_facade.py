@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import asyncio
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from octomil.embeddings import EmbeddingResult, EmbeddingUsage
 from octomil.errors import OctomilError
-from octomil.facade import FacadeResponses, Octomil, OctomilNotInitializedError
+from octomil.facade import FacadeEmbeddings, FacadeResponses, Octomil, OctomilNotInitializedError
 from octomil.responses.types import Response, ResponseToolCall, TextOutput, ToolCallOutput
 
 # ---------------------------------------------------------------------------
@@ -201,3 +202,71 @@ class TestOutputText:
             finish_reason="stop",
         )
         assert resp.output_text == "part1part2"
+
+
+# ---------------------------------------------------------------------------
+# Embeddings namespace
+# ---------------------------------------------------------------------------
+
+
+class TestEmbeddingsNamespace:
+    def test_embeddings_namespace_exists(self):
+        client = Octomil(publishable_key="oct_pub_test_abc")
+        asyncio.run(client.initialize())
+        assert isinstance(client.embeddings, FacadeEmbeddings)
+
+    def test_embeddings_before_init_raises(self):
+        client = Octomil(publishable_key="oct_pub_test_abc")
+        with pytest.raises(OctomilNotInitializedError):
+            _ = client.embeddings
+
+
+class TestEmbeddingsCreate:
+    def test_embeddings_create_delegates(self):
+        fake_result = EmbeddingResult(
+            embeddings=[[0.1, 0.2, 0.3]],
+            model="nomic-embed-text-v1.5",
+            usage=EmbeddingUsage(prompt_tokens=5, total_tokens=5),
+        )
+        client = Octomil(publishable_key="oct_pub_test_abc")
+        asyncio.run(client.initialize())
+
+        with patch.object(client._client, "embed", return_value=fake_result) as mock_embed:
+            result = asyncio.run(
+                client.embeddings.create(
+                    model="nomic-embed-text-v1.5",
+                    input="On-device AI inference at scale",
+                )
+            )
+
+        assert result is fake_result
+        mock_embed.assert_called_once_with(
+            "nomic-embed-text-v1.5",
+            "On-device AI inference at scale",
+            timeout=30.0,
+        )
+
+    def test_embeddings_create_batch_input(self):
+        fake_result = EmbeddingResult(
+            embeddings=[[0.1, 0.2], [0.3, 0.4]],
+            model="nomic-embed-text-v1.5",
+            usage=EmbeddingUsage(prompt_tokens=10, total_tokens=10),
+        )
+        client = Octomil(publishable_key="oct_pub_test_abc")
+        asyncio.run(client.initialize())
+
+        with patch.object(client._client, "embed", return_value=fake_result) as mock_embed:
+            result = asyncio.run(
+                client.embeddings.create(
+                    model="nomic-embed-text-v1.5",
+                    input=["hello", "world"],
+                )
+            )
+
+        assert result is fake_result
+        assert len(result.embeddings) == 2
+        mock_embed.assert_called_once_with(
+            "nomic-embed-text-v1.5",
+            ["hello", "world"],
+            timeout=30.0,
+        )
