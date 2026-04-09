@@ -44,6 +44,27 @@ r = client.chat.completions.create(
 print(r.choices[0].message.content)
 ```
 
+## Unified Facade (recommended for new code)
+
+The `Octomil` facade is the simplest way to use the cloud-backed Responses API:
+
+```python
+import asyncio
+from octomil import Octomil
+
+async def main():
+    client = Octomil(api_key="edg_...", org_id="org_...")
+    await client.initialize()
+    response = await client.responses.create(model="phi-4-mini", input="Hello")
+    print(response.output_text)
+
+asyncio.run(main())
+```
+
+### Migrating from OctomilClient
+
+`OctomilClient` and the low-level `OctomilResponses` / `ResponseRequest` APIs still work exactly as before. The `Octomil` facade is a convenience wrapper for the common path — it delegates to the same underlying client internally.
+
 ## Native API
 
 The `responses` API is the primary Octomil interface for new code. It gives you local inference, routing, multimodal inputs, and conversation threading without going through the OpenAI compatibility layer.
