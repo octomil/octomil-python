@@ -23,16 +23,31 @@ class FacadeResponses:
     def __init__(self, responses: OctomilResponses) -> None:
         self._responses = responses
 
-    async def create(self, *, model: str, input: str, **kwargs: Any) -> Response:
+    async def create(
+        self, request_or_model: Any = None, *, model: str | None = None, input: str | None = None, **kwargs: Any
+    ) -> Response:
         from .responses.types import ResponseRequest
 
-        request = ResponseRequest.text(model, input, **kwargs)
+        if isinstance(request_or_model, ResponseRequest):
+            return await self._responses.create(request_or_model)
+        resolved_model = request_or_model if isinstance(request_or_model, str) else model
+        if resolved_model is None or input is None:
+            raise TypeError("create() requires either a ResponseRequest or model= and input= arguments")
+        request = ResponseRequest.text(resolved_model, input, **kwargs)
         return await self._responses.create(request)
 
-    async def stream(self, *, model: str, input: str, **kwargs: Any) -> AsyncIterator:
+    async def stream(
+        self, request_or_model: Any = None, *, model: str | None = None, input: str | None = None, **kwargs: Any
+    ) -> AsyncIterator:
         from .responses.types import ResponseRequest
 
-        request = ResponseRequest.text(model, input, **kwargs)
+        if isinstance(request_or_model, ResponseRequest):
+            request = request_or_model
+        else:
+            resolved_model = request_or_model if isinstance(request_or_model, str) else model
+            if resolved_model is None or input is None:
+                raise TypeError("stream() requires either a ResponseRequest or model= and input= arguments")
+            request = ResponseRequest.text(resolved_model, input, **kwargs)
         async for event in self._responses.stream(request):
             yield event
 
