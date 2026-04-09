@@ -48,8 +48,8 @@ from .enterprise import (
     save_config,
 )
 from .errors import OctomilError, OctomilErrorCode
-from .facade import Octomil as Octomil  # noqa: F811 — unified facade re-export
-from .facade import OctomilNotInitializedError
+from .facade import FacadeEmbeddings, OctomilNotInitializedError  # noqa: F811 — unified facade re-export
+from .facade import Octomil as Octomil
 from .model import Model, ModelMetadata, Prediction
 from .models import (
     DeploymentPlan,
@@ -266,6 +266,7 @@ __all__ = [
     "RollbackResult",
     "TrainingSession",
     "Octomil",
+    "FacadeEmbeddings",
     "LegacyOctomil",
     "OctomilNotInitializedError",
     "OctomilClientError",

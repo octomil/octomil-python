@@ -8,6 +8,8 @@ from .auth_config import PublishableKeyAuth
 
 if TYPE_CHECKING:
     from .auth import AuthConfig
+    from .client import OctomilClient
+    from .embeddings import EmbeddingResult
     from .responses.responses import OctomilResponses
     from .responses.types import Response
 
@@ -52,6 +54,29 @@ class FacadeResponses:
             yield event
 
 
+class FacadeEmbeddings:
+    """Embeddings namespace on the unified Octomil facade."""
+
+    def __init__(self, client: OctomilClient) -> None:
+        self._client = client
+
+    async def create(
+        self,
+        *,
+        model: str,
+        input: str | list[str],
+        timeout: float = 30.0,
+    ) -> EmbeddingResult:
+        """Create embeddings using the initialized facade auth context."""
+        import asyncio
+
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(
+            None,
+            lambda: self._client.embed(model, input, timeout=timeout),
+        )
+
+
 class Octomil:
     """Unified facade for the Octomil SDK.
 
@@ -76,6 +101,7 @@ class Octomil:
         self._kwargs = kwargs
         self._client: Any = None
         self._responses_wrapper: FacadeResponses | None = None
+        self._embeddings_wrapper: FacadeEmbeddings | None = None
 
         if auth is not None:
             self._auth: AuthConfig = auth
@@ -104,6 +130,7 @@ class Octomil:
 
         self._client = OctomilClient(auth=self._auth, **self._kwargs)
         self._responses_wrapper = FacadeResponses(self._client.responses)
+        self._embeddings_wrapper = FacadeEmbeddings(self._client)
         self._initialized = True
 
     @property
@@ -113,3 +140,11 @@ class Octomil:
             raise OctomilNotInitializedError()
         assert self._responses_wrapper is not None
         return self._responses_wrapper
+
+    @property
+    def embeddings(self) -> FacadeEmbeddings:
+        """Access the embeddings API. Requires initialize() to have been called."""
+        if not self._initialized:
+            raise OctomilNotInitializedError()
+        assert self._embeddings_wrapper is not None
+        return self._embeddings_wrapper
