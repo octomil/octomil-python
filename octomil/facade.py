@@ -59,6 +59,7 @@ class Octomil:
     ) -> None:
         self._initialized = False
         self._kwargs = kwargs
+        self._client: Any = None
         self._responses_wrapper: FacadeResponses | None = None
 
         if auth is not None:
@@ -80,9 +81,14 @@ class Octomil:
             raise ValueError("One of publishable_key=, api_key= + org_id=, or auth= must be provided.")
 
     async def initialize(self) -> None:
-        """Validate auth and prepare the client. Idempotent."""
+        """Validate auth and prepare the underlying client. Idempotent."""
         if self._initialized:
             return
+
+        from .client import OctomilClient
+
+        self._client = OctomilClient(auth=self._auth, **self._kwargs)
+        self._responses_wrapper = FacadeResponses(self._client.responses)
         self._initialized = True
 
     @property
@@ -90,9 +96,5 @@ class Octomil:
         """Access the responses API. Requires initialize() to have been called."""
         if not self._initialized:
             raise OctomilNotInitializedError()
-        if self._responses_wrapper is None:
-            from .responses.responses import OctomilResponses
-
-            underlying = OctomilResponses()
-            self._responses_wrapper = FacadeResponses(underlying)
+        assert self._responses_wrapper is not None
         return self._responses_wrapper

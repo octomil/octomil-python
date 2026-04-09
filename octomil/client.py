@@ -78,6 +78,8 @@ class OctomilClient(ModelOpsMixin):
         auth: AuthConfig,
         device_id: str | None = None,
     ) -> None:
+        from .auth import PublishableKeyAuth
+
         if isinstance(auth, OrgApiKeyAuth):
             self._api_key: str = auth.api_key
             self._org_id: str = auth.org_id
@@ -86,8 +88,14 @@ class OctomilClient(ModelOpsMixin):
             self._api_key = auth.bootstrap_token
             self._org_id = ""
             self._api_base = auth.api_base
+        elif isinstance(auth, PublishableKeyAuth):
+            self._api_key = auth.api_key
+            self._org_id = ""
+            self._api_base = auth.api_base
         else:
-            raise TypeError(f"auth must be OrgApiKeyAuth or DeviceTokenAuth, got {type(auth).__name__}")
+            raise TypeError(
+                f"auth must be OrgApiKeyAuth, DeviceTokenAuth, or PublishableKeyAuth, got {type(auth).__name__}"
+            )
 
         self._auth = auth
         self._device_id: str | None = device_id
