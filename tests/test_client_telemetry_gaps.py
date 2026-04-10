@@ -99,7 +99,8 @@ class TestPushTelemetry:
         client, reporter, sent, patcher = _make_client_with_reporter()
 
         mock_registry = MagicMock()
-        mock_registry.ensure_model.side_effect = RuntimeError("upload failed")
+        # push() calls upload_version_from_path() directly — not ensure_model.
+        mock_registry.upload_version_from_path.side_effect = RuntimeError("upload failed")
         client._registry = mock_registry
 
         time.sleep(0.1)

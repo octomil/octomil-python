@@ -131,9 +131,7 @@ class PublishableKeyAuth:
         if not self.api_key.startswith(_PUBLISHABLE_KEY_PREFIX):
             raise OctomilError(
                 code=OctomilErrorCode.INVALID_API_KEY,
-                message=(
-                    f"Publishable key must start with '{_PUBLISHABLE_KEY_PREFIX}', " f"got '{self.api_key[:16]}...'"
-                ),
+                message=(f"Publishable key must start with '{_PUBLISHABLE_KEY_PREFIX}', got '{self.api_key[:16]}...'"),
             )
 
     @property

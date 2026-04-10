@@ -172,9 +172,7 @@ class ArtifactLoop:
     def _build_inventory(self) -> tuple[list[dict[str, str]], list[dict[str, str]]]:
         """Build installed models and active versions from local DB."""
         db = self._model_registry._db
-        rows = db.execute(
-            "SELECT DISTINCT model_id, version FROM model_artifacts " "WHERE status NOT IN ('REGISTERED')"
-        )
+        rows = db.execute("SELECT DISTINCT model_id, version FROM model_artifacts WHERE status NOT IN ('REGISTERED')")
         installed = [{"model_id": r["model_id"], "version": r["version"]} for r in rows]
 
         active_rows = db.execute("SELECT model_id, active_version FROM active_model_pointer")

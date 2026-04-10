@@ -218,11 +218,14 @@ class TestDeployCommand:
         mock_poll_resp.status_code = 200
         mock_poll_resp.json.return_value = {"status": "done"}
 
-        # http_request uses httpx.Client().request(), not httpx.post/get
+        # http_request uses httpx.Client().request(), not httpx.post/get.
+        # The phone deploy path makes exactly 2 HTTP calls:
+        #   1. POST /deploy/pair  (creates the pairing session)
+        #   2. GET  /deploy/pair/{code}  (polls for device connection)
+        # The old mock_list_resp / mock_versions_resp were from a removed
+        # pre-deploy catalog-check flow and are no longer consumed.
         mock_client_instance = MagicMock()
         mock_client_instance.request.side_effect = [
-            mock_list_resp,
-            mock_versions_resp,
             mock_post_resp,
             mock_poll_resp,
         ]

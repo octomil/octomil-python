@@ -181,6 +181,12 @@ class FederatedClient:
         payload["device_identifier"] = self.device_identifier
         payload["org_id"] = self.org_id
         payload["sdk_version"] = _get_sdk_version()
+        # Respect the platform passed to the constructor (e.g. "python",
+        # "ios", "android").  DeviceInfo.to_registration_dict() sets
+        # "platform" to the OS string ("macos", "linux", etc.) which is
+        # correct for native device agents, but Python SDK clients identify
+        # as the logical platform given at construction time.
+        payload["platform"] = self.platform
         if feature_schema:
             payload["feature_schema"] = feature_schema
 
