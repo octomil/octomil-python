@@ -9,7 +9,7 @@ import time
 import uuid
 from typing import TYPE_CHECKING, Any, Optional
 
-from ..errors import OctomilError
+from ..errors import OctomilError, OctomilErrorCode
 from .backends.llamacpp import LlamaCppBackend
 from .config import CloudConfig, MoEConfig, ServerState
 from .detection import _detect_backend, _get_cache_manager, _log_startup_error
@@ -46,6 +46,58 @@ def _create_cloud_backend_from_profile(profile: Any, model: str) -> Any:
     )
     backend.load_model(model)
     return backend
+
+
+def _backend_for_locality(state: ServerState, locality: str) -> Any:
+    """Return the backend matching the given locality."""
+    if locality == "cloud":
+        return state.cloud_backend
+    return state.backend
+
+
+async def _generate_with_backend(backend: Any, request: GenerationRequest) -> tuple[str, Any]:
+    """Call generate on a backend, preferring async when available."""
+    generate_async = getattr(backend, "generate_async", None)
+    if generate_async is not None:
+        return await generate_async(request)
+    return backend.generate(request)
+
+
+async def _generate_with_routing(
+    state: ServerState,
+    request: GenerationRequest,
+    decision: Any,
+) -> tuple[str, Any, str, bool]:
+    """Dispatch generation through kernel routing with optional fallback.
+
+    Returns (text, metrics, used_locality, fallback_used).
+    """
+    primary = _backend_for_locality(state, decision.primary_locality)
+    if primary is None:
+        raise OctomilError(
+            code=OctomilErrorCode.RUNTIME_UNAVAILABLE,
+            message=f"No backend available for {decision.primary_locality} routing.",
+        )
+
+    try:
+        text, metrics = await _generate_with_backend(primary, request)
+        return text, metrics, decision.primary_locality, False
+    except Exception as primary_exc:
+        if decision.fallback_locality is None:
+            raise
+
+        fallback = _backend_for_locality(state, decision.fallback_locality)
+        if fallback is None:
+            raise
+
+        logger.warning(
+            "Primary %s backend failed (%s), falling back to %s",
+            decision.primary_locality,
+            primary_exc,
+            decision.fallback_locality,
+        )
+        text, metrics = await _generate_with_backend(fallback, request)
+        return text, metrics, decision.fallback_locality, True
 
 
 def create_app(
@@ -400,8 +452,17 @@ def create_app(
 
     @app.post("/v1/chat/completions")
     async def chat_completions(body: ChatCompletionBody) -> Any:
-        if state.backend is None:
+        if state.backend is None and state.cloud_backend is None:
             raise OctomilError(code=OctomilErrorCode.MODEL_LOAD_FAILED, message="Model not loaded")
+
+        # --- Kernel routing decision (when config-driven) ---
+        _routing_decision = None
+        if state.kernel is not None:
+            _routing_decision = state.kernel.resolve_chat_routing(
+                model=body.model or None,
+                local_available=state.backend is not None,
+                cloud_available=state.cloud_backend is not None,
+            )
 
         # --- Tier-0: deterministic routing (arithmetic, etc.) ---
         # Check the last user message for a query that can be answered
@@ -454,7 +515,13 @@ def create_app(
 
         # For backends without native grammar support (MLX, echo),
         # inject a system prompt nudging JSON output when json_mode is on.
-        uses_grammar_natively = isinstance(unwrap_backend(state.backend), LlamaCppBackend)
+        # When kernel routing is active, use the primary backend for this check.
+        _primary_backend = state.backend
+        if _routing_decision is not None:
+            _primary_backend = _backend_for_locality(state, _routing_decision.primary_locality) or state.backend
+        uses_grammar_natively = _primary_backend is not None and isinstance(
+            unwrap_backend(_primary_backend), LlamaCppBackend
+        )
         schema_for_prompt: Optional[dict[str, Any]] = None
         if is_json and not uses_grammar_natively:
             rf = body.response_format or {}
@@ -516,6 +583,10 @@ def create_app(
 
         if gen_req.stream:
             _is_reasoning_stream = state.is_reasoning_model
+            # Select the routed backend for streaming (no streaming fallback in this PR)
+            _stream_backend = None
+            if _routing_decision is not None:
+                _stream_backend = _backend_for_locality(state, _routing_decision.primary_locality)
             if _queue is not None:
                 # Stream through the request queue
                 return StreamingResponse(
@@ -526,6 +597,7 @@ def create_app(
                         session_id,
                         _queue,
                         is_reasoning=_is_reasoning_stream,
+                        backend=_stream_backend,
                     ),
                     media_type="text/event-stream",
                 )
@@ -536,6 +608,7 @@ def create_app(
                     req_id,
                     session_id,
                     is_reasoning=_is_reasoning_stream,
+                    backend=_stream_backend,
                 ),
                 media_type="text/event-stream",
             )
@@ -556,22 +629,50 @@ def create_app(
 
         gen_start = time.monotonic()
         try:
-            if _queue is not None:
+            if _routing_decision is not None and _queue is None:
+                # Config-driven routing: dispatch with fallback
+                text, metrics, _used_locality, _fallback_used = await _generate_with_routing(
+                    state, gen_req, _routing_decision
+                )
+            elif _queue is not None:
                 from ..batch import QueueFullError, QueueTimeoutError
 
-                try:
-                    text, metrics = await _queue.submit_generate(gen_req, state.backend.generate)
-                except QueueFullError:
-                    raise OctomilError(
-                        code=OctomilErrorCode.RATE_LIMITED,
-                        message="Server busy -- request queue full. Try again later.",
-                    )
-                except QueueTimeoutError:
-                    raise OctomilError(
-                        code=OctomilErrorCode.REQUEST_TIMEOUT,
-                        message="Request timed out waiting in queue.",
-                    )
+                # Queue-aware dispatch.  When routing is active, wrap the
+                # generate callable so the queue uses the routed backend.
+                if _routing_decision is not None:
+
+                    async def _routed_generate(req: GenerationRequest) -> tuple[str, Any]:
+                        t, m, _, _ = await _generate_with_routing(state, req, _routing_decision)
+                        return t, m
+
+                    try:
+                        text, metrics = await _queue.submit_generate(gen_req, _routed_generate)
+                    except QueueFullError:
+                        raise OctomilError(
+                            code=OctomilErrorCode.RATE_LIMITED,
+                            message="Server busy -- request queue full. Try again later.",
+                        )
+                    except QueueTimeoutError:
+                        raise OctomilError(
+                            code=OctomilErrorCode.REQUEST_TIMEOUT,
+                            message="Request timed out waiting in queue.",
+                        )
+                else:
+                    assert state.backend is not None
+                    try:
+                        text, metrics = await _queue.submit_generate(gen_req, state.backend.generate)
+                    except QueueFullError:
+                        raise OctomilError(
+                            code=OctomilErrorCode.RATE_LIMITED,
+                            message="Server busy -- request queue full. Try again later.",
+                        )
+                    except QueueTimeoutError:
+                        raise OctomilError(
+                            code=OctomilErrorCode.REQUEST_TIMEOUT,
+                            message="Request timed out waiting in queue.",
+                        )
             else:
+                assert state.backend is not None
                 text, metrics = state.backend.generate(gen_req)
         except OctomilError:
             raise
@@ -608,7 +709,11 @@ def create_app(
                         stream=False,
                         json_mode=True,
                     )
-                    text, metrics = state.backend.generate(retry_req)
+                    if _routing_decision is not None:
+                        text, metrics, _, _ = await _generate_with_routing(state, retry_req, _routing_decision)
+                    else:
+                        assert state.backend is not None
+                        text, metrics = state.backend.generate(retry_req)
                     # Best-effort extraction on retry
                     if not validate_json_output(text):
                         extracted = extract_json(text)
