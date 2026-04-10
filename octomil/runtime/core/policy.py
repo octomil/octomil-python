@@ -27,18 +27,19 @@ class RoutingPolicy:
         cls,
         prefer_local: bool = True,
         max_latency_ms: Optional[int] = None,
-        fallback: str = "cloud",
+        fallback: Optional[str] = None,
     ) -> RoutingPolicy:
+        fallback_target = fallback if fallback is not None else ("cloud" if prefer_local else "local")
         return cls(
             mode=ContractRoutingPolicy.AUTO,
             prefer_local=prefer_local,
             max_latency_ms=max_latency_ms,
-            fallback=fallback,
+            fallback=fallback_target,
         )
 
     @classmethod
     def local_only(cls) -> RoutingPolicy:
-        return cls(mode=ContractRoutingPolicy.LOCAL_ONLY)
+        return cls(mode=ContractRoutingPolicy.LOCAL_ONLY, fallback="none")
 
     @classmethod
     def local_first(
@@ -55,7 +56,7 @@ class RoutingPolicy:
 
     @classmethod
     def cloud_only(cls) -> RoutingPolicy:
-        return cls(mode=ContractRoutingPolicy.CLOUD_ONLY)
+        return cls(mode=ContractRoutingPolicy.CLOUD_ONLY, prefer_local=False, fallback="none")
 
     @classmethod
     def from_desired_state_entry(cls, entry: dict[str, Any]) -> Optional[RoutingPolicy]:
@@ -70,8 +71,8 @@ class RoutingPolicy:
           routing_mode=cloud_only             → CLOUD_ONLY
           routing_preference=local            → LOCAL_FIRST
           routing_preference=performance      → AUTO, prefer_local=True
-          routing_preference=quality          → AUTO, prefer_local=False
           routing_preference=cloud            → AUTO, prefer_local=False
+          routing_preference=quality          → AUTO, prefer_local=False (legacy alias)
           (none of the above)                 → AUTO (default)
         """
         sp = entry.get("serving_policy")
@@ -80,21 +81,20 @@ class RoutingPolicy:
         rm = sp.get("routing_mode", "auto")
         rp = sp.get("routing_preference")
         fb = sp.get("fallback") or {}
-        fallback = "cloud" if fb.get("allow_cloud_fallback", True) else "none"
+        cloud_fallback = "cloud" if fb.get("allow_cloud_fallback", True) else "none"
+        local_fallback = "local" if fb.get("allow_local_fallback", True) else "none"
 
         if rm == "local_only":
             return cls.local_only()
         if rm == "cloud_only":
             return cls.cloud_only()
         if rp == "local":
-            return cls.local_first(fallback=fallback)
+            return cls.local_first(fallback=cloud_fallback)
         if rp == "performance":
-            return cls.auto(prefer_local=True, fallback=fallback)
-        if rp == "quality":
-            return cls.auto(prefer_local=False, fallback=fallback)
-        if rp == "cloud":
-            return cls.auto(prefer_local=False, fallback=fallback)
-        return cls.auto(fallback=fallback)
+            return cls.auto(prefer_local=True, fallback=cloud_fallback)
+        if rp in {"quality", "cloud"}:
+            return cls.auto(prefer_local=False, fallback=local_fallback)
+        return cls.auto(fallback=cloud_fallback)
 
     @classmethod
     def from_metadata(cls, metadata: Optional[dict[str, str]]) -> Optional[RoutingPolicy]:

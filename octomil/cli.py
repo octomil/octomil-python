@@ -60,13 +60,27 @@ from octomil.commands import (  # noqa: E402
     deploy,
     enterprise,
     federation,
+    inference,
     interactive,
     model_ops,
     serve,
     setup,
 )
 
-for _mod in [serve, model_ops, deploy, benchmark, enterprise, federation, interactive, completions, setup, agent]:
+# Register inference commands first so they appear before serve in help output.
+for _mod in [
+    inference,
+    serve,
+    model_ops,
+    deploy,
+    benchmark,
+    enterprise,
+    federation,
+    interactive,
+    completions,
+    setup,
+    agent,
+]:
     _mod.register(main)
 
 from octomil.commands import mcp_cmd  # noqa: E402

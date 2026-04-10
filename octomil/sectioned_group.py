@@ -7,11 +7,23 @@ import click
 # Section name -> command names (in display order).
 # Commands not listed here appear in an "Other" section at the end.
 COMMAND_SECTIONS: dict[str, list[str]] = {
-    "Get Started": ["serve", "chat", "launch", "setup", "warmup"],
-    "Models": ["models", "push", "pull", "convert", "check", "list"],
+    "Get Started": ["run", "chat", "embed", "transcribe", "launch", "setup"],
+    "Compatibility": ["serve"],
+    "Models": ["models", "push", "pull", "convert", "check", "list", "warmup"],
     "Deploy": ["deploy", "rollback", "pair", "status", "benchmark", "dashboard"],
     "Account": ["login", "init", "org", "team", "keys"],
-    "Advanced": ["train", "federation", "mcp", "scan", "demo", "interactive", "completions"],
+    "Advanced": [
+        "responses",
+        "embeddings",
+        "audio",
+        "train",
+        "federation",
+        "mcp",
+        "scan",
+        "demo",
+        "interactive",
+        "completions",
+    ],
 }
 
 

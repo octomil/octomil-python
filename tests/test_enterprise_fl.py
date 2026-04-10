@@ -23,11 +23,11 @@ from octomil.secagg import (
     DEFAULT_FIELD_SIZE,
     SecAggClient,
     SecAggConfig,
-    _derive_mask_elements,
     field_elements_to_model_bytes,
     model_bytes_to_field_elements,
     reconstruct_secret,
 )
+from octomil.secagg.encoding import _derive_mask_elements
 
 # ---------------------------------------------------------------------------
 # Helpers

@@ -22,8 +22,8 @@ entries = client.control.get_desired_state()
 print(f"Loaded {len(entries)} model(s) from desired state")
 
 # All inference calls now route automatically.
-# If "chat-model" is deployed with routing_preference="quality",
-# requests will prefer cloud inference for best quality.
+# If "chat-model" is deployed with routing_preference="cloud",
+# requests will prefer cloud inference and fall back locally if needed.
 result = client.chat.create(
     model="chat-model",
     messages=[{"role": "user", "content": "What is 2+2?"}],

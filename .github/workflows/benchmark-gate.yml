@@ -64,7 +64,7 @@ jobs:
           echo "exit_code=${BENCH_EXIT}" >> "$GITHUB_OUTPUT"
 
           # Extract TTFT p95 from output for PR comment
-          TTFT_P95=$(grep 'TTFT p95:' benchmark-output.txt | awk '{print $3}' | tr -d 'ms')
+          TTFT_P95=$(grep -m1 'TTFT p95:' benchmark-output.txt | awk '{print $3}' | tr -d 'ms')
           echo "ttft_p95=${TTFT_P95}" >> "$GITHUB_OUTPUT"
 
           exit $BENCH_EXIT

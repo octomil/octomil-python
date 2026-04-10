@@ -24,7 +24,6 @@ from octomil.secagg import (
     SecAggPlusClient,
     SecAggPlusConfig,
     ShamirShare,
-    _pseudo_rand_gen,
     combine_shares_bytes,
     create_shares_bytes,
     decrypt_share,
@@ -37,6 +36,7 @@ from octomil.secagg import (
     quantize,
     reconstruct_secret,
 )
+from octomil.secagg.crypto import _pseudo_rand_gen
 
 # ---------------------------------------------------------------------------
 # Stochastic quantization pipeline
