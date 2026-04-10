@@ -100,6 +100,66 @@ async def _generate_with_routing(
         return text, metrics, decision.fallback_locality, True
 
 
+async def _kernel_driven_startup(state: ServerState, model_name: str) -> None:
+    """Initialise backends based on the kernel routing policy.
+
+    Called during lifespan when ``config_set`` was provided.
+    """
+    kernel = state.kernel
+    assert kernel is not None
+
+    # Probe local availability (best-effort; do not fail yet)
+    _local_ok = True
+    try:
+        state.backend = _detect_backend(
+            model_name,
+            cache_size_mb=state.cache_size_mb,
+            cache_enabled=state.cache_enabled,
+            engine_override=state.engine_override,
+            verbose_emitter=state.verbose_emitter,
+        )
+        state.engine_name = state.backend.name if state.backend else "none"
+    except Exception as exc:
+        _local_ok = False
+        logger.info("Local backend detection failed (%s); continuing with cloud if available.", exc)
+
+    # Resolve routing to determine what we actually need
+    try:
+        decision = kernel.resolve_chat_routing(
+            model=model_name,
+            local_available=_local_ok,
+        )
+    except RuntimeError:
+        # Routing resolution can fail when policy demands a resource that
+        # is unavailable (e.g. private with no local).  Raise to fail startup.
+        raise
+
+    state.routing_policy_preset = decision.policy_preset
+
+    # Construct cloud backend when routing needs it
+    needs_cloud = decision.primary_locality == "cloud" or decision.fallback_locality == "cloud"
+    if needs_cloud and decision.cloud_profile is not None:
+        try:
+            state.cloud_backend = _create_cloud_backend_from_profile(decision.cloud_profile, model_name)
+            logger.info("Cloud backend ready (profile=%s)", decision.cloud_profile.name)
+        except Exception as exc:
+            logger.warning("Failed to create cloud backend from profile: %s", exc)
+
+    # If cloud_only policy succeeded but local was also detected, clear local backend
+    if decision.primary_locality == "cloud" and decision.fallback_locality is None:
+        if state.backend is not None and state.cloud_backend is not None:
+            logger.info("cloud_only policy: skipping local backend")
+            state.backend = None
+            state.engine_name = "cloud"
+
+    # If local failed and policy requires it with no fallback, fail startup
+    if not _local_ok and decision.primary_locality == "on_device" and decision.fallback_locality is None:
+        raise RuntimeError(
+            f"Local backend required by policy '{decision.policy_preset}' but "
+            f"no engine could load model '{model_name}'."
+        )
+
+
 def create_app(
     model_name: str,
     *,
@@ -267,6 +327,9 @@ def create_app(
                 raise
             state.whisper_backend = whisper_backend
             state.engine_name = "whisper.cpp"
+        elif state.kernel is not None:
+            # --- Config-driven startup: use kernel routing to decide backends ---
+            await _kernel_driven_startup(state, model_name)
         elif state.cloud_config is not None and state.engine_override is None:
             # Cloud-only mode: use CloudInferenceBackend directly
             from .backends.cloud import CloudInferenceBackend
