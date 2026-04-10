@@ -128,11 +128,11 @@ class TestBuildDeepLink:
         assert parsed.netloc == "pair"
         params = urllib.parse.parse_qs(parsed.query)
         assert params["token"] == ["T"]
-        assert params["host"] == ["http://localhost:8000/api/v1"]
+        assert params["host"] == ["http://localhost:8000"]
 
     def test_host_is_url_encoded(self):
         url = build_deep_link(token="T", host="https://custom.example.com/api/v1")
-        assert "host=https%3A%2F%2Fcustom.example.com%2Fapi%2Fv1" in url
+        assert "host=https%3A%2F%2Fcustom.example.com" in url
 
     def test_empty_token(self):
         url = build_deep_link(token="", host="https://api.octomil.com/api/v1")
@@ -219,8 +219,8 @@ class TestDeployPhoneQr:
             ),
         )
 
-        p1, p2, p3 = _mock_deploy_http(_model_check_resp("gemma-1b"), _versions_resp(), mock_post_resp, mock_poll_resp)
-        with p1, p2, p3:
+        p1, p2, p3 = _mock_deploy_http(mock_post_resp, mock_poll_resp)
+        with p1, p2, p3, patch("octomil.models.catalog.CATALOG", {"gemma-1b": True}):
             runner = CliRunner()
             result = runner.invoke(main, ["deploy", "gemma-1b", "--phone"])
 
@@ -265,14 +265,12 @@ class TestDeployPhoneQr:
         )
 
         p1, p2, p3 = _mock_deploy_http(
-            _model_check_resp("gemma-1b"),
-            _versions_resp(),
             mock_post_resp,
             mock_connected,
             mock_deploy_trigger,
             mock_done,
         )
-        with p1, p2, p3:
+        with p1, p2, p3, patch("octomil.models.catalog.CATALOG", {"gemma-1b": True}):
             runner = CliRunner()
             result = runner.invoke(main, ["deploy", "gemma-1b", "--phone"])
 
@@ -294,8 +292,8 @@ class TestDeployPhoneQr:
         )
         mock_poll_resp = MagicMock(status_code=200, json=MagicMock(return_value={"status": "expired"}))
 
-        p1, p2, p3 = _mock_deploy_http(_model_check_resp(), _versions_resp(), mock_post_resp, mock_poll_resp)
-        with p1, p2, p3:
+        p1, p2, p3 = _mock_deploy_http(mock_post_resp, mock_poll_resp)
+        with p1, p2, p3, patch("octomil.models.catalog.CATALOG", {"test-model": True}):
             runner = CliRunner()
             result = runner.invoke(main, ["deploy", "test-model", "--phone"])
 
@@ -317,8 +315,8 @@ class TestDeployPhoneQr:
         )
         mock_poll_resp = MagicMock(status_code=200, json=MagicMock(return_value={"status": "done"}))
 
-        p1, p2, p3 = _mock_deploy_http(_model_check_resp(), _versions_resp(), mock_post_resp, mock_poll_resp)
-        with p1, p2, p3:
+        p1, p2, p3 = _mock_deploy_http(mock_post_resp, mock_poll_resp)
+        with p1, p2, p3, patch("octomil.models.catalog.CATALOG", {"test-model": True}):
             runner = CliRunner()
             result = runner.invoke(main, ["deploy", "test-model", "--phone"])
 
@@ -348,19 +346,19 @@ class TestDeployPhoneQr:
         )
         mock_poll_resp = MagicMock(status_code=200, json=MagicMock(return_value={"status": "done"}))
 
-        p1, p2, p3 = _mock_deploy_http(_model_check_resp(), _versions_resp(), mock_post_resp, mock_poll_resp)
-        with p1, p2, p3:
+        p1, p2, p3 = _mock_deploy_http(mock_post_resp, mock_poll_resp)
+        with p1, p2, p3, patch("octomil.models.catalog.CATALOG", {"test-model": True}):
             runner = CliRunner()
             result = runner.invoke(main, ["deploy", "test-model", "--phone"])
 
         assert result.exit_code == 0
-        # Verify deep link URL includes custom host
+        # Verify deep link URL includes custom host (without /api/v1, since SDKs append it)
         url = build_deep_link(token="CUST01", host="http://localhost:8000/api/v1")
         parsed = urllib.parse.urlparse(url)
         assert parsed.scheme == "octomil"
         assert parsed.netloc == "pair"
         params = urllib.parse.parse_qs(parsed.query)
-        assert params["host"] == ["http://localhost:8000/api/v1"]
+        assert params["host"] == ["http://localhost:8000"]
 
     def test_deploy_phone_svg_saved(self, monkeypatch):
         """An SVG QR image should be saved to a temp file."""
@@ -377,8 +375,8 @@ class TestDeployPhoneQr:
         )
         mock_poll_resp = MagicMock(status_code=200, json=MagicMock(return_value={"status": "done"}))
 
-        p1, p2, p3 = _mock_deploy_http(_model_check_resp(), _versions_resp(), mock_post_resp, mock_poll_resp)
-        with p1, p2, p3:
+        p1, p2, p3 = _mock_deploy_http(mock_post_resp, mock_poll_resp)
+        with p1, p2, p3, patch("octomil.models.catalog.CATALOG", {"test-model": True}):
             runner = CliRunner()
             result = runner.invoke(main, ["deploy", "test-model", "--phone"])
 
@@ -405,9 +403,10 @@ class TestDeployPhoneQr:
         )
         mock_poll_resp = MagicMock(status_code=200, json=MagicMock(return_value={"status": "done"}))
 
-        p1, p2, p3 = _mock_deploy_http(_model_check_resp(), _versions_resp(), mock_post_resp, mock_poll_resp)
+        p1, p2, p3 = _mock_deploy_http(mock_post_resp, mock_poll_resp)
         with (
             patch.dict("sys.modules", {"segno": None}),
+            patch("octomil.models.catalog.CATALOG", {"test-model": True}),
             p1,
             p2,
             p3,
