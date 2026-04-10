@@ -239,8 +239,10 @@ def transcribe_cmd(
         if not p.is_file():
             raise click.UsageError(f"Audio file not found: {audio_file}")
         audio_data = p.read_bytes()
-    elif not sys.stdin.isatty():
+    elif not sys.stdin.isatty() and hasattr(sys.stdin, "buffer"):
         audio_data = sys.stdin.buffer.read()
+        if not audio_data:
+            raise click.UsageError("Missing audio input. Pass a file or pipe audio bytes.")
     else:
         raise click.UsageError("Missing audio input. Pass a file or pipe audio bytes.")
 
