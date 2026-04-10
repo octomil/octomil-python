@@ -704,12 +704,26 @@ def create_app(
                 # generate callable so the queue uses the routed backend.
                 if _routing_decision is not None:
 
-                    async def _routed_generate(req: GenerationRequest) -> tuple[str, Any]:
-                        t, m, _, _ = await _generate_with_routing(state, req, _routing_decision)
-                        return t, m
+                    def _routed_generate_sync(req: GenerationRequest) -> tuple[str, Any]:
+                        """Sync wrapper for queue — uses sync .generate() with fallback."""
+                        primary = _backend_for_locality(state, _routing_decision.primary_locality)
+                        if primary is None:
+                            raise OctomilError(
+                                code=OctomilErrorCode.RUNTIME_UNAVAILABLE,
+                                message=f"No backend for {_routing_decision.primary_locality}.",
+                            )
+                        try:
+                            return primary.generate(req)
+                        except Exception:
+                            if _routing_decision.fallback_locality is None:
+                                raise
+                            fb = _backend_for_locality(state, _routing_decision.fallback_locality)
+                            if fb is None:
+                                raise
+                            return fb.generate(req)
 
                     try:
-                        text, metrics = await _queue.submit_generate(gen_req, _routed_generate)
+                        text, metrics = await _queue.submit_generate(gen_req, _routed_generate_sync)
                     except QueueFullError:
                         raise OctomilError(
                             code=OctomilErrorCode.RATE_LIMITED,
