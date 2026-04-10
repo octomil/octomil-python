@@ -123,15 +123,19 @@ def _strip_code_fence(text: str) -> str:
     return text
 
 
-def _validate_arguments(arguments: dict, schema: dict) -> tuple[bool, list[str]]:
-    """Validate arguments against a JSON schema. Returns (valid, errors)."""
+def _validate_arguments(arguments: dict, schema: dict) -> tuple[bool | None, list[str]]:
+    """Validate arguments against a JSON schema. Returns (valid, errors).
+
+    Returns (None, []) when jsonschema is not installed — callers treat
+    None as "validation skipped" rather than "passed".
+    """
     try:
         import jsonschema
 
         jsonschema.validate(instance=arguments, schema=schema)
         return True, []
     except ImportError:
-        # jsonschema not installed — skip validation
-        return True, []
+        # jsonschema not installed — skip validation (result is unknown, not True)
+        return None, []
     except Exception as e:
         return False, [str(e)]
