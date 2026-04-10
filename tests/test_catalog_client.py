@@ -185,11 +185,17 @@ class TestServerFetcher:
 class TestCatalogClientV2:
     """Tests for the v2 catalog client."""
 
-    def test_get_manifest_returns_empty_when_no_server(self) -> None:
+    def test_get_manifest_returns_empty_when_no_server(self, tmp_path: Path) -> None:
         """When server unreachable and no cache, should return empty dict."""
         client = CatalogClientV2(base_url="https://api.example.com")
 
-        with patch.dict("sys.modules", {"httpx": None}):
+        # Redirect the disk cache to an empty tmp dir so a real
+        # ~/.cache/octomil/catalog_manifest_v2.json does not leak into
+        # this test and cause a non-empty result.
+        with (
+            patch("octomil.models.catalog_client._CACHE_DIR", tmp_path),
+            patch.dict("sys.modules", {"httpx": None}),
+        ):
             manifest = client.get_manifest(platform="all")
 
         assert manifest == {}

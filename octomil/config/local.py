@@ -31,7 +31,7 @@ def _normalise_preset(raw: str) -> str:
     lowered = raw.strip().lower()
     mapped = _LEGACY_PRESET_MAP.get(lowered, lowered)
     if mapped not in VALID_PRESETS:
-        raise ValueError(f"Unknown policy preset '{raw}'. " f"Valid presets: {', '.join(sorted(VALID_PRESETS))}")
+        raise ValueError(f"Unknown policy preset '{raw}'. Valid presets: {', '.join(sorted(VALID_PRESETS))}")
     return mapped
 
 

@@ -194,11 +194,11 @@ class TestDeployOllamaUri:
             quantization="Q4_K_M",
         )
 
-        mock_list_resp = MagicMock(
-            status_code=200,
-            json=MagicMock(return_value={"models": [{"name": "gemma", "id": "m-oll"}]}),
-        )
-        mock_versions_resp = MagicMock(status_code=200, json=MagicMock(return_value=[{"version": "1.0.0"}]))
+        # The phone deploy path makes exactly 2 HTTP calls:
+        #   1. POST /deploy/pair  (creates the pairing session)
+        #   2. GET  /deploy/pair/{code}  (polls for device connection)
+        # The old mock_list_resp / mock_versions_resp were from a removed
+        # pre-deploy catalog-check flow and are no longer consumed.
         mock_post_resp = MagicMock(
             status_code=200,
             json=MagicMock(
@@ -211,7 +211,7 @@ class TestDeployOllamaUri:
         mock_poll_resp = MagicMock(status_code=200, json=MagicMock(return_value={"status": "done"}))
 
         mock_client = MagicMock()
-        mock_client.request.side_effect = [mock_list_resp, mock_versions_resp, mock_post_resp, mock_poll_resp]
+        mock_client.request.side_effect = [mock_post_resp, mock_poll_resp]
         mock_client.__enter__ = MagicMock(return_value=mock_client)
         mock_client.__exit__ = MagicMock(return_value=False)
 
@@ -219,6 +219,9 @@ class TestDeployOllamaUri:
             patch("httpx.Client", return_value=mock_client),
             patch("octomil.discovery.scan_for_devices", return_value=[]),
             patch("time.sleep"),
+            # After URI stripping, the model name becomes "gemma" — inject it
+            # into the CATALOG so the deploy skips the "importing..." path.
+            patch.dict("octomil.models.catalog.CATALOG", {"gemma": object()}, clear=False),
         ):
             runner = CliRunner()
             result = runner.invoke(main, ["deploy", "ollama://gemma:2b", "--phone"])
