@@ -78,9 +78,9 @@ class TestLlamaCppFlashAttn:
 
         mock_llama_cls.assert_called_once()
         call_kwargs = mock_llama_cls.call_args
-        assert call_kwargs.kwargs.get("flash_attn") is True, (
-            "Llama() constructor must receive flash_attn=True for local .gguf files"
-        )
+        assert (
+            call_kwargs.kwargs.get("flash_attn") is True
+        ), "Llama() constructor must receive flash_attn=True for local .gguf files"
         assert call_kwargs.kwargs.get("model_path") == "model.gguf"
 
     def test_load_model_hf_repo_passes_flash_attn(self):
@@ -96,9 +96,9 @@ class TestLlamaCppFlashAttn:
 
         mock_from_pretrained.assert_called_once()
         call_kwargs = mock_from_pretrained.call_args
-        assert call_kwargs.kwargs.get("flash_attn") is True, (
-            "Llama.from_pretrained() must receive flash_attn=True for HF repo IDs"
-        )
+        assert (
+            call_kwargs.kwargs.get("flash_attn") is True
+        ), "Llama.from_pretrained() must receive flash_attn=True for HF repo IDs"
         assert call_kwargs.kwargs.get("repo_id") == "user/some-model"
 
     def test_load_model_resolved_gguf_passes_flash_attn(self):
@@ -115,16 +115,16 @@ class TestLlamaCppFlashAttn:
         mock_llama_module = MagicMock(Llama=mock_llama_cls, LlamaCache=MagicMock())
         with (
             patch.dict("sys.modules", {"llama_cpp": mock_llama_module}),
-            patch("octomil.serve._resolve_new", return_value=mock_resolved),
+            patch("octomil.serve.backends.llamacpp._resolve_new", return_value=mock_resolved),
         ):
             backend = LlamaCppBackend(cache_enabled=False)
             backend.load_model("short-name")
 
         mock_from_pretrained.assert_called_once()
         call_kwargs = mock_from_pretrained.call_args
-        assert call_kwargs.kwargs.get("flash_attn") is True, (
-            "Llama.from_pretrained() must receive flash_attn=True for resolver-resolved models"
-        )
+        assert (
+            call_kwargs.kwargs.get("flash_attn") is True
+        ), "Llama.from_pretrained() must receive flash_attn=True for resolver-resolved models"
 
     def test_load_model_legacy_catalog_passes_flash_attn(self):
         """Llama.from_pretrained() should receive flash_attn=True for legacy catalog models."""
@@ -136,21 +136,21 @@ class TestLlamaCppFlashAttn:
         with (
             patch.dict("sys.modules", {"llama_cpp": mock_llama_module}),
             patch(
-                "octomil.serve._resolve_new",
+                "octomil.serve.backends.llamacpp._resolve_new",
                 side_effect=__import__(
                     "octomil.models.resolver", fromlist=["ModelResolutionError"]
                 ).ModelResolutionError("not found"),
             ),
-            patch("octomil.serve._GGUF_MODELS", {"test-model": ("org/repo", "file.gguf")}),
+            patch("octomil.serve.backends.llamacpp._GGUF_MODELS", {"test-model": ("org/repo", "file.gguf")}),
         ):
             backend = LlamaCppBackend(cache_enabled=False)
             backend.load_model("test-model")
 
         mock_from_pretrained.assert_called_once()
         call_kwargs = mock_from_pretrained.call_args
-        assert call_kwargs.kwargs.get("flash_attn") is True, (
-            "Llama.from_pretrained() must receive flash_attn=True for legacy catalog models"
-        )
+        assert (
+            call_kwargs.kwargs.get("flash_attn") is True
+        ), "Llama.from_pretrained() must receive flash_attn=True for legacy catalog models"
 
 
 # ---------------------------------------------------------------------------
