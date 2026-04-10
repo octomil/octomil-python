@@ -25,6 +25,29 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def _create_cloud_backend_from_profile(profile: Any, model: str) -> Any:
+    """Build a CloudInferenceBackend from a config CloudProfile.
+
+    Used only for config-driven cloud routing — not for explicit --cloud
+    or catalog :cloud paths.
+    """
+    from .backends.cloud import CloudInferenceBackend
+
+    api_key = os.environ.get(profile.api_key_env, "")
+    if not api_key:
+        raise RuntimeError(f"Cloud routing requires {profile.api_key_env} to be set.")
+
+    from ..execution.kernel import _openai_base_url
+
+    backend = CloudInferenceBackend(
+        base_url=_openai_base_url(profile),
+        api_key=api_key,
+        model=model,
+    )
+    backend.load_model(model)
+    return backend
+
+
 def create_app(
     model_name: str,
     *,
@@ -45,6 +68,7 @@ def create_app(
     early_exit_config: Optional["EarlyExitConfig"] = None,
     verbose: bool = False,
     cloud_config: Optional[CloudConfig] = None,
+    config_set: Any = None,
 ) -> Any:
     """Create a FastAPI app with OpenAI-compatible endpoints.
 
@@ -120,6 +144,13 @@ def create_app(
             )
         )
 
+    # --- Kernel construction (config-driven routing) ---
+    _kernel = None
+    if config_set is not None:
+        from ..execution.kernel import ExecutionKernel
+
+        _kernel = ExecutionKernel(config_set=config_set)
+
     state = ServerState(
         model_name=model_name,
         api_key=api_key,
@@ -138,6 +169,8 @@ def create_app(
         is_reasoning_model=_is_reasoning,
         verbose_runtime_logs=verbose,
         cloud_config=cloud_config,
+        kernel=_kernel,
+        config_set=config_set,
     )
 
     @asynccontextmanager
@@ -889,6 +922,7 @@ def run_server(
     early_exit_config: Optional["EarlyExitConfig"] = None,
     verbose: bool = False,
     cloud_config: Optional[CloudConfig] = None,
+    config_set: Any = None,
 ) -> None:
     """Start the inference server (blocking).
 
@@ -945,5 +979,6 @@ def run_server(
         early_exit_config=early_exit_config,
         verbose=verbose,
         cloud_config=cloud_config,
+        config_set=config_set,
     )
     uvicorn.run(app, host=host, port=port, log_level="info")
