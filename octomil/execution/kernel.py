@@ -14,8 +14,10 @@ Does NOT require an HTTP server process.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
+import tempfile
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -133,6 +135,68 @@ def _inline_to_routing_policy(ip: InlinePolicy) -> RoutingPolicy:
     if rp == "performance":
         return RoutingPolicy.auto(prefer_local=True)
     return RoutingPolicy.auto()
+
+
+def _openai_base_url(profile: CloudProfile) -> str:
+    """Return an OpenAI-compatible hosted base URL ending in /v1."""
+    base = profile.base_url.rstrip("/")
+    if base.endswith("/v1") and not base.endswith("/api/v1"):
+        return base
+    if base.endswith("/api/v1"):
+        return base[: -len("/api/v1")] + "/v1"
+    return f"{base}/v1"
+
+
+def _platform_api_base_url(profile: CloudProfile) -> str:
+    """Return the legacy platform API base URL ending in /api/v1."""
+    base = profile.base_url.rstrip("/")
+    if base.endswith("/api/v1"):
+        return base
+    if base.endswith("/v1"):
+        return base[: -len("/v1")] + "/api/v1"
+    return f"{base}/api/v1"
+
+
+def _cloud_api_key(profile: Optional[CloudProfile]) -> str:
+    if profile is None:
+        return ""
+    return os.environ.get(profile.api_key_env, "")
+
+
+def _cloud_available(defaults: ResolvedExecutionDefaults) -> bool:
+    return bool(defaults.cloud_profile and _cloud_api_key(defaults.cloud_profile))
+
+
+def _select_locality_for_capability(
+    routing_policy: RoutingPolicy,
+    *,
+    local_available: bool,
+    cloud_available: bool,
+    capability: str,
+) -> tuple[str, bool]:
+    """Select local/cloud for non-ModelRuntime capabilities using exact policy semantics."""
+    if routing_policy.mode == ContractRoutingPolicy.LOCAL_ONLY:
+        if local_available:
+            return LOCALITY_ON_DEVICE, False
+        raise RuntimeError(f"Local {capability} execution is required by policy, but no local runtime is available.")
+
+    if routing_policy.mode == ContractRoutingPolicy.CLOUD_ONLY:
+        if cloud_available:
+            return LOCALITY_CLOUD, False
+        raise RuntimeError(f"Cloud {capability} execution is required by policy, but cloud is not configured.")
+
+    if routing_policy.mode == ContractRoutingPolicy.LOCAL_FIRST or routing_policy.prefer_local:
+        if local_available:
+            return LOCALITY_ON_DEVICE, False
+        if routing_policy.fallback == "cloud" and cloud_available:
+            return LOCALITY_CLOUD, True
+        raise RuntimeError(f"No local {capability} runtime available and cloud fallback is not configured.")
+
+    if cloud_available:
+        return LOCALITY_CLOUD, False
+    if routing_policy.fallback == "local" and local_available:
+        return LOCALITY_ON_DEVICE, True
+    raise RuntimeError(f"No cloud {capability} runtime available and local fallback is not configured.")
 
 
 # ---------------------------------------------------------------------------
@@ -281,39 +345,33 @@ class ExecutionKernel:
 
         routing_policy = _resolve_routing_policy(defaults)
 
-        # Check if local embedding is even possible
         local_available = self._can_local(effective_model, CAPABILITY_EMBEDDING)
-        if not local_available and routing_policy.mode == ContractRoutingPolicy.LOCAL_ONLY:
-            raise RuntimeError(
-                "Local embedding execution is required by policy, but no local "
-                "embedding runtime is available.\n\n"
-                "Pass --model with a supported local embedding model, configure "
-                "a local runtime, or explicitly enable cloud."
-            )
+        cloud_available = _cloud_available(defaults)
+        locality, is_fallback = _select_locality_for_capability(
+            routing_policy,
+            local_available=local_available,
+            cloud_available=cloud_available,
+            capability=CAPABILITY_EMBEDDING,
+        )
 
-        # For now, embeddings route through cloud when cloud is available,
-        # or raise a clear error when local is required but unavailable.
-        if not local_available:
-            # Cloud path
-            cloud_profile = defaults.cloud_profile
-            if cloud_profile is None:
-                raise RuntimeError(
-                    "No local embedding runtime available and no cloud profile "
-                    "configured.\n\n"
-                    "Configure a cloud profile in .octomil.toml or use "
-                    "--policy private with a local embedding model."
-                )
-            return await self._cloud_embed(inputs, effective_model, cloud_profile)
+        if locality == LOCALITY_CLOUD:
+            assert defaults.cloud_profile is not None
+            return await self._cloud_embed(inputs, effective_model, defaults.cloud_profile, is_fallback)
 
-        # Local embedding path (if a local runtime exists)
-        return await self._local_embed(inputs, effective_model, routing_policy)
+        return await self._local_embed(inputs, effective_model, is_fallback)
 
-    async def _cloud_embed(self, inputs: list[str], model: str, profile: CloudProfile) -> ExecutionResult:
+    async def _cloud_embed(
+        self,
+        inputs: list[str],
+        model: str,
+        profile: CloudProfile,
+        fallback_used: bool = False,
+    ) -> ExecutionResult:
         """Dispatch embeddings to cloud."""
         from octomil.embeddings import embed
 
         api_key = os.environ.get(profile.api_key_env, "")
-        base_url = profile.base_url
+        base_url = _platform_api_base_url(profile)
         if not api_key:
             raise RuntimeError(
                 f"Cloud embedding requires {profile.api_key_env} to be set.\n\n"
@@ -321,7 +379,7 @@ class ExecutionKernel:
             )
 
         result = embed(
-            server_url=f"{base_url.rstrip('/')}/api/v1",
+            server_url=base_url,
             api_key=api_key,
             model_id=model,
             input=inputs if len(inputs) > 1 else inputs[0],
@@ -333,7 +391,7 @@ class ExecutionKernel:
             model=model,
             capability=CAPABILITY_EMBEDDING,
             locality=LOCALITY_CLOUD,
-            fallback_used=False,
+            fallback_used=fallback_used,
             embeddings=result.embeddings,
             dimensions=dims,
             usage={
@@ -342,7 +400,7 @@ class ExecutionKernel:
             },
         )
 
-    async def _local_embed(self, inputs: list[str], model: str, policy: RoutingPolicy) -> ExecutionResult:
+    async def _local_embed(self, inputs: list[str], model: str, fallback_used: bool = False) -> ExecutionResult:
         """Dispatch embeddings to a local runtime."""
         from octomil.runtime.core.registry import ModelRuntimeRegistry
 
@@ -351,21 +409,24 @@ class ExecutionKernel:
         if runtime is None:
             raise RuntimeError(f"No local runtime found for embedding model '{model}'.")
 
-        all_vectors: list[list[float]] = []
-        total_tokens = 0
+        embed_fn = getattr(runtime, "embed", None) or getattr(runtime, "create_embeddings", None)
+        if embed_fn is None:
+            raise RuntimeError(f"Local runtime for embedding model '{model}' does not expose an embedding interface.")
 
-        for text in inputs:
-            request = RuntimeRequest(
-                messages=[RuntimeMessage(role=MessageRole.USER, parts=[RuntimeContentPart.text_part(text)])],
-                generation_config=GenerationConfig(max_tokens=0, temperature=0.0),
-            )
-            response = await runtime.run(request)
-            # Attempt to extract embedding vector from response
-            if hasattr(response, "embedding") and response.embedding:
-                all_vectors.append(response.embedding)
-            else:
-                all_vectors.append([])
-            total_tokens += getattr(response, "input_tokens", len(text.split()))
+        maybe_result = embed_fn(inputs)
+        if hasattr(maybe_result, "__await__"):
+            maybe_result = await maybe_result
+
+        if hasattr(maybe_result, "embeddings"):
+            all_vectors = maybe_result.embeddings
+            usage_obj = getattr(maybe_result, "usage", None)
+            total_tokens = getattr(usage_obj, "total_tokens", 0) if usage_obj is not None else 0
+        else:
+            all_vectors = maybe_result
+            total_tokens = sum(len(text.split()) for text in inputs)
+
+        if not isinstance(all_vectors, list):
+            raise RuntimeError(f"Local embedding runtime for '{model}' returned an invalid embedding result.")
 
         dims = len(all_vectors[0]) if all_vectors and all_vectors[0] else 0
         return ExecutionResult(
@@ -373,7 +434,7 @@ class ExecutionKernel:
             model=model,
             capability=CAPABILITY_EMBEDDING,
             locality=LOCALITY_ON_DEVICE,
-            fallback_used=False,
+            fallback_used=fallback_used,
             embeddings=all_vectors,
             dimensions=dims,
             usage={"input_tokens": total_tokens, "total_tokens": total_tokens},
@@ -399,49 +460,101 @@ class ExecutionKernel:
             raise _no_model_error(CAPABILITY_TRANSCRIPTION)
 
         routing_policy = _resolve_routing_policy(defaults)
-
-        local_available = self._can_local(effective_model, CAPABILITY_TRANSCRIPTION)
-        if not local_available and routing_policy.mode == ContractRoutingPolicy.LOCAL_ONLY:
-            raise RuntimeError(
-                "Local transcription is required by policy, but no local "
-                "transcription runtime is available.\n\n"
-                "Pass --model with a supported local transcription model or "
-                "change the serving policy."
-            )
-
-        if not local_available:
-            raise RuntimeError(
-                "No local transcription runtime available. Audio transcription "
-                "currently requires a local Whisper-compatible runtime.\n\n"
-                "Install whisper support or pass --model with an available model."
-            )
-
-        # Local transcription
-        from octomil.runtime.core.registry import ModelRuntimeRegistry
-
-        registry = ModelRuntimeRegistry.shared()
-        runtime = registry.resolve(effective_model)
-        if runtime is None:
-            raise RuntimeError(f"No runtime found for transcription model '{effective_model}'.")
-
-        request = RuntimeRequest(
-            messages=[
-                RuntimeMessage(
-                    role=MessageRole.USER,
-                    parts=[RuntimeContentPart.text_part(language or "")],
-                ),
-            ],
-            generation_config=GenerationConfig(max_tokens=0, temperature=0.0),
+        local_available = self._has_local_transcription_backend(effective_model)
+        cloud_available = _cloud_available(defaults)
+        locality, is_fallback = _select_locality_for_capability(
+            routing_policy,
+            local_available=local_available,
+            cloud_available=cloud_available,
+            capability=CAPABILITY_TRANSCRIPTION,
         )
-        response = await runtime.run(request)
+
+        if locality == LOCALITY_CLOUD:
+            assert defaults.cloud_profile is not None
+            return await self._cloud_transcribe(
+                audio_data, effective_model, defaults.cloud_profile, language, is_fallback
+            )
+
+        return await self._local_transcribe(audio_data, effective_model, language, is_fallback)
+
+    async def _cloud_transcribe(
+        self,
+        audio_data: bytes,
+        model: str,
+        profile: CloudProfile,
+        language: Optional[str],
+        fallback_used: bool = False,
+    ) -> ExecutionResult:
+        """Dispatch audio transcription to a hosted OpenAI-compatible endpoint."""
+        import httpx
+
+        api_key = os.environ.get(profile.api_key_env, "")
+        if not api_key:
+            raise RuntimeError(
+                f"Cloud transcription requires {profile.api_key_env} to be set.\n\n"
+                f"Export {profile.api_key_env} or configure a cloud profile."
+            )
+
+        data = {"model": model}
+        if language:
+            data["language"] = language
+        headers = {"Authorization": f"Bearer {api_key}"}
+        async with httpx.AsyncClient(base_url=_openai_base_url(profile), headers=headers, timeout=120.0) as client:
+            response = await client.post(
+                "/audio/transcriptions",
+                data=data,
+                files={"file": ("audio.wav", audio_data, "audio/wav")},
+            )
+            response.raise_for_status()
+            payload = response.json()
 
         return ExecutionResult(
             id=f"txn_{uuid.uuid4().hex[:12]}",
-            model=effective_model,
+            model=model,
+            capability=CAPABILITY_TRANSCRIPTION,
+            locality=LOCALITY_CLOUD,
+            fallback_used=fallback_used,
+            output_text=payload.get("text", ""),
+            segments=payload.get("segments"),
+            raw=payload,
+        )
+
+    async def _local_transcribe(
+        self,
+        audio_data: bytes,
+        model: str,
+        language: Optional[str],
+        fallback_used: bool = False,
+    ) -> ExecutionResult:
+        """Dispatch audio transcription to a local Whisper-compatible backend."""
+        backend = self._resolve_local_transcription_backend(model)
+        if backend is None:
+            raise RuntimeError(f"No local transcription runtime found for model '{model}'.")
+
+        fd, tmp_path = tempfile.mkstemp(suffix=".wav")
+        try:
+            os.write(fd, audio_data)
+            os.close(fd)
+            result = await asyncio.to_thread(backend.transcribe, tmp_path)
+        finally:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+            if os.path.exists(tmp_path):
+                os.unlink(tmp_path)
+
+        text = result.get("text", "") if isinstance(result, dict) else str(result)
+        segments = result.get("segments") if isinstance(result, dict) else None
+        return ExecutionResult(
+            id=f"txn_{uuid.uuid4().hex[:12]}",
+            model=model,
             capability=CAPABILITY_TRANSCRIPTION,
             locality=LOCALITY_ON_DEVICE,
-            fallback_used=False,
-            output_text=response.text,
+            fallback_used=fallback_used,
+            output_text=text,
+            segments=segments,
+            raw=result if isinstance(result, dict) else None,
         )
 
     # ------------------------------------------------------------------
@@ -461,14 +574,39 @@ class ExecutionKernel:
 
     def _can_local(self, model: str, capability: str) -> bool:
         """Check if a local runtime is available for the given model."""
+        if capability == CAPABILITY_TRANSCRIPTION:
+            return self._has_local_transcription_backend(model)
+
         try:
             from octomil.runtime.core.registry import ModelRuntimeRegistry
 
             registry = ModelRuntimeRegistry.shared()
             runtime = registry.resolve(model)
-            return runtime is not None
+            if runtime is None:
+                return False
+            if capability == CAPABILITY_EMBEDDING:
+                return hasattr(runtime, "embed") or hasattr(runtime, "create_embeddings")
+            return True
         except Exception:
             return False
+
+    def _has_local_transcription_backend(self, model: str) -> bool:
+        return self._resolve_local_transcription_backend(model) is not None
+
+    def _resolve_local_transcription_backend(self, model: str) -> Optional[Any]:
+        try:
+            from octomil.runtime.engines import get_registry
+
+            registry = get_registry()
+            for detection in registry.detect_all(model):
+                if not detection.available:
+                    continue
+                backend = detection.engine.create_backend(model)
+                if hasattr(backend, "transcribe"):
+                    return backend
+        except Exception:
+            return None
+        return None
 
     async def _build_router(
         self,
@@ -494,7 +632,7 @@ class ExecutionKernel:
                 if not api_key:
                     return None
                 return CloudModelRuntime(
-                    base_url=defaults.cloud_profile.base_url,
+                    base_url=_openai_base_url(defaults.cloud_profile),
                     api_key=api_key,
                     model=model,
                 )

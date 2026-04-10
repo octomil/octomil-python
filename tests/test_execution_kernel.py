@@ -12,6 +12,7 @@ from octomil.config.local import (
     CAPABILITY_EMBEDDING,
     CAPABILITY_TRANSCRIPTION,
     CapabilityDefault,
+    CloudProfile,
     LoadedConfigSet,
     LocalOctomilConfig,
 )
@@ -158,12 +159,33 @@ class TestKernelCreateEmbeddings:
                 await kernel.create_embeddings(["test input"])
 
     @pytest.mark.asyncio
-    async def test_no_cloud_no_local_raises(self):
+    async def test_no_cloud_no_local_raises(self, monkeypatch):
+        monkeypatch.delenv("OCTOMIL_SERVER_KEY", raising=False)
         kernel = _make_kernel(policy="local_first")
 
         with patch.object(kernel, "_can_local", return_value=False):
             with pytest.raises(RuntimeError, match="No local embedding runtime available"):
                 await kernel.create_embeddings(["test input"])
+
+    @pytest.mark.asyncio
+    async def test_cloud_only_embeddings_use_cloud_even_when_local_available(self, monkeypatch):
+        monkeypatch.setenv("OCTOMIL_SERVER_KEY", "test-key")
+        config = LocalOctomilConfig(
+            capabilities={CAPABILITY_EMBEDDING: CapabilityDefault(model="embed-model", policy="cloud_only")},
+            cloud_profiles={"default": CloudProfile()},
+        )
+        kernel = ExecutionKernel(config_set=LoadedConfigSet(project=config))
+
+        expected = MagicMock()
+        expected.capability = CAPABILITY_EMBEDDING
+        with patch.object(kernel, "_can_local", return_value=True):
+            with patch.object(kernel, "_cloud_embed", new_callable=AsyncMock, return_value=expected) as cloud_embed:
+                with patch.object(kernel, "_local_embed", new_callable=AsyncMock) as local_embed:
+                    result = await kernel.create_embeddings(["test input"])
+
+        assert result is expected
+        cloud_embed.assert_awaited_once()
+        local_embed.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -176,14 +198,15 @@ class TestKernelTranscribeAudio:
     async def test_local_only_without_runtime_raises(self):
         kernel = _make_kernel(policy="private")
 
-        with patch.object(kernel, "_can_local", return_value=False):
-            with pytest.raises(RuntimeError, match="Local transcription is required by policy"):
+        with patch.object(kernel, "_has_local_transcription_backend", return_value=False):
+            with pytest.raises(RuntimeError, match="Local transcription execution is required by policy"):
                 await kernel.transcribe_audio(b"fake_audio")
 
     @pytest.mark.asyncio
-    async def test_no_local_runtime_raises(self):
+    async def test_no_local_runtime_raises(self, monkeypatch):
+        monkeypatch.delenv("OCTOMIL_SERVER_KEY", raising=False)
         kernel = _make_kernel(policy="local_first")
 
-        with patch.object(kernel, "_can_local", return_value=False):
+        with patch.object(kernel, "_has_local_transcription_backend", return_value=False):
             with pytest.raises(RuntimeError, match="No local transcription runtime available"):
                 await kernel.transcribe_audio(b"fake_audio")

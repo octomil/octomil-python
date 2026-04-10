@@ -158,7 +158,7 @@ def test_from_metadata_returns_none_for_unknown_mode():
 
 
 class TestFromDesiredStateEntry:
-    """Verify RoutingPolicy.from_desired_state_entry maps all 6 serving policy presets."""
+    """Verify RoutingPolicy.from_desired_state_entry maps serving policy presets."""
 
     def test_private_local_only(self):
         entry = {"serving_policy": {"routing_mode": "local_only"}}
@@ -205,14 +205,14 @@ class TestFromDesiredStateEntry:
             "serving_policy": {
                 "routing_mode": "auto",
                 "routing_preference": "quality",
-                "fallback": {"allow_cloud_fallback": True},
+                "fallback": {"allow_local_fallback": True},
             }
         }
         policy = RoutingPolicy.from_desired_state_entry(entry)
         assert policy is not None
         assert policy.mode == "auto"
         assert policy.prefer_local is False
-        assert policy.fallback == "cloud"
+        assert policy.fallback == "local"
 
     def test_cloud_preference(self):
         entry = {"serving_policy": {"routing_mode": "auto", "routing_preference": "cloud"}}
@@ -220,6 +220,7 @@ class TestFromDesiredStateEntry:
         assert policy is not None
         assert policy.mode == "auto"
         assert policy.prefer_local is False
+        assert policy.fallback == "local"
 
     def test_local_only_disables_fallback(self):
         entry = {"serving_policy": {"routing_mode": "local_only"}}
@@ -249,6 +250,18 @@ class TestFromDesiredStateEntry:
         assert policy is not None
         assert policy.fallback == "cloud"
 
+    def test_cloud_preference_can_disable_local_fallback(self):
+        entry = {
+            "serving_policy": {
+                "routing_mode": "auto",
+                "routing_preference": "cloud",
+                "fallback": {"allow_local_fallback": False},
+            }
+        }
+        policy = RoutingPolicy.from_desired_state_entry(entry)
+        assert policy is not None
+        assert policy.fallback == "none"
+
 
 # ---------------------------------------------------------------------------
 # Runtime decision tests: quality vs balanced behavior
@@ -277,6 +290,17 @@ async def test_quality_falls_back_to_local_when_no_cloud():
     )
     resp = await router.run(_text_request())
     assert resp.text == "from-local"
+
+
+@pytest.mark.asyncio
+async def test_cloud_first_respects_disabled_local_fallback():
+    router = RouterModelRuntime(
+        local_factory=lambda mid: StubRuntime("local"),
+        cloud_factory=lambda mid: None,
+        default_policy=RoutingPolicy.auto(prefer_local=False, fallback="none"),
+    )
+    with pytest.raises(RuntimeError, match="No runtime available"):
+        await router.run(_text_request())
 
 
 @pytest.mark.asyncio

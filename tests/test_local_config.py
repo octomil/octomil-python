@@ -228,7 +228,8 @@ class TestResolutionPrecedence:
         )
         assert result.policy_preset == "local_first"
 
-    def test_no_credentials_required_for_local(self):
+    def test_no_credentials_required_for_local(self, monkeypatch):
+        monkeypatch.delenv("OCTOMIL_SERVER_KEY", raising=False)
         config_set = LoadedConfigSet()
         result = resolve_capability_defaults(
             CAPABILITY_CHAT,
@@ -238,3 +239,14 @@ class TestResolutionPrecedence:
         assert result.cloud_profile is None
         assert result.app_slug is None
         assert result.org_id is None
+
+    def test_standard_server_key_enables_builtin_cloud_profile(self, monkeypatch):
+        monkeypatch.setenv("OCTOMIL_SERVER_KEY", "test-key")
+        config_set = LoadedConfigSet()
+        result = resolve_capability_defaults(
+            CAPABILITY_CHAT,
+            RequestOverrides(policy="cloud_only"),
+            config_set,
+        )
+        assert result.cloud_profile is not None
+        assert result.cloud_profile.base_url == "https://api.octomil.com/v1"

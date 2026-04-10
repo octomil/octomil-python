@@ -24,6 +24,7 @@ VALID_PRESETS = frozenset({"private", "local_first", "performance_first", "cloud
 
 # Legacy presets that must normalise silently.
 _LEGACY_PRESET_MAP = {"quality_first": "cloud_first", "quality": "cloud_first"}
+DEFAULT_CLOUD_BASE_URL = "https://api.octomil.com/v1"
 
 
 def _normalise_preset(raw: str) -> str:
@@ -37,7 +38,7 @@ def _normalise_preset(raw: str) -> str:
 @dataclass
 class FallbackConfig:
     allow_cloud_fallback: bool = True
-    allow_local_fallback: bool = False
+    allow_local_fallback: bool = True
 
 
 @dataclass
@@ -67,7 +68,7 @@ class AppBinding:
 @dataclass
 class CloudProfile:
     name: str = "default"
-    base_url: str = "https://api.octomil.com"
+    base_url: str = DEFAULT_CLOUD_BASE_URL
     api_key_env: str = "OCTOMIL_SERVER_KEY"
     org_id_env: str = "OCTOMIL_ORG_ID"
 
@@ -319,6 +320,9 @@ def resolve_capability_defaults(
     if result.policy_preset is None and result.inline_policy is None:
         result.policy_preset = "local_first"
 
+    if result.cloud_profile is None:
+        result.cloud_profile = _default_cloud_profile_from_env()
+
     return result
 
 
@@ -362,7 +366,13 @@ def _merge_config_layer(
         profile_name = config.default_profile if config.default_profile != "local" else "default"
         profile = config.cloud_profiles.get(profile_name) or next(iter(config.cloud_profiles.values()), None)
         if profile:
-            # Only set if the env var actually has a value
-            key = os.environ.get(profile.api_key_env, "")
-            if key:
-                result.cloud_profile = profile
+            result.cloud_profile = profile
+
+
+def _default_cloud_profile_from_env() -> Optional[CloudProfile]:
+    """Return the built-in hosted profile when standard cloud auth is present."""
+    if not os.environ.get("OCTOMIL_SERVER_KEY"):
+        return None
+    return CloudProfile(
+        base_url=os.environ.get("OCTOMIL_API_BASE") or os.environ.get("OCTOMIL_API_URL") or DEFAULT_CLOUD_BASE_URL,
+    )
