@@ -192,9 +192,11 @@ def _resolve_localities(
 ) -> tuple[str, Optional[str]]:
     """Return (primary_locality, fallback_locality | None).
 
-    Unlike ``_select_locality_for_capability`` this does not raise when a
-    resource is unavailable — it simply reports what is possible so the
-    caller can handle startup/fallback independently.
+    This mirrors ``_select_locality_for_capability`` but returns the
+    configured primary and fallback localities for callers that own backend
+    lifecycle.  Disabled fallbacks are exact: if the preferred locality is
+    unavailable and fallback is ``"none"``, this raises instead of silently
+    switching execution locations.
     """
     if routing_policy.mode == ContractRoutingPolicy.LOCAL_ONLY:
         if not local_available:
@@ -212,26 +214,24 @@ def _resolve_localities(
         prefer_local = True
 
     if prefer_local:
-        primary = LOCALITY_ON_DEVICE if local_available else (LOCALITY_CLOUD if cloud_available else None)
-        if primary is None:
-            raise RuntimeError("No local or cloud backend available for chat.")
-        fallback: Optional[str] = None
-        if primary == LOCALITY_ON_DEVICE and routing_policy.fallback == "cloud" and cloud_available:
-            fallback = LOCALITY_CLOUD
-        elif primary == LOCALITY_CLOUD and routing_policy.fallback != "none" and local_available:
-            fallback = LOCALITY_ON_DEVICE
-        return primary, fallback
-    else:
-        # cloud-first
-        primary = LOCALITY_CLOUD if cloud_available else (LOCALITY_ON_DEVICE if local_available else None)
-        if primary is None:
-            raise RuntimeError("No local or cloud backend available for chat.")
-        fallback = None
-        if primary == LOCALITY_CLOUD and routing_policy.fallback == "local" and local_available:
-            fallback = LOCALITY_ON_DEVICE
-        elif primary == LOCALITY_ON_DEVICE and routing_policy.fallback != "none" and cloud_available:
-            fallback = LOCALITY_CLOUD
-        return primary, fallback
+        if local_available:
+            fallback = LOCALITY_CLOUD if routing_policy.fallback == "cloud" and cloud_available else None
+            return LOCALITY_ON_DEVICE, fallback
+        if routing_policy.fallback == "cloud" and cloud_available:
+            return LOCALITY_CLOUD, None
+        if cloud_available:
+            raise RuntimeError("Local chat execution is required by policy, but cloud fallback is disabled.")
+        raise RuntimeError("No local or cloud backend available for chat.")
+
+    # cloud-first
+    if cloud_available:
+        fallback = LOCALITY_ON_DEVICE if routing_policy.fallback == "local" and local_available else None
+        return LOCALITY_CLOUD, fallback
+    if routing_policy.fallback == "local" and local_available:
+        return LOCALITY_ON_DEVICE, None
+    if local_available:
+        raise RuntimeError("Cloud chat execution is required by policy, but local fallback is disabled.")
+    raise RuntimeError("No local or cloud backend available for chat.")
 
 
 def _select_locality_for_capability(

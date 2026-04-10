@@ -24,6 +24,8 @@ class CloudInferenceBackend(InferenceBackend):
 
     def __init__(self, base_url: str, api_key: str, model: str) -> None:
         super().__init__()
+        self._base_url = base_url
+        self._api_key = api_key
         self._cloud_client = CloudClient(base_url, api_key, model)
         self._model = model
 
@@ -33,8 +35,15 @@ class CloudInferenceBackend(InferenceBackend):
 
     async def generate_async(self, request: GenerationRequest) -> tuple[str, InferenceMetrics]:
         """Async generation — safe to call from an already-running event loop."""
+        return await self._generate_with_client(self._cloud_client, request)
+
+    async def _generate_with_client(
+        self,
+        client: CloudClient,
+        request: GenerationRequest,
+    ) -> tuple[str, InferenceMetrics]:
         messages = _to_openai_messages(request)
-        result = await self._cloud_client.chat(
+        result = await client.chat(
             messages,
             max_tokens=request.max_tokens,
             temperature=request.temperature,
@@ -52,6 +61,13 @@ class CloudInferenceBackend(InferenceBackend):
         )
         return text, metrics
 
+    async def _generate_once(self, request: GenerationRequest) -> tuple[str, InferenceMetrics]:
+        client = CloudClient(self._base_url, self._api_key, self._model)
+        try:
+            return await self._generate_with_client(client, request)
+        finally:
+            await client.close()
+
     def generate(self, request: GenerationRequest) -> tuple[str, InferenceMetrics]:
         """Sync generation — safe for both running and non-running event loops."""
         try:
@@ -64,10 +80,13 @@ class CloudInferenceBackend(InferenceBackend):
             # Run in a worker thread to avoid "This event loop is already running".
             import concurrent.futures
 
-            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-                return pool.submit(asyncio.run, self.generate_async(request)).result()
+            def _run() -> tuple[str, InferenceMetrics]:
+                return asyncio.run(self._generate_once(request))
 
-        return asyncio.run(self.generate_async(request))
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+                return pool.submit(_run).result()
+
+        return asyncio.run(self._generate_once(request))
 
     async def generate_stream(
         self,
@@ -93,8 +112,23 @@ class CloudInferenceBackend(InferenceBackend):
 
     def list_models(self) -> list[str]:
         try:
-            loop = asyncio.get_event_loop()
-            return loop.run_until_complete(self._cloud_client.list_models())
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = None
+
+        if loop is not None and loop.is_running():
+            return [self._model]
+
+        try:
+
+            async def _list_once() -> list[str]:
+                client = CloudClient(self._base_url, self._api_key, self._model)
+                try:
+                    return await client.list_models()
+                finally:
+                    await client.close()
+
+            return asyncio.run(_list_once())
         except Exception:
             return [self._model]
 

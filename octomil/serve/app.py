@@ -55,6 +55,13 @@ def _backend_for_locality(state: ServerState, locality: str) -> Any:
     return state.backend
 
 
+def _active_backend_for_metadata(state: ServerState) -> Any:
+    """Return the request-primary backend for metadata endpoints."""
+    if state.engine_name == "cloud" and state.cloud_backend is not None:
+        return state.cloud_backend
+    return state.backend or state.cloud_backend
+
+
 async def _generate_with_backend(backend: Any, request: GenerationRequest) -> tuple[str, Any]:
     """Call generate on a backend, preferring async when available."""
     generate_async = getattr(backend, "generate_async", None)
@@ -108,26 +115,37 @@ async def _kernel_driven_startup(state: ServerState, model_name: str) -> None:
     kernel = state.kernel
     assert kernel is not None
 
-    # Probe local availability (best-effort; do not fail yet)
-    _local_ok = True
-    try:
-        state.backend = _detect_backend(
-            model_name,
-            cache_size_mb=state.cache_size_mb,
-            cache_enabled=state.cache_enabled,
-            engine_override=state.engine_override,
-            verbose_emitter=state.verbose_emitter,
-        )
-        state.engine_name = state.backend.name if state.backend else "none"
-    except Exception as exc:
-        _local_ok = False
-        logger.info("Local backend detection failed (%s); continuing with cloud if available.", exc)
+    from .._generated.routing_policy import RoutingPolicy as ContractRoutingPolicy
+    from ..config.local import CAPABILITY_CHAT
+    from ..execution.kernel import _cloud_available, _resolve_routing_policy
+
+    defaults = kernel._resolve(CAPABILITY_CHAT, model=model_name)
+    routing_policy = _resolve_routing_policy(defaults)
+    cloud_available = _cloud_available(defaults)
+
+    # Cloud-only means cloud-only. Do not probe local engines or trigger local
+    # model downloads before we know the policy permits local execution.
+    _local_ok = False
+    if routing_policy.mode != ContractRoutingPolicy.CLOUD_ONLY:
+        try:
+            state.backend = _detect_backend(
+                model_name,
+                cache_size_mb=state.cache_size_mb,
+                cache_enabled=state.cache_enabled,
+                engine_override=state.engine_override,
+                verbose_emitter=state.verbose_emitter,
+            )
+            _local_ok = state.backend is not None
+            state.engine_name = state.backend.name if state.backend else "none"
+        except Exception as exc:
+            logger.info("Local backend detection failed (%s); continuing with cloud if policy allows it.", exc)
 
     # Resolve routing to determine what we actually need
     try:
         decision = kernel.resolve_chat_routing(
             model=model_name,
             local_available=_local_ok,
+            cloud_available=cloud_available,
         )
     except RuntimeError:
         # Routing resolution can fail when policy demands a resource that
@@ -143,14 +161,18 @@ async def _kernel_driven_startup(state: ServerState, model_name: str) -> None:
             state.cloud_backend = _create_cloud_backend_from_profile(decision.cloud_profile, model_name)
             logger.info("Cloud backend ready (profile=%s)", decision.cloud_profile.name)
         except Exception as exc:
-            logger.warning("Failed to create cloud backend from profile: %s", exc)
+            if decision.primary_locality == "cloud" and decision.fallback_locality is None:
+                raise RuntimeError(f"Cloud backend required by policy but could not be initialised: {exc}") from exc
+            logger.warning("Failed to create cloud backend from profile; cloud fallback disabled: %s", exc)
 
-    # If cloud_only policy succeeded but local was also detected, clear local backend
+    if decision.primary_locality == "cloud" and state.cloud_backend is not None:
+        state.engine_name = "cloud"
+
+    # If the policy has no local fallback, clear any local backend we probed.
     if decision.primary_locality == "cloud" and decision.fallback_locality is None:
         if state.backend is not None and state.cloud_backend is not None:
-            logger.info("cloud_only policy: skipping local backend")
+            logger.info("Cloud-primary policy has no local fallback; clearing local backend.")
             state.backend = None
-            state.engine_name = "cloud"
 
     # If local failed and policy requires it with no fallback, fail startup
     if not _local_ok and decision.primary_locality == "on_device" and decision.fallback_locality is None:
@@ -472,7 +494,8 @@ def create_app(
 
     @app.get("/v1/models")
     async def list_models() -> dict[str, Any]:
-        models = state.backend.list_models() if state.backend else []
+        active_backend = _active_backend_for_metadata(state)
+        models = active_backend.list_models() if active_backend else []
         data = []
         for m in models:
             entry: dict[str, Any] = {
@@ -522,7 +545,7 @@ def create_app(
         _routing_decision = None
         if state.kernel is not None:
             _routing_decision = state.kernel.resolve_chat_routing(
-                model=body.model or None,
+                model=state.model_name,
                 local_available=state.backend is not None,
                 cloud_available=state.cloud_backend is not None,
             )
@@ -1016,8 +1039,12 @@ def create_app(
         backend_name = "none"
         if state.whisper_backend is not None:
             backend_name = state.whisper_backend.name
+        elif state.engine_name == "cloud" and state.cloud_backend is not None:
+            backend_name = state.cloud_backend.name
         elif state.backend is not None:
             backend_name = state.backend.name
+        elif state.cloud_backend is not None:
+            backend_name = state.cloud_backend.name
 
         health_data: dict[str, Any] = {
             "status": "ok",

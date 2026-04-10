@@ -268,12 +268,14 @@ class TestRoutingDispatch:
         )
         config_set = LoadedConfigSet(project=config)
         fake_cloud = _FakeCloudBackend()
-        echo = _make_echo_backend()
 
-        with patch("octomil.serve.app._detect_backend", return_value=echo):
+        with patch(
+            "octomil.serve.app._detect_backend", side_effect=AssertionError("local probe must not run")
+        ) as detect:
             with patch("octomil.serve.app._create_cloud_backend_from_profile", return_value=fake_cloud):
                 app = create_app("test-model", config_set=config_set)
                 await _start_lifespan(app)
+                detect.assert_not_called()
                 async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
                     resp = await client.post(
                         "/v1/chat/completions",
@@ -285,6 +287,30 @@ class TestRoutingDispatch:
                     assert resp.status_code == 200
                     data = resp.json()
                     assert "[cloud:" in data["choices"][0]["message"]["content"]
+
+                    health = await client.get("/health")
+                    assert health.status_code == 200
+                    assert health.json()["backend"] == "cloud"
+
+                    models = await client.get("/v1/models")
+                    assert models.status_code == 200
+                    assert models.json()["data"][0]["id"] == "test-model"
+
+    @pytest.mark.asyncio
+    async def test_cloud_only_policy_fails_startup_when_cloud_backend_cannot_start(self, monkeypatch):
+        """Cloud-only must fail closed if the cloud backend cannot initialise."""
+        monkeypatch.setenv("OCTOMIL_SERVER_KEY", "test-key")
+        config = LocalOctomilConfig(
+            capabilities={CAPABILITY_CHAT: CapabilityDefault(model="test-model", policy="cloud_only")},
+            cloud_profiles={"default": CloudProfile()},
+        )
+        config_set = LoadedConfigSet(project=config)
+
+        with patch("octomil.serve.app._detect_backend", side_effect=AssertionError("local probe must not run")):
+            with patch("octomil.serve.app._create_cloud_backend_from_profile", side_effect=RuntimeError("boom")):
+                app = create_app("test-model", config_set=config_set)
+                with pytest.raises(RuntimeError, match="Cloud backend required"):
+                    await _start_lifespan(app)
 
     @pytest.mark.asyncio
     async def test_local_first_uses_local_primary(self):
@@ -306,6 +332,37 @@ class TestRoutingDispatch:
                 assert resp.status_code == 200
                 data = resp.json()
                 assert "[echo:test-model]" in data["choices"][0]["message"]["content"]
+
+    @pytest.mark.asyncio
+    async def test_request_model_does_not_replan_single_model_server(self):
+        """OpenAI request model names must not override the served model's routing plan."""
+        config_set = _make_config_set(model="served-model", policy="private")
+        echo = _make_echo_backend("served-model")
+        seen_models: list[str | None] = []
+        original = ExecutionKernel.resolve_chat_routing
+
+        def spy_resolve(self, *args, **kwargs):
+            seen_models.append(kwargs.get("model"))
+            return original(self, *args, **kwargs)
+
+        with patch("octomil.serve.app._detect_backend", return_value=echo):
+            with patch.object(ExecutionKernel, "resolve_chat_routing", new=spy_resolve):
+                app = create_app("served-model", config_set=config_set, max_queue_depth=0)
+                await _start_lifespan(app)
+                async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                    resp = await client.post(
+                        "/v1/chat/completions",
+                        json={
+                            "model": "client-supplied-model",
+                            "messages": [{"role": "user", "content": "hello"}],
+                        },
+                    )
+                    assert resp.status_code == 200
+                    data = resp.json()
+                    assert "[echo:served-model]" in data["choices"][0]["message"]["content"]
+
+        assert seen_models
+        assert all(model == "served-model" for model in seen_models)
 
     @pytest.mark.asyncio
     async def test_local_first_falls_back_to_cloud_when_local_generate_fails(self, monkeypatch):
@@ -543,6 +600,11 @@ class TestResolveLocalities:
         assert primary == "cloud"
         assert fallback is None
 
+    def test_local_first_without_cloud_fallback_does_not_switch_to_cloud(self):
+        rp = RoutingPolicy.local_first(fallback="none")
+        with pytest.raises(RuntimeError, match="cloud fallback is disabled"):
+            _resolve_localities(rp, local_available=False, cloud_available=True)
+
     def test_cloud_first_both_available(self):
         from octomil._generated.routing_policy import RoutingPolicy as CRP
 
@@ -557,6 +619,13 @@ class TestResolveLocalities:
         rp = RoutingPolicy(mode=CRP.AUTO, prefer_local=False, fallback="local")
         primary, fallback = _resolve_localities(rp, local_available=True, cloud_available=False)
         assert primary == "on_device"
+
+    def test_cloud_first_without_local_fallback_does_not_switch_to_local(self):
+        from octomil._generated.routing_policy import RoutingPolicy as CRP
+
+        rp = RoutingPolicy(mode=CRP.AUTO, prefer_local=False, fallback="none")
+        with pytest.raises(RuntimeError, match="local fallback is disabled"):
+            _resolve_localities(rp, local_available=True, cloud_available=False)
 
     def test_neither_available_raises(self):
         rp = RoutingPolicy.local_first(fallback="cloud")
