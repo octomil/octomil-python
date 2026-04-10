@@ -17,9 +17,11 @@ async def _stream_response(
     req_id: str,
     session_id: str = "",
     is_reasoning: bool = False,
+    backend: Any = None,
 ) -> AsyncIterator[str]:
     """Yield SSE chunks in OpenAI streaming format."""
-    assert state.backend is not None
+    _backend = backend or state.backend
+    assert _backend is not None
 
     from .thinking import ThinkingStreamParser
 
@@ -33,7 +35,7 @@ async def _stream_response(
     parser = ThinkingStreamParser() if is_reasoning else None
 
     try:
-        async for chunk in state.backend.generate_stream(request):
+        async for chunk in _backend.generate_stream(request):
             now = time.monotonic()
             chunk_latency_ms = (now - prev_chunk_time) * 1000
             prev_chunk_time = now
@@ -149,7 +151,7 @@ async def _stream_response(
                 total_duration_ms=total_duration_ms,
                 ttfc_ms=ttfc_ms,
                 throughput=throughput,
-                attention_backend=(state.backend.attention_backend if state.backend is not None else None),
+                attention_backend=(_backend.attention_backend if _backend is not None else None),
             )
         except Exception:
             pass
@@ -162,6 +164,7 @@ async def _queued_stream_response(
     session_id: str,
     queue: Any,
     is_reasoning: bool = False,
+    backend: Any = None,
 ) -> AsyncIterator[str]:
     """Yield SSE chunks after waiting in the request queue.
 
@@ -173,7 +176,8 @@ async def _queued_stream_response(
     from ..batch import QueueFullError, QueueTimeoutError
     from .thinking import ThinkingStreamParser
 
-    assert state.backend is not None
+    _backend = backend or state.backend
+    assert _backend is not None
 
     _reporter = state.reporter
     model_version = "latest"
@@ -183,7 +187,7 @@ async def _queued_stream_response(
     parser = ThinkingStreamParser() if is_reasoning else None
 
     try:
-        chunk_iter = queue.submit_generate_stream(request, state.backend.generate_stream)
+        chunk_iter = queue.submit_generate_stream(request, _backend.generate_stream)
         # Build SSE events from the chunk iterator (same format as _stream_response)
         chunk_index = 0
         async for chunk in chunk_iter:

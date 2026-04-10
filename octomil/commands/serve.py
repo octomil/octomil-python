@@ -25,7 +25,7 @@ def register(cli: click.Group) -> None:
 
 
 @click.command()
-@click.argument("model", shell_complete=_complete_model_name)
+@click.argument("model", required=False, default=None, shell_complete=_complete_model_name)
 @click.option("--port", "-p", default=8080, help="Port to listen on.")
 @click.option("--host", default="0.0.0.0", help="Host to bind to.")
 @click.option("--benchmark", is_flag=True, help="Run latency benchmark on startup.")
@@ -174,7 +174,7 @@ def register(cli: click.Group) -> None:
     "Defaults to the positional MODEL arg. Also reads OCTOMIL_CLOUD_MODEL.",
 )
 def serve(
-    model: str,
+    model: str | None,
     port: int,
     host: str,
     benchmark: bool,
@@ -203,9 +203,11 @@ def serve(
 ) -> None:
     """Start a local OpenAI-compatible inference server.
 
-    MODEL accepts Ollama-style model:variant syntax:
+    MODEL is optional. When omitted, the default chat model is resolved from
+    .octomil.toml, ~/.config/octomil/config.toml, or the built-in default.
 
     \b
+        octomil serve                       # uses config/default chat model
         octomil serve gemma-1b              # auto-picks best quant for your hw
         octomil serve gemma-1b:8bit         # explicit 8-bit quantization
         octomil serve llama-8b:fp16         # full precision (no auto-optimize)
@@ -233,6 +235,30 @@ def serve(
     Use --json-mode to default all responses to valid JSON output:
         octomil serve gemma-1b --json-mode
     """
+    # --- Config-driven model resolution ---
+    from octomil.config.local import (
+        CAPABILITY_CHAT,
+        RequestOverrides,
+        load_standalone_config,
+        resolve_capability_defaults,
+    )
+
+    config_set = load_standalone_config()
+
+    if model is None:
+        defaults = resolve_capability_defaults(CAPABILITY_CHAT, RequestOverrides(), config_set)
+        model = defaults.model
+        if not model:
+            click.echo(
+                "Error: No model specified and no default chat model in config.\n"
+                "Pass a model: octomil serve gemma-1b\n"
+                "Or configure .octomil.toml:\n\n"
+                '[capabilities.chat]\nmodel = "gemma-1b"',
+                err=True,
+            )
+            sys.exit(1)
+        click.echo(f"    Model resolved from config: {model}")
+
     api_key = _get_api_key() if (share or cloud) else None
     api_base: str = (
         os.environ.get("OCTOMIL_API_URL") or os.environ.get("OCTOMIL_API_BASE") or "https://api.octomil.com/api/v1"
@@ -458,6 +484,7 @@ def serve(
         early_exit_config=ee_config if ee_config.enabled else None,
         verbose=verbose,
         cloud_config=_cloud_config,
+        config_set=config_set,
     )
 
 

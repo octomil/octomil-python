@@ -84,6 +84,23 @@ class StreamChunk:
     result: Optional[ExecutionResult] = None
 
 
+@dataclass
+class ChatRoutingDecision:
+    """Routing decision for a chat request — used by serve to dispatch to the right backend.
+
+    Does not create runtimes or execute inference.  Tells the caller which
+    locality to try first, whether fallback is available, and which cloud
+    profile to use.
+    """
+
+    model: str
+    primary_locality: str  # "on_device" | "cloud"
+    fallback_locality: Optional[str] = None  # "on_device" | "cloud" | None
+    cloud_profile: Optional[CloudProfile] = None
+    policy_preset: Optional[str] = None
+    inline_policy: Optional[InlinePolicy] = None
+
+
 # ---------------------------------------------------------------------------
 # Policy conversion
 # ---------------------------------------------------------------------------
@@ -167,6 +184,56 @@ def _cloud_available(defaults: ResolvedExecutionDefaults) -> bool:
     return bool(defaults.cloud_profile and _cloud_api_key(defaults.cloud_profile))
 
 
+def _resolve_localities(
+    routing_policy: RoutingPolicy,
+    *,
+    local_available: bool,
+    cloud_available: bool,
+) -> tuple[str, Optional[str]]:
+    """Return (primary_locality, fallback_locality | None).
+
+    This mirrors ``_select_locality_for_capability`` but returns the
+    configured primary and fallback localities for callers that own backend
+    lifecycle.  Disabled fallbacks are exact: if the preferred locality is
+    unavailable and fallback is ``"none"``, this raises instead of silently
+    switching execution locations.
+    """
+    if routing_policy.mode == ContractRoutingPolicy.LOCAL_ONLY:
+        if not local_available:
+            raise RuntimeError("Private/local-only policy requires a local backend, but none is available.")
+        return LOCALITY_ON_DEVICE, None
+
+    if routing_policy.mode == ContractRoutingPolicy.CLOUD_ONLY:
+        if not cloud_available:
+            raise RuntimeError("Cloud-only policy requires cloud credentials, but none are configured.")
+        return LOCALITY_CLOUD, None
+
+    # AUTO or LOCAL_FIRST — determine prefer_local from policy
+    prefer_local = routing_policy.prefer_local
+    if routing_policy.mode == ContractRoutingPolicy.LOCAL_FIRST:
+        prefer_local = True
+
+    if prefer_local:
+        if local_available:
+            fallback = LOCALITY_CLOUD if routing_policy.fallback == "cloud" and cloud_available else None
+            return LOCALITY_ON_DEVICE, fallback
+        if routing_policy.fallback == "cloud" and cloud_available:
+            return LOCALITY_CLOUD, None
+        if cloud_available:
+            raise RuntimeError("Local chat execution is required by policy, but cloud fallback is disabled.")
+        raise RuntimeError("No local or cloud backend available for chat.")
+
+    # cloud-first
+    if cloud_available:
+        fallback = LOCALITY_ON_DEVICE if routing_policy.fallback == "local" and local_available else None
+        return LOCALITY_CLOUD, fallback
+    if routing_policy.fallback == "local" and local_available:
+        return LOCALITY_ON_DEVICE, None
+    if local_available:
+        raise RuntimeError("Cloud chat execution is required by policy, but local fallback is disabled.")
+    raise RuntimeError("No local or cloud backend available for chat.")
+
+
 def _select_locality_for_capability(
     routing_policy: RoutingPolicy,
     *,
@@ -220,6 +287,55 @@ class ExecutionKernel:
         start_dir: Optional[Path] = None,
     ) -> None:
         self._config_set = config_set or load_standalone_config(start_dir)
+
+    @property
+    def config_set(self) -> LoadedConfigSet:
+        return self._config_set
+
+    # ------------------------------------------------------------------
+    # Chat routing decision (for serve integration)
+    # ------------------------------------------------------------------
+
+    def resolve_chat_routing(
+        self,
+        *,
+        model: Optional[str] = None,
+        policy: Optional[str] = None,
+        app: Optional[str] = None,
+        local_available: bool,
+        cloud_available: Optional[bool] = None,
+    ) -> ChatRoutingDecision:
+        """Resolve routing without executing inference.
+
+        Returns a ``ChatRoutingDecision`` that tells the caller which
+        backend locality to use as primary and which (if any) as fallback.
+        Serve uses this to dispatch to its own ``InferenceBackend`` instances.
+        """
+        defaults = self._resolve(CAPABILITY_CHAT, model=model, policy=policy, app=app)
+        effective_model = defaults.model
+        if not effective_model:
+            raise _no_model_error(CAPABILITY_CHAT)
+
+        routing_policy = _resolve_routing_policy(defaults)
+
+        # Determine cloud availability from config when caller does not know
+        if cloud_available is None:
+            cloud_available = _cloud_available(defaults)
+
+        primary, fallback = _resolve_localities(
+            routing_policy,
+            local_available=local_available,
+            cloud_available=cloud_available,
+        )
+
+        return ChatRoutingDecision(
+            model=effective_model,
+            primary_locality=primary,
+            fallback_locality=fallback,
+            cloud_profile=defaults.cloud_profile,
+            policy_preset=defaults.policy_preset,
+            inline_policy=defaults.inline_policy,
+        )
 
     # ------------------------------------------------------------------
     # Responses

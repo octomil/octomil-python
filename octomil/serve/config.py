@@ -96,6 +96,12 @@ class ServerState:
     verbose_emitter: Any = None  # VerboseEventEmitter instance
     cloud_config: Optional["CloudConfig"] = None  # cloud provider for --cloud mode
 
+    # --- Config-driven kernel routing (WS2) ---
+    kernel: Any = None  # ExecutionKernel instance (when config_set is passed)
+    config_set: Any = None  # LoadedConfigSet (avoids import cycle)
+    cloud_backend: Optional[InferenceBackend] = None  # config-driven cloud backend
+    routing_policy_preset: Optional[str] = None  # resolved policy preset name
+
 
 @dataclass
 class MultiModelServerState:

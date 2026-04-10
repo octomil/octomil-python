@@ -9,7 +9,7 @@ import time
 import uuid
 from typing import TYPE_CHECKING, Any, Optional
 
-from ..errors import OctomilError
+from ..errors import OctomilError, OctomilErrorCode
 from .backends.llamacpp import LlamaCppBackend
 from .config import CloudConfig, MoEConfig, ServerState
 from .detection import _detect_backend, _get_cache_manager, _log_startup_error
@@ -23,6 +23,163 @@ if TYPE_CHECKING:
     from ..early_exit import EarlyExitConfig
 
 logger = logging.getLogger(__name__)
+
+
+def _create_cloud_backend_from_profile(profile: Any, model: str) -> Any:
+    """Build a CloudInferenceBackend from a config CloudProfile.
+
+    Used only for config-driven cloud routing — not for explicit --cloud
+    or catalog :cloud paths.
+    """
+    from .backends.cloud import CloudInferenceBackend
+
+    api_key = os.environ.get(profile.api_key_env, "")
+    if not api_key:
+        raise RuntimeError(f"Cloud routing requires {profile.api_key_env} to be set.")
+
+    from ..execution.kernel import _openai_base_url
+
+    backend = CloudInferenceBackend(
+        base_url=_openai_base_url(profile),
+        api_key=api_key,
+        model=model,
+    )
+    backend.load_model(model)
+    return backend
+
+
+def _backend_for_locality(state: ServerState, locality: str) -> Any:
+    """Return the backend matching the given locality."""
+    if locality == "cloud":
+        return state.cloud_backend
+    return state.backend
+
+
+def _active_backend_for_metadata(state: ServerState) -> Any:
+    """Return the request-primary backend for metadata endpoints."""
+    if state.engine_name == "cloud" and state.cloud_backend is not None:
+        return state.cloud_backend
+    return state.backend or state.cloud_backend
+
+
+async def _generate_with_backend(backend: Any, request: GenerationRequest) -> tuple[str, Any]:
+    """Call generate on a backend, preferring async when available."""
+    generate_async = getattr(backend, "generate_async", None)
+    if generate_async is not None:
+        return await generate_async(request)
+    return backend.generate(request)
+
+
+async def _generate_with_routing(
+    state: ServerState,
+    request: GenerationRequest,
+    decision: Any,
+) -> tuple[str, Any, str, bool]:
+    """Dispatch generation through kernel routing with optional fallback.
+
+    Returns (text, metrics, used_locality, fallback_used).
+    """
+    primary = _backend_for_locality(state, decision.primary_locality)
+    if primary is None:
+        raise OctomilError(
+            code=OctomilErrorCode.RUNTIME_UNAVAILABLE,
+            message=f"No backend available for {decision.primary_locality} routing.",
+        )
+
+    try:
+        text, metrics = await _generate_with_backend(primary, request)
+        return text, metrics, decision.primary_locality, False
+    except Exception as primary_exc:
+        if decision.fallback_locality is None:
+            raise
+
+        fallback = _backend_for_locality(state, decision.fallback_locality)
+        if fallback is None:
+            raise
+
+        logger.warning(
+            "Primary %s backend failed (%s), falling back to %s",
+            decision.primary_locality,
+            primary_exc,
+            decision.fallback_locality,
+        )
+        text, metrics = await _generate_with_backend(fallback, request)
+        return text, metrics, decision.fallback_locality, True
+
+
+async def _kernel_driven_startup(state: ServerState, model_name: str) -> None:
+    """Initialise backends based on the kernel routing policy.
+
+    Called during lifespan when ``config_set`` was provided.
+    """
+    kernel = state.kernel
+    assert kernel is not None
+
+    from .._generated.routing_policy import RoutingPolicy as ContractRoutingPolicy
+    from ..config.local import CAPABILITY_CHAT
+    from ..execution.kernel import _cloud_available, _resolve_routing_policy
+
+    defaults = kernel._resolve(CAPABILITY_CHAT, model=model_name)
+    routing_policy = _resolve_routing_policy(defaults)
+    cloud_available = _cloud_available(defaults)
+
+    # Cloud-only means cloud-only. Do not probe local engines or trigger local
+    # model downloads before we know the policy permits local execution.
+    _local_ok = False
+    if routing_policy.mode != ContractRoutingPolicy.CLOUD_ONLY:
+        try:
+            state.backend = _detect_backend(
+                model_name,
+                cache_size_mb=state.cache_size_mb,
+                cache_enabled=state.cache_enabled,
+                engine_override=state.engine_override,
+                verbose_emitter=state.verbose_emitter,
+            )
+            _local_ok = state.backend is not None
+            state.engine_name = state.backend.name if state.backend else "none"
+        except Exception as exc:
+            logger.info("Local backend detection failed (%s); continuing with cloud if policy allows it.", exc)
+
+    # Resolve routing to determine what we actually need
+    try:
+        decision = kernel.resolve_chat_routing(
+            model=model_name,
+            local_available=_local_ok,
+            cloud_available=cloud_available,
+        )
+    except RuntimeError:
+        # Routing resolution can fail when policy demands a resource that
+        # is unavailable (e.g. private with no local).  Raise to fail startup.
+        raise
+
+    state.routing_policy_preset = decision.policy_preset
+
+    # Construct cloud backend when routing needs it
+    needs_cloud = decision.primary_locality == "cloud" or decision.fallback_locality == "cloud"
+    if needs_cloud and decision.cloud_profile is not None:
+        try:
+            state.cloud_backend = _create_cloud_backend_from_profile(decision.cloud_profile, model_name)
+            logger.info("Cloud backend ready (profile=%s)", decision.cloud_profile.name)
+        except Exception as exc:
+            if decision.primary_locality == "cloud" and decision.fallback_locality is None:
+                raise RuntimeError(f"Cloud backend required by policy but could not be initialised: {exc}") from exc
+            logger.warning("Failed to create cloud backend from profile; cloud fallback disabled: %s", exc)
+
+    if decision.primary_locality == "cloud" and state.cloud_backend is not None:
+        state.engine_name = "cloud"
+
+    # If the policy has no local fallback, clear any local backend we probed.
+    if decision.primary_locality == "cloud" and decision.fallback_locality is None:
+        if state.backend is not None and state.cloud_backend is not None:
+            logger.info("Cloud-primary policy has no local fallback; clearing local backend.")
+            state.backend = None
+
+    # If local failed and policy requires it with no fallback, fail startup
+    if not _local_ok and decision.primary_locality == "on_device" and decision.fallback_locality is None:
+        raise RuntimeError(
+            f"Local backend required by policy '{decision.policy_preset}' but "
+            f"no engine could load model '{model_name}'."
+        )
 
 
 def create_app(
@@ -45,6 +202,7 @@ def create_app(
     early_exit_config: Optional["EarlyExitConfig"] = None,
     verbose: bool = False,
     cloud_config: Optional[CloudConfig] = None,
+    config_set: Any = None,
 ) -> Any:
     """Create a FastAPI app with OpenAI-compatible endpoints.
 
@@ -120,6 +278,13 @@ def create_app(
             )
         )
 
+    # --- Kernel construction (config-driven routing) ---
+    _kernel = None
+    if config_set is not None:
+        from ..execution.kernel import ExecutionKernel
+
+        _kernel = ExecutionKernel(config_set=config_set)
+
     state = ServerState(
         model_name=model_name,
         api_key=api_key,
@@ -138,6 +303,8 @@ def create_app(
         is_reasoning_model=_is_reasoning,
         verbose_runtime_logs=verbose,
         cloud_config=cloud_config,
+        kernel=_kernel,
+        config_set=config_set,
     )
 
     @asynccontextmanager
@@ -182,6 +349,9 @@ def create_app(
                 raise
             state.whisper_backend = whisper_backend
             state.engine_name = "whisper.cpp"
+        elif state.kernel is not None:
+            # --- Config-driven startup: use kernel routing to decide backends ---
+            await _kernel_driven_startup(state, model_name)
         elif state.cloud_config is not None and state.engine_override is None:
             # Cloud-only mode: use CloudInferenceBackend directly
             from .backends.cloud import CloudInferenceBackend
@@ -324,7 +494,8 @@ def create_app(
 
     @app.get("/v1/models")
     async def list_models() -> dict[str, Any]:
-        models = state.backend.list_models() if state.backend else []
+        active_backend = _active_backend_for_metadata(state)
+        models = active_backend.list_models() if active_backend else []
         data = []
         for m in models:
             entry: dict[str, Any] = {
@@ -367,8 +538,17 @@ def create_app(
 
     @app.post("/v1/chat/completions")
     async def chat_completions(body: ChatCompletionBody) -> Any:
-        if state.backend is None:
+        if state.backend is None and state.cloud_backend is None:
             raise OctomilError(code=OctomilErrorCode.MODEL_LOAD_FAILED, message="Model not loaded")
+
+        # --- Kernel routing decision (when config-driven) ---
+        _routing_decision = None
+        if state.kernel is not None:
+            _routing_decision = state.kernel.resolve_chat_routing(
+                model=state.model_name,
+                local_available=state.backend is not None,
+                cloud_available=state.cloud_backend is not None,
+            )
 
         # --- Tier-0: deterministic routing (arithmetic, etc.) ---
         # Check the last user message for a query that can be answered
@@ -421,7 +601,13 @@ def create_app(
 
         # For backends without native grammar support (MLX, echo),
         # inject a system prompt nudging JSON output when json_mode is on.
-        uses_grammar_natively = isinstance(unwrap_backend(state.backend), LlamaCppBackend)
+        # When kernel routing is active, use the primary backend for this check.
+        _primary_backend = state.backend
+        if _routing_decision is not None:
+            _primary_backend = _backend_for_locality(state, _routing_decision.primary_locality) or state.backend
+        uses_grammar_natively = _primary_backend is not None and isinstance(
+            unwrap_backend(_primary_backend), LlamaCppBackend
+        )
         schema_for_prompt: Optional[dict[str, Any]] = None
         if is_json and not uses_grammar_natively:
             rf = body.response_format or {}
@@ -483,6 +669,10 @@ def create_app(
 
         if gen_req.stream:
             _is_reasoning_stream = state.is_reasoning_model
+            # Select the routed backend for streaming (no streaming fallback in this PR)
+            _stream_backend = None
+            if _routing_decision is not None:
+                _stream_backend = _backend_for_locality(state, _routing_decision.primary_locality)
             if _queue is not None:
                 # Stream through the request queue
                 return StreamingResponse(
@@ -493,6 +683,7 @@ def create_app(
                         session_id,
                         _queue,
                         is_reasoning=_is_reasoning_stream,
+                        backend=_stream_backend,
                     ),
                     media_type="text/event-stream",
                 )
@@ -503,6 +694,7 @@ def create_app(
                     req_id,
                     session_id,
                     is_reasoning=_is_reasoning_stream,
+                    backend=_stream_backend,
                 ),
                 media_type="text/event-stream",
             )
@@ -523,22 +715,64 @@ def create_app(
 
         gen_start = time.monotonic()
         try:
-            if _queue is not None:
+            if _routing_decision is not None and _queue is None:
+                # Config-driven routing: dispatch with fallback
+                text, metrics, _used_locality, _fallback_used = await _generate_with_routing(
+                    state, gen_req, _routing_decision
+                )
+            elif _queue is not None:
                 from ..batch import QueueFullError, QueueTimeoutError
 
-                try:
-                    text, metrics = await _queue.submit_generate(gen_req, state.backend.generate)
-                except QueueFullError:
-                    raise OctomilError(
-                        code=OctomilErrorCode.RATE_LIMITED,
-                        message="Server busy -- request queue full. Try again later.",
-                    )
-                except QueueTimeoutError:
-                    raise OctomilError(
-                        code=OctomilErrorCode.REQUEST_TIMEOUT,
-                        message="Request timed out waiting in queue.",
-                    )
+                # Queue-aware dispatch.  When routing is active, wrap the
+                # generate callable so the queue uses the routed backend.
+                if _routing_decision is not None:
+
+                    def _routed_generate_sync(req: GenerationRequest) -> tuple[str, Any]:
+                        """Sync wrapper for queue — uses sync .generate() with fallback."""
+                        primary = _backend_for_locality(state, _routing_decision.primary_locality)
+                        if primary is None:
+                            raise OctomilError(
+                                code=OctomilErrorCode.RUNTIME_UNAVAILABLE,
+                                message=f"No backend for {_routing_decision.primary_locality}.",
+                            )
+                        try:
+                            return primary.generate(req)
+                        except Exception:
+                            if _routing_decision.fallback_locality is None:
+                                raise
+                            fb = _backend_for_locality(state, _routing_decision.fallback_locality)
+                            if fb is None:
+                                raise
+                            return fb.generate(req)
+
+                    try:
+                        text, metrics = await _queue.submit_generate(gen_req, _routed_generate_sync)
+                    except QueueFullError:
+                        raise OctomilError(
+                            code=OctomilErrorCode.RATE_LIMITED,
+                            message="Server busy -- request queue full. Try again later.",
+                        )
+                    except QueueTimeoutError:
+                        raise OctomilError(
+                            code=OctomilErrorCode.REQUEST_TIMEOUT,
+                            message="Request timed out waiting in queue.",
+                        )
+                else:
+                    assert state.backend is not None
+                    try:
+                        text, metrics = await _queue.submit_generate(gen_req, state.backend.generate)
+                    except QueueFullError:
+                        raise OctomilError(
+                            code=OctomilErrorCode.RATE_LIMITED,
+                            message="Server busy -- request queue full. Try again later.",
+                        )
+                    except QueueTimeoutError:
+                        raise OctomilError(
+                            code=OctomilErrorCode.REQUEST_TIMEOUT,
+                            message="Request timed out waiting in queue.",
+                        )
             else:
+                assert state.backend is not None
                 text, metrics = state.backend.generate(gen_req)
         except OctomilError:
             raise
@@ -575,7 +809,11 @@ def create_app(
                         stream=False,
                         json_mode=True,
                     )
-                    text, metrics = state.backend.generate(retry_req)
+                    if _routing_decision is not None:
+                        text, metrics, _, _ = await _generate_with_routing(state, retry_req, _routing_decision)
+                    else:
+                        assert state.backend is not None
+                        text, metrics = state.backend.generate(retry_req)
                     # Best-effort extraction on retry
                     if not validate_json_output(text):
                         extracted = extract_json(text)
@@ -801,8 +1039,12 @@ def create_app(
         backend_name = "none"
         if state.whisper_backend is not None:
             backend_name = state.whisper_backend.name
+        elif state.engine_name == "cloud" and state.cloud_backend is not None:
+            backend_name = state.cloud_backend.name
         elif state.backend is not None:
             backend_name = state.backend.name
+        elif state.cloud_backend is not None:
+            backend_name = state.cloud_backend.name
 
         health_data: dict[str, Any] = {
             "status": "ok",
@@ -889,6 +1131,7 @@ def run_server(
     early_exit_config: Optional["EarlyExitConfig"] = None,
     verbose: bool = False,
     cloud_config: Optional[CloudConfig] = None,
+    config_set: Any = None,
 ) -> None:
     """Start the inference server (blocking).
 
@@ -945,5 +1188,6 @@ def run_server(
         early_exit_config=early_exit_config,
         verbose=verbose,
         cloud_config=cloud_config,
+        config_set=config_set,
     )
     uvicorn.run(app, host=host, port=port, log_level="info")
