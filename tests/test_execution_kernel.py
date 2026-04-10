@@ -13,13 +13,19 @@ from octomil.config.local import (
     CAPABILITY_TRANSCRIPTION,
     CapabilityDefault,
     CloudProfile,
+    FallbackConfig,
+    InlinePolicy,
     LoadedConfigSet,
     LocalOctomilConfig,
+    ResolvedExecutionDefaults,
 )
 from octomil.execution.kernel import (
     ExecutionKernel,
+    _inline_to_routing_policy,
     _resolve_routing_policy,
+    _select_locality_for_capability,
 )
+from octomil.runtime.core.policy import RoutingPolicy
 from octomil.runtime.core.types import RuntimeResponse, RuntimeUsage
 
 # ---------------------------------------------------------------------------
@@ -29,45 +35,33 @@ from octomil.runtime.core.types import RuntimeResponse, RuntimeUsage
 
 class TestResolveRoutingPolicy:
     def test_private_preset(self):
-        from octomil.config.local import ResolvedExecutionDefaults
-
         d = ResolvedExecutionDefaults(policy_preset="private")
         p = _resolve_routing_policy(d)
         assert p.mode == ContractRoutingPolicy.LOCAL_ONLY
 
     def test_local_first_preset(self):
-        from octomil.config.local import ResolvedExecutionDefaults
-
         d = ResolvedExecutionDefaults(policy_preset="local_first")
         p = _resolve_routing_policy(d)
         assert p.mode == ContractRoutingPolicy.LOCAL_FIRST
 
     def test_cloud_only_preset(self):
-        from octomil.config.local import ResolvedExecutionDefaults
-
         d = ResolvedExecutionDefaults(policy_preset="cloud_only")
         p = _resolve_routing_policy(d)
         assert p.mode == ContractRoutingPolicy.CLOUD_ONLY
 
     def test_cloud_first_preset(self):
-        from octomil.config.local import ResolvedExecutionDefaults
-
         d = ResolvedExecutionDefaults(policy_preset="cloud_first")
         p = _resolve_routing_policy(d)
         assert p.mode == ContractRoutingPolicy.AUTO
         assert p.prefer_local is False
 
     def test_performance_first_preset(self):
-        from octomil.config.local import ResolvedExecutionDefaults
-
         d = ResolvedExecutionDefaults(policy_preset="performance_first")
         p = _resolve_routing_policy(d)
         assert p.mode == ContractRoutingPolicy.AUTO
         assert p.prefer_local is True
 
     def test_none_defaults_to_local_first(self):
-        from octomil.config.local import ResolvedExecutionDefaults
-
         d = ResolvedExecutionDefaults()
         p = _resolve_routing_policy(d)
         assert p.mode == ContractRoutingPolicy.LOCAL_FIRST
@@ -210,3 +204,231 @@ class TestKernelTranscribeAudio:
         with patch.object(kernel, "_has_local_transcription_backend", return_value=False):
             with pytest.raises(RuntimeError, match="No local transcription runtime available"):
                 await kernel.transcribe_audio(b"fake_audio")
+
+    @pytest.mark.asyncio
+    async def test_local_transcribe_success(self):
+        kernel = _make_kernel(policy="local_first")
+
+        mock_backend = MagicMock()
+        mock_backend.transcribe = MagicMock(return_value={"text": "hello world", "segments": []})
+
+        with patch.object(kernel, "_has_local_transcription_backend", return_value=True):
+            with patch.object(kernel, "_resolve_local_transcription_backend", return_value=mock_backend):
+                result = await kernel.transcribe_audio(b"fake_audio", language="en")
+
+        assert result.output_text == "hello world"
+        assert result.capability == CAPABILITY_TRANSCRIPTION
+        assert result.locality == "on_device"
+        assert result.fallback_used is False
+
+
+# ---------------------------------------------------------------------------
+# Inline policy resolution
+# ---------------------------------------------------------------------------
+
+
+class TestInlinePolicyResolution:
+    def test_inline_local_only(self):
+        ip = InlinePolicy(routing_mode="local_only")
+        rp = _inline_to_routing_policy(ip)
+        assert rp.mode == ContractRoutingPolicy.LOCAL_ONLY
+
+    def test_inline_cloud_only(self):
+        ip = InlinePolicy(routing_mode="cloud_only")
+        rp = _inline_to_routing_policy(ip)
+        assert rp.mode == ContractRoutingPolicy.CLOUD_ONLY
+
+    def test_inline_local_preference_with_cloud_fallback(self):
+        ip = InlinePolicy(
+            routing_mode="auto",
+            routing_preference="local",
+            fallback=FallbackConfig(allow_cloud_fallback=True),
+        )
+        rp = _inline_to_routing_policy(ip)
+        assert rp.mode == ContractRoutingPolicy.LOCAL_FIRST
+        assert rp.fallback == "cloud"
+
+    def test_inline_local_preference_no_fallback(self):
+        ip = InlinePolicy(
+            routing_mode="auto",
+            routing_preference="local",
+            fallback=FallbackConfig(allow_cloud_fallback=False),
+        )
+        rp = _inline_to_routing_policy(ip)
+        assert rp.fallback == "none"
+
+    def test_inline_cloud_preference(self):
+        ip = InlinePolicy(
+            routing_mode="auto",
+            routing_preference="cloud",
+            fallback=FallbackConfig(allow_local_fallback=True),
+        )
+        rp = _inline_to_routing_policy(ip)
+        assert rp.mode == ContractRoutingPolicy.AUTO
+        assert rp.prefer_local is False
+
+    def test_inline_performance_preference(self):
+        ip = InlinePolicy(routing_mode="auto", routing_preference="performance")
+        rp = _inline_to_routing_policy(ip)
+        assert rp.mode == ContractRoutingPolicy.AUTO
+        assert rp.prefer_local is True
+
+
+# ---------------------------------------------------------------------------
+# Locality selection for capabilities
+# ---------------------------------------------------------------------------
+
+
+class TestSelectLocalityForCapability:
+    def test_local_only_with_local(self):
+        rp = RoutingPolicy.local_only()
+        locality, fb = _select_locality_for_capability(
+            rp, local_available=True, cloud_available=False, capability="embedding"
+        )
+        assert locality == "on_device"
+        assert fb is False
+
+    def test_local_only_without_local_raises(self):
+        rp = RoutingPolicy.local_only()
+        with pytest.raises(RuntimeError, match="Local embedding execution is required"):
+            _select_locality_for_capability(rp, local_available=False, cloud_available=True, capability="embedding")
+
+    def test_cloud_only_with_cloud(self):
+        rp = RoutingPolicy.cloud_only()
+        locality, fb = _select_locality_for_capability(
+            rp, local_available=True, cloud_available=True, capability="embedding"
+        )
+        assert locality == "cloud"
+        assert fb is False
+
+    def test_cloud_only_without_cloud_raises(self):
+        rp = RoutingPolicy.cloud_only()
+        with pytest.raises(RuntimeError, match="Cloud embedding execution is required"):
+            _select_locality_for_capability(rp, local_available=True, cloud_available=False, capability="embedding")
+
+    def test_local_first_prefers_local(self):
+        rp = RoutingPolicy.local_first()
+        locality, fb = _select_locality_for_capability(
+            rp, local_available=True, cloud_available=True, capability="embedding"
+        )
+        assert locality == "on_device"
+        assert fb is False
+
+    def test_local_first_falls_back_to_cloud(self):
+        rp = RoutingPolicy.local_first(fallback="cloud")
+        locality, fb = _select_locality_for_capability(
+            rp, local_available=False, cloud_available=True, capability="embedding"
+        )
+        assert locality == "cloud"
+        assert fb is True
+
+    def test_cloud_first_prefers_cloud(self):
+        rp = RoutingPolicy(mode=ContractRoutingPolicy.AUTO, prefer_local=False, fallback="local")
+        locality, fb = _select_locality_for_capability(
+            rp, local_available=True, cloud_available=True, capability="embedding"
+        )
+        assert locality == "cloud"
+        assert fb is False
+
+    def test_cloud_first_falls_back_to_local(self):
+        rp = RoutingPolicy(mode=ContractRoutingPolicy.AUTO, prefer_local=False, fallback="local")
+        locality, fb = _select_locality_for_capability(
+            rp, local_available=True, cloud_available=False, capability="embedding"
+        )
+        assert locality == "on_device"
+        assert fb is True
+
+
+# ---------------------------------------------------------------------------
+# Kernel — local embeddings
+# ---------------------------------------------------------------------------
+
+
+class TestKernelLocalEmbeddings:
+    @pytest.mark.asyncio
+    async def test_local_embed_success(self):
+        kernel = _make_kernel(policy="private")
+
+        mock_runtime = MagicMock()
+        mock_runtime.embed = MagicMock(return_value=[[0.1, 0.2, 0.3], [0.4, 0.5, 0.6]])
+
+        with patch.object(kernel, "_can_local", return_value=True):
+            with patch("octomil.runtime.core.registry.ModelRuntimeRegistry") as mock_reg_cls:
+                mock_registry = MagicMock()
+                mock_registry.resolve.return_value = mock_runtime
+                mock_reg_cls.shared.return_value = mock_registry
+                result = await kernel.create_embeddings(["hello", "world"])
+
+        assert result.capability == CAPABILITY_EMBEDDING
+        assert result.locality == "on_device"
+        assert result.embeddings == [[0.1, 0.2, 0.3], [0.4, 0.5, 0.6]]
+        assert result.dimensions == 3
+
+    @pytest.mark.asyncio
+    async def test_local_embed_async_runtime(self):
+        kernel = _make_kernel(policy="private")
+
+        async def mock_embed(inputs):
+            return [[1.0, 2.0]]
+
+        mock_runtime = MagicMock()
+        mock_runtime.embed = mock_embed
+
+        with patch.object(kernel, "_can_local", return_value=True):
+            with patch("octomil.runtime.core.registry.ModelRuntimeRegistry") as mock_reg_cls:
+                mock_registry = MagicMock()
+                mock_registry.resolve.return_value = mock_runtime
+                mock_reg_cls.shared.return_value = mock_registry
+                result = await kernel.create_embeddings(["hello"])
+
+        assert result.embeddings == [[1.0, 2.0]]
+
+    @pytest.mark.asyncio
+    async def test_local_embed_no_embed_method_raises(self):
+        kernel = _make_kernel(policy="private")
+
+        mock_runtime = MagicMock(spec=[])  # no embed or create_embeddings
+
+        with patch.object(kernel, "_can_local", return_value=True):
+            with patch("octomil.runtime.core.registry.ModelRuntimeRegistry") as mock_reg_cls:
+                mock_registry = MagicMock()
+                mock_registry.resolve.return_value = mock_runtime
+                mock_reg_cls.shared.return_value = mock_registry
+                with pytest.raises(RuntimeError, match="does not expose an embedding interface"):
+                    await kernel.create_embeddings(["hello"])
+
+
+# ---------------------------------------------------------------------------
+# Kernel — stream_response
+# ---------------------------------------------------------------------------
+
+
+class TestKernelStreamResponse:
+    @pytest.mark.asyncio
+    async def test_stream_collects_chunks(self):
+        kernel = _make_kernel()
+
+        async def mock_stream(request, policy):
+            for text in ["Hello", " ", "world!"]:
+                chunk = MagicMock()
+                chunk.text = text
+                yield chunk
+
+        with patch.object(kernel, "_build_router") as mock_build:
+            mock_router = MagicMock()
+            mock_router.resolve_locality = MagicMock(return_value=("on_device", False))
+            mock_router.stream = mock_stream
+            mock_build.return_value = mock_router
+
+            chunks = []
+            async for chunk in kernel.stream_response("Hello!"):
+                chunks.append(chunk)
+
+        # Should have 3 delta chunks + 1 final done chunk
+        assert len(chunks) == 4
+        assert chunks[0].delta == "Hello"
+        assert chunks[1].delta == " "
+        assert chunks[2].delta == "world!"
+        assert chunks[3].done is True
+        assert chunks[3].result is not None
+        assert chunks[3].result.output_text == "Hello world!"
