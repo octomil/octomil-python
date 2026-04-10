@@ -31,15 +31,14 @@ class CloudInferenceBackend(InferenceBackend):
         # No-op for cloud — model is specified by cloud_model config
         logger.info("Cloud backend ready for model '%s' via %s", self._model, self._cloud_client._base_url)
 
-    def generate(self, request: GenerationRequest) -> tuple[str, InferenceMetrics]:
+    async def generate_async(self, request: GenerationRequest) -> tuple[str, InferenceMetrics]:
+        """Async generation — safe to call from an already-running event loop."""
         messages = _to_openai_messages(request)
-        result = asyncio.get_event_loop().run_until_complete(
-            self._cloud_client.chat(
-                messages,
-                max_tokens=request.max_tokens,
-                temperature=request.temperature,
-                top_p=request.top_p,
-            )
+        result = await self._cloud_client.chat(
+            messages,
+            max_tokens=request.max_tokens,
+            temperature=request.temperature,
+            top_p=request.top_p,
         )
 
         choice = result.get("choices", [{}])[0]
@@ -52,6 +51,23 @@ class CloudInferenceBackend(InferenceBackend):
             tokens_per_second=0.0,
         )
         return text, metrics
+
+    def generate(self, request: GenerationRequest) -> tuple[str, InferenceMetrics]:
+        """Sync generation — safe for both running and non-running event loops."""
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = None
+
+        if loop is not None and loop.is_running():
+            # Already inside an async context (e.g. FastAPI handler).
+            # Run in a worker thread to avoid "This event loop is already running".
+            import concurrent.futures
+
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+                return pool.submit(asyncio.run, self.generate_async(request)).result()
+
+        return asyncio.run(self.generate_async(request))
 
     async def generate_stream(
         self,
