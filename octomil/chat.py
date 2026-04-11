@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Any, Iterator
 import click
 
 if TYPE_CHECKING:
+    from .execution.kernel import ExecutionKernel
     from .responses.responses import OctomilResponses
 
 
@@ -93,6 +94,41 @@ def stream_chat_via_responses(
     yield from chunks
 
 
+def stream_chat_via_kernel(
+    kernel: ExecutionKernel,
+    model: str,
+    messages: list[dict[str, str]],
+    *,
+    policy: str | None = None,
+    app: str | None = None,
+    temperature: float = 0.7,
+    max_tokens: int = 2048,
+) -> Iterator[dict[str, Any]]:
+    """Stream chat completions via the shared execution kernel."""
+
+    async def _collect() -> list[dict[str, Any]]:
+        chunks: list[dict[str, Any]] = []
+        async for event in kernel.stream_chat_messages(
+            messages,
+            model=model,
+            policy=policy,
+            app=app,
+            temperature=temperature,
+            max_output_tokens=max_tokens,
+        ):
+            if event.delta:
+                chunks.append(_response_to_chat_chunk(event.delta))
+        return chunks
+
+    loop = asyncio.new_event_loop()
+    try:
+        chunks = loop.run_until_complete(_collect())
+    finally:
+        loop.close()
+
+    yield from chunks
+
+
 # ---------------------------------------------------------------------------
 # REPL
 # ---------------------------------------------------------------------------
@@ -108,11 +144,14 @@ def _read_input() -> str | None:
 
 def run_chat_repl(
     model: str,
-    responses: OctomilResponses,
+    responses: OctomilResponses | ExecutionKernel,
     *,
     system_prompt: str | None = None,
     temperature: float = 0.7,
     max_tokens: int = 2048,
+    policy: str | None = None,
+    app: str | None = None,
+    stream_fn: Any = None,
     _input_fn: Any = None,
 ) -> None:
     """Main interactive REPL loop.
@@ -133,6 +172,7 @@ def run_chat_repl(
         Override for ``_read_input`` (used in tests).
     """
     read_input = _input_fn or _read_input
+    stream: Any = stream_fn or stream_chat_via_responses
 
     messages: list[dict[str, str]] = []
     if system_prompt:
@@ -165,12 +205,19 @@ def run_chat_repl(
         token_count = 0
 
         try:
-            chunk_iter = stream_chat_via_responses(
+            stream_kwargs: dict[str, Any] = {
+                "temperature": temperature,
+                "max_tokens": max_tokens,
+            }
+            if stream is stream_chat_via_kernel:
+                stream_kwargs["policy"] = policy
+                stream_kwargs["app"] = app
+
+            chunk_iter = stream(
                 responses,
                 model,
                 messages,
-                temperature=temperature,
-                max_tokens=max_tokens,
+                **stream_kwargs,
             )
             for chunk in chunk_iter:
                 delta = chunk.get("choices", [{}])[0].get("delta", {})
@@ -182,6 +229,10 @@ def run_chat_repl(
         except RuntimeError as exc:
             click.secho(f"\nError: {exc}", fg="red", err=True)
             # Remove the unanswered user message so conversation stays clean
+            messages.pop()
+            continue
+        except Exception as exc:
+            click.secho(f"\nError: {_format_chat_error(exc)}", fg="red", err=True)
             messages.pop()
             continue
 
@@ -197,3 +248,11 @@ def run_chat_repl(
         click.echo()
 
         messages.append({"role": "assistant", "content": full_response})
+
+
+def _format_chat_error(exc: Exception) -> str:
+    text = str(exc).strip()
+    if not text:
+        return exc.__class__.__name__
+    first_line = text.splitlines()[0].strip()
+    return first_line or exc.__class__.__name__

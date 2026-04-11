@@ -187,6 +187,28 @@ class EngineRegistry:
                 )
             return engine, []
 
+        if n_tokens <= 0:
+            detected = [d.engine for d in self.detect_all(model_name) if d.available]
+            if not detected:
+                raise OctomilError(
+                    code=OctomilErrorCode.RUNTIME_UNAVAILABLE,
+                    message="No inference engines available. Install one of:\n"
+                    "  pip install 'octomil[mlx]'     # Apple Silicon\n"
+                    "  pip install 'octomil[llama]'    # Cross-platform\n"
+                    "  pip install 'octomil[onnx]'     # ONNX Runtime",
+                )
+            ranked = [
+                RankedEngine(
+                    engine=engine,
+                    result=BenchmarkResult(
+                        engine_name=engine.name,
+                        metadata={"selection": "priority", "reason": "benchmark_skipped"},
+                    ),
+                )
+                for engine in sorted(detected, key=lambda e: e.priority)
+            ]
+            return ranked[0].engine, ranked
+
         ranked = self.benchmark_all(model_name, n_tokens=n_tokens)
         if not ranked:
             raise OctomilError(

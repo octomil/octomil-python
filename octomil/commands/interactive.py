@@ -20,7 +20,10 @@ from octomil.cli_helpers import _complete_model_name, cli_header
 
 @click.command()
 @click.argument("model", required=False, default=None, shell_complete=_complete_model_name)
-@click.option("--port", "-p", default=8080, help="Port for local server.")
+@click.option("--app", default=None, help="App context (slug).")
+@click.option("--policy", default=None, help="Serving policy preset.")
+@click.option("--select", is_flag=True, help="Interactively choose a local model.")
+@click.option("--port", "-p", default=None, type=int, hidden=True)
 @click.option("--system", "-s", default=None, help="System prompt.")
 @click.option(
     "--temperature",
@@ -37,56 +40,57 @@ from octomil.cli_helpers import _complete_model_name, cli_header
 )
 def chat(
     model: Optional[str],
-    port: int,
+    app: Optional[str],
+    policy: Optional[str],
+    select: bool,
+    port: Optional[int],
     system: Optional[str],
     temperature: float,
     max_tokens: int,
 ) -> None:
     """Chat with a model locally.
 
-    Starts the server, downloads the model if needed, and opens an
-    interactive chat. One command from install to conversation.
+    Downloads the model if needed and opens an interactive chat using the
+    same direct local/cloud routing path as ``octomil run``.
 
     \b
     Examples:
         octomil chat
-        octomil chat qwen-coder-7b
+        octomil chat gemma3-1b
+        octomil chat --select
         octomil chat llama-8b --system "You are a Python expert."
-        octomil chat qwen-coder-3b -t 0.3
+        octomil chat gemma3-4b -t 0.3
     """
-    from octomil.agents.launcher import (
-        _auto_select_model,
-        is_serve_running,
-        start_serve_background,
-    )
-    from octomil.chat import run_chat_repl
-    from octomil.responses.responses import OctomilResponses
+    from octomil.chat import run_chat_repl, stream_chat_via_kernel
+    from octomil.execution.kernel import ExecutionKernel
 
+    kernel = ExecutionKernel()
     if model is None:
-        model = _auto_select_model()
+        if select:
+            from octomil.agents.launcher import _select_model_tui
+
+            model = _select_model_tui()
+        else:
+            try:
+                defaults = kernel.resolve_chat_defaults(policy=policy, app=app)
+            except Exception as exc:
+                raise click.ClickException(str(exc)) from exc
+            model = defaults.model or "gemma3-1b"
 
     cli_header(f"Chat — {model}")
-
-    serve_proc = None
-    if not is_serve_running(port=port):
-        click.echo(f"Starting octomil serve {model}...")
-        serve_proc = start_serve_background(model, port=port)
-        click.echo("Ready.\n")
-    else:
-        click.echo(f"Using existing server at localhost:{port}\n")
-
-    responses = OctomilResponses()
-    try:
-        run_chat_repl(
-            model,
-            responses,
-            system_prompt=system,
-            temperature=temperature,
-            max_tokens=max_tokens,
-        )
-    finally:
-        if serve_proc is not None:
-            serve_proc.terminate()
+    if port is not None:
+        click.echo("Note: --port is ignored by direct chat. Use `octomil serve` for a local HTTP server.", err=True)
+    click.echo("Running through the shared execution kernel. Use `octomil serve` for a local HTTP server.\n")
+    run_chat_repl(
+        model,
+        kernel,
+        system_prompt=system,
+        temperature=temperature,
+        max_tokens=max_tokens,
+        policy=policy,
+        app=app,
+        stream_fn=stream_chat_via_kernel,
+    )
 
 
 # ---------------------------------------------------------------------------

@@ -432,3 +432,41 @@ class TestKernelStreamResponse:
         assert chunks[3].done is True
         assert chunks[3].result is not None
         assert chunks[3].result.output_text == "Hello world!"
+
+
+class TestKernelStreamChatMessages:
+    @pytest.mark.asyncio
+    async def test_stream_preserves_message_roles(self):
+        kernel = _make_kernel()
+        captured_request = None
+
+        async def mock_stream(request, policy):
+            nonlocal captured_request
+            captured_request = request
+            for text in ["Hi", "!"]:
+                chunk = MagicMock()
+                chunk.text = text
+                yield chunk
+
+        with patch.object(kernel, "_build_router") as mock_build:
+            mock_router = MagicMock()
+            mock_router.resolve_locality = MagicMock(return_value=("on_device", False))
+            mock_router.stream = mock_stream
+            mock_build.return_value = mock_router
+
+            chunks = []
+            async for chunk in kernel.stream_chat_messages(
+                [
+                    {"role": "system", "content": "be brief"},
+                    {"role": "user", "content": "hello"},
+                    {"role": "assistant", "content": "hi"},
+                    {"role": "user", "content": "again"},
+                ]
+            ):
+                chunks.append(chunk)
+
+        assert captured_request is not None
+        assert [m.role.value for m in captured_request.messages] == ["system", "user", "assistant", "user"]
+        assert chunks[-1].done is True
+        assert chunks[-1].result is not None
+        assert chunks[-1].result.output_text == "Hi!"

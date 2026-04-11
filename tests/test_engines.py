@@ -285,6 +285,22 @@ class TestEngineRegistry:
         assert engine.name == "fake"
         assert len(ranked) >= 1
 
+    def test_auto_select_zero_tokens_skips_benchmark(self):
+        reg = EngineRegistry()
+        fake = _FakeEngine()
+        slow = _SlowEngine()
+        fake.benchmark = MagicMock(side_effect=AssertionError("should not benchmark"))  # type: ignore[method-assign]
+        slow.benchmark = MagicMock(side_effect=AssertionError("should not benchmark"))  # type: ignore[method-assign]
+        reg.register(fake)
+        reg.register(slow)
+
+        engine, ranked = reg.auto_select("supported-model", n_tokens=0)
+
+        assert engine.name == "slow"
+        assert ranked[0].result.metadata["selection"] == "priority"
+        fake.benchmark.assert_not_called()
+        slow.benchmark.assert_not_called()
+
 
 # ---------------------------------------------------------------------------
 # Global registry

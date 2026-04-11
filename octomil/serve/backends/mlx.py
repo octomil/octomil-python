@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import logging
 import time
+import warnings
+from contextlib import contextmanager
 from typing import Any, AsyncIterator, Optional
 
 from ..models import resolve_model_name
@@ -25,6 +27,68 @@ _DRAFT_MODEL_MAP: dict[str, str] = {
     "gemma-12b": "REDACTED",
     "gemma-27b": "REDACTED",
 }
+
+
+@contextmanager
+def _suppress_huggingface_warnings() -> Any:
+    """Suppress noisy Hub warnings that do not help users act."""
+    with warnings.catch_warnings():
+        warnings.filterwarnings(
+            "ignore",
+            message=r".*local_dir_use_symlinks.*deprecated.*",
+            category=UserWarning,
+        )
+        yield
+
+
+@contextmanager
+def _quiet_huggingface_progress() -> Any:
+    """Suppress Hub progress for already-cached loads only."""
+    try:
+        from huggingface_hub.utils import (  # type: ignore[import-untyped]
+            are_progress_bars_disabled,
+            disable_progress_bars,
+            enable_progress_bars,
+        )
+
+        was_disabled = are_progress_bars_disabled()
+        disable_progress_bars()
+    except Exception:
+        was_disabled = True
+
+    try:
+        with _suppress_huggingface_warnings():
+            yield
+    finally:
+        try:
+            if not was_disabled:
+                enable_progress_bars()
+        except Exception:
+            pass
+
+
+def _cached_snapshot_path(repo_id: str) -> Optional[str]:
+    """Return an existing HF snapshot path for repo_id, if the repo is cached."""
+    try:
+        from ...sources.huggingface import HuggingFaceSource
+
+        return HuggingFaceSource().check_cache(repo_id)
+    except Exception:
+        return None
+
+
+def _load_mlx_model(mlx_lm: Any, repo_id: str) -> tuple[Any, ...]:
+    """Load an MLX model, preferring cached snapshots to avoid Hub revalidation UX."""
+    cached_ref = _cached_snapshot_path(repo_id)
+    if cached_ref:
+        try:
+            with _quiet_huggingface_progress():
+                return mlx_lm.load(cached_ref)
+        except FileNotFoundError:
+            logger.info("Cached MLX snapshot for %s is incomplete; retrying from Hugging Face.", repo_id)
+
+    with _suppress_huggingface_warnings():
+        return mlx_lm.load(repo_id)
 
 
 class MLXBackend(InferenceBackend):
@@ -69,7 +133,7 @@ class MLXBackend(InferenceBackend):
 
         load_start = time.time()
         logger.info("Loading %s (%s) with mlx-lm...", model_name, self._repo_id)
-        self._model, self._tokenizer, *_ = mlx_lm.load(self._repo_id)
+        self._model, self._tokenizer, *_ = _load_mlx_model(mlx_lm, self._repo_id)
         load_elapsed_ms = (time.time() - load_start) * 1000
         logger.info("Model loaded: %s", self._repo_id)
 
@@ -87,7 +151,7 @@ class MLXBackend(InferenceBackend):
         if draft_repo:
             logger.info("Loading draft model for speculative decoding: %s", draft_repo)
             try:
-                self._draft_model, *_ = mlx_lm.load(draft_repo)
+                self._draft_model, *_ = _load_mlx_model(mlx_lm, draft_repo)
             except Exception:
                 logger.debug("Draft model load failed (non-fatal)", exc_info=True)
 
