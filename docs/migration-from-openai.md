@@ -4,7 +4,15 @@ Octomil is wire-compatible with the OpenAI API. You can migrate in 2 minutes by 
 
 ## Quick migration (2 minutes)
 
-Change two lines in your existing OpenAI client code:
+### Option A: Local server (recommended — no account needed)
+
+Start a local OpenAI-compatible server and point your client at it:
+
+```bash
+octomil serve
+```
+
+Then change two lines in your existing OpenAI client code:
 
 ```python
 # Before
@@ -13,11 +21,17 @@ client = OpenAI(api_key="sk-...")
 
 # After: local inference (no API key needed)
 from openai import OpenAI
-client = OpenAI(base_url="http://localhost:8080/v1", api_key="unused")
+client = OpenAI(base_url="http://127.0.0.1:8080/v1", api_key="unused")
+```
 
-# After: managed fleet (publishable key)
+### Option B: Hosted API
+
+Use the Octomil cloud API as a drop-in replacement:
+
+```python
+# After: hosted (use your server key)
 from openai import OpenAI
-client = OpenAI(base_url="https://api.octomil.com/v1", api_key="oct_pub_...")
+client = OpenAI(base_url="https://api.octomil.com/v1", api_key="YOUR_SERVER_KEY")
 ```
 
 Everything else — `chat.completions.create`, streaming, tool calls — works without changes.
@@ -28,11 +42,11 @@ Everything else — `chat.completions.create`, streaming, tool calls — works w
 
 ### Chat completions (non-streaming)
 
-| OpenAI                                 | Octomil                                                         |
-| -------------------------------------- | --------------------------------------------------------------- |
-| `base_url="https://api.openai.com/v1"` | `base_url="http://localhost:8080/v1"`                           |
-| `api_key="sk-..."`                     | `api_key="unused"` (local) or `api_key="oct_pub_..."` (managed) |
-| `model="gpt-4o"`                       | `model="gemma-3-4b"` (see model mapping below)                  |
+| OpenAI                                 | Octomil                                                            |
+| -------------------------------------- | ------------------------------------------------------------------ |
+| `base_url="https://api.openai.com/v1"` | `base_url="http://127.0.0.1:8080/v1"`                              |
+| `api_key="sk-..."`                     | `api_key="unused"` (local) or `api_key="YOUR_SERVER_KEY"` (hosted) |
+| `model="gpt-4o"`                       | `model="gemma-3-4b"` (see model mapping below)                     |
 
 ```python
 # OpenAI
@@ -50,7 +64,7 @@ print(response.choices[0].message.content)
 # Octomil (OpenAI-compatible path)
 from openai import OpenAI
 
-client = OpenAI(base_url="http://localhost:8080/v1", api_key="unused")
+client = OpenAI(base_url="http://127.0.0.1:8080/v1", api_key="unused")
 response = client.chat.completions.create(
     model="gemma-3-4b",
     messages=[{"role": "user", "content": "Explain quantum computing in one sentence."}],
@@ -80,7 +94,7 @@ for chunk in stream:
 # Octomil (OpenAI-compatible path — identical except base_url and model)
 from openai import OpenAI
 
-client = OpenAI(base_url="http://localhost:8080/v1", api_key="unused")
+client = OpenAI(base_url="http://127.0.0.1:8080/v1", api_key="unused")
 stream = client.chat.completions.create(
     model="gemma-3-4b",
     messages=[{"role": "user", "content": "Write a haiku about the ocean."}],
@@ -113,7 +127,7 @@ print(transcript.text)
 # Octomil (OpenAI-compatible path)
 from openai import OpenAI
 
-client = OpenAI(base_url="http://localhost:8080/v1", api_key="unused")
+client = OpenAI(base_url="http://127.0.0.1:8080/v1", api_key="unused")
 with open("audio.mp3", "rb") as f:
     transcript = client.audio.transcriptions.create(
         model="whisper-small",  # see model mapping below
@@ -136,7 +150,7 @@ print(transcript.text)
 | `o3-mini`           | `deepseek-r1-1.5b`         | Small reasoning model           |
 | `whisper-1`         | `whisper-small`            | Default transcription           |
 | `whisper-1` (large) | `whisper-large-v3`         | Highest accuracy transcription  |
-| `text-embedding-*`  | Not yet supported          | Embeddings API coming soon      |
+| `text-embedding-*`  | `nomic-embed-text-v1.5`    | `octomil embed` or SDK          |
 
 Use `octomil models` to see the full catalog of 60+ available models.
 
@@ -144,10 +158,10 @@ Use `octomil models` to see the full catalog of 60+ available models.
 
 ## API key differences
 
-|              | OpenAI           | Octomil (local)      | Octomil (managed fleet)     |
+|              | OpenAI           | Octomil (local)      | Octomil (hosted)            |
 | ------------ | ---------------- | -------------------- | --------------------------- |
 | Key format   | `sk-...`         | No key needed        | `oct_pub_...` (publishable) |
-| Where to set | `OPENAI_API_KEY` | Any non-empty string | `OCTOMIL_API_KEY`           |
+| Where to set | `OPENAI_API_KEY` | Any non-empty string | `OCTOMIL_SERVER_KEY`        |
 | Key rotation | OpenAI dashboard | N/A                  | Octomil dashboard           |
 | Rate limits  | Account-based    | None (your hardware) | Fleet-based                 |
 
@@ -155,10 +169,10 @@ For local inference, the `api_key` parameter is required by the OpenAI client li
 
 ```python
 # Local — no real key needed
-client = OpenAI(base_url="http://localhost:8080/v1", api_key="unused")
+client = OpenAI(base_url="http://127.0.0.1:8080/v1", api_key="unused")
 
-# Managed fleet — use your publishable key (safe for client-side code)
-client = OpenAI(base_url="https://api.octomil.com/v1", api_key="oct_pub_...")
+# Hosted — use your server key
+client = OpenAI(base_url="https://api.octomil.com/v1", api_key="YOUR_SERVER_KEY")
 ```
 
 ---
@@ -167,9 +181,9 @@ client = OpenAI(base_url="https://api.octomil.com/v1", api_key="oct_pub_...")
 
 | Environment                 | Base URL                     |
 | --------------------------- | ---------------------------- |
-| Local server (default port) | `http://localhost:8080/v1`   |
-| Local server (custom port)  | `http://localhost:<port>/v1` |
-| Managed fleet               | `https://api.octomil.com/v1` |
+| Local server (default port) | `http://127.0.0.1:8080/v1`   |
+| Local server (custom port)  | `http://127.0.0.1:<port>/v1` |
+| Hosted API                  | `https://api.octomil.com/v1` |
 
 Start a local server:
 

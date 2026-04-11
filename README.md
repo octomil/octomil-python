@@ -10,38 +10,53 @@ Run LLMs on your laptop, phone, or edge device. One command. OpenAI-compatible A
 
 Octomil is a CLI + Python SDK for running open-weight models locally behind an OpenAI-compatible API. It detects your hardware, picks the fastest available engine, and gives you a local-first replacement for cloud API calls on Mac, Linux, and Windows.
 
-## Quick start
+## Quick Start
+
+### Install
 
 ```bash
 curl -fsSL https://get.octomil.com | sh
 ```
 
-The installer runs `octomil setup` in the background — it creates a venv, installs the best engine for your hardware, downloads a recommended model, and registers the MCP server with your AI tools (Claude Code, Cursor, VS Code, Codex CLI).
-
-Then start serving:
+Or via pip:
 
 ```bash
-octomil serve gemma-1b
+pip install octomil
 ```
 
-You now have an OpenAI-compatible server on `localhost:8080`:
+### Local Inference (no server, no account needed)
 
 ```bash
-curl http://localhost:8080/v1/chat/completions \
-  -d '{"model": "gemma-1b", "messages": [{"role": "user", "content": "Hello!"}]}'
+# Chat / responses
+octomil run "What can you help me with?"
+
+# Embeddings
+octomil embed "On-device AI inference at scale" --json
+
+# Transcription
+octomil transcribe meeting.wav
 ```
 
-Or use any OpenAI client library:
+### OpenAI-Compatible Local Server
 
-```python
-from openai import OpenAI
+```bash
+octomil serve
 
-client = OpenAI(base_url="http://localhost:8080/v1", api_key="unused")
-r = client.chat.completions.create(
-    model="gemma-1b",
-    messages=[{"role": "user", "content": "Explain quantum computing in 2 sentences."}],
-)
-print(r.choices[0].message.content)
+# Then use any OpenAI-compatible client:
+curl http://127.0.0.1:8080/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{"model":"default","messages":[{"role":"user","content":"Hello"}]}'
+```
+
+### Hosted API
+
+```bash
+export OCTOMIL_SERVER_KEY="YOUR_SERVER_KEY"
+
+curl https://api.octomil.com/v1/responses \
+  -H "Authorization: Bearer $OCTOMIL_SERVER_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"default","input":"Hello"}'
 ```
 
 ## Unified Facade (recommended for new code)
@@ -53,7 +68,7 @@ import asyncio
 from octomil import Octomil
 
 async def main():
-    client = Octomil(api_key="edg_...", org_id="org_...")
+    client = Octomil(api_key="YOUR_SERVER_KEY", org_id="org_...")
     await client.initialize()
     response = await client.responses.create(model="phi-4-mini", input="Hello")
     print(response.output_text)
