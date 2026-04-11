@@ -6,6 +6,22 @@ When an `OctomilClient` fetches desired state via `control.get_desired_state()`,
 
 > **Scope:** Automatic routing applies to `responses.create()`, `responses.stream()`, `chat.create()`, `chat.stream()`, and any code that goes through `OctomilResponses` (including `WorkflowRunner` and `ToolRunner`). It does **not** apply to `client.text`, `client.audio`, or other namespaces that resolve runtimes directly.
 
+### Routing policy presets
+
+These are the user-facing policy names you can pass via metadata or CLI `--policy`:
+
+| Policy              | Meaning                                                           |
+| ------------------- | ----------------------------------------------------------------- |
+| `private`           | Local only. Never send input to cloud. Fail if no local runtime.  |
+| `local_first`       | Try local first. Cloud fallback only when configured and allowed. |
+| `cloud_first`       | Try cloud first. Local fallback only when configured and allowed. |
+| `cloud_only`        | Hosted/cloud only. Never use local.                               |
+| `performance_first` | Current heuristic prefers fastest available path.                 |
+
+> `quality_first` is a deprecated legacy alias for `cloud_first`. It may appear in older configs but should not be used in new code.
+
+### Deployment-level routing
+
 Each deployment carries:
 
 - `routing_mode`: `auto`, `local_only`, or `cloud_only`
@@ -19,7 +35,7 @@ These map to SDK routing behavior:
 | `cloud_only` | —          | All inference runs in the cloud.                                                |
 | `auto`       | `local`    | Prefer on-device; fall back to cloud if local is unavailable.                   |
 | `auto`       | `balanced` | Route to whichever is fastest (on-device or cloud).                             |
-| `auto`       | `quality`  | Prefer cloud for highest quality; use local as fallback.                        |
+| `auto`       | `cloud`    | Prefer cloud; use local as fallback.                                            |
 
 ## Automatic routing (recommended)
 
