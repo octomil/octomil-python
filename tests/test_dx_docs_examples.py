@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from click.testing import CliRunner
 
 from octomil.cli import main
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
 class TestCliHelpDx:
@@ -51,43 +55,29 @@ class TestDocSnippetConsistency:
     """Verify doc files don't use banned placeholders in inference examples."""
 
     def _read_file(self, path: str) -> str:
-        try:
-            with open(path) as f:
-                return f.read()
-        except FileNotFoundError:
-            return ""
+        return (REPO_ROOT / path).read_text()
 
     def test_readme_no_your_api_key_in_inference(self):
         content = self._read_file("README.md")
-        if not content:
-            return
         # YOUR_API_KEY should not appear — should be YOUR_SERVER_KEY or YOUR_CLIENT_KEY
         assert "YOUR_API_KEY" not in content, "README uses deprecated YOUR_API_KEY placeholder"
 
     def test_readme_has_local_cli_examples(self):
         content = self._read_file("README.md")
-        if not content:
-            return
         assert "octomil run" in content
         assert "octomil embed" in content
         assert "octomil transcribe" in content
 
     def test_readme_has_serve_example(self):
         content = self._read_file("README.md")
-        if not content:
-            return
         assert "octomil serve" in content
 
     def test_quickstart_no_your_api_key(self):
         content = self._read_file("docs/quickstart.md")
-        if not content:
-            return
         assert "YOUR_API_KEY" not in content
 
     def test_routing_doc_no_quality_first_as_preset(self):
         content = self._read_file("docs/routing.md")
-        if not content:
-            return
         # quality_first should not be listed as a primary preset
         # It can appear as a legacy alias mention
         lines = content.split("\n")

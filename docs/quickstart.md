@@ -58,9 +58,9 @@ This starts an OpenAI-compatible server on `http://127.0.0.1:8080/v1`.
 ### Using curl
 
 ```bash
-curl http://127.0.0.1:8080/v1/responses \
+curl http://127.0.0.1:8080/v1/chat/completions \
   -H "Content-Type: application/json" \
-  -d '{"model":"default","input":"Hello"}'
+  -d '{"model":"default","messages":[{"role":"user","content":"Hello"}]}'
 ```
 
 ### Using the OpenAI Python client

@@ -43,9 +43,9 @@ octomil transcribe meeting.wav
 octomil serve
 
 # Then use any OpenAI-compatible client:
-curl http://127.0.0.1:8080/v1/responses \
+curl http://127.0.0.1:8080/v1/chat/completions \
   -H "Content-Type: application/json" \
-  -d '{"model":"default","input":"Hello"}'
+  -d '{"model":"default","messages":[{"role":"user","content":"Hello"}]}'
 ```
 
 ### Hosted API
