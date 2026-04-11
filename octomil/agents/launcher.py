@@ -37,7 +37,7 @@ _CURATED_CANDIDATES: list[_Candidate] = [
     _Candidate("qwen-7b", 7, "Qwen 2.5 Coder, best small coding model", "4.5 GB"),
     _Candidate("llama-8b", 8, "Meta Llama 3.1, solid all-rounder", "4.5 GB"),
     _Candidate("phi-4", 14, "Microsoft Phi-4, strong reasoning", "8.5 GB"),
-    _Candidate("gemma-12b", 12, "Google Gemma 3, multilingual", "7.5 GB"),
+    _Candidate("gemma3-12b", 12, "Google Gemma 3, multilingual", "7.5 GB"),
 ]
 
 # Recommended keys shown in the top section of the picker
@@ -56,10 +56,10 @@ _MODEL_INFO: dict[str, tuple[str, str]] = {
     "llama-70b": ("Meta Llama 3.1 70B", "general, large"),
     "phi-4": ("Microsoft Phi-4 14B", "reasoning"),
     "phi-mini": ("Microsoft Phi-4 Mini 3.8B", "reasoning, fast"),
-    "gemma-12b": ("Google Gemma 3 12B", "multilingual"),
-    "gemma-4b": ("Google Gemma 3 4B", "multilingual, fast"),
-    "gemma-1b": ("Google Gemma 3 1B", "multilingual, tiny"),
-    "gemma-27b": ("Google Gemma 3 27B", "multilingual, large"),
+    "gemma3-12b": ("Google Gemma 3 12B", "multilingual"),
+    "gemma3-4b": ("Google Gemma 3 4B", "multilingual, fast"),
+    "gemma3-1b": ("Google Gemma 3 1B", "multilingual, tiny"),
+    "gemma3-27b": ("Google Gemma 3 27B", "multilingual, large"),
     "mistral-7b": ("Mistral 7B v0.3", "general"),
     "codestral-22b": ("Codestral 22B", "coding, large"),
     "smollm-360m": ("SmolLM2 360M", "ultra-light"),

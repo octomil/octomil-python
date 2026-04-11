@@ -277,7 +277,7 @@ class ExecutionKernel:
     Usage::
 
         kernel = ExecutionKernel()
-        result = await kernel.create_response("Hello!", model="gemma-1b")
+        result = await kernel.create_response("Hello!", model="gemma3-1b")
     """
 
     def __init__(

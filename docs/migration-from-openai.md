@@ -46,7 +46,7 @@ Everything else — `chat.completions.create`, streaming, tool calls — works w
 | -------------------------------------- | ------------------------------------------------------------------ |
 | `base_url="https://api.openai.com/v1"` | `base_url="http://127.0.0.1:8080/v1"`                              |
 | `api_key="sk-..."`                     | `api_key="unused"` (local) or `api_key="YOUR_SERVER_KEY"` (hosted) |
-| `model="gpt-4o"`                       | `model="gemma-3-4b"` (see model mapping below)                     |
+| `model="gpt-4o"`                       | `model="gemma3-4b"` (see model mapping below)                      |
 
 ```python
 # OpenAI
@@ -66,7 +66,7 @@ from openai import OpenAI
 
 client = OpenAI(base_url="http://127.0.0.1:8080/v1", api_key="unused")
 response = client.chat.completions.create(
-    model="gemma-3-4b",
+    model="gemma3-4b",
     messages=[{"role": "user", "content": "Explain quantum computing in one sentence."}],
 )
 print(response.choices[0].message.content)
@@ -96,7 +96,7 @@ from openai import OpenAI
 
 client = OpenAI(base_url="http://127.0.0.1:8080/v1", api_key="unused")
 stream = client.chat.completions.create(
-    model="gemma-3-4b",
+    model="gemma3-4b",
     messages=[{"role": "user", "content": "Write a haiku about the ocean."}],
     stream=True,
 )
@@ -140,17 +140,17 @@ print(transcript.text)
 
 ## Model name mapping
 
-| OpenAI model        | Octomil equivalent         | Notes                           |
-| ------------------- | -------------------------- | ------------------------------- |
-| `gpt-4o`            | `gemma-3-12b`              | Best quality available locally  |
-| `gpt-4o-mini`       | `gemma-3-4b`               | Good quality, fast              |
-| `gpt-3.5-turbo`     | `gemma-3-1b` or `phi-mini` | Fastest, smallest               |
-| `gpt-4-turbo`       | `llama-3.3-70b`            | Large model, requires 40GB+ RAM |
-| `o1` / `o1-mini`    | `deepseek-r1-7b`           | Reasoning model                 |
-| `o3-mini`           | `deepseek-r1-1.5b`         | Small reasoning model           |
-| `whisper-1`         | `whisper-small`            | Default transcription           |
-| `whisper-1` (large) | `whisper-large-v3`         | Highest accuracy transcription  |
-| `text-embedding-*`  | `nomic-embed-text-v1.5`    | `octomil embed` or SDK          |
+| OpenAI model        | Octomil equivalent        | Notes                           |
+| ------------------- | ------------------------- | ------------------------------- |
+| `gpt-4o`            | `gemma3-12b`              | Best quality available locally  |
+| `gpt-4o-mini`       | `gemma3-4b`               | Good quality, fast              |
+| `gpt-3.5-turbo`     | `gemma3-1b` or `phi-mini` | Fastest, smallest               |
+| `gpt-4-turbo`       | `llama-3.3-70b`           | Large model, requires 40GB+ RAM |
+| `o1` / `o1-mini`    | `deepseek-r1-7b`          | Reasoning model                 |
+| `o3-mini`           | `deepseek-r1-1.5b`        | Small reasoning model           |
+| `whisper-1`         | `whisper-small`           | Default transcription           |
+| `whisper-1` (large) | `whisper-large-v3`        | Highest accuracy transcription  |
+| `text-embedding-*`  | `nomic-embed-text-v1.5`   | `octomil embed` or SDK          |
 
 Use `octomil models` to see the full catalog of 60+ available models.
 
@@ -188,8 +188,8 @@ client = OpenAI(base_url="https://api.octomil.com/v1", api_key="YOUR_SERVER_KEY"
 Start a local server:
 
 ```bash
-octomil serve gemma-3-4b          # starts on :8080 by default
-octomil serve gemma-3-4b --port 9000
+octomil serve gemma3-4b           # starts on :8080 by default
+octomil serve gemma3-4b --port 9000
 ```
 
 ---
@@ -229,7 +229,7 @@ When an error occurs, Octomil returns an `ErrorCode` from the `octomil._generate
 ```python
 # Force local-only inference (no cloud fallback)
 result = await responses.create(ResponseRequest(
-    model="gemma-3-4b",
+    model="gemma3-4b",
     input="Hello",
     metadata={"routing.policy": "local_only"},
 ))

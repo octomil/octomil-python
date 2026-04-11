@@ -25,16 +25,29 @@ import click
 def _run_async(coro):
     """Run an async coroutine synchronously for Click commands."""
     try:
-        loop = asyncio.get_running_loop()
-    except RuntimeError:
-        loop = None
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = None
 
-    if loop and loop.is_running():
-        import concurrent.futures
+        if loop and loop.is_running():
+            import concurrent.futures
 
-        with concurrent.futures.ThreadPoolExecutor() as pool:
-            return pool.submit(asyncio.run, coro).result()
-    return asyncio.run(coro)
+            with concurrent.futures.ThreadPoolExecutor() as pool:
+                return pool.submit(asyncio.run, coro).result()
+        return asyncio.run(coro)
+    except Exception as exc:
+        _raise_click_exception(exc)
+
+
+def _raise_click_exception(exc: Exception) -> None:
+    """Render domain errors as Click failures instead of tracebacks."""
+    from octomil.errors import OctomilError
+    from octomil.models.resolver import ModelResolutionError
+
+    if isinstance(exc, (OctomilError, ModelResolutionError)):
+        raise click.ClickException(str(exc)) from exc
+    raise exc
 
 
 def _is_tty() -> bool:
@@ -85,7 +98,7 @@ def run_cmd(
     \b
     Examples:
         octomil run "What can you help me with?"
-        octomil run --model gemma-1b "Explain transformers"
+        octomil run --model gemma3-1b "Explain transformers"
         cat prompt.txt | octomil run
         octomil run --json "Return a haiku about SQLite"
     """

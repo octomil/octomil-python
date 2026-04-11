@@ -37,7 +37,7 @@ octomil transcribe meeting.wav
 ### Options
 
 ```bash
-octomil run --model gemma-1b "Hello"              # pick a model
+octomil run --model gemma3-1b "Hello"             # pick a model
 octomil run --json "Return a haiku about SQLite"   # structured JSON output
 cat prompt.txt | octomil run                       # pipe stdin
 octomil run --no-stream "Hello"                    # disable streaming
@@ -71,7 +71,7 @@ from openai import OpenAI
 client = OpenAI(base_url="http://127.0.0.1:8080/v1", api_key="unused")
 
 response = client.chat.completions.create(
-    model="gemma-1b",
+    model="gemma3-1b",
     messages=[{"role": "user", "content": "Explain quantum computing in one sentence."}],
 )
 print(response.choices[0].message.content)
@@ -85,7 +85,7 @@ from openai import OpenAI
 client = OpenAI(base_url="http://127.0.0.1:8080/v1", api_key="unused")
 
 stream = client.chat.completions.create(
-    model="gemma-1b",
+    model="gemma3-1b",
     messages=[{"role": "user", "content": "Write a haiku about the ocean."}],
     stream=True,
 )
@@ -142,7 +142,7 @@ responses = OctomilResponses()
 
 async def main():
     result = await responses.create(ResponseRequest(
-        model="gemma-1b",
+        model="gemma3-1b",
         input=[text_input("Explain quantum computing in one sentence.")],
     ))
     print(result.output[0].text)
@@ -162,7 +162,7 @@ responses = OctomilResponses()
 
 async def main():
     async for event in responses.stream(ResponseRequest(
-        model="gemma-1b",
+        model="gemma3-1b",
         input=[text_input("Write a haiku about the ocean.")],
     )):
         if isinstance(event, TextDeltaEvent):
@@ -177,13 +177,13 @@ asyncio.run(main())
 
 ```python
 result1 = await responses.create(ResponseRequest(
-    model="gemma-1b",
+    model="gemma3-1b",
     input=[text_input("My name is Alice.")],
     instructions="You are a helpful assistant.",
 ))
 
 result2 = await responses.create(ResponseRequest(
-    model="gemma-1b",
+    model="gemma3-1b",
     input=[text_input("What's my name?")],
     previous_response_id=result1.id,
 ))
@@ -194,7 +194,7 @@ print(result2.output[0].text)  # "Your name is Alice."
 
 ```python
 result = await responses.create(ResponseRequest(
-    model="gemma-1b",
+    model="gemma3-1b",
     input=[text_input("Hello")],
     metadata={"routing.policy": "local_only"},
 ))

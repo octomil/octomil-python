@@ -254,7 +254,7 @@ def load_standalone_config(start_dir: Optional[Path] = None) -> LoadedConfigSet:
 # Built-in hardware-aware defaults.  These are the smallest reasonable
 # models that should work on most machines.
 _BUILTIN_DEFAULTS: dict[str, str] = {
-    CAPABILITY_CHAT: "gemma-1b",
+    CAPABILITY_CHAT: "gemma3-1b",
     CAPABILITY_EMBEDDING: "nomic-embed-text-v1.5",
     CAPABILITY_TRANSCRIPTION: "whisper-small",
 }

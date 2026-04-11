@@ -208,8 +208,8 @@ def serve(
 
     \b
         octomil serve                       # uses config/default chat model
-        octomil serve gemma-1b              # auto-picks best quant for your hw
-        octomil serve gemma-1b:8bit         # explicit 8-bit quantization
+        octomil serve gemma3-1b             # auto-picks best quant for your hw
+        octomil serve gemma3-1b:8bit        # explicit 8-bit quantization
         octomil serve llama-8b:fp16         # full precision (no auto-optimize)
         octomil serve llama-3b:q4_k_m       # engine-specific quant (explicit)
 
@@ -229,11 +229,11 @@ def serve(
 
     \b
     Force a specific engine:
-        octomil serve gemma-1b --engine llama.cpp
+        octomil serve gemma3-1b --engine llama.cpp
 
     \b
     Use --json-mode to default all responses to valid JSON output:
-        octomil serve gemma-1b --json-mode
+        octomil serve gemma3-1b --json-mode
     """
     # --- Config-driven model resolution ---
     from octomil.config.local import (
@@ -251,9 +251,9 @@ def serve(
         if not model:
             click.echo(
                 "Error: No model specified and no default chat model in config.\n"
-                "Pass a model: octomil serve gemma-1b\n"
+                "Pass a model: octomil serve gemma3-1b\n"
                 "Or configure .octomil.toml:\n\n"
-                '[capabilities.chat]\nmodel = "gemma-1b"',
+                '[capabilities.chat]\nmodel = "gemma3-1b"',
                 err=True,
             )
             sys.exit(1)

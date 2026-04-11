@@ -8,7 +8,7 @@ Source aliases are derived from the v2 catalog manifest via
 
 Supports:
 - Explicit sources: ``hf:org/model``, ``ollama:name:tag``, ``kaggle:org/model``
-- Known aliases: ``phi-4-mini``, ``gemma-1b``, ``llama-3.2-3b``
+- Known aliases: ``phi-4-mini``, ``gemma3-1b``, ``llama-3.2-3b``
 - Direct HuggingFace repo IDs: ``microsoft/Phi-4-mini-instruct``
 """
 
