@@ -53,6 +53,76 @@ def _make_metadata(**overrides: Any) -> ModelMetadata:
 
 
 # ===========================================================================
+# Unified facade environment config
+# ===========================================================================
+
+
+class TestOctomilFacadeFromEnv:
+    def test_uses_server_key_and_org_id(self, monkeypatch):
+        from octomil import Octomil
+
+        monkeypatch.setenv("OCTOMIL_SERVER_KEY", "srv_key")
+        monkeypatch.setenv("OCTOMIL_API_KEY", "legacy_key")
+        monkeypatch.setenv("OCTOMIL_ORG_ID", "org_public_id")
+
+        client = Octomil.from_env()
+
+        assert client._auth.api_key == "srv_key"
+        assert client._auth.org_id == "org_public_id"
+
+    def test_accepts_legacy_api_key_when_server_key_absent(self, monkeypatch):
+        from octomil import Octomil
+
+        monkeypatch.delenv("OCTOMIL_SERVER_KEY", raising=False)
+        monkeypatch.setenv("OCTOMIL_API_KEY", "legacy_key")
+        monkeypatch.setenv("OCTOMIL_ORG_ID", "org_public_id")
+
+        client = Octomil.from_env()
+
+        assert client._auth.api_key == "legacy_key"
+        assert client._auth.org_id == "org_public_id"
+
+    def test_reads_api_base_override(self, monkeypatch):
+        from octomil import Octomil
+
+        monkeypatch.setenv("OCTOMIL_SERVER_KEY", "srv_key")
+        monkeypatch.setenv("OCTOMIL_ORG_ID", "org_public_id")
+        monkeypatch.setenv("OCTOMIL_API_BASE", "http://localhost:8000/api/v1")
+
+        client = Octomil.from_env()
+
+        assert client._auth.api_base == "http://localhost:8000/api/v1"
+
+    def test_requires_server_key_or_legacy_api_key(self, monkeypatch):
+        from octomil import Octomil
+
+        monkeypatch.delenv("OCTOMIL_SERVER_KEY", raising=False)
+        monkeypatch.delenv("OCTOMIL_API_KEY", raising=False)
+        monkeypatch.setenv("OCTOMIL_ORG_ID", "org_public_id")
+
+        try:
+            Octomil.from_env()
+        except ValueError as exc:
+            assert "OCTOMIL_SERVER_KEY" in str(exc)
+            assert "OCTOMIL_API_KEY" in str(exc)
+        else:
+            raise AssertionError("Expected Octomil.from_env() to require a server key")
+
+    def test_requires_org_id(self, monkeypatch):
+        from octomil import Octomil
+
+        monkeypatch.setenv("OCTOMIL_SERVER_KEY", "srv_key")
+        monkeypatch.delenv("OCTOMIL_ORG_ID", raising=False)
+
+        try:
+            Octomil.from_env()
+        except ValueError as exc:
+            assert "OCTOMIL_ORG_ID" in str(exc)
+        else:
+            raise AssertionError("Expected Octomil.from_env() to require an org id")
+
+
+# ===========================================================================
 # P0 #1 — ChatClient
 # ===========================================================================
 

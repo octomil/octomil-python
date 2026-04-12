@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from typing import TYPE_CHECKING, Any, AsyncIterator
 
 from .auth_config import PublishableKeyAuth
@@ -82,7 +83,7 @@ class Octomil:
 
     Usage::
 
-        client = Octomil(publishable_key="oct_pub_test_abc123")
+        client = Octomil.from_env()
         await client.initialize()
         response = await client.responses.create(model="phi-4-mini", input="Hello!")
         print(response.output_text)
@@ -120,6 +121,40 @@ class Octomil:
             self._auth = OrgApiKeyAuth(api_key=api_key, org_id=org_id)
         else:
             raise ValueError("One of publishable_key=, api_key= + org_id=, or auth= must be provided.")
+
+    @classmethod
+    def from_env(
+        cls,
+        *,
+        server_key_var: str = "OCTOMIL_SERVER_KEY",
+        legacy_api_key_var: str = "OCTOMIL_API_KEY",
+        org_id_var: str = "OCTOMIL_ORG_ID",
+        api_base_var: str = "OCTOMIL_API_BASE",
+        **kwargs: Any,
+    ) -> "Octomil":
+        """Construct a server-side facade client from environment config.
+
+        ``OCTOMIL_SERVER_KEY`` is the canonical server SDK credential. The
+        older ``OCTOMIL_API_KEY`` name is still accepted as a compatibility
+        fallback so existing deployments keep working.
+        """
+        api_key = os.environ.get(server_key_var) or os.environ.get(legacy_api_key_var)
+        if not api_key:
+            raise ValueError(
+                f"Set {server_key_var} before calling Octomil.from_env() "
+                f"(or set {legacy_api_key_var} for legacy compatibility)."
+            )
+
+        org_id = os.environ.get(org_id_var)
+        if not org_id:
+            raise ValueError(f"Set {org_id_var} before calling Octomil.from_env().")
+
+        from .auth import OrgApiKeyAuth
+
+        api_base = os.environ.get(api_base_var)
+        if api_base:
+            return cls(auth=OrgApiKeyAuth(api_key=api_key, org_id=org_id, api_base=api_base), **kwargs)
+        return cls(auth=OrgApiKeyAuth(api_key=api_key, org_id=org_id), **kwargs)
 
     async def initialize(self) -> None:
         """Validate auth and prepare the underlying client. Idempotent."""
