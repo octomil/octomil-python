@@ -219,7 +219,7 @@ class TestDeployPhoneQr:
             ),
         )
 
-        p1, p2, p3 = _mock_deploy_http(_model_check_resp("gemma-1b"), _versions_resp(), mock_post_resp, mock_poll_resp)
+        p1, p2, p3 = _mock_deploy_http(mock_post_resp, mock_poll_resp)
         with p1, p2, p3:
             runner = CliRunner()
             result = runner.invoke(main, ["deploy", "gemma-1b", "--phone"])
@@ -265,8 +265,6 @@ class TestDeployPhoneQr:
         )
 
         p1, p2, p3 = _mock_deploy_http(
-            _model_check_resp("gemma-1b"),
-            _versions_resp(),
             mock_post_resp,
             mock_connected,
             mock_deploy_trigger,
@@ -294,10 +292,10 @@ class TestDeployPhoneQr:
         )
         mock_poll_resp = MagicMock(status_code=200, json=MagicMock(return_value={"status": "expired"}))
 
-        p1, p2, p3 = _mock_deploy_http(_model_check_resp(), _versions_resp(), mock_post_resp, mock_poll_resp)
+        p1, p2, p3 = _mock_deploy_http(mock_post_resp, mock_poll_resp)
         with p1, p2, p3:
             runner = CliRunner()
-            result = runner.invoke(main, ["deploy", "test-model", "--phone"])
+            result = runner.invoke(main, ["deploy", "gemma-1b", "--phone"])
 
         assert result.exit_code != 0
 
@@ -317,10 +315,10 @@ class TestDeployPhoneQr:
         )
         mock_poll_resp = MagicMock(status_code=200, json=MagicMock(return_value={"status": "done"}))
 
-        p1, p2, p3 = _mock_deploy_http(_model_check_resp(), _versions_resp(), mock_post_resp, mock_poll_resp)
+        p1, p2, p3 = _mock_deploy_http(mock_post_resp, mock_poll_resp)
         with p1, p2, p3:
             runner = CliRunner()
-            result = runner.invoke(main, ["deploy", "test-model", "--phone"])
+            result = runner.invoke(main, ["deploy", "gemma-1b", "--phone"])
 
         assert result.exit_code == 0
         # Verify deep link URL format (unit tests cover build_deep_link in detail)
@@ -348,10 +346,10 @@ class TestDeployPhoneQr:
         )
         mock_poll_resp = MagicMock(status_code=200, json=MagicMock(return_value={"status": "done"}))
 
-        p1, p2, p3 = _mock_deploy_http(_model_check_resp(), _versions_resp(), mock_post_resp, mock_poll_resp)
+        p1, p2, p3 = _mock_deploy_http(mock_post_resp, mock_poll_resp)
         with p1, p2, p3:
             runner = CliRunner()
-            result = runner.invoke(main, ["deploy", "test-model", "--phone"])
+            result = runner.invoke(main, ["deploy", "gemma-1b", "--phone"])
 
         assert result.exit_code == 0
         # Verify deep link URL includes custom host
@@ -377,10 +375,10 @@ class TestDeployPhoneQr:
         )
         mock_poll_resp = MagicMock(status_code=200, json=MagicMock(return_value={"status": "done"}))
 
-        p1, p2, p3 = _mock_deploy_http(_model_check_resp(), _versions_resp(), mock_post_resp, mock_poll_resp)
+        p1, p2, p3 = _mock_deploy_http(mock_post_resp, mock_poll_resp)
         with p1, p2, p3:
             runner = CliRunner()
-            result = runner.invoke(main, ["deploy", "test-model", "--phone"])
+            result = runner.invoke(main, ["deploy", "gemma-1b", "--phone"])
 
         assert result.exit_code == 0
         assert "QR image saved" in result.output
@@ -405,7 +403,7 @@ class TestDeployPhoneQr:
         )
         mock_poll_resp = MagicMock(status_code=200, json=MagicMock(return_value={"status": "done"}))
 
-        p1, p2, p3 = _mock_deploy_http(_model_check_resp(), _versions_resp(), mock_post_resp, mock_poll_resp)
+        p1, p2, p3 = _mock_deploy_http(mock_post_resp, mock_poll_resp)
         with (
             patch.dict("sys.modules", {"segno": None}),
             p1,
@@ -413,7 +411,7 @@ class TestDeployPhoneQr:
             p3,
         ):
             runner = CliRunner()
-            result = runner.invoke(main, ["deploy", "test-model", "--phone"])
+            result = runner.invoke(main, ["deploy", "gemma-1b", "--phone"])
 
         assert result.exit_code == 0
         assert "FB0001" in result.output

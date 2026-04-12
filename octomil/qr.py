@@ -6,13 +6,15 @@ import io
 import sys
 import urllib.parse
 
+_DEFAULT_API_BASES = {
+    "https://api.octomil.com",
+    "https://api.octomil.com/api/v1",
+}
 
-def _strip_api_prefix(host: str) -> str:
-    """Strip /api/v1 suffix — mobile SDKs append their own path prefix."""
-    for suffix in ("/api/v1", "/api/v1/"):
-        if host.endswith(suffix):
-            return host[: -len(suffix)]
-    return host
+
+def _is_default_api_base(host: str) -> bool:
+    """Return whether host points at Octomil's default hosted API."""
+    return host.rstrip("/") in _DEFAULT_API_BASES
 
 
 def build_deep_link(token: str, host: str) -> str:
@@ -22,21 +24,17 @@ def build_deep_link(token: str, host: str) -> str:
     the Android and iOS companion apps without requiring domain verification.
     A non-default host is appended as ``&host=`` so the app knows which server.
     """
-    base = _strip_api_prefix(host)
-    default_base = "https://api.octomil.com"
     params = {"token": token}
-    if base != default_base:
-        params["host"] = base
+    if not _is_default_api_base(host):
+        params["host"] = host
     return f"octomil://pair?{urllib.parse.urlencode(params)}"
 
 
 def build_custom_scheme_link(token: str, host: str) -> str:
     """Build an ``octomil://`` deep link for manual opening."""
-    base = _strip_api_prefix(host)
-    default_base = "https://api.octomil.com"
     params = {"token": token}
-    if base != default_base:
-        params["host"] = base
+    if not _is_default_api_base(host):
+        params["host"] = host
     return f"octomil://pair?{urllib.parse.urlencode(params)}"
 
 

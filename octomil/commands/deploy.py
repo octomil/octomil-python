@@ -211,6 +211,8 @@ def deploy(
 
         canonical = _resolve_alias(name)
         model_found = name in CATALOG or canonical in CATALOG
+        if model_found:
+            name = canonical
 
         if not model_found:
             click.echo(click.style(f"  Model '{name}' not in registry — importing...", dim=True))

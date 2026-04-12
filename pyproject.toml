@@ -33,6 +33,7 @@ dependencies = [
   "pyarrow>=10.0.0",
   "segno>=1.6",
   "huggingface_hub>=0.20.0",
+  "jsonschema>=4.0.0",
 ]
 
 [project.optional-dependencies]
