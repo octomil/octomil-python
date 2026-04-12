@@ -11,8 +11,15 @@ All commands use the shared execution kernel.
 from __future__ import annotations
 
 import asyncio
+import importlib
+import inspect
 import json
+import os
+import platform
+import shutil
+import subprocess
 import sys
+from dataclasses import dataclass
 from typing import Optional
 
 import click
@@ -25,8 +32,17 @@ _LOCAL_RUNTIME_HINT = (
     "Install a local runtime for on-device execution:\n"
     "  pip install 'octomil[mlx]'      # Apple Silicon\n"
     "  pip install 'octomil[llama]'    # Cross-platform\n"
-    "Or set OCTOMIL_SERVER_KEY to allow hosted cloud fallback."
+    "Or rerun with --install-runtime to let Octomil install the recommended runtime into this Python environment.\n"
+    "Set OCTOMIL_SERVER_KEY to allow hosted cloud fallback."
 )
+
+
+@dataclass(frozen=True)
+class RuntimeInstallCandidate:
+    engine_name: str
+    requirement: str
+    extra_name: str
+    description: str
 
 
 def _run_async(coro):
@@ -69,6 +85,186 @@ def _is_runtime_unavailable_error(message: str) -> bool:
         }
         or "no local runtime is available" in message.lower()
     )
+
+
+def _is_runtime_unavailable_click_exception(exc: click.ClickException) -> bool:
+    return "No inference backend available" in exc.message
+
+
+def _recommended_runtime_install() -> RuntimeInstallCandidate:
+    machine = platform.machine().lower()
+    if sys.platform == "darwin" and machine in {"arm64", "aarch64"}:
+        return RuntimeInstallCandidate(
+            engine_name="mlx-lm",
+            requirement="mlx-lm>=0.10.0",
+            extra_name="mlx",
+            description="Apple Silicon GPU inference",
+        )
+    return RuntimeInstallCandidate(
+        engine_name="llama.cpp",
+        requirement="llama-cpp-python>=0.2.0",
+        extra_name="llama",
+        description="cross-platform local GGUF inference",
+    )
+
+
+def _truthy_env(value: Optional[str]) -> bool:
+    return (value or "").strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
+def _falsey_env(value: Optional[str]) -> bool:
+    return (value or "").strip().lower() in {"0", "false", "no", "n", "off"}
+
+
+def _can_prompt_runtime_install() -> bool:
+    return bool(getattr(sys.stdin, "isatty", lambda: False)())
+
+
+def _should_install_runtime(
+    auto_install_runtime: Optional[bool], assume_yes: bool, candidate: RuntimeInstallCandidate
+) -> bool:
+    if auto_install_runtime is False:
+        return False
+    if auto_install_runtime is True or assume_yes or _truthy_env(os.environ.get("OCTOMIL_AUTO_INSTALL_RUNTIME")):
+        return True
+    if _falsey_env(os.environ.get("OCTOMIL_AUTO_INSTALL_RUNTIME")):
+        return False
+    if not _can_prompt_runtime_install():
+        return False
+
+    click.echo(
+        f"No local inference runtime is installed. Octomil can install {candidate.engine_name} "
+        f"for {candidate.description}.",
+        err=True,
+    )
+    return click.confirm(
+        f"Install {candidate.engine_name} now into this Python environment?",
+        default=True,
+        err=True,
+    )
+
+
+def _install_runtime(candidate: RuntimeInstallCandidate) -> None:
+    command = _runtime_install_command(candidate.requirement)
+    click.echo(f"Installing {candidate.engine_name} runtime with: {' '.join(command)}", err=True)
+    try:
+        subprocess.run(command, check=True)
+    except (OSError, subprocess.CalledProcessError) as exc:
+        raise click.ClickException(
+            "Failed to install a local inference runtime.\n\n"
+            f"Try manually: pip install 'octomil[{candidate.extra_name}]'\n"
+            "Then rerun your octomil command."
+        ) from exc
+
+    # Make packages installed into the current interpreter importable on retry.
+    importlib.invalidate_caches()
+    try:
+        from octomil.runtime.core import engine_bridge
+        from octomil.runtime.engines.registry import reset_registry
+
+        engine_bridge._runtime_cache.clear()
+        reset_registry()
+    except Exception:
+        # Cache refresh is best-effort; a fresh process will still see the installed runtime.
+        pass
+
+
+def _runtime_install_command(requirement: str) -> list[str]:
+    uv = shutil.which("uv")
+    if uv:
+        return [uv, "pip", "install", "--python", sys.executable, requirement]
+    return [sys.executable, "-m", "pip", "install", requirement]
+
+
+def _retry_after_runtime_install(
+    exc: click.ClickException,
+    auto_install_runtime: Optional[bool],
+    assume_yes: bool,
+    already_attempted: bool = False,
+) -> bool:
+    if not _is_runtime_unavailable_click_exception(exc):
+        return False
+    if already_attempted:
+        return False
+
+    candidate = _recommended_runtime_install()
+    if not _should_install_runtime(auto_install_runtime, assume_yes, candidate):
+        return False
+
+    _install_runtime(candidate)
+    return True
+
+
+def _run_with_runtime_install_retry(
+    make_coro,
+    auto_install_runtime: Optional[bool],
+    assume_yes: bool,
+    install_already_attempted: bool = False,
+):
+    try:
+        return _run_async(make_coro())
+    except click.ClickException as exc:
+        if not _retry_after_runtime_install(exc, auto_install_runtime, assume_yes, install_already_attempted):
+            raise
+        return _run_async(make_coro())
+
+
+def _has_real_local_runtime(model: str) -> bool:
+    try:
+        from octomil.runtime.engines import get_registry
+
+        registry = get_registry()
+        return any(detection.available and detection.engine.name != "echo" for detection in registry.detect_all(model))
+    except Exception:
+        return False
+
+
+def _chat_policy_prefers_local(
+    kernel, model: Optional[str], policy: Optional[str], app: Optional[str]
+) -> tuple[bool, str]:
+    try:
+        from octomil._generated.routing_policy import RoutingPolicy as ContractRoutingPolicy
+        from octomil.execution.kernel import _resolve_routing_policy
+
+        defaults = kernel.resolve_chat_defaults(model=model, policy=policy, app=app)
+        if inspect.isawaitable(defaults):
+            close = getattr(defaults, "close", None)
+            if callable(close):
+                close()
+            return False, ""
+        effective_model = defaults.model
+        if not isinstance(effective_model, str) or not effective_model:
+            return False, ""
+
+        routing_policy = _resolve_routing_policy(defaults)
+        prefers_local = (
+            routing_policy.mode == ContractRoutingPolicy.LOCAL_ONLY
+            or routing_policy.mode == ContractRoutingPolicy.LOCAL_FIRST
+            or routing_policy.prefer_local
+        )
+        return prefers_local and routing_policy.mode != ContractRoutingPolicy.CLOUD_ONLY, effective_model
+    except Exception:
+        return False, ""
+
+
+def _prepare_runtime_for_local_run(
+    kernel,
+    model: Optional[str],
+    policy: Optional[str],
+    app: Optional[str],
+    auto_install_runtime: Optional[bool],
+    assume_yes: bool,
+) -> bool:
+    prefers_local, effective_model = _chat_policy_prefers_local(kernel, model, policy, app)
+    if not prefers_local or not effective_model or _has_real_local_runtime(effective_model):
+        return False
+
+    candidate = _recommended_runtime_install()
+    if not _should_install_runtime(auto_install_runtime, assume_yes, candidate):
+        return False
+
+    _install_runtime(candidate)
+    return True
 
 
 def _warn_if_cloud_execution(result) -> None:
@@ -114,6 +310,12 @@ def _read_stdin_text() -> Optional[str]:
 @click.option("--stream/--no-stream", "stream", default=None, help="Enable/disable streaming.")
 @click.option("--temperature", "-t", type=float, default=None, help="Sampling temperature.")
 @click.option("--max-output-tokens", type=int, default=None, help="Max output tokens.")
+@click.option(
+    "--install-runtime/--no-install-runtime",
+    default=None,
+    help="Install a recommended local runtime if no real local backend is available.",
+)
+@click.option("-y", "--yes", is_flag=True, help="Accept runtime installation prompts.")
 def run_cmd(
     prompt: Optional[str],
     model: Optional[str],
@@ -123,6 +325,8 @@ def run_cmd(
     stream: Optional[bool],
     temperature: Optional[float],
     max_output_tokens: Optional[int],
+    install_runtime: Optional[bool],
+    yes: bool,
 ) -> None:
     """Run a one-shot inference request.
 
@@ -143,22 +347,31 @@ def run_cmd(
         raise click.UsageError("Missing prompt. Pass a prompt or pipe stdin.")
 
     kernel = _kernel()
+    runtime_install_attempted = _prepare_runtime_for_local_run(kernel, model, policy, app, install_runtime, yes)
 
     # Default: stream if TTY and not JSON
     should_stream = stream if stream is not None else (_is_tty() and not output_json)
 
     if should_stream and not output_json:
-        _run_async(_stream_run(kernel, prompt, model, policy, app, temperature, max_output_tokens))
+        _run_with_runtime_install_retry(
+            lambda: _stream_run(kernel, prompt, model, policy, app, temperature, max_output_tokens),
+            install_runtime,
+            yes,
+            runtime_install_attempted,
+        )
     else:
-        result = _run_async(
-            kernel.create_response(
+        result = _run_with_runtime_install_retry(
+            lambda: kernel.create_response(
                 prompt,
                 model=model,
                 policy=policy,
                 app=app,
                 temperature=temperature,
                 max_output_tokens=max_output_tokens,
-            )
+            ),
+            install_runtime,
+            yes,
+            runtime_install_attempted,
         )
         if output_json:
             click.echo(json.dumps(_result_to_dict(result), indent=2))
