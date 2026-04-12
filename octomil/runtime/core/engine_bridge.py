@@ -41,7 +41,12 @@ def engine_registry_factory(model_id: str) -> Optional[ModelRuntime]:
         from octomil.runtime.engines import get_registry
 
         registry = get_registry()
-        engine, _ = registry.auto_select(model_id, n_tokens=0)
+        detections = registry.detect_all(model_id)
+        real_engines = [d.engine for d in detections if d.available and d.engine.name != "echo"]
+        if not real_engines:
+            return None
+
+        engine = sorted(real_engines, key=lambda e: e.priority)[0]
         backend = engine.create_backend(model_id)
         adapter = InferenceBackendAdapter(
             backend=backend,
