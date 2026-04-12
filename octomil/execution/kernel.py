@@ -277,7 +277,7 @@ class ExecutionKernel:
     Usage::
 
         kernel = ExecutionKernel()
-        result = await kernel.create_response("Hello!", model="gemma-1b")
+        result = await kernel.create_response("Hello!", model="gemma3-1b")
     """
 
     def __init__(
@@ -291,6 +291,16 @@ class ExecutionKernel:
     @property
     def config_set(self) -> LoadedConfigSet:
         return self._config_set
+
+    def resolve_chat_defaults(
+        self,
+        *,
+        model: Optional[str] = None,
+        policy: Optional[str] = None,
+        app: Optional[str] = None,
+    ) -> ResolvedExecutionDefaults:
+        """Resolve chat defaults without executing inference."""
+        return self._resolve(CAPABILITY_CHAT, model=model, policy=policy, app=app)
 
     # ------------------------------------------------------------------
     # Chat routing decision (for serve integration)
@@ -419,6 +429,54 @@ class ExecutionKernel:
                     parts=[RuntimeContentPart.text_part(prompt)],
                 ),
             ],
+            generation_config=gen_config,
+        )
+
+        collected_text = ""
+        async for chunk in router.stream(request, policy=routing_policy):
+            text = chunk.text or ""
+            collected_text += text
+            yield StreamChunk(delta=text)
+
+        yield StreamChunk(
+            delta="",
+            done=True,
+            result=ExecutionResult(
+                id=f"resp_{uuid.uuid4().hex[:12]}",
+                model=effective_model,
+                capability=CAPABILITY_CHAT,
+                locality=locality,
+                fallback_used=is_fallback,
+                output_text=collected_text,
+            ),
+        )
+
+    async def stream_chat_messages(
+        self,
+        messages: list[dict[str, str]],
+        *,
+        model: Optional[str] = None,
+        policy: Optional[str] = None,
+        app: Optional[str] = None,
+        temperature: Optional[float] = None,
+        max_output_tokens: Optional[int] = None,
+    ) -> AsyncIterator[StreamChunk]:
+        """Stream a multi-turn chat request through the shared router."""
+        defaults = self._resolve(CAPABILITY_CHAT, model=model, policy=policy, app=app)
+        effective_model = defaults.model
+        if not effective_model:
+            raise _no_model_error(CAPABILITY_CHAT)
+
+        routing_policy = _resolve_routing_policy(defaults)
+        router = await self._build_router(effective_model, CAPABILITY_CHAT, defaults)
+        locality, is_fallback = router.resolve_locality(routing_policy)
+
+        gen_config = GenerationConfig(
+            max_tokens=max_output_tokens or 2048,
+            temperature=temperature if temperature is not None else 0.7,
+        )
+        request = RuntimeRequest(
+            messages=_chat_messages_to_runtime_messages(messages),
             generation_config=gen_config,
         )
 
@@ -788,3 +846,20 @@ def _extract_usage(response: RuntimeResponse) -> dict[str, int]:
         elif "input_tokens" in usage and "output_tokens" in usage:
             usage["total_tokens"] = usage["input_tokens"] + usage["output_tokens"]
     return usage
+
+
+def _chat_messages_to_runtime_messages(messages: list[dict[str, str]]) -> list[RuntimeMessage]:
+    runtime_messages: list[RuntimeMessage] = []
+    for message in messages:
+        raw_role = message.get("role", MessageRole.USER.value)
+        try:
+            role = MessageRole(raw_role)
+        except ValueError:
+            role = MessageRole.USER
+        runtime_messages.append(
+            RuntimeMessage(
+                role=role,
+                parts=[RuntimeContentPart.text_part(message.get("content", ""))],
+            )
+        )
+    return runtime_messages

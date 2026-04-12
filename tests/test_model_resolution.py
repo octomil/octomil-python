@@ -20,6 +20,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from octomil.models.catalog import (
     CATALOG,
     MODEL_ALIASES,
+    _build_aliases,
     _resolve_alias,
     get_model,
     list_models,
@@ -282,6 +283,38 @@ class TestModelAliases:
         assert _resolve_alias("gemma-3-1b") == "gemma-1b"
         assert _resolve_alias("gemma-3-4b") == "gemma-4b"
         assert get_model("gemma-3-1b") is not None
+
+    def test_curated_aliases_follow_canonical_manifest_ids(self) -> None:
+        """New manifests use canonical gemma3/gemma4/qwen3.5 IDs."""
+        aliases = _build_aliases(
+            {
+                "gemma-3": {
+                    "variants": {
+                        "gemma3-1b": {},
+                        "gemma3-4b": {},
+                    }
+                },
+                "gemma-4": {
+                    "variants": {
+                        "gemma4-e2b": {},
+                        "gemma4-31b": {},
+                    }
+                },
+                "qwen3.5": {
+                    "variants": {
+                        "qwen3.5-0.8b": {},
+                        "qwen3.5-122b-a10b": {},
+                    }
+                },
+            }
+        )
+
+        assert aliases["gemma-1b"] == "gemma3-1b"
+        assert aliases["gemma-3-1b"] == "gemma3-1b"
+        assert aliases["gemma-4"] == "gemma4-e2b"
+        assert aliases["gemma-4-31b"] == "gemma4-31b"
+        assert aliases["qwen3.5"] == "qwen3.5-0.8b"
+        assert aliases["qwen-3.5-122b-a10b"] == "qwen3.5-122b-a10b"
 
     def test_canonical_names_pass_through(self) -> None:
         """Canonical names (already in catalog) pass through unchanged."""

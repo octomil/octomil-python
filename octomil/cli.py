@@ -3,16 +3,16 @@ Octomil command-line interface.
 
 Usage::
 
-    octomil serve gemma-1b --port 8080
-    octomil deploy gemma-1b --phone
+    octomil serve gemma3-1b --port 8080
+    octomil deploy gemma3-1b --phone
     octomil dashboard
     octomil push phi-4-mini --version 1.0.0
     octomil pull sentiment-v1 --version 1.0.0 --format coreml
     octomil check model.pt
     octomil convert model.pt --target ios,android
     octomil status sentiment-v1
-    octomil benchmark gemma-1b
-    octomil benchmark gemma-1b --local
+    octomil benchmark gemma3-1b
+    octomil benchmark gemma3-1b --local
     octomil login
     octomil init "Acme Corp" --compliance hipaa --region us
     octomil team add alice@acme.com --role admin

@@ -124,13 +124,13 @@ def deploy(
     \b
     Examples
     ─────────────────────────────────────────────
-    octomil deploy gemma-1b
+    octomil deploy gemma3-1b
     octomil deploy ollama://llama3.2
-    octomil deploy gemma-1b --fleet --rollout 10
-    octomil deploy gemma-1b --fleet --strategy progressive-1h
-    octomil deploy gemma-1b --fleet --env staging
-    octomil deploy gemma-1b --devices d1,d2
-    octomil deploy gemma-1b --group production --dry-run
+    octomil deploy gemma3-1b --fleet --rollout 10
+    octomil deploy gemma3-1b --fleet --strategy progressive-1h
+    octomil deploy gemma3-1b --fleet --env staging
+    octomil deploy gemma3-1b --devices d1,d2
+    octomil deploy gemma3-1b --group production --dry-run
     """
     cli_header(f"Deploy — {name}")
 
@@ -211,6 +211,8 @@ def deploy(
 
         canonical = _resolve_alias(name)
         model_found = name in CATALOG or canonical in CATALOG
+        if model_found:
+            name = canonical
 
         if not model_found:
             click.echo(click.style(f"  Model '{name}' not in registry — importing...", dim=True))
@@ -529,8 +531,8 @@ def rollback(name: str, to_version: Optional[str]) -> None:
 
     Examples:
 
-        octomil rollback gemma-1b
-        octomil rollback gemma-1b --to-version 1.0.0
+        octomil rollback gemma3-1b
+        octomil rollback gemma3-1b --to-version 1.0.0
     """
     client = _get_client()
     target = to_version or "previous"

@@ -290,8 +290,8 @@ def benchmark(
     MODEL accepts Ollama-style model:variant syntax:
 
     \b
-        octomil benchmark gemma-1b            # default (4bit)
-        octomil benchmark gemma-1b:8bit       # 8-bit quantization
+        octomil benchmark gemma3-1b           # default (4bit)
+        octomil benchmark gemma3-1b:8bit      # 8-bit quantization
         octomil benchmark llama-8b:fp16       # full precision
 
     Measures TTFT, TPOT, latency distribution (min/avg/median/p90/p95/p99/max),
@@ -302,12 +302,12 @@ def benchmark(
 
     Use --all-engines to compare performance across all available engines:
 
-        octomil benchmark gemma-1b --all-engines
+        octomil benchmark gemma3-1b --all-engines
 
     Example:
 
-        octomil benchmark gemma-1b --iterations 20
-        octomil benchmark gemma-1b --local
+        octomil benchmark gemma3-1b --iterations 20
+        octomil benchmark gemma3-1b --local
     """
     import platform as _platform
     import sys

@@ -219,6 +219,18 @@ class TestRunChatRepl:
         )
         mock_stream.assert_called_once()
 
+    @patch("octomil.chat.stream_chat_via_responses", side_effect=FileNotFoundError("missing cached model"))
+    def test_model_load_error_handled(self, mock_stream: MagicMock) -> None:
+        """Model load errors are caught without a traceback."""
+        input_fn = _make_input_fn(["hello", "/exit"])
+        responses = MagicMock()
+        run_chat_repl(
+            "test-model",
+            responses,
+            _input_fn=input_fn,
+        )
+        mock_stream.assert_called_once()
+
     @patch("octomil.chat.stream_chat_via_responses")
     def test_temperature_and_max_tokens_passed(self, mock_stream: MagicMock) -> None:
         """Custom temperature and max_tokens are forwarded to stream_chat_via_responses."""
@@ -260,86 +272,76 @@ class TestChatCLI:
     def test_chat_help_shows_options(self) -> None:
         runner = CliRunner()
         result = runner.invoke(main, ["chat", "--help"])
-        assert "--port" in result.output
+        assert "--select" in result.output
+        assert "--policy" in result.output
         assert "--temperature" in result.output
         assert "--max-tokens" in result.output
 
     @patch("octomil.chat.run_chat_repl")
-    @patch("octomil.agents.launcher.start_serve_background")
-    @patch("octomil.agents.launcher.is_serve_running", return_value=False)
-    @patch("octomil.agents.launcher._auto_select_model", return_value="qwen-coder-3b")
-    def test_chat_auto_selects_model(
+    def test_chat_uses_direct_local_default(
         self,
-        mock_auto: MagicMock,
-        mock_running: MagicMock,
-        mock_serve: MagicMock,
         mock_repl: MagicMock,
     ) -> None:
-        mock_proc = MagicMock()
-        mock_serve.return_value = mock_proc
         runner = CliRunner()
         result = runner.invoke(main, ["chat"])
         assert result.exit_code == 0
-        mock_auto.assert_called_once()
-        mock_serve.assert_called_once_with("qwen-coder-3b", port=8080)
-        mock_proc.terminate.assert_called_once()
+        assert "Chat — gemma3-1b" in result.output
+        assert "shared execution kernel" in result.output
+        mock_repl.assert_called_once()
+        assert mock_repl.call_args.args[0] == "gemma3-1b"
 
     @patch("octomil.chat.run_chat_repl")
-    @patch("octomil.agents.launcher.is_serve_running", return_value=True)
-    def test_chat_uses_existing_server(
+    @patch("octomil.agents.launcher._select_model_tui", return_value="llama-8b")
+    def test_chat_select_uses_picker(
         self,
-        mock_running: MagicMock,
+        mock_select: MagicMock,
+        mock_repl: MagicMock,
+    ) -> None:
+        runner = CliRunner()
+        result = runner.invoke(main, ["chat", "--select"])
+        assert result.exit_code == 0
+        mock_select.assert_called_once()
+        assert "Chat — llama-8b" in result.output
+        mock_repl.assert_called_once()
+
+    @patch("octomil.chat.run_chat_repl")
+    def test_chat_uses_explicit_model(
+        self,
         mock_repl: MagicMock,
     ) -> None:
         runner = CliRunner()
         result = runner.invoke(main, ["chat", "llama-8b"])
         assert result.exit_code == 0
-        assert "Using existing server" in result.output
+        assert "Chat — llama-8b" in result.output
+        assert mock_repl.call_args.args[0] == "llama-8b"
+
+    @patch("octomil.chat.run_chat_repl")
+    def test_chat_forwards_policy_and_app(
+        self,
+        mock_repl: MagicMock,
+    ) -> None:
+        runner = CliRunner()
+        result = runner.invoke(main, ["chat", "test-model", "--policy", "cloud_first", "--app", "demo"])
+        assert result.exit_code == 0
+        assert mock_repl.call_args.kwargs["policy"] == "cloud_first"
+        assert mock_repl.call_args.kwargs["app"] == "demo"
+
+    @patch("octomil.chat.run_chat_repl")
+    def test_chat_accepts_legacy_port_without_starting_server(
+        self,
+        mock_repl: MagicMock,
+    ) -> None:
+        runner = CliRunner()
+        result = runner.invoke(main, ["chat", "test-model", "--port", "9090"])
+        assert result.exit_code == 0
+        assert "--port is ignored" in result.output
         mock_repl.assert_called_once()
 
-    @patch("octomil.chat.run_chat_repl")
-    @patch("octomil.agents.launcher.start_serve_background")
-    @patch("octomil.agents.launcher.is_serve_running", return_value=False)
-    def test_chat_starts_server_with_explicit_model(
+    @patch("octomil.chat.run_chat_repl", side_effect=KeyboardInterrupt)
+    def test_chat_propagates_keyboard_interrupt(
         self,
-        mock_running: MagicMock,
-        mock_serve: MagicMock,
         mock_repl: MagicMock,
     ) -> None:
-        mock_serve.return_value = MagicMock()
-        runner = CliRunner()
-        result = runner.invoke(main, ["chat", "llama-8b", "--port", "9090"])
-        assert result.exit_code == 0
-        mock_serve.assert_called_once_with("llama-8b", port=9090)
-
-    @patch("octomil.chat.run_chat_repl")
-    @patch("octomil.agents.launcher.start_serve_background")
-    @patch("octomil.agents.launcher.is_serve_running", return_value=False)
-    def test_chat_terminates_server_on_exit(
-        self,
-        mock_running: MagicMock,
-        mock_serve: MagicMock,
-        mock_repl: MagicMock,
-    ) -> None:
-        mock_proc = MagicMock()
-        mock_serve.return_value = mock_proc
         runner = CliRunner()
         result = runner.invoke(main, ["chat", "test-model"])
-        assert result.exit_code == 0
-        mock_proc.terminate.assert_called_once()
-
-    @patch("octomil.chat.run_chat_repl", side_effect=KeyboardInterrupt)
-    @patch("octomil.agents.launcher.start_serve_background")
-    @patch("octomil.agents.launcher.is_serve_running", return_value=False)
-    def test_chat_terminates_server_on_keyboard_interrupt(
-        self,
-        mock_running: MagicMock,
-        mock_serve: MagicMock,
-        mock_repl: MagicMock,
-    ) -> None:
-        mock_proc = MagicMock()
-        mock_serve.return_value = mock_proc
-        runner = CliRunner()
-        runner.invoke(main, ["chat", "test-model"])
-        # KeyboardInterrupt causes non-zero exit
-        mock_proc.terminate.assert_called_once()
+        assert result.exit_code != 0

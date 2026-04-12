@@ -9,6 +9,7 @@ import pytest
 from click.testing import CliRunner
 
 from octomil.cli import main
+from octomil.errors import OctomilError, OctomilErrorCode
 from octomil.execution.kernel import ExecutionResult
 
 
@@ -25,7 +26,7 @@ def runner():
 def _mock_result(text: str = "Hello!") -> ExecutionResult:
     return ExecutionResult(
         id="resp_abc123",
-        model="gemma-1b",
+        model="gemma3-1b",
         capability="chat",
         locality="on_device",
         fallback_used=False,
@@ -63,7 +64,7 @@ class TestRunCommand:
             result = runner.invoke(main, ["run", "--json", "Hello!"])
             assert result.exit_code == 0
             data = json.loads(result.output)
-            assert data["model"] == "gemma-1b"
+            assert data["model"] == "gemma3-1b"
             assert data["locality"] == "on_device"
             assert data["output_text"] == "Hello!"
 
@@ -82,6 +83,22 @@ class TestRunCommand:
             assert result.exit_code == 0
             call_kwargs = mock_kernel.create_response.call_args
             assert call_kwargs.kwargs.get("model") == "phi-mini" or call_kwargs[1].get("model") == "phi-mini"
+
+    def test_run_model_errors_do_not_traceback(self, runner):
+        with patch("octomil.commands.inference._kernel") as mock_kf:
+            mock_kernel = AsyncMock()
+            mock_kernel.create_response = AsyncMock(
+                side_effect=OctomilError(
+                    code=OctomilErrorCode.MODEL_NOT_FOUND,
+                    message="Unknown model 'gemma-1b'. Did you mean: gemma3-1b?",
+                )
+            )
+            mock_kf.return_value = mock_kernel
+
+            result = runner.invoke(main, ["run", "--no-stream", "Hello!"])
+            assert result.exit_code != 0
+            assert "Unknown model 'gemma-1b'" in result.output
+            assert "Traceback" not in result.output
 
 
 # ---------------------------------------------------------------------------
@@ -199,10 +216,10 @@ class TestResponsesCreate:
             mock_kernel.create_response = AsyncMock(return_value=_mock_result())
             mock_kf.return_value = mock_kernel
 
-            result = runner.invoke(main, ["responses", "create", "--model", "gemma-1b", "--input", "Hello!"])
+            result = runner.invoke(main, ["responses", "create", "--model", "gemma3-1b", "--input", "Hello!"])
             assert result.exit_code == 0
             data = json.loads(result.output)
-            assert data["model"] == "gemma-1b"
+            assert data["model"] == "gemma3-1b"
 
 
 class TestEmbeddingsCreate:

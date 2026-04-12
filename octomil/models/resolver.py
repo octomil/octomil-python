@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import difflib
 import logging
+import re
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
@@ -31,13 +32,14 @@ from .catalog import (
     MoEMetadata,
     ResourceBindingSpec,
     _build_resource_bindings,
+    _canonical_quant,
     _parse_hf_uri,
     _parse_modalities,
     _resolve_alias,
     resolve_ollama_tag,
 )
 from .catalog_client import CatalogClientV2
-from .parser import normalize_variant, parse
+from .parser import QUANT_ALIASES, normalize_variant, parse
 
 logger = logging.getLogger(__name__)
 
@@ -209,6 +211,28 @@ def _find_manifest_model(manifest: dict, family: str, model_id: str | None = Non
     return None
 
 
+def _variant_looks_like_model_size(variant: str | None) -> bool:
+    """Return True when ``model:variant`` is an Ollama-style size tag."""
+    if not variant:
+        return False
+    return variant.lower() not in QUANT_ALIASES
+
+
+def _model_size_candidates(family: str, variant: str) -> list[str]:
+    """Build likely catalog IDs for Ollama-style ``family:size`` tags."""
+    family_lower = family.lower()
+    variant_lower = variant.lower()
+    candidates = [f"{family_lower}-{variant_lower}"]
+
+    # Ollama omits the hyphen between vendor family and major version:
+    # ``gemma3:1b`` -> ``gemma-3-1b``, ``llama3.1:8b`` -> ``llama-3.1-8b``.
+    hyphenated_family = re.sub(r"^([a-z]+)(\d)", r"\1-\2", family_lower)
+    if hyphenated_family != family_lower:
+        candidates.append(f"{hyphenated_family}-{variant_lower}")
+
+    return list(dict.fromkeys(candidates))
+
+
 def _select_package(
     packages: list[dict],
     quant: str,
@@ -226,13 +250,13 @@ def _select_package(
     The ``quant`` parameter should already be in raw manifest form
     (e.g. ``q4_k_m``) or canonical form (e.g. ``4bit``).
     """
-    quant_lower = quant.lower()
+    quant_lower = str(quant or "").lower()
     # Also get the canonical form for matching
     quant_canonical = _QUANT_TO_CANONICAL.get(quant_lower, quant_lower)
 
     def _quant_matches(pkg: dict) -> bool:
-        pkg_quant = pkg.get("quantization", "").lower()
-        pkg_canonical = _QUANT_TO_CANONICAL.get(pkg_quant, pkg_quant)
+        pkg_quant = str(pkg.get("quantization") or "").lower()
+        pkg_canonical = _canonical_quant(pkg_quant)
         return pkg_quant == quant_lower or pkg_canonical == quant_canonical
 
     def _engine_matches(pkg: dict, target_engine: str) -> bool:
@@ -303,11 +327,33 @@ def _resolve_from_manifest(
     if not manifest:
         return None
 
-    # Resolve alias first
+    # Resolve alias first. For Ollama-style tags like ``gemma3:1b`` or
+    # ``qwen2.5:3b``, the portion after ":" is a model size, not a quant.
     canonical = _resolve_alias(parsed_family)
+    ollama_resolved_quant: str | None = None
+    size_variant_model_match = False
+    if _variant_looks_like_model_size(parsed_variant):
+        ollama_match = resolve_ollama_tag(name)
+        if ollama_match is not None:
+            canonical, ollama_resolved_quant = ollama_match
 
     # Find model in manifest
-    manifest_model = _find_manifest_model(manifest, canonical, model_id=canonical)
+    manifest_model = None
+    if _variant_looks_like_model_size(parsed_variant) and ollama_resolved_quant is None:
+        size_candidates = _model_size_candidates(parsed_family, parsed_variant or "")
+        for candidate in size_candidates:
+            candidate_canonical = _resolve_alias(candidate)
+            manifest_model = _find_manifest_model(
+                manifest,
+                candidate_canonical,
+                model_id=candidate_canonical,
+            )
+            if manifest_model is not None:
+                size_variant_model_match = True
+                break
+
+    if manifest_model is None:
+        manifest_model = _find_manifest_model(manifest, canonical, model_id=canonical)
     if manifest_model is None:
         # Try with the original (un-aliased) family name
         manifest_model = _find_manifest_model(manifest, parsed_family, model_id=parsed_family)
@@ -317,10 +363,14 @@ def _resolve_from_manifest(
 
     # Determine quant
     default_quant_raw = manifest_model.get("default_quantization", "4bit")
-    if parsed_variant is not None:
+    if ollama_resolved_quant is not None:
+        quant = ollama_resolved_quant
+    elif size_variant_model_match:
+        quant = _canonical_quant(default_quant_raw)
+    elif parsed_variant is not None:
         quant = normalize_variant(parsed_variant)
     else:
-        quant = _QUANT_TO_CANONICAL.get(default_quant_raw, default_quant_raw)
+        quant = _canonical_quant(default_quant_raw)
 
     # Select best package
     packages = manifest_model.get("packages", [])
@@ -392,8 +442,8 @@ def _resolve_from_manifest(
             resolved_filename = path
 
     model_id = manifest_model.get("id", canonical)
-    pkg_quant_raw = selected.get("quantization", default_quant_raw)
-    resolved_quant = _QUANT_TO_CANONICAL.get(pkg_quant_raw, pkg_quant_raw)
+    pkg_quant_raw = selected.get("quantization") or default_quant_raw
+    resolved_quant = _canonical_quant(pkg_quant_raw)
 
     # Extract modalities and engine_config from selected package
     pkg_input_modalities = _parse_modalities(selected.get("input_modalities"))
@@ -452,6 +502,8 @@ def _pick_engine(
         if engine_name == "mlc-llm" and (variant.mlc or variant.source_repo):
             return engine_name
         if engine_name == "llama.cpp" and variant.gguf:
+            return engine_name
+        if engine_name == "whisper.cpp" and (variant.gguf or variant.source_repo):
             return engine_name
         if engine_name in ("mnn", "executorch") and (variant.gguf or variant.source_repo):
             return engine_name
@@ -530,7 +582,20 @@ def resolve(
 
     # --- CATALOG lookup (hydrated from the same v2 manifest) ---
     canonical = _resolve_alias(parsed.family)
-    entry = CATALOG.get(canonical)
+    entry = None
+    catalog_size_model_match = False
+    if _variant_looks_like_model_size(parsed.variant):
+        for candidate in _model_size_candidates(parsed.family, parsed.variant or ""):
+            candidate_canonical = _resolve_alias(candidate)
+            candidate_entry = CATALOG.get(candidate_canonical)
+            if candidate_entry is not None:
+                canonical = candidate_canonical
+                entry = candidate_entry
+                catalog_size_model_match = True
+                break
+
+    if entry is None:
+        entry = CATALOG.get(canonical)
 
     # Try reverse Ollama tag lookup.
     # e.g. "qwen2.5:3b" -> catalog entry "qwen-3b" at quant "4bit"
@@ -545,13 +610,17 @@ def resolve(
     if entry is None:
         suggestions = _suggest_models(parsed.family)
         hint = f" Did you mean: {', '.join(suggestions)}?" if suggestions else ""
+        available_count = len(CATALOG)
         raise ModelResolutionError(
-            f"Unknown model '{parsed.family}'. Available: {', '.join(sorted(CATALOG.keys()))}.{hint}"
+            f"Unknown model '{parsed.family}'.{hint} "
+            f"Run `octomil models list` to browse {available_count} available models."
         )
 
     # Determine quant level
     if ollama_resolved_quant is not None:
         quant = ollama_resolved_quant
+    elif catalog_size_model_match:
+        quant = entry.default_quant
     elif parsed.variant is not None:
         quant = normalize_variant(parsed.variant)
     else:
@@ -594,13 +663,20 @@ def resolve(
         hf_repo = variant.mlx
     elif resolved_engine == "mlc-llm" and variant.mlc:
         hf_repo = variant.mlc
-    elif resolved_engine == "llama.cpp" and variant.gguf:
+    elif resolved_engine in ("llama.cpp", "whisper.cpp") and variant.gguf:
         hf_repo = variant.gguf.repo
         filename = variant.gguf.filename
     elif resolved_engine == "onnxruntime" and variant.ort:
         hf_repo = variant.ort
+    elif resolved_engine in ("onnxruntime", "mlc-llm", "whisper.cpp") and variant.source_repo:
+        hf_repo = variant.source_repo
     elif resolved_engine == "ollama" and variant.ollama:
         hf_repo = variant.ollama
+    elif resolved_engine in ("mnn", "executorch", "cactus") and variant.source_repo:
+        hf_repo = variant.source_repo
+    elif resolved_engine in ("mnn", "executorch", "cactus") and variant.gguf:
+        hf_repo = variant.gguf.repo
+        filename = variant.gguf.filename
     elif resolved_engine == "cloud":
         return ResolvedModel(
             family=canonical,
@@ -613,6 +689,12 @@ def resolve(
             capabilities=entry.capabilities,
             engine_config=entry.engine_config,
             resource_bindings=entry.resource_bindings,
+        )
+    elif resolved_engine in _ENGINE_TO_EXECUTORS:
+        raise ModelResolutionError(
+            f"No artifact found for '{canonical}:{quant}' "
+            f"on engine '{resolved_engine}'. "
+            f"Try a different engine or pass a full HuggingFace repo ID."
         )
     elif variant.gguf:
         hf_repo = variant.gguf.repo

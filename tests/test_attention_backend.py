@@ -60,6 +60,48 @@ class TestInferenceBackendAttentionBackend:
         assert echo.attention_backend == "standard"
 
 
+class TestMLXCachedLoading:
+    @patch("octomil.serve.backends.mlx._cached_snapshot_path", return_value=None)
+    def test_load_uses_repo_when_not_cached(self, mock_cache):
+        from octomil.serve.backends.mlx import _load_mlx_model
+
+        mlx_lm = MagicMock()
+        mlx_lm.load.return_value = ("model", "tokenizer")
+
+        result = _load_mlx_model(mlx_lm, "org/model")
+
+        assert result == ("model", "tokenizer")
+        mock_cache.assert_called_once_with("org/model")
+        mlx_lm.load.assert_called_once_with("org/model")
+
+    @patch("octomil.serve.backends.mlx._cached_snapshot_path", return_value="/cache/snapshots/model")
+    def test_load_prefers_cached_snapshot(self, mock_cache):
+        from octomil.serve.backends.mlx import _load_mlx_model
+
+        mlx_lm = MagicMock()
+        mlx_lm.load.return_value = ("model", "tokenizer")
+
+        result = _load_mlx_model(mlx_lm, "org/model")
+
+        assert result == ("model", "tokenizer")
+        mock_cache.assert_called_once_with("org/model")
+        mlx_lm.load.assert_called_once_with("/cache/snapshots/model")
+
+    @patch("octomil.serve.backends.mlx._cached_snapshot_path", return_value="/cache/snapshots/incomplete")
+    def test_load_repairs_incomplete_cached_snapshot(self, mock_cache):
+        from octomil.serve.backends.mlx import _load_mlx_model
+
+        mlx_lm = MagicMock()
+        mlx_lm.load.side_effect = [FileNotFoundError("missing config"), ("model", "tokenizer")]
+
+        result = _load_mlx_model(mlx_lm, "org/model")
+
+        assert result == ("model", "tokenizer")
+        mock_cache.assert_called_once_with("org/model")
+        assert mlx_lm.load.call_args_list[0].args == ("/cache/snapshots/incomplete",)
+        assert mlx_lm.load.call_args_list[1].args == ("org/model",)
+
+
 # ---------------------------------------------------------------------------
 # LlamaCppBackend — flash_attn=True in Llama() constructor
 # ---------------------------------------------------------------------------
@@ -78,9 +120,9 @@ class TestLlamaCppFlashAttn:
 
         mock_llama_cls.assert_called_once()
         call_kwargs = mock_llama_cls.call_args
-        assert call_kwargs.kwargs.get("flash_attn") is True, (
-            "Llama() constructor must receive flash_attn=True for local .gguf files"
-        )
+        assert (
+            call_kwargs.kwargs.get("flash_attn") is True
+        ), "Llama() constructor must receive flash_attn=True for local .gguf files"
         assert call_kwargs.kwargs.get("model_path") == "model.gguf"
 
     def test_load_model_hf_repo_passes_flash_attn(self):
@@ -96,9 +138,9 @@ class TestLlamaCppFlashAttn:
 
         mock_from_pretrained.assert_called_once()
         call_kwargs = mock_from_pretrained.call_args
-        assert call_kwargs.kwargs.get("flash_attn") is True, (
-            "Llama.from_pretrained() must receive flash_attn=True for HF repo IDs"
-        )
+        assert (
+            call_kwargs.kwargs.get("flash_attn") is True
+        ), "Llama.from_pretrained() must receive flash_attn=True for HF repo IDs"
         assert call_kwargs.kwargs.get("repo_id") == "user/some-model"
 
     def test_load_model_resolved_gguf_passes_flash_attn(self):
@@ -115,16 +157,16 @@ class TestLlamaCppFlashAttn:
         mock_llama_module = MagicMock(Llama=mock_llama_cls, LlamaCache=MagicMock())
         with (
             patch.dict("sys.modules", {"llama_cpp": mock_llama_module}),
-            patch("octomil.serve._resolve_new", return_value=mock_resolved),
+            patch("octomil.serve.backends.llamacpp._resolve_new", return_value=mock_resolved),
         ):
             backend = LlamaCppBackend(cache_enabled=False)
             backend.load_model("short-name")
 
         mock_from_pretrained.assert_called_once()
         call_kwargs = mock_from_pretrained.call_args
-        assert call_kwargs.kwargs.get("flash_attn") is True, (
-            "Llama.from_pretrained() must receive flash_attn=True for resolver-resolved models"
-        )
+        assert (
+            call_kwargs.kwargs.get("flash_attn") is True
+        ), "Llama.from_pretrained() must receive flash_attn=True for resolver-resolved models"
 
     def test_load_model_legacy_catalog_passes_flash_attn(self):
         """Llama.from_pretrained() should receive flash_attn=True for legacy catalog models."""
@@ -136,21 +178,21 @@ class TestLlamaCppFlashAttn:
         with (
             patch.dict("sys.modules", {"llama_cpp": mock_llama_module}),
             patch(
-                "octomil.serve._resolve_new",
+                "octomil.serve.backends.llamacpp._resolve_new",
                 side_effect=__import__(
                     "octomil.models.resolver", fromlist=["ModelResolutionError"]
                 ).ModelResolutionError("not found"),
             ),
-            patch("octomil.serve._GGUF_MODELS", {"test-model": ("org/repo", "file.gguf")}),
+            patch("octomil.serve.backends.llamacpp._GGUF_MODELS", {"test-model": ("org/repo", "file.gguf")}),
         ):
             backend = LlamaCppBackend(cache_enabled=False)
             backend.load_model("test-model")
 
         mock_from_pretrained.assert_called_once()
         call_kwargs = mock_from_pretrained.call_args
-        assert call_kwargs.kwargs.get("flash_attn") is True, (
-            "Llama.from_pretrained() must receive flash_attn=True for legacy catalog models"
-        )
+        assert (
+            call_kwargs.kwargs.get("flash_attn") is True
+        ), "Llama.from_pretrained() must receive flash_attn=True for legacy catalog models"
 
 
 # ---------------------------------------------------------------------------

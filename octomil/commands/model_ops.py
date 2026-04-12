@@ -130,7 +130,7 @@ def push(
     if not hf_repo:
         click.echo(f"Error: unknown model '{model_name}'", err=True)
         click.echo(
-            "  Use a known model name (phi-4-mini, gemma-4b, llama-8b, ...)\n  or a HuggingFace repo: hf:org/model",
+            "  Use a known model name (phi-4-mini, gemma3-4b, llama-8b, ...)\n  or a HuggingFace repo: hf:org/model",
             err=True,
         )
         sys.exit(1)
@@ -216,8 +216,8 @@ def pull(name: str, version: Optional[str], fmt: Optional[str], output: str) -> 
     NAME accepts Ollama-style model:variant syntax:
 
     \b
-        octomil pull gemma-1b                  # auto-picks best quant for your hw
-        octomil pull gemma-1b:8bit             # 8-bit quantization (explicit)
+        octomil pull gemma3-1b                 # auto-picks best quant for your hw
+        octomil pull gemma3-1b:8bit            # 8-bit quantization (explicit)
         octomil pull sentiment-v1 --version 1.0.0 --format coreml
     """
     if not _has_explicit_quant(name):
@@ -500,12 +500,12 @@ def list_models_cmd(model_family: Optional[str]) -> None:
     \b
     Examples:
         octomil list
-        octomil list gemma-4b
+        octomil list gemma3-4b
         octomil list llama-8b
 
     \b
     Use model:variant syntax with serve/benchmark/pull:
-        octomil serve gemma-4b:8bit
+        octomil serve gemma3-4b:8bit
         octomil benchmark llama-8b:fp16
     """
     from octomil.models.catalog import CATALOG, get_model
@@ -667,7 +667,7 @@ def models(search: Optional[str], show_all: bool, limit: int) -> None:
         octomil models --all
     \b
     Run a model:
-        octomil serve gemma-1b
+        octomil serve gemma3-1b
         octomil serve qwen-3b:8bit
     """
     from octomil.models.catalog import CATALOG

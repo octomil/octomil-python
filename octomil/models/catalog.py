@@ -117,14 +117,23 @@ _QUANT_TO_CANONICAL: dict[str, str] = {
     "q4_k_m": "4bit",
     "q4_k_s": "4bit",
     "q4_0": "4bit",
+    "q4": "4bit",
     "4bit": "4bit",
     "q8_0": "8bit",
     "q8_1": "8bit",
+    "q8": "8bit",
     "8bit": "8bit",
     "fp16": "fp16",
     "f16": "fp16",
     "float16": "fp16",
 }
+
+
+def _canonical_quant(value: str) -> str:
+    """Normalize manifest quantization labels regardless of casing."""
+    value_lower = str(value or "").lower()
+    return _QUANT_TO_CANONICAL.get(value_lower, value_lower)
+
 
 # Maps v2 runtime_executor names to the canonical engine names
 # used by the resolver and engine registry.
@@ -153,12 +162,14 @@ _FAMILY_TO_PUBLISHER: dict[str, str] = {
     "gemma": "Google",
     "gemma-2": "Google",
     "gemma-3": "Google",
+    "gemma-4": "Google",
     "codegemma": "Google",
     "qwen": "Alibaba",
     "qwen2": "Alibaba",
     "qwen2.5": "Alibaba",
     "qwen2.5-coder": "Alibaba",
     "qwen3": "Alibaba",
+    "qwen3.5": "Alibaba",
     "qwen2-vl": "Alibaba",
     "llama": "Meta",
     "llama-2": "Meta",
@@ -396,7 +407,7 @@ def _manifest_model_to_entry(model: dict) -> tuple[str, ModelEntry]:
     default_quant_raw: str = model.get("default_quantization", "4bit")
 
     # Map the default quant to canonical form
-    default_quant = _QUANT_TO_CANONICAL.get(default_quant_raw, default_quant_raw)
+    default_quant = _canonical_quant(default_quant_raw)
 
     # Determine publisher: prefer manifest vendor, fall back to family map
     publisher = model.get("vendor") or _FAMILY_TO_PUBLISHER.get(family, "Unknown")
@@ -418,7 +429,7 @@ def _manifest_model_to_entry(model: dict) -> tuple[str, ModelEntry]:
     quant_packages: dict[str, list[dict]] = {}
     for pkg in packages:
         pkg_quant_raw = pkg.get("quantization", default_quant_raw)
-        pkg_quant = _QUANT_TO_CANONICAL.get(pkg_quant_raw, pkg_quant_raw)
+        pkg_quant = _canonical_quant(pkg_quant_raw)
         quant_packages.setdefault(pkg_quant, []).append(pkg)
 
         # Collect engine names
@@ -562,6 +573,7 @@ def _build_aliases(manifest: dict) -> dict[str, str]:
     """
     aliases: dict[str, str] = {}
     family_models: dict[str, list[str]] = {}
+    variants_by_lower: dict[str, str] = {}
 
     for family_name, family_data in manifest.items():
         if not isinstance(family_data, dict) or "variants" not in family_data:
@@ -572,6 +584,7 @@ def _build_aliases(manifest: dict) -> dict[str, str]:
 
             # Name-based aliases (lowercase, normalized)
             name_lower = variant_name.lower()
+            variants_by_lower[name_lower] = variant_name
             name_hyphen = re.sub(r"\s+", "-", name_lower)
             if name_hyphen != variant_name:
                 aliases[name_hyphen] = variant_name
@@ -584,7 +597,59 @@ def _build_aliases(manifest: dict) -> dict[str, str]:
         if len(variant_ids) == 1:
             aliases[family] = variant_ids[0]
 
+    _add_curated_aliases(aliases, variants_by_lower)
+
     return aliases
+
+
+_CURATED_MODEL_ALIASES: dict[str, str] = {
+    # Gemma 3 was cut over to canonical gemma3-* model IDs. Keep the old
+    # public spellings as aliases, but never use them as SDK defaults.
+    "gemma-1b": "gemma3-1b",
+    "gemma-4b": "gemma3-4b",
+    "gemma-12b": "gemma3-12b",
+    "gemma-27b": "gemma3-27b",
+    "gemma-3-1b": "gemma3-1b",
+    "gemma-3-4b": "gemma3-4b",
+    "gemma-3-12b": "gemma3-12b",
+    "gemma-3-27b": "gemma3-27b",
+    "gemma-3b": "gemma3-4b",
+    # Gemma 4 follows the same no-hyphen family spelling in variant IDs.
+    "gemma4": "gemma4-e2b",
+    "gemma-4": "gemma4-e2b",
+    "gemma-4-e2b": "gemma4-e2b",
+    "gemma-4-e4b": "gemma4-e4b",
+    "gemma-4-26b-a4b": "gemma4-26b-a4b",
+    "gemma-4-31b": "gemma4-31b",
+    # Qwen 3.5 canonical IDs use qwen3.5-*; accept the hyphenated spelling.
+    "qwen-3.5": "qwen3.5-0.8b",
+    "qwen3.5": "qwen3.5-0.8b",
+    "qwen-3.5-0.8b": "qwen3.5-0.8b",
+    "qwen-3.5-2b": "qwen3.5-2b",
+    "qwen-3.5-4b": "qwen3.5-4b",
+    "qwen-3.5-9b": "qwen3.5-9b",
+    "qwen-3.5-27b": "qwen3.5-27b",
+    "qwen-3.5-35b-a3b": "qwen3.5-35b-a3b",
+    "qwen-3.5-122b-a10b": "qwen3.5-122b-a10b",
+    "qwen-3.5-397b-a17b": "qwen3.5-397b-a17b",
+}
+
+
+def _add_curated_aliases(aliases: dict[str, str], variants_by_lower: dict[str, str]) -> None:
+    """Add product-level aliases only when their canonical targets exist.
+
+    The manifest stays the source of truth. This helper is intentionally
+    conservative: aliases never invent models, and never replace an exact
+    variant ID already present in the catalog.
+    """
+    for alias, target in _CURATED_MODEL_ALIASES.items():
+        alias_lower = alias.lower()
+        target_variant = variants_by_lower.get(target.lower())
+        if target_variant is None:
+            continue
+        if alias_lower in variants_by_lower:
+            continue
+        aliases.setdefault(alias_lower, target_variant)
 
 
 # ---------------------------------------------------------------------------
@@ -716,7 +781,7 @@ def resolve_ollama_tag(tag: str) -> Optional[tuple[str, str]]:
     Examples::
 
         resolve_ollama_tag("qwen2.5:3b")  -> ("qwen-3b", "4bit")
-        resolve_ollama_tag("gemma3:1b")   -> ("gemma-1b", "4bit")
+        resolve_ollama_tag("gemma3:1b")   -> ("gemma3-1b", "4bit")
     """
     tag_lower = tag.lower()
     for family, entry in CATALOG.items():

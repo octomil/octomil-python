@@ -194,7 +194,7 @@ class TestResolutionPrecedence:
             RequestOverrides(),
             config_set,
         )
-        assert result.model == "gemma-1b"
+        assert result.model == "gemma3-1b"
         assert result.source == "builtin"
 
     def test_builtin_embedding_default(self):
