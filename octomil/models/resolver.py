@@ -250,13 +250,13 @@ def _select_package(
     The ``quant`` parameter should already be in raw manifest form
     (e.g. ``q4_k_m``) or canonical form (e.g. ``4bit``).
     """
-    quant_lower = quant.lower()
+    quant_lower = str(quant or "").lower()
     # Also get the canonical form for matching
     quant_canonical = _QUANT_TO_CANONICAL.get(quant_lower, quant_lower)
 
     def _quant_matches(pkg: dict) -> bool:
-        pkg_quant = pkg.get("quantization", "").lower()
-        pkg_canonical = _QUANT_TO_CANONICAL.get(pkg_quant, pkg_quant)
+        pkg_quant = str(pkg.get("quantization") or "").lower()
+        pkg_canonical = _canonical_quant(pkg_quant)
         return pkg_quant == quant_lower or pkg_canonical == quant_canonical
 
     def _engine_matches(pkg: dict, target_engine: str) -> bool:
@@ -442,7 +442,7 @@ def _resolve_from_manifest(
             resolved_filename = path
 
     model_id = manifest_model.get("id", canonical)
-    pkg_quant_raw = selected.get("quantization", default_quant_raw)
+    pkg_quant_raw = selected.get("quantization") or default_quant_raw
     resolved_quant = _canonical_quant(pkg_quant_raw)
 
     # Extract modalities and engine_config from selected package
@@ -502,6 +502,8 @@ def _pick_engine(
         if engine_name == "mlc-llm" and (variant.mlc or variant.source_repo):
             return engine_name
         if engine_name == "llama.cpp" and variant.gguf:
+            return engine_name
+        if engine_name == "whisper.cpp" and (variant.gguf or variant.source_repo):
             return engine_name
         if engine_name in ("mnn", "executorch") and (variant.gguf or variant.source_repo):
             return engine_name
@@ -661,11 +663,13 @@ def resolve(
         hf_repo = variant.mlx
     elif resolved_engine == "mlc-llm" and variant.mlc:
         hf_repo = variant.mlc
-    elif resolved_engine == "llama.cpp" and variant.gguf:
+    elif resolved_engine in ("llama.cpp", "whisper.cpp") and variant.gguf:
         hf_repo = variant.gguf.repo
         filename = variant.gguf.filename
     elif resolved_engine == "onnxruntime" and variant.ort:
         hf_repo = variant.ort
+    elif resolved_engine in ("onnxruntime", "mlc-llm", "whisper.cpp") and variant.source_repo:
+        hf_repo = variant.source_repo
     elif resolved_engine == "ollama" and variant.ollama:
         hf_repo = variant.ollama
     elif resolved_engine in ("mnn", "executorch", "cactus") and variant.source_repo:
