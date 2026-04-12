@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import MagicMock, patch
 
@@ -361,6 +362,17 @@ class TestEchoEngine:
     def test_lowest_priority(self):
         e = EchoEngine()
         assert e.priority == 999
+
+    def test_echo_is_not_direct_local_runtime(self):
+        from octomil.runtime.core import engine_bridge
+
+        echo = EchoEngine()
+        registry = MagicMock()
+        registry.detect_all.return_value = [SimpleNamespace(engine=echo, available=True)]
+
+        engine_bridge._runtime_cache.clear()
+        with patch("octomil.runtime.engines.get_registry", return_value=registry):
+            assert engine_bridge.engine_registry_factory("gemma3-1b") is None
 
 
 # ---------------------------------------------------------------------------

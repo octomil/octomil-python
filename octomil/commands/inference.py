@@ -21,6 +21,13 @@ import click
 # Helpers
 # ---------------------------------------------------------------------------
 
+_LOCAL_RUNTIME_HINT = (
+    "Install a local runtime for on-device execution:\n"
+    "  pip install 'octomil[mlx]'      # Apple Silicon\n"
+    "  pip install 'octomil[llama]'    # Cross-platform\n"
+    "Or set OCTOMIL_SERVER_KEY to allow hosted cloud fallback."
+)
+
 
 def _run_async(coro):
     """Run an async coroutine synchronously for Click commands."""
@@ -47,7 +54,34 @@ def _raise_click_exception(exc: Exception) -> None:
 
     if isinstance(exc, (OctomilError, ModelResolutionError)):
         raise click.ClickException(str(exc)) from exc
+    if isinstance(exc, RuntimeError) and _is_runtime_unavailable_error(str(exc)):
+        raise click.ClickException(f"No inference backend available.\n\n{_LOCAL_RUNTIME_HINT}") from exc
     raise exc
+
+
+def _is_runtime_unavailable_error(message: str) -> bool:
+    return (
+        message
+        in {
+            "No runtime available",
+            "No local runtime available",
+            "No local or cloud backend available for chat.",
+        }
+        or "no local runtime is available" in message.lower()
+    )
+
+
+def _warn_if_cloud_execution(result) -> None:
+    if result.locality != "cloud":
+        return
+    if result.fallback_used:
+        click.echo(
+            "Using hosted cloud fallback because no local inference backend was available. "
+            "Install a local runtime with `pip install 'octomil[mlx]'` or `pip install 'octomil[llama]'` for on-device execution.",
+            err=True,
+        )
+    else:
+        click.echo("Running on hosted cloud per routing policy.", err=True)
 
 
 def _is_tty() -> bool:
@@ -129,10 +163,12 @@ def run_cmd(
         if output_json:
             click.echo(json.dumps(_result_to_dict(result), indent=2))
         else:
+            _warn_if_cloud_execution(result)
             click.echo(result.output_text)
 
 
 async def _stream_run(kernel, prompt, model, policy, app, temperature, max_output_tokens):
+    final_result = None
     async for chunk in kernel.stream_response(
         prompt,
         model=model,
@@ -143,7 +179,11 @@ async def _stream_run(kernel, prompt, model, policy, app, temperature, max_outpu
     ):
         if chunk.delta:
             click.echo(chunk.delta, nl=False)
+        if chunk.done and chunk.result is not None:
+            final_result = chunk.result
     click.echo()  # trailing newline
+    if final_result is not None:
+        _warn_if_cloud_execution(final_result)
 
 
 # ---------------------------------------------------------------------------

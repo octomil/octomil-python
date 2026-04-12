@@ -35,6 +35,13 @@ def _mock_result(text: str = "Hello!") -> ExecutionResult:
     )
 
 
+def _mock_cloud_fallback_result(text: str = "Hello from cloud!") -> ExecutionResult:
+    result = _mock_result(text)
+    result.locality = "cloud"
+    result.fallback_used = True
+    return result
+
+
 class TestRunCommand:
     def test_run_with_prompt(self, runner):
         with patch("octomil.commands.inference._kernel") as mock_kf:
@@ -99,6 +106,29 @@ class TestRunCommand:
             assert result.exit_code != 0
             assert "Unknown model 'gemma-1b'" in result.output
             assert "Traceback" not in result.output
+
+    def test_run_runtime_errors_do_not_traceback(self, runner):
+        with patch("octomil.commands.inference._kernel") as mock_kf:
+            mock_kernel = AsyncMock()
+            mock_kernel.create_response = AsyncMock(side_effect=RuntimeError("No runtime available"))
+            mock_kf.return_value = mock_kernel
+
+            result = runner.invoke(main, ["run", "--no-stream", "Hello!"])
+            assert result.exit_code != 0
+            assert "No inference backend available" in result.output
+            assert "pip install 'octomil[mlx]'" in result.output
+            assert "Traceback" not in result.output
+
+    def test_run_warns_when_using_cloud_fallback(self, runner):
+        with patch("octomil.commands.inference._kernel") as mock_kf:
+            mock_kernel = AsyncMock()
+            mock_kernel.create_response = AsyncMock(return_value=_mock_cloud_fallback_result())
+            mock_kf.return_value = mock_kernel
+
+            result = runner.invoke(main, ["run", "--no-stream", "Hello!"])
+            assert result.exit_code == 0
+            assert "Hello from cloud!" in result.output
+            assert "Using hosted cloud fallback" in result.output
 
 
 # ---------------------------------------------------------------------------
