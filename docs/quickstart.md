@@ -103,7 +103,7 @@ print()
 Use the Octomil cloud API for inference without running anything locally.
 
 ```bash
-export OCTOMIL_SERVER_KEY="YOUR_SERVER_KEY"
+export OCTOMIL_SERVER_KEY=YOUR_SERVER_KEY
 
 curl https://api.octomil.com/v1/responses \
   -H "Authorization: Bearer $OCTOMIL_SERVER_KEY" \
@@ -113,12 +113,17 @@ curl https://api.octomil.com/v1/responses \
 
 Or via the Python SDK:
 
+```bash
+export OCTOMIL_SERVER_KEY=YOUR_SERVER_KEY
+export OCTOMIL_ORG_ID=YOUR_ORG_ID
+```
+
 ```python
 import asyncio
 from octomil import Octomil
 
 async def main():
-    client = Octomil(api_key="YOUR_SERVER_KEY", org_id="org_...")
+    client = Octomil.from_env()
     await client.initialize()
     response = await client.responses.create(model="phi-4-mini", input="Hello")
     print(response.output_text)
