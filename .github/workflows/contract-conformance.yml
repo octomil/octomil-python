@@ -1,0 +1,21 @@
+name: Contract Conformance
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  conformance:
+    uses: octomil/octomil-contracts/.github/workflows/sdk-conformance.yml@v1.16.0
+    with:
+      sdk: python
+      contract-version: "1.16.0"
+      setup-command: "python -m pip install --upgrade pip && pip install -e '.[test]'"
+      codegen-command: "python3 .contract/scripts/sync_generated.py --sdk python --check --target-dir octomil/_generated"
+      test-command: "pytest tests/conformance -q --no-cov && python3 .contract/ci/audit-sdks.py --sdk python --sdk-path . --out parity_report.json"
+      parity-report-path: parity_report.json
+      parity-score-floor: 60
