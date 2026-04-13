@@ -11,11 +11,21 @@ All commands use the shared execution kernel.
 from __future__ import annotations
 
 import asyncio
+import importlib
+import inspect
 import json
+import logging
+import os
+import platform
+import shutil
+import subprocess
 import sys
+from dataclasses import dataclass
 from typing import Optional
 
 import click
+
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -25,8 +35,17 @@ _LOCAL_RUNTIME_HINT = (
     "Install a local runtime for on-device execution:\n"
     "  pip install 'octomil[mlx]'      # Apple Silicon\n"
     "  pip install 'octomil[llama]'    # Cross-platform\n"
-    "Or set OCTOMIL_SERVER_KEY to allow hosted cloud fallback."
+    "Or rerun with --install-runtime to let Octomil install the recommended runtime into this Python environment.\n"
+    "Set OCTOMIL_SERVER_KEY to allow hosted cloud fallback."
 )
+
+
+@dataclass(frozen=True)
+class RuntimeInstallCandidate:
+    engine_name: str
+    requirement: str
+    extra_name: str
+    description: str
 
 
 def _run_async(coro):
@@ -71,6 +90,250 @@ def _is_runtime_unavailable_error(message: str) -> bool:
     )
 
 
+def _is_runtime_unavailable_click_exception(exc: click.ClickException) -> bool:
+    return "No inference backend available" in exc.message
+
+
+def _recommended_runtime_install() -> RuntimeInstallCandidate:
+    machine = platform.machine().lower()
+    if sys.platform == "darwin" and machine in {"arm64", "aarch64"}:
+        return RuntimeInstallCandidate(
+            engine_name="mlx-lm",
+            requirement="mlx-lm>=0.10.0",
+            extra_name="mlx",
+            description="Apple Silicon GPU inference",
+        )
+    return RuntimeInstallCandidate(
+        engine_name="llama.cpp",
+        requirement="llama-cpp-python>=0.2.0",
+        extra_name="llama",
+        description="cross-platform local GGUF inference",
+    )
+
+
+def _truthy_env(value: Optional[str]) -> bool:
+    return (value or "").strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
+def _falsey_env(value: Optional[str]) -> bool:
+    return (value or "").strip().lower() in {"0", "false", "no", "n", "off"}
+
+
+def _can_prompt_runtime_install() -> bool:
+    return bool(getattr(sys.stdin, "isatty", lambda: False)())
+
+
+def _should_install_runtime(
+    auto_install_runtime: Optional[bool], assume_yes: bool, candidate: RuntimeInstallCandidate
+) -> bool:
+    if auto_install_runtime is False:
+        return False
+    if auto_install_runtime is True or assume_yes or _truthy_env(os.environ.get("OCTOMIL_AUTO_INSTALL_RUNTIME")):
+        return True
+    if _falsey_env(os.environ.get("OCTOMIL_AUTO_INSTALL_RUNTIME")):
+        return False
+    if not _can_prompt_runtime_install():
+        return False
+
+    click.echo(
+        f"No local inference runtime is installed. Octomil can install {candidate.engine_name} "
+        f"for {candidate.description}.",
+        err=True,
+    )
+    return click.confirm(
+        f"Install {candidate.engine_name} now into this Python environment?",
+        default=True,
+        err=True,
+    )
+
+
+def _install_runtime(candidate: RuntimeInstallCandidate) -> None:
+    command = _runtime_install_command(candidate.requirement)
+    click.echo(f"Installing {candidate.engine_name} runtime with: {' '.join(command)}", err=True)
+    try:
+        subprocess.run(command, check=True)
+    except (OSError, subprocess.CalledProcessError) as exc:
+        raise click.ClickException(
+            "Failed to install a local inference runtime.\n\n"
+            f"Try manually: pip install 'octomil[{candidate.extra_name}]'\n"
+            "Then rerun your octomil command."
+        ) from exc
+
+    # Make packages installed into the current interpreter importable on retry.
+    importlib.invalidate_caches()
+    try:
+        from octomil.runtime.core import engine_bridge
+        from octomil.runtime.engines.registry import reset_registry
+
+        engine_bridge._runtime_cache.clear()
+        reset_registry()
+    except Exception:
+        # Cache refresh is best-effort; a fresh process will still see the installed runtime.
+        pass
+
+
+def _runtime_install_command(requirement: str) -> list[str]:
+    uv = shutil.which("uv")
+    if uv:
+        return [uv, "pip", "install", "--python", sys.executable, requirement]
+    return [sys.executable, "-m", "pip", "install", requirement]
+
+
+def _retry_after_runtime_install(
+    exc: click.ClickException,
+    auto_install_runtime: Optional[bool],
+    assume_yes: bool,
+    already_attempted: bool = False,
+) -> bool:
+    if not _is_runtime_unavailable_click_exception(exc):
+        return False
+    if already_attempted:
+        return False
+
+    candidate = _recommended_runtime_install()
+    if not _should_install_runtime(auto_install_runtime, assume_yes, candidate):
+        return False
+
+    _install_runtime(candidate)
+    return True
+
+
+def _run_with_runtime_install_retry(
+    make_coro,
+    auto_install_runtime: Optional[bool],
+    assume_yes: bool,
+    install_already_attempted: bool = False,
+):
+    try:
+        return _run_async(make_coro())
+    except click.ClickException as exc:
+        if not _retry_after_runtime_install(exc, auto_install_runtime, assume_yes, install_already_attempted):
+            raise
+        return _run_async(make_coro())
+
+
+def _has_real_local_runtime(model: str) -> bool:
+    try:
+        from octomil.runtime.engines import get_registry
+
+        registry = get_registry()
+        return any(detection.available and detection.engine.name != "echo" for detection in registry.detect_all(model))
+    except Exception:
+        return False
+
+
+def _chat_policy_prefers_local(
+    kernel, model: Optional[str], policy: Optional[str], app: Optional[str]
+) -> tuple[bool, str]:
+    try:
+        from octomil._generated.routing_policy import RoutingPolicy as ContractRoutingPolicy
+        from octomil.execution.kernel import _resolve_routing_policy
+
+        defaults = kernel.resolve_chat_defaults(model=model, policy=policy, app=app)
+        if inspect.isawaitable(defaults):
+            close = getattr(defaults, "close", None)
+            if callable(close):
+                close()
+            return False, ""
+        effective_model = defaults.model
+        if not isinstance(effective_model, str) or not effective_model:
+            return False, ""
+
+        routing_policy = _resolve_routing_policy(defaults)
+        prefers_local = (
+            routing_policy.mode == ContractRoutingPolicy.LOCAL_ONLY
+            or routing_policy.mode == ContractRoutingPolicy.LOCAL_FIRST
+            or routing_policy.prefer_local
+        )
+        return prefers_local and routing_policy.mode != ContractRoutingPolicy.CLOUD_ONLY, effective_model
+    except Exception:
+        return False, ""
+
+
+def _capability_runner_target(
+    kernel,
+    capability: str,
+    model: Optional[str],
+    policy: Optional[str],
+    app: Optional[str],
+) -> tuple[bool, str, Optional[str]]:
+    """Return whether a capability should use the runner, plus model/policy."""
+    try:
+        from octomil._generated.routing_policy import RoutingPolicy as ContractRoutingPolicy
+        from octomil.config.local import CAPABILITY_CHAT
+        from octomil.execution.kernel import _resolve_routing_policy
+
+        if capability == CAPABILITY_CHAT:
+            defaults = kernel.resolve_chat_defaults(model=model, policy=policy, app=app)
+        else:
+            defaults = kernel._resolve(capability, model=model, policy=policy, app=app)
+        if inspect.isawaitable(defaults):
+            close = getattr(defaults, "close", None)
+            if callable(close):
+                close()
+            return False, "", None
+
+        effective_model = defaults.model
+        if not isinstance(effective_model, str) or not effective_model:
+            return False, "", None
+
+        routing_policy = _resolve_routing_policy(defaults)
+        prefers_local = (
+            routing_policy.mode == ContractRoutingPolicy.LOCAL_ONLY
+            or routing_policy.mode == ContractRoutingPolicy.LOCAL_FIRST
+            or routing_policy.prefer_local
+        )
+        if routing_policy.mode == ContractRoutingPolicy.CLOUD_ONLY or not prefers_local:
+            return False, effective_model, None
+
+        return True, effective_model, defaults.policy_preset or policy or "local_first"
+    except Exception:
+        return False, "", None
+
+
+def _planner_engine_for_runner(model: str, capability: str, policy: str) -> Optional[str]:
+    """Use the runtime planner to choose the runner engine when possible."""
+    try:
+        from octomil.config.local import CAPABILITY_CHAT, CAPABILITY_EMBEDDING, CAPABILITY_TRANSCRIPTION
+        from octomil.runtime.planner.planner import RuntimePlanner
+
+        planner_capability = {
+            CAPABILITY_CHAT: "responses",
+            CAPABILITY_EMBEDDING: "embeddings",
+            CAPABILITY_TRANSCRIPTION: "transcription",
+        }.get(capability, capability)
+        selection = RuntimePlanner().resolve(
+            model=model,
+            capability=planner_capability,
+            routing_policy=policy,
+        )
+        if selection.locality == "local":
+            return selection.engine
+    except Exception:
+        logger.debug("Runtime planner could not choose runner engine", exc_info=True)
+    return None
+
+
+def _prepare_runtime_for_local_run(
+    kernel,
+    model: Optional[str],
+    policy: Optional[str],
+    app: Optional[str],
+    auto_install_runtime: Optional[bool],
+    assume_yes: bool,
+) -> bool:
+    prefers_local, effective_model = _chat_policy_prefers_local(kernel, model, policy, app)
+    if not prefers_local or not effective_model or _has_real_local_runtime(effective_model):
+        return False
+
+    candidate = _recommended_runtime_install()
+    if not _should_install_runtime(auto_install_runtime, assume_yes, candidate):
+        return False
+
+    _install_runtime(candidate)
+    return True
+
+
 def _warn_if_cloud_execution(result) -> None:
     if result.locality != "cloud":
         return
@@ -101,6 +364,112 @@ def _read_stdin_text() -> Optional[str]:
 
 
 # ---------------------------------------------------------------------------
+# Local runner integration
+# ---------------------------------------------------------------------------
+
+
+def _runner_enabled(no_runner: bool) -> bool:
+    """Check if the invisible local runner should be used."""
+    if no_runner:
+        return False
+    env = os.environ.get("OCTOMIL_LOCAL_RUNNER", "").strip().lower()
+    if env in {"0", "false", "no", "off"}:
+        return False
+    return True
+
+
+def _try_runner_response(
+    model: Optional[str],
+    prompt: str,
+    *,
+    engine: Optional[str] = None,
+    temperature: Optional[float] = None,
+    max_output_tokens: Optional[int] = None,
+    restart_runner: bool = False,
+    output_json: bool = False,
+) -> Optional[str]:
+    """Try to run inference via the local runner. Returns output text or None on failure."""
+    if not model:
+        return None
+    try:
+        from ..local_runner.client import LocalRunnerClient
+        from ..local_runner.manager import LocalRunnerManager
+
+        mgr = LocalRunnerManager()
+        handle = mgr.ensure(model=model, engine=engine, restart=restart_runner)
+        client = LocalRunnerClient(handle.base_url, handle.token)
+
+        result = _run_async(
+            client.create_response(
+                model=handle.model,
+                input=prompt,
+                temperature=temperature,
+                max_output_tokens=max_output_tokens,
+            )
+        )
+        if result and "choices" in result:
+            text = result["choices"][0]["message"]["content"]
+            if output_json:
+                return json.dumps(result, indent=2)
+            return text
+    except Exception as exc:
+        logger.debug("Local runner failed, falling back to kernel: %s", exc)
+    return None
+
+
+def _try_runner_embed(
+    model: Optional[str],
+    text_inputs: list[str],
+    *,
+    engine: Optional[str] = None,
+    restart_runner: bool = False,
+) -> Optional[dict]:
+    """Try to run embeddings via the local runner. Returns result dict or None."""
+    if not model:
+        return None
+    try:
+        from ..local_runner.client import LocalRunnerClient
+        from ..local_runner.manager import LocalRunnerManager
+
+        mgr = LocalRunnerManager()
+        handle = mgr.ensure(model=model, engine=engine, restart=restart_runner)
+        client = LocalRunnerClient(handle.base_url, handle.token)
+        result = _run_async(client.create_embedding(model=handle.model, input=text_inputs))
+        return result
+    except Exception as exc:
+        logger.debug("Local runner embedding failed, falling back: %s", exc)
+    return None
+
+
+def _try_runner_transcribe(
+    model: Optional[str],
+    audio_file: str,
+    *,
+    engine: Optional[str] = None,
+    restart_runner: bool = False,
+    language: Optional[str] = None,
+) -> Optional[dict]:
+    """Try to run transcription via the local runner. Returns result dict or None."""
+    if not model:
+        return None
+    try:
+        from ..local_runner.client import LocalRunnerClient
+        from ..local_runner.manager import LocalRunnerManager
+
+        mgr = LocalRunnerManager()
+        handle = mgr.ensure(model=model, engine=engine, restart=restart_runner)
+        client = LocalRunnerClient(handle.base_url, handle.token)
+        kw: dict[str, str] = {}
+        if language:
+            kw["language"] = language
+        result = _run_async(client.create_transcription(model=handle.model, file_path=audio_file, **kw))
+        return result
+    except Exception as exc:
+        logger.debug("Local runner transcription failed, falling back: %s", exc)
+    return None
+
+
+# ---------------------------------------------------------------------------
 # octomil run
 # ---------------------------------------------------------------------------
 
@@ -114,6 +483,14 @@ def _read_stdin_text() -> Optional[str]:
 @click.option("--stream/--no-stream", "stream", default=None, help="Enable/disable streaming.")
 @click.option("--temperature", "-t", type=float, default=None, help="Sampling temperature.")
 @click.option("--max-output-tokens", type=int, default=None, help="Max output tokens.")
+@click.option(
+    "--install-runtime/--no-install-runtime",
+    default=None,
+    help="Install a recommended local runtime if no real local backend is available.",
+)
+@click.option("-y", "--yes", is_flag=True, help="Accept runtime installation prompts.")
+@click.option("--no-runner", is_flag=True, help="Disable the invisible local runner.")
+@click.option("--restart-runner", is_flag=True, help="Force restart the local runner.")
 def run_cmd(
     prompt: Optional[str],
     model: Optional[str],
@@ -123,6 +500,10 @@ def run_cmd(
     stream: Optional[bool],
     temperature: Optional[float],
     max_output_tokens: Optional[int],
+    install_runtime: Optional[bool],
+    yes: bool,
+    no_runner: bool,
+    restart_runner: bool,
 ) -> None:
     """Run a one-shot inference request.
 
@@ -143,22 +524,48 @@ def run_cmd(
         raise click.UsageError("Missing prompt. Pass a prompt or pipe stdin.")
 
     kernel = _kernel()
+    runtime_install_attempted = _prepare_runtime_for_local_run(kernel, model, policy, app, install_runtime, yes)
+    should_try_runner, runner_model, runner_policy = _capability_runner_target(kernel, "chat", model, policy, app)
+
+    # Try invisible local runner only when the resolved policy prefers local execution.
+    if _runner_enabled(no_runner) and should_try_runner and runner_model and _has_real_local_runtime(runner_model):
+        runner_engine = _planner_engine_for_runner(runner_model, "chat", runner_policy or "local_first")
+        runner_output = _try_runner_response(
+            runner_model,
+            prompt,
+            engine=runner_engine,
+            temperature=temperature,
+            max_output_tokens=max_output_tokens,
+            restart_runner=restart_runner,
+            output_json=output_json,
+        )
+        if runner_output is not None:
+            click.echo(runner_output)
+            return
 
     # Default: stream if TTY and not JSON
     should_stream = stream if stream is not None else (_is_tty() and not output_json)
 
     if should_stream and not output_json:
-        _run_async(_stream_run(kernel, prompt, model, policy, app, temperature, max_output_tokens))
+        _run_with_runtime_install_retry(
+            lambda: _stream_run(kernel, prompt, model, policy, app, temperature, max_output_tokens),
+            install_runtime,
+            yes,
+            runtime_install_attempted,
+        )
     else:
-        result = _run_async(
-            kernel.create_response(
+        result = _run_with_runtime_install_retry(
+            lambda: kernel.create_response(
                 prompt,
                 model=model,
                 policy=policy,
                 app=app,
                 temperature=temperature,
                 max_output_tokens=max_output_tokens,
-            )
+            ),
+            install_runtime,
+            yes,
+            runtime_install_attempted,
         )
         if output_json:
             click.echo(json.dumps(_result_to_dict(result), indent=2))
@@ -198,6 +605,8 @@ async def _stream_run(kernel, prompt, model, policy, app, temperature, max_outpu
 @click.option("--policy", default=None, help="Serving policy preset.")
 @click.option("--json", "output_json", is_flag=True, help="Output full JSON with vectors.")
 @click.option("--jsonl", "output_jsonl", is_flag=True, help="Output NDJSON (one object per input).")
+@click.option("--no-runner", is_flag=True, help="Disable the invisible local runner.")
+@click.option("--restart-runner", is_flag=True, help="Force restart the local runner.")
 def embed_cmd(
     inputs: tuple[str, ...],
     model: Optional[str],
@@ -205,6 +614,8 @@ def embed_cmd(
     policy: Optional[str],
     output_json: bool,
     output_jsonl: bool,
+    no_runner: bool,
+    restart_runner: bool,
 ) -> None:
     """Generate embeddings for text or files.
 
@@ -235,6 +646,35 @@ def embed_cmd(
         raise click.UsageError("Missing input. Pass text, files, or pipe stdin.")
 
     kernel = _kernel()
+    should_try_runner, runner_model, runner_policy = _capability_runner_target(
+        kernel,
+        "embedding",
+        model,
+        policy,
+        app,
+    )
+
+    # Try invisible local runner only when the resolved policy prefers local execution.
+    if _runner_enabled(no_runner) and should_try_runner and runner_model and _has_real_local_runtime(runner_model):
+        runner_engine = _planner_engine_for_runner(runner_model, "embedding", runner_policy or "local_first")
+        runner_result = _try_runner_embed(
+            runner_model,
+            text_inputs,
+            engine=runner_engine,
+            restart_runner=restart_runner,
+        )
+        if runner_result is not None:
+            if output_jsonl and "data" in runner_result:
+                for item in runner_result["data"]:
+                    click.echo(json.dumps(item))
+            elif output_json:
+                click.echo(json.dumps(runner_result, indent=2))
+            else:
+                count = len(runner_result.get("data", []))
+                dims = len(runner_result["data"][0].get("embedding", [])) if count > 0 else 0
+                click.echo(f"Generated {count} embedding(s) with {dims} dimensions. Use --json to print vectors.")
+            return
+
     result = _run_async(
         kernel.create_embeddings(
             text_inputs,
@@ -267,6 +707,8 @@ def embed_cmd(
 @click.option("--policy", default=None, help="Serving policy preset.")
 @click.option("--json", "output_json", is_flag=True, help="Output structured JSON.")
 @click.option("--language", default=None, help="Language hint (BCP 47 code).")
+@click.option("--no-runner", is_flag=True, help="Disable the invisible local runner.")
+@click.option("--restart-runner", is_flag=True, help="Force restart the local runner.")
 def transcribe_cmd(
     audio_file: Optional[str],
     model: Optional[str],
@@ -274,6 +716,8 @@ def transcribe_cmd(
     policy: Optional[str],
     output_json: bool,
     language: Optional[str],
+    no_runner: bool,
+    restart_runner: bool,
 ) -> None:
     """Transcribe audio to text.
 
@@ -300,6 +744,37 @@ def transcribe_cmd(
         raise click.UsageError("Missing audio input. Pass a file or pipe audio bytes.")
 
     kernel = _kernel()
+    should_try_runner, runner_model, runner_policy = _capability_runner_target(
+        kernel,
+        "transcription",
+        model,
+        policy,
+        app,
+    )
+
+    # Try invisible local runner only when the resolved policy prefers local execution.
+    if (
+        _runner_enabled(no_runner)
+        and should_try_runner
+        and runner_model
+        and audio_file
+        and _has_real_local_runtime(runner_model)
+    ):
+        runner_engine = _planner_engine_for_runner(runner_model, "transcription", runner_policy or "local_first")
+        runner_result = _try_runner_transcribe(
+            runner_model,
+            audio_file,
+            engine=runner_engine,
+            restart_runner=restart_runner,
+            language=language,
+        )
+        if runner_result is not None:
+            if output_json:
+                click.echo(json.dumps(runner_result, indent=2))
+            else:
+                click.echo(runner_result.get("text", ""))
+            return
+
     result = _run_async(
         kernel.transcribe_audio(
             audio_data,

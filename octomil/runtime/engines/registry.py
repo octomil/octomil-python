@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import gc
 import logging
+import os
 import time
 from dataclasses import dataclass
 from typing import Optional
@@ -242,6 +243,8 @@ def get_registry() -> EngineRegistry:
     if _registry is None:
         _registry = EngineRegistry()
         _auto_register(_registry)
+        if os.environ.get("OCTOMIL_EXPERIMENTAL_ENGINES"):
+            _register_experimental(_registry)
     return _registry
 
 

@@ -11,6 +11,8 @@ if TYPE_CHECKING:
     from .auth import AuthConfig
     from .client import OctomilClient
     from .embeddings import EmbeddingResult
+    from .local_runner.client import LocalRunnerClient
+    from .local_runner.manager import LocalRunnerHandle
     from .responses.responses import OctomilResponses
     from .responses.types import Response
 
@@ -179,6 +181,132 @@ class Octomil:
     @property
     def embeddings(self) -> FacadeEmbeddings:
         """Access the embeddings API. Requires initialize() to have been called."""
+        if not self._initialized:
+            raise OctomilNotInitializedError()
+        assert self._embeddings_wrapper is not None
+        return self._embeddings_wrapper
+
+    @classmethod
+    def local(cls, *, model: str = "default", engine: str | None = None) -> "LocalOctomil":
+        """Create a local-only client backed by the invisible local runner.
+
+        No server key required. The runner starts automatically on first use
+        and shuts down after an idle timeout.
+
+        Usage::
+
+            client = Octomil.local()
+            await client.initialize()
+            response = await client.responses.create(model="default", input="Hello!")
+        """
+        return LocalOctomil(model=model, engine=engine)
+
+
+# ---------------------------------------------------------------------------
+# Local facade — backed by the invisible local runner
+# ---------------------------------------------------------------------------
+
+
+class LocalFacadeResponses:
+    """Responses namespace backed by the local runner."""
+
+    def __init__(self, runner_client: LocalRunnerClient, model: str) -> None:
+        self._client = runner_client
+        self._model = model
+
+    async def create(
+        self,
+        request_or_model: Any = None,
+        *,
+        model: str | None = None,
+        input: str | None = None,
+        **kwargs: Any,
+    ) -> dict[str, Any]:
+        resolved_model = request_or_model if isinstance(request_or_model, str) else (model or self._model)
+        if input is None:
+            raise TypeError("create() requires input= argument")
+        return await self._client.create_response(model=resolved_model, input=input, **kwargs)
+
+
+class LocalFacadeEmbeddings:
+    """Embeddings namespace backed by the local runner."""
+
+    def __init__(self, runner_client: LocalRunnerClient, model: str) -> None:
+        self._client = runner_client
+        self._model = model
+
+    async def create(
+        self,
+        *,
+        model: str | None = None,
+        input: str | list[str],
+        **kwargs: Any,
+    ) -> dict[str, Any]:
+        texts = [input] if isinstance(input, str) else input
+        return await self._client.create_embedding(model=model or self._model, input=texts, **kwargs)
+
+
+class LocalOctomil:
+    """Local-only Octomil client backed by the invisible local runner.
+
+    Does not require a server key. Uses the ``LocalRunnerManager`` to
+    start/reuse a background inference server on ``127.0.0.1``.
+    """
+
+    def __init__(self, *, model: str = "default", engine: str | None = None) -> None:
+        self._model = model
+        self._engine = engine
+        self._initialized = False
+        self._handle: LocalRunnerHandle | None = None
+        self._runner_client: LocalRunnerClient | None = None
+        self._responses_wrapper: LocalFacadeResponses | None = None
+        self._embeddings_wrapper: LocalFacadeEmbeddings | None = None
+
+    async def initialize(self) -> None:
+        """Ensure a local runner is running and initialize the client."""
+        if self._initialized:
+            return
+
+        from .local_runner.manager import LocalRunnerManager
+
+        mgr = LocalRunnerManager()
+
+        # Resolve model from config if "default"
+        effective_model = self._model
+        if effective_model == "default":
+            try:
+                from .execution.kernel import ExecutionKernel
+
+                kernel = ExecutionKernel()
+                defaults = kernel.resolve_chat_defaults()
+                if defaults and defaults.model:
+                    effective_model = defaults.model
+            except Exception:
+                pass
+
+        if effective_model == "default":
+            raise ValueError(
+                "No default chat model configured. " "Pass model= explicitly or set a default in .octomil.toml."
+            )
+
+        self._handle = mgr.ensure(model=effective_model, engine=self._engine)
+
+        from .local_runner.client import LocalRunnerClient
+
+        self._runner_client = LocalRunnerClient(self._handle.base_url, self._handle.token)
+        self._responses_wrapper = LocalFacadeResponses(self._runner_client, effective_model)
+        self._embeddings_wrapper = LocalFacadeEmbeddings(self._runner_client, effective_model)
+        self._initialized = True
+
+    @property
+    def responses(self) -> LocalFacadeResponses:
+        if not self._initialized:
+            raise OctomilNotInitializedError()
+        assert self._responses_wrapper is not None
+        return self._responses_wrapper
+
+    @property
+    def embeddings(self) -> LocalFacadeEmbeddings:
         if not self._initialized:
             raise OctomilNotInitializedError()
         assert self._embeddings_wrapper is not None

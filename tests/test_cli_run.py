@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import json
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from click.testing import CliRunner
 
 from octomil.cli import main
+from octomil.commands.inference import RuntimeInstallCandidate
+from octomil.config.local import ResolvedExecutionDefaults
 from octomil.errors import OctomilError, OctomilErrorCode
 from octomil.execution.kernel import ExecutionResult
 
@@ -119,6 +121,101 @@ class TestRunCommand:
             assert "pip install 'octomil[mlx]'" in result.output
             assert "Traceback" not in result.output
 
+    def test_run_install_runtime_retries_once(self, runner):
+        candidate = RuntimeInstallCandidate(
+            engine_name="test-runtime",
+            requirement="test-runtime>=1.0",
+            extra_name="test",
+            description="test local inference",
+        )
+
+        with patch("octomil.commands.inference._kernel") as mock_kf:
+            mock_kernel = AsyncMock()
+            mock_kernel.create_response = AsyncMock(side_effect=[RuntimeError("No runtime available"), _mock_result()])
+            mock_kf.return_value = mock_kernel
+
+            with patch("octomil.commands.inference._recommended_runtime_install", return_value=candidate):
+                with patch("octomil.commands.inference._runtime_install_command", return_value=["install-runtime"]):
+                    with patch("octomil.commands.inference.subprocess.run") as mock_run:
+                        result = runner.invoke(main, ["run", "--no-stream", "--install-runtime", "Hello!"])
+
+            assert result.exit_code == 0
+            assert "Installing test-runtime runtime" in result.output
+            assert "Hello!" in result.output
+            assert mock_kernel.create_response.await_count == 2
+            mock_run.assert_called_once_with(["install-runtime"], check=True)
+
+    def test_run_interactive_prompt_can_install_runtime(self, runner):
+        candidate = RuntimeInstallCandidate(
+            engine_name="test-runtime",
+            requirement="test-runtime>=1.0",
+            extra_name="test",
+            description="test local inference",
+        )
+
+        with patch("octomil.commands.inference._kernel") as mock_kf:
+            mock_kernel = AsyncMock()
+            mock_kernel.create_response = AsyncMock(side_effect=[RuntimeError("No runtime available"), _mock_result()])
+            mock_kf.return_value = mock_kernel
+
+            with patch("octomil.commands.inference._can_prompt_runtime_install", return_value=True):
+                with patch("octomil.commands.inference._recommended_runtime_install", return_value=candidate):
+                    with patch("octomil.commands.inference._runtime_install_command", return_value=["install-runtime"]):
+                        with patch("octomil.commands.inference.subprocess.run") as mock_run:
+                            result = runner.invoke(main, ["run", "--no-stream", "Hello!"], input="y\n")
+
+            assert result.exit_code == 0
+            assert "Install test-runtime now" in result.output
+            assert "Hello!" in result.output
+            assert mock_kernel.create_response.await_count == 2
+            mock_run.assert_called_once()
+
+    def test_run_install_runtime_happens_before_cloud_fallback(self, runner):
+        candidate = RuntimeInstallCandidate(
+            engine_name="test-runtime",
+            requirement="test-runtime>=1.0",
+            extra_name="test",
+            description="test local inference",
+        )
+
+        with patch("octomil.commands.inference._kernel") as mock_kf:
+            mock_kernel = AsyncMock()
+            mock_kernel.resolve_chat_defaults = MagicMock(
+                return_value=ResolvedExecutionDefaults(
+                    model="gemma3-1b",
+                    policy_preset="local_first",
+                )
+            )
+            mock_kernel.create_response = AsyncMock(return_value=_mock_cloud_fallback_result())
+            mock_kf.return_value = mock_kernel
+
+            with patch("octomil.commands.inference._has_real_local_runtime", return_value=False):
+                with patch("octomil.commands.inference._recommended_runtime_install", return_value=candidate):
+                    with patch("octomil.commands.inference._runtime_install_command", return_value=["install-runtime"]):
+                        with patch("octomil.commands.inference.subprocess.run") as mock_run:
+                            result = runner.invoke(main, ["run", "--no-stream", "--install-runtime", "Hello!"])
+
+            assert result.exit_code == 0
+            assert "Installing test-runtime runtime" in result.output
+            assert "Using hosted cloud fallback" in result.output
+            mock_run.assert_called_once_with(["install-runtime"], check=True)
+
+    def test_run_no_install_runtime_disables_env_install(self, runner, monkeypatch):
+        monkeypatch.setenv("OCTOMIL_AUTO_INSTALL_RUNTIME", "1")
+
+        with patch("octomil.commands.inference._kernel") as mock_kf:
+            mock_kernel = AsyncMock()
+            mock_kernel.create_response = AsyncMock(side_effect=RuntimeError("No runtime available"))
+            mock_kf.return_value = mock_kernel
+
+            with patch("octomil.commands.inference.subprocess.run") as mock_run:
+                result = runner.invoke(main, ["run", "--no-stream", "--no-install-runtime", "Hello!"])
+
+            assert result.exit_code != 0
+            assert "No inference backend available" in result.output
+            assert "Traceback" not in result.output
+            mock_run.assert_not_called()
+
     def test_run_warns_when_using_cloud_fallback(self, runner):
         with patch("octomil.commands.inference._kernel") as mock_kf:
             mock_kernel = AsyncMock()
@@ -129,6 +226,54 @@ class TestRunCommand:
             assert result.exit_code == 0
             assert "Hello from cloud!" in result.output
             assert "Using hosted cloud fallback" in result.output
+
+    def test_run_uses_runner_for_resolved_default_model(self, runner):
+        with patch("octomil.commands.inference._kernel") as mock_kf:
+            mock_kernel = AsyncMock()
+            mock_kernel.resolve_chat_defaults = MagicMock(
+                return_value=ResolvedExecutionDefaults(
+                    model="gemma3-1b",
+                    policy_preset="local_first",
+                )
+            )
+            mock_kernel.create_response = AsyncMock(return_value=_mock_result("kernel"))
+            mock_kf.return_value = mock_kernel
+
+            with patch("octomil.commands.inference._has_real_local_runtime", return_value=True):
+                with patch("octomil.commands.inference._planner_engine_for_runner", return_value="mlx-lm"):
+                    with patch(
+                        "octomil.commands.inference._try_runner_response",
+                        return_value="runner local",
+                    ) as mock_runner:
+                        result = runner.invoke(main, ["run", "--no-stream", "Hello!"])
+
+            assert result.exit_code == 0
+            assert result.output.strip() == "runner local"
+            mock_runner.assert_called_once()
+            assert mock_runner.call_args.args[:2] == ("gemma3-1b", "Hello!")
+            assert mock_runner.call_args.kwargs["engine"] == "mlx-lm"
+            mock_kernel.create_response.assert_not_awaited()
+
+    def test_run_cloud_only_skips_local_runner(self, runner):
+        with patch("octomil.commands.inference._kernel") as mock_kf:
+            mock_kernel = AsyncMock()
+            mock_kernel.resolve_chat_defaults = MagicMock(
+                return_value=ResolvedExecutionDefaults(
+                    model="gemma3-1b",
+                    policy_preset="cloud_only",
+                )
+            )
+            mock_kernel.create_response = AsyncMock(return_value=_mock_result("cloud path"))
+            mock_kf.return_value = mock_kernel
+
+            with patch("octomil.commands.inference._has_real_local_runtime", return_value=True):
+                with patch("octomil.commands.inference._try_runner_response") as mock_runner:
+                    result = runner.invoke(main, ["run", "--no-stream", "--policy", "cloud_only", "Hello!"])
+
+            assert result.exit_code == 0
+            assert "cloud path" in result.output
+            mock_runner.assert_not_called()
+            mock_kernel.create_response.assert_awaited_once()
 
 
 # ---------------------------------------------------------------------------
