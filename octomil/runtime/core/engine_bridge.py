@@ -207,6 +207,26 @@ def engine_registry_factory(model_id: str) -> Optional[ModelRuntime]:
         return None
 
 
+def _select_engine_with_planner(model: str, capability: str, policy: str) -> Any:
+    """Try planner-based selection. Returns None if planner is disabled or fails.
+
+    The planner combines server-side plan recommendations with local benchmark
+    caching in a SQLite store.  Opt-out via OCTOMIL_RUNTIME_PLANNER_CACHE=0.
+    """
+    if os.environ.get("OCTOMIL_RUNTIME_PLANNER_CACHE") == "0":
+        return None
+    try:
+        import logging
+
+        from octomil.runtime.planner.planner import RuntimePlanner
+
+        planner = RuntimePlanner()
+        return planner.resolve(model=model, capability=capability, routing_policy=policy)
+    except Exception:
+        logging.getLogger(__name__).debug("Planner selection failed, falling back to legacy", exc_info=True)
+        return None
+
+
 def cloud_runtime_factory(base_url: str, api_key: str, model: str) -> RuntimeFactory:
     """RuntimeFactory that creates CloudModelRuntime for cloud inference."""
     _cached: Optional[ModelRuntime] = None
