@@ -1,0 +1,15 @@
+rules:
+  - name: runtime-must-not-import-cli
+    paths: ["octomil/runtime/**/*.py", "octomil/local_runner/**/*.py"]
+    forbidden_imports: ["octomil.cli", "octomil.commands"]
+    severity: error
+
+  - name: serve-must-not-import-cli
+    paths: ["octomil/serve/**/*.py"]
+    forbidden_imports: ["octomil.cli", "octomil.commands"]
+    severity: error
+
+  - name: generated-code-not-hand-edited
+    paths: ["octomil/_generated/**"]
+    require_changed_with: ["octomil/_generated/.contract-version.json"]
+    severity: warning
