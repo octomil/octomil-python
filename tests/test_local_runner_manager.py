@@ -173,6 +173,173 @@ class TestLocalRunnerManager:
         assert mgr._is_compatible(manifest, "gemma-1b", "auto")
         assert not mgr._is_compatible(manifest, "gemma-1b", "llama.cpp")
 
+    def test_ensure_restarts_on_model_mismatch(self, tmp_path: Path) -> None:
+        """When model differs, ensure should stop old runner and start new one."""
+        mgr = self._make_manager(tmp_path)
+        token_path = tmp_path / "token"
+        token_path.write_text("tok123")
+
+        manifest = RunnerManifest(
+            pid=os.getpid(),
+            port=51200,
+            base_url="http://127.0.0.1:51200",
+            token_file=str(token_path),
+            model="gemma-1b",
+            engine="auto",
+            started_at=time.time(),
+        )
+        manifest.save(tmp_path / "manifest.json")
+
+        # _is_alive returns True for old runner, _start_runner returns new manifest
+        with (
+            patch.object(mgr, "_is_alive", return_value=True),
+            patch.object(mgr, "_kill_runner") as mock_kill,
+            patch.object(mgr, "_start_runner") as mock_start,
+            patch.object(mgr, "_find_free_port", return_value=51201),
+            patch.object(mgr, "_read_token", return_value="newtok"),
+        ):
+            new_manifest = RunnerManifest(
+                pid=99999,
+                port=51201,
+                base_url="http://127.0.0.1:51201",
+                token_file=str(token_path),
+                model="phi-4-mini",
+                engine="auto",
+            )
+            mock_start.return_value = new_manifest
+
+            handle = mgr.ensure(model="phi-4-mini")
+            assert handle.model == "phi-4-mini"
+            mock_kill.assert_called_once()
+            mock_start.assert_called_once()
+
+    def test_ensure_restarts_on_engine_mismatch(self, tmp_path: Path) -> None:
+        """When engine differs, ensure should stop old runner and start new one."""
+        mgr = self._make_manager(tmp_path)
+        token_path = tmp_path / "token"
+        token_path.write_text("tok123")
+
+        manifest = RunnerManifest(
+            pid=os.getpid(),
+            port=51200,
+            base_url="http://127.0.0.1:51200",
+            token_file=str(token_path),
+            model="gemma-1b",
+            engine="mlx-lm",
+            started_at=time.time(),
+        )
+        manifest.save(tmp_path / "manifest.json")
+
+        with (
+            patch.object(mgr, "_is_alive", return_value=True),
+            patch.object(mgr, "_kill_runner") as mock_kill,
+            patch.object(mgr, "_start_runner") as mock_start,
+            patch.object(mgr, "_find_free_port", return_value=51201),
+            patch.object(mgr, "_read_token", return_value="newtok"),
+        ):
+            new_manifest = RunnerManifest(
+                pid=99999,
+                port=51201,
+                base_url="http://127.0.0.1:51201",
+                token_file=str(token_path),
+                model="gemma-1b",
+                engine="llama.cpp",
+            )
+            mock_start.return_value = new_manifest
+
+            handle = mgr.ensure(model="gemma-1b", engine="llama.cpp")
+            assert handle.engine == "llama.cpp"
+            mock_kill.assert_called_once()
+
+    def test_ensure_restarts_on_stale_pid(self, tmp_path: Path) -> None:
+        """When the PID is dead, ensure should start a new runner."""
+        mgr = self._make_manager(tmp_path)
+        token_path = tmp_path / "token"
+        token_path.write_text("tok123")
+
+        manifest = RunnerManifest(
+            pid=999999999,  # dead PID
+            port=51200,
+            base_url="http://127.0.0.1:51200",
+            token_file=str(token_path),
+            model="gemma-1b",
+            engine="auto",
+            started_at=time.time(),
+        )
+        manifest.save(tmp_path / "manifest.json")
+
+        with (
+            patch.object(mgr, "_start_runner") as mock_start,
+            patch.object(mgr, "_find_free_port", return_value=51201),
+            patch.object(mgr, "_read_token", return_value="newtok"),
+        ):
+            new_manifest = RunnerManifest(
+                pid=88888,
+                port=51201,
+                base_url="http://127.0.0.1:51201",
+                token_file=str(token_path),
+                model="gemma-1b",
+                engine="auto",
+            )
+            mock_start.return_value = new_manifest
+
+            handle = mgr.ensure(model="gemma-1b")
+            assert handle.base_url == "http://127.0.0.1:51201"
+            mock_start.assert_called_once()
+
+    @patch("octomil.local_runner.manager.LocalRunnerManager._is_alive", return_value=True)
+    @patch("octomil.local_runner.manager.LocalRunnerManager._pid_exists", return_value=True)
+    def test_status_running(self, mock_pid, mock_alive, tmp_path: Path) -> None:
+        mgr = self._make_manager(tmp_path)
+        manifest = RunnerManifest(
+            pid=os.getpid(),
+            port=51200,
+            base_url="http://127.0.0.1:51200",
+            token_file=str(tmp_path / "token"),
+            model="gemma-1b",
+            engine="mlx-lm",
+            started_at=time.time() - 60,
+            idle_timeout_seconds=1800,
+        )
+        manifest.save(tmp_path / "manifest.json")
+
+        status = mgr.status()
+        assert status.running is True
+        assert status.pid == os.getpid()
+        assert status.port == 51200
+        assert status.model == "gemma-1b"
+        assert status.engine == "mlx-lm"
+        assert status.uptime_seconds >= 59
+        assert status.idle_timeout_seconds == 1800
+        assert status.warm is True
+
+    def test_find_free_port(self) -> None:
+        port = LocalRunnerManager._find_free_port()
+        assert isinstance(port, int)
+        assert 1024 <= port <= 65535
+
+    @patch.object(LocalRunnerManager, "_start_runner")
+    @patch.object(LocalRunnerManager, "_find_free_port", return_value=51200)
+    def test_ensure_starts_runner_when_no_manifest(self, mock_port, mock_start, tmp_path: Path) -> None:
+        mgr = self._make_manager(tmp_path)
+        token_path = tmp_path / "token"
+        token_path.write_text("newtok")
+
+        new_manifest = RunnerManifest(
+            pid=12345,
+            port=51200,
+            base_url="http://127.0.0.1:51200",
+            token_file=str(token_path),
+            model="gemma-1b",
+            engine="auto",
+        )
+        mock_start.return_value = new_manifest
+
+        handle = mgr.ensure(model="gemma-1b")
+        assert handle.base_url == "http://127.0.0.1:51200"
+        assert handle.model == "gemma-1b"
+        mock_start.assert_called_once()
+
 
 class TestTokenSecurity:
     def test_token_file_permissions(self, tmp_path: Path) -> None:

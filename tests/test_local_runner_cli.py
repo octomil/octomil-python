@@ -154,6 +154,17 @@ class TestLocalEndpoint:
             assert "token" not in data  # not shown without --show-token
 
 
+class TestLocalHelp:
+    def test_local_help(self) -> None:
+        """octomil local --help should list status, stop, endpoint."""
+        runner = CliRunner()
+        result = runner.invoke(main, ["local", "--help"])
+        assert result.exit_code == 0
+        assert "status" in result.output
+        assert "stop" in result.output
+        assert "endpoint" in result.output
+
+
 class TestLocalRunnerServeCommand:
     def test_hidden_command_exists(self) -> None:
         """The _local-runner-serve command should be registered but hidden."""
