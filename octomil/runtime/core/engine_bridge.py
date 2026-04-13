@@ -2,13 +2,23 @@
 
 from __future__ import annotations
 
-from typing import Optional
+import json
+import os
+import platform
+import sys
+import time
+from pathlib import Path
+from typing import Any, Optional
 
 from octomil.runtime.core.adapter import InferenceBackendAdapter
+from octomil.runtime.core.base import EnginePlugin
 from octomil.runtime.core.model_runtime import ModelRuntime, RuntimeFactory
 from octomil.runtime.core.types import RuntimeCapabilities, ToolCallTier
 
 _runtime_cache: dict[str, ModelRuntime] = {}
+_SELECTION_CACHE_FILENAME = "runtime_engine_selection.json"
+_SELECTION_CACHE_TTL_SECONDS = 7 * 24 * 60 * 60
+_DEFAULT_BENCHMARK_TOKENS = 16
 
 # Models known to follow the tool-call JSON protocol reliably.
 # Extend this list as models are evaluated.
@@ -32,8 +42,140 @@ def _infer_tool_call_tier(model_id: str) -> ToolCallTier:
     return ToolCallTier.NONE
 
 
+def _cache_path() -> Path:
+    cache_root = Path(os.environ.get("OCTOMIL_CACHE_DIR", Path.home() / ".cache" / "octomil"))
+    return cache_root / _SELECTION_CACHE_FILENAME
+
+
+def _selection_cache_enabled() -> bool:
+    return os.environ.get("OCTOMIL_RUNTIME_SELECTION_CACHE", "1").lower() not in {"0", "false", "no"}
+
+
+def _benchmark_tokens() -> int:
+    raw = os.environ.get("OCTOMIL_RUNTIME_BENCHMARK_TOKENS")
+    if raw is None:
+        return _DEFAULT_BENCHMARK_TOKENS
+    try:
+        return max(1, int(raw))
+    except ValueError:
+        return _DEFAULT_BENCHMARK_TOKENS
+
+
+def _selection_cache_key(model_id: str, engine_names: list[str]) -> str:
+    from octomil import __version__
+
+    fingerprint = "|".join(
+        [
+            model_id,
+            platform.system(),
+            platform.machine(),
+            f"{sys.version_info.major}.{sys.version_info.minor}",
+            __version__,
+            ",".join(sorted(engine_names)),
+        ]
+    )
+    return fingerprint
+
+
+def _load_selection_cache() -> dict[str, dict[str, object]]:
+    if not _selection_cache_enabled():
+        return {}
+    try:
+        raw = _cache_path().read_text()
+        data = json.loads(raw)
+        if isinstance(data, dict):
+            return {str(key): value for key, value in data.items() if isinstance(value, dict)}
+    except (OSError, json.JSONDecodeError, TypeError):
+        pass
+    return {}
+
+
+def _write_selection_cache(cache: dict[str, dict[str, object]]) -> None:
+    if not _selection_cache_enabled():
+        return
+    path = _cache_path()
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp_path = path.with_suffix(path.suffix + ".tmp")
+        tmp_path.write_text(json.dumps(cache, indent=2, sort_keys=True) + "\n")
+        tmp_path.replace(path)
+    except OSError:
+        pass
+
+
+def _get_cached_engine(model_id: str, real_engines: list[EnginePlugin]) -> Optional[EnginePlugin]:
+    engine_by_name = {engine.name: engine for engine in real_engines}
+    key = _selection_cache_key(model_id, list(engine_by_name))
+    entry = _load_selection_cache().get(key)
+    if not entry:
+        return None
+
+    selected_at = entry.get("selected_at")
+    engine_name = entry.get("engine")
+    if not isinstance(selected_at, (int, float)) or not isinstance(engine_name, str):
+        return None
+    if time.time() - selected_at > _SELECTION_CACHE_TTL_SECONDS:
+        return None
+    return engine_by_name.get(engine_name)
+
+
+def _record_cached_engine(
+    model_id: str,
+    real_engines: list[EnginePlugin],
+    engine: EnginePlugin,
+    tokens_per_second: float,
+) -> None:
+    engine_names = [candidate.name for candidate in real_engines]
+    key = _selection_cache_key(model_id, engine_names)
+    cache = _load_selection_cache()
+    cache[key] = {
+        "engine": engine.name,
+        "selected_at": time.time(),
+        "tokens_per_second": tokens_per_second,
+    }
+    _write_selection_cache(cache)
+
+
+def _evict_cached_engine(model_id: str, real_engines: list[EnginePlugin]) -> None:
+    engine_names = [candidate.name for candidate in real_engines]
+    key = _selection_cache_key(model_id, engine_names)
+    cache = _load_selection_cache()
+    if key in cache:
+        del cache[key]
+        _write_selection_cache(cache)
+
+
+def _select_real_engine(registry: Any, model_id: str) -> tuple[Optional[EnginePlugin], list[EnginePlugin]]:
+    detections = registry.detect_all(model_id)
+    real_engines = [d.engine for d in detections if d.available and d.engine.name != "echo"]
+    if not real_engines:
+        return None, []
+
+    cached = _get_cached_engine(model_id, real_engines)
+    if cached is not None:
+        return cached, real_engines
+
+    ranked = registry.benchmark_all(
+        model_id,
+        n_tokens=_benchmark_tokens(),
+        engines=real_engines,
+    )
+    for ranked_engine in ranked:
+        if ranked_engine.engine.name == "echo" or not ranked_engine.result.ok:
+            continue
+        _record_cached_engine(
+            model_id,
+            real_engines,
+            ranked_engine.engine,
+            ranked_engine.result.tokens_per_second,
+        )
+        return ranked_engine.engine, real_engines
+
+    return None, real_engines
+
+
 def engine_registry_factory(model_id: str) -> Optional[ModelRuntime]:
-    """RuntimeFactory that uses EngineRegistry to auto-select an engine."""
+    """RuntimeFactory that benchmark-selects the fastest real local engine."""
     if model_id in _runtime_cache:
         return _runtime_cache[model_id]
 
@@ -41,13 +183,16 @@ def engine_registry_factory(model_id: str) -> Optional[ModelRuntime]:
         from octomil.runtime.engines import get_registry
 
         registry = get_registry()
-        detections = registry.detect_all(model_id)
-        real_engines = [d.engine for d in detections if d.available and d.engine.name != "echo"]
-        if not real_engines:
+        engine, real_engines = _select_real_engine(registry, model_id)
+        if engine is None:
             return None
 
-        engine = sorted(real_engines, key=lambda e: e.priority)[0]
-        backend = engine.create_backend(model_id)
+        try:
+            backend = engine.create_backend(model_id)
+        except (ValueError, RuntimeError, ImportError):
+            _evict_cached_engine(model_id, real_engines)
+            return None
+
         adapter = InferenceBackendAdapter(
             backend=backend,
             model_name=model_id,

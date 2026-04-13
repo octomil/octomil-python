@@ -89,6 +89,16 @@ class _SlowEngine(EnginePlugin):
         return MagicMock(name="slow-backend")
 
 
+class _DirectFastEngine(_FakeEngine):
+    def create_backend(self, model_name: str, **kwargs: Any) -> Any:
+        return SimpleNamespace(engine_name="fake")
+
+
+class _DirectSlowEngine(_SlowEngine):
+    def create_backend(self, model_name: str, **kwargs: Any) -> Any:
+        return SimpleNamespace(engine_name="slow")
+
+
 class _BrokenEngine(EnginePlugin):
     @property
     def name(self) -> str:
@@ -373,6 +383,68 @@ class TestEchoEngine:
         engine_bridge._runtime_cache.clear()
         with patch("octomil.runtime.engines.get_registry", return_value=registry):
             assert engine_bridge.engine_registry_factory("gemma3-1b") is None
+
+    def test_direct_local_runtime_uses_fastest_benchmark_not_priority(self, tmp_path):
+        from octomil.runtime.core import engine_bridge
+
+        registry = EngineRegistry()
+        registry.register(_DirectSlowEngine())  # priority 50, 10 tok/s
+        registry.register(_DirectFastEngine())  # priority 100, 100 tok/s
+
+        engine_bridge._runtime_cache.clear()
+        with (
+            patch.dict("os.environ", {"OCTOMIL_CACHE_DIR": str(tmp_path), "OCTOMIL_RUNTIME_SELECTION_CACHE": "1"}),
+            patch("octomil.runtime.engines.get_registry", return_value=registry),
+        ):
+            runtime = engine_bridge.engine_registry_factory("gemma3-1b")
+
+        assert runtime is not None
+        assert runtime._backend.engine_name == "fake"  # type: ignore[attr-defined]
+
+    def test_direct_local_runtime_returns_none_when_real_benchmarks_fail(self, tmp_path):
+        from octomil.runtime.core import engine_bridge
+
+        registry = EngineRegistry()
+        registry.register(_BrokenEngine())
+        registry.register(EchoEngine())
+
+        engine_bridge._runtime_cache.clear()
+        with (
+            patch.dict("os.environ", {"OCTOMIL_CACHE_DIR": str(tmp_path), "OCTOMIL_RUNTIME_SELECTION_CACHE": "1"}),
+            patch("octomil.runtime.engines.get_registry", return_value=registry),
+        ):
+            assert engine_bridge.engine_registry_factory("gemma3-1b") is None
+
+    def test_direct_local_runtime_reuses_cached_benchmark_winner(self, tmp_path):
+        from octomil.runtime.core import engine_bridge
+
+        fast = _DirectFastEngine()
+        slow = _DirectSlowEngine()
+        registry = EngineRegistry()
+        registry.register(slow)
+        registry.register(fast)
+
+        engine_bridge._runtime_cache.clear()
+        with (
+            patch.dict("os.environ", {"OCTOMIL_CACHE_DIR": str(tmp_path), "OCTOMIL_RUNTIME_SELECTION_CACHE": "1"}),
+            patch("octomil.runtime.engines.get_registry", return_value=registry),
+        ):
+            first = engine_bridge.engine_registry_factory("gemma3-1b")
+
+        assert first is not None
+        assert first._backend.engine_name == "fake"  # type: ignore[attr-defined]
+
+        fast.benchmark = MagicMock(side_effect=AssertionError("cached winner should avoid benchmark"))  # type: ignore[method-assign]
+        slow.benchmark = MagicMock(side_effect=AssertionError("cached winner should avoid benchmark"))  # type: ignore[method-assign]
+        engine_bridge._runtime_cache.clear()
+        with (
+            patch.dict("os.environ", {"OCTOMIL_CACHE_DIR": str(tmp_path), "OCTOMIL_RUNTIME_SELECTION_CACHE": "1"}),
+            patch("octomil.runtime.engines.get_registry", return_value=registry),
+        ):
+            second = engine_bridge.engine_registry_factory("gemma3-1b")
+
+        assert second is not None
+        assert second._backend.engine_name == "fake"  # type: ignore[attr-defined]
 
 
 # ---------------------------------------------------------------------------

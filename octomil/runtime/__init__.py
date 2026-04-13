@@ -11,8 +11,6 @@ from ``octomil.runtime.core``.
 
 from __future__ import annotations
 
-import os
-
 from octomil.runtime.core.model_runtime import ModelRuntime, RuntimeFactory
 
 __all__ = [
@@ -26,17 +24,10 @@ def _connect_engines() -> None:
     try:
         from octomil.runtime.core.engine_bridge import engine_registry_factory
         from octomil.runtime.core.registry import ModelRuntimeRegistry
-        from octomil.runtime.engines.registry import (
-            _register_experimental,
-            get_registry,
-        )
+        from octomil.runtime.engines.registry import get_registry
 
-        # Always register stable engines
-        registry = get_registry()
-
-        # Register experimental engines if env var is set
-        if os.environ.get("OCTOMIL_EXPERIMENTAL_ENGINES"):
-            _register_experimental(registry)
+        # Initialize stable engines and any env-gated experimental engines.
+        get_registry()
 
         ModelRuntimeRegistry.shared().default_factory = engine_registry_factory
     except Exception:
