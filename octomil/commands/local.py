@@ -96,8 +96,7 @@ def local_endpoint(
 
     if not model:
         raise click.UsageError(
-            "No model specified and no default chat model configured.\n"
-            "Pass --model or set a default in .octomil.toml."
+            "No model specified and no default chat model configured.\nPass --model or set a default in .octomil.toml."
         )
 
     mgr = LocalRunnerManager()
