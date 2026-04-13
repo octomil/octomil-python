@@ -40,7 +40,7 @@ octomil/
 ├── execution/           # Execution kernel
 ├── workflows/           # Multi-step workflow orchestration
 ├── benchmark/           # Benchmarking tools
-├── facade.ts            # Unified entry point
+├── facade.py            # Unified entry point
 ├── client.py            # Hosted API client
 ├── chat.py              # Chat completions
 ├── chat_client.py       # Chat client wrapper
