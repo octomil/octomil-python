@@ -26,3 +26,7 @@ class Scope(str, Enum):
     """Submit benchmark results"""
     EVALS_WRITE = "evals:write"
     """Submit evaluation results"""
+    CLOUD_INFERENCE = "cloud:inference"
+    """Execute cloud inference via the Octomil gateway"""
+    CLOUD_CREDENTIALS = "cloud:credentials"
+    """Manage provider credentials (CRUD). Requires admin or owner role."""

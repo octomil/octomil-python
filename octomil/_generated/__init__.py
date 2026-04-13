@@ -5,7 +5,15 @@ Do not edit manually -- re-run codegen from octomil-contracts instead.
 """
 
 # Span-based telemetry (v1.2.0)
-from . import metric_views, span_attributes, span_event_attributes, span_event_names, span_names, span_status_mapping
+from . import (
+    metric_views,
+    span_attributes,
+    span_event_attributes,
+    span_event_names,
+    span_names,
+    span_status_mapping,
+    telemetry_events,
+)
 from .artifact_resource_kind import ArtifactResourceKind
 from .compatibility_level import CompatibilityLevel
 from .device_class import DeviceClass
@@ -18,6 +26,7 @@ from .otlp_resource_attributes import (
     OCTOMIL_AVAILABLE_RUNTIMES,
     OCTOMIL_DEVICE_CLASS,
     OCTOMIL_DEVICE_ID,
+    OCTOMIL_INSTALL_ID,
     OCTOMIL_ORG_ID,
     OCTOMIL_PLATFORM,
     OCTOMIL_SDK_SURFACE,
@@ -45,6 +54,7 @@ __all__ = [
     "TELEMETRY_SDK_VERSION",
     "OCTOMIL_ORG_ID",
     "OCTOMIL_DEVICE_ID",
+    "OCTOMIL_INSTALL_ID",
     "OCTOMIL_PLATFORM",
     "OCTOMIL_SDK_SURFACE",
     "OCTOMIL_DEVICE_CLASS",
@@ -58,4 +68,5 @@ __all__ = [
     "span_event_attributes",
     "span_status_mapping",
     "metric_views",
+    "telemetry_events",
 ]

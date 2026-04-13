@@ -7,6 +7,8 @@ FALLBACK_TRIGGERED = "fallback_triggered"
 COMPLETED = "completed"
 TOOL_CALL_PARSE_SUCCEEDED = "tool_call_parse_succeeded"
 TOOL_CALL_PARSE_FAILED = "tool_call_parse_failed"
+KV_CACHE_APPLIED = "kv_cache_applied"
+CREDENTIAL_RESOLVED = "credential_resolved"
 DOWNLOAD_STARTED = "download_started"
 DOWNLOAD_COMPLETED = "download_completed"
 CHECKSUM_VERIFIED = "checksum_verified"
@@ -46,6 +48,8 @@ EVENT_PARENT_SPAN: dict[str, str] = {
     "completed": "octomil.response",
     "tool_call_parse_succeeded": "octomil.response",
     "tool_call_parse_failed": "octomil.response",
+    "kv_cache_applied": "octomil.response",
+    "credential_resolved": "octomil.fallback.cloud",
     "download_started": "octomil.model.load",
     "download_completed": "octomil.model.load",
     "checksum_verified": "octomil.model.load",
