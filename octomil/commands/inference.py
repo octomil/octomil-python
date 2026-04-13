@@ -14,6 +14,7 @@ import asyncio
 import importlib
 import inspect
 import json
+import logging
 import os
 import platform
 import shutil
@@ -23,6 +24,8 @@ from dataclasses import dataclass
 from typing import Optional
 
 import click
+
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -297,6 +300,109 @@ def _read_stdin_text() -> Optional[str]:
 
 
 # ---------------------------------------------------------------------------
+# Local runner integration
+# ---------------------------------------------------------------------------
+
+
+def _runner_enabled(no_runner: bool) -> bool:
+    """Check if the invisible local runner should be used."""
+    if no_runner:
+        return False
+    env = os.environ.get("OCTOMIL_LOCAL_RUNNER", "").strip().lower()
+    if env in {"0", "false", "no", "off"}:
+        return False
+    return True
+
+
+def _try_runner_response(
+    model: Optional[str],
+    prompt: str,
+    *,
+    temperature: Optional[float] = None,
+    max_output_tokens: Optional[int] = None,
+    restart_runner: bool = False,
+    output_json: bool = False,
+) -> Optional[str]:
+    """Try to run inference via the local runner. Returns output text or None on failure."""
+    if not model:
+        return None
+    try:
+        from ..local_runner.client import LocalRunnerClient
+        from ..local_runner.manager import LocalRunnerManager
+
+        mgr = LocalRunnerManager()
+        handle = mgr.ensure(model=model, restart=restart_runner)
+        client = LocalRunnerClient(handle.base_url, handle.token)
+
+        result = _run_async(
+            client.create_response(
+                model=handle.model,
+                input=prompt,
+                temperature=temperature,
+                max_output_tokens=max_output_tokens,
+            )
+        )
+        if result and "choices" in result:
+            text = result["choices"][0]["message"]["content"]
+            if output_json:
+                return json.dumps(result, indent=2)
+            return text
+    except Exception as exc:
+        logger.debug("Local runner failed, falling back to kernel: %s", exc)
+    return None
+
+
+def _try_runner_embed(
+    model: Optional[str],
+    text_inputs: list[str],
+    *,
+    restart_runner: bool = False,
+) -> Optional[dict]:
+    """Try to run embeddings via the local runner. Returns result dict or None."""
+    if not model:
+        return None
+    try:
+        from ..local_runner.client import LocalRunnerClient
+        from ..local_runner.manager import LocalRunnerManager
+
+        mgr = LocalRunnerManager()
+        handle = mgr.ensure(model=model, restart=restart_runner)
+        client = LocalRunnerClient(handle.base_url, handle.token)
+        result = _run_async(client.create_embedding(model=handle.model, input=text_inputs))
+        return result
+    except Exception as exc:
+        logger.debug("Local runner embedding failed, falling back: %s", exc)
+    return None
+
+
+def _try_runner_transcribe(
+    model: Optional[str],
+    audio_file: str,
+    *,
+    restart_runner: bool = False,
+    language: Optional[str] = None,
+) -> Optional[dict]:
+    """Try to run transcription via the local runner. Returns result dict or None."""
+    if not model:
+        return None
+    try:
+        from ..local_runner.client import LocalRunnerClient
+        from ..local_runner.manager import LocalRunnerManager
+
+        mgr = LocalRunnerManager()
+        handle = mgr.ensure(model=model, restart=restart_runner)
+        client = LocalRunnerClient(handle.base_url, handle.token)
+        kw: dict[str, str] = {}
+        if language:
+            kw["language"] = language
+        result = _run_async(client.create_transcription(model=handle.model, file_path=audio_file, **kw))
+        return result
+    except Exception as exc:
+        logger.debug("Local runner transcription failed, falling back: %s", exc)
+    return None
+
+
+# ---------------------------------------------------------------------------
 # octomil run
 # ---------------------------------------------------------------------------
 
@@ -316,6 +422,8 @@ def _read_stdin_text() -> Optional[str]:
     help="Install a recommended local runtime if no real local backend is available.",
 )
 @click.option("-y", "--yes", is_flag=True, help="Accept runtime installation prompts.")
+@click.option("--no-runner", is_flag=True, help="Disable the invisible local runner.")
+@click.option("--restart-runner", is_flag=True, help="Force restart the local runner.")
 def run_cmd(
     prompt: Optional[str],
     model: Optional[str],
@@ -327,6 +435,8 @@ def run_cmd(
     max_output_tokens: Optional[int],
     install_runtime: Optional[bool],
     yes: bool,
+    no_runner: bool,
+    restart_runner: bool,
 ) -> None:
     """Run a one-shot inference request.
 
@@ -345,6 +455,20 @@ def run_cmd(
         prompt = _read_stdin_text()
     if not prompt:
         raise click.UsageError("Missing prompt. Pass a prompt or pipe stdin.")
+
+    # Try invisible local runner first
+    if _runner_enabled(no_runner):
+        runner_output = _try_runner_response(
+            model,
+            prompt,
+            temperature=temperature,
+            max_output_tokens=max_output_tokens,
+            restart_runner=restart_runner,
+            output_json=output_json,
+        )
+        if runner_output is not None:
+            click.echo(runner_output)
+            return
 
     kernel = _kernel()
     runtime_install_attempted = _prepare_runtime_for_local_run(kernel, model, policy, app, install_runtime, yes)
@@ -411,6 +535,8 @@ async def _stream_run(kernel, prompt, model, policy, app, temperature, max_outpu
 @click.option("--policy", default=None, help="Serving policy preset.")
 @click.option("--json", "output_json", is_flag=True, help="Output full JSON with vectors.")
 @click.option("--jsonl", "output_jsonl", is_flag=True, help="Output NDJSON (one object per input).")
+@click.option("--no-runner", is_flag=True, help="Disable the invisible local runner.")
+@click.option("--restart-runner", is_flag=True, help="Force restart the local runner.")
 def embed_cmd(
     inputs: tuple[str, ...],
     model: Optional[str],
@@ -418,6 +544,8 @@ def embed_cmd(
     policy: Optional[str],
     output_json: bool,
     output_jsonl: bool,
+    no_runner: bool,
+    restart_runner: bool,
 ) -> None:
     """Generate embeddings for text or files.
 
@@ -446,6 +574,21 @@ def embed_cmd(
 
     if not text_inputs:
         raise click.UsageError("Missing input. Pass text, files, or pipe stdin.")
+
+    # Try invisible local runner first
+    if _runner_enabled(no_runner) and model:
+        runner_result = _try_runner_embed(model, text_inputs, restart_runner=restart_runner)
+        if runner_result is not None:
+            if output_jsonl and "data" in runner_result:
+                for item in runner_result["data"]:
+                    click.echo(json.dumps(item))
+            elif output_json:
+                click.echo(json.dumps(runner_result, indent=2))
+            else:
+                count = len(runner_result.get("data", []))
+                dims = len(runner_result["data"][0].get("embedding", [])) if count > 0 else 0
+                click.echo(f"Generated {count} embedding(s) with {dims} dimensions. Use --json to print vectors.")
+            return
 
     kernel = _kernel()
     result = _run_async(
@@ -480,6 +623,8 @@ def embed_cmd(
 @click.option("--policy", default=None, help="Serving policy preset.")
 @click.option("--json", "output_json", is_flag=True, help="Output structured JSON.")
 @click.option("--language", default=None, help="Language hint (BCP 47 code).")
+@click.option("--no-runner", is_flag=True, help="Disable the invisible local runner.")
+@click.option("--restart-runner", is_flag=True, help="Force restart the local runner.")
 def transcribe_cmd(
     audio_file: Optional[str],
     model: Optional[str],
@@ -487,6 +632,8 @@ def transcribe_cmd(
     policy: Optional[str],
     output_json: bool,
     language: Optional[str],
+    no_runner: bool,
+    restart_runner: bool,
 ) -> None:
     """Transcribe audio to text.
 
@@ -511,6 +658,16 @@ def transcribe_cmd(
             raise click.UsageError("Missing audio input. Pass a file or pipe audio bytes.")
     else:
         raise click.UsageError("Missing audio input. Pass a file or pipe audio bytes.")
+
+    # Try invisible local runner first
+    if _runner_enabled(no_runner) and model and audio_file:
+        runner_result = _try_runner_transcribe(model, audio_file, restart_runner=restart_runner, language=language)
+        if runner_result is not None:
+            if output_json:
+                click.echo(json.dumps(runner_result, indent=2))
+            else:
+                click.echo(runner_result.get("text", ""))
+            return
 
     kernel = _kernel()
     result = _run_async(

@@ -35,7 +35,9 @@ class LocalRunnerClient:
         model: str,
         input: str,
         stream: bool = False,
-        **kwargs: Any,
+        temperature: float | None = None,
+        max_tokens: int | None = None,
+        max_output_tokens: int | None = None,
     ) -> dict[str, Any]:
         """Call /v1/chat/completions on the local runner.
 
@@ -49,12 +51,11 @@ class LocalRunnerClient:
             "messages": [{"role": "user", "content": input}],
             "stream": stream,
         }
-        if "temperature" in kwargs and kwargs["temperature"] is not None:
-            payload["temperature"] = kwargs["temperature"]
-        if "max_tokens" in kwargs and kwargs["max_tokens"] is not None:
-            payload["max_tokens"] = kwargs["max_tokens"]
-        if "max_output_tokens" in kwargs and kwargs["max_output_tokens"] is not None:
-            payload["max_tokens"] = kwargs["max_output_tokens"]
+        if temperature is not None:
+            payload["temperature"] = temperature
+        effective_max = max_output_tokens or max_tokens
+        if effective_max is not None:
+            payload["max_tokens"] = effective_max
 
         async with httpx.AsyncClient(timeout=120.0) as client:
             resp = await client.post(
