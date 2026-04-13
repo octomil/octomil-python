@@ -30,13 +30,21 @@ CREATE TABLE IF NOT EXISTS plan_cache (
 CREATE TABLE IF NOT EXISTS benchmark_cache (
     cache_key          TEXT PRIMARY KEY,
     model              TEXT NOT NULL,
+    policy             TEXT NOT NULL DEFAULT '',
     capability         TEXT NOT NULL,
     engine             TEXT NOT NULL,
+    engine_version     TEXT,
+    platform           TEXT NOT NULL DEFAULT '',
+    arch               TEXT NOT NULL DEFAULT '',
+    chip               TEXT,
+    sdk_version        TEXT NOT NULL DEFAULT '',
+    installed_hash     TEXT NOT NULL DEFAULT '',
     tokens_per_second  REAL NOT NULL DEFAULT 0.0,
     ttft_ms            REAL NOT NULL DEFAULT 0.0,
     memory_mb          REAL NOT NULL DEFAULT 0.0,
     metadata_json      TEXT NOT NULL DEFAULT '{}',
-    created_at         REAL NOT NULL
+    created_at         REAL NOT NULL,
+    expires_at         REAL NOT NULL
 );
 """
 
@@ -67,6 +75,7 @@ class RuntimePlannerStore:
         try:
             conn = self._get_conn()
             conn.executescript(_SCHEMA_SQL)
+            self._ensure_benchmark_columns(conn)
         except sqlite3.DatabaseError:
             logger.warning("Corrupt planner DB at %s — recreating", self._db_path, exc_info=True)
             self.close()
@@ -78,8 +87,27 @@ class RuntimePlannerStore:
                 self._conn = None
                 conn = self._get_conn()
                 conn.executescript(_SCHEMA_SQL)
+                self._ensure_benchmark_columns(conn)
             except Exception:
                 logger.error("Failed to recreate planner DB", exc_info=True)
+
+    def _ensure_benchmark_columns(self, conn: sqlite3.Connection) -> None:
+        """Add cache columns for users who tried earlier pre-merge builds."""
+        existing = {row["name"] for row in conn.execute("PRAGMA table_info(benchmark_cache)").fetchall()}
+        columns = {
+            "policy": "TEXT NOT NULL DEFAULT ''",
+            "engine_version": "TEXT",
+            "platform": "TEXT NOT NULL DEFAULT ''",
+            "arch": "TEXT NOT NULL DEFAULT ''",
+            "chip": "TEXT",
+            "sdk_version": "TEXT NOT NULL DEFAULT ''",
+            "installed_hash": "TEXT NOT NULL DEFAULT ''",
+            "expires_at": "REAL NOT NULL DEFAULT 0",
+        }
+        for name, ddl in columns.items():
+            if name not in existing:
+                conn.execute(f"ALTER TABLE benchmark_cache ADD COLUMN {name} {ddl}")
+        conn.commit()
 
     @staticmethod
     def _make_cache_key(**kwargs: str | None) -> str:
@@ -150,6 +178,10 @@ class RuntimePlannerStore:
             ).fetchone()
             if row is None:
                 return None
+            if time.time() > row["expires_at"]:
+                conn.execute("DELETE FROM benchmark_cache WHERE cache_key = ?", (cache_key,))
+                conn.commit()
+                return None
             return dict(row)
         except sqlite3.Error:
             logger.debug("Failed to read benchmark cache", exc_info=True)
@@ -162,10 +194,18 @@ class RuntimePlannerStore:
         model: str,
         capability: str,
         engine: str,
+        policy: str = "",
+        engine_version: str | None = None,
+        platform: str = "",
+        arch: str = "",
+        chip: str | None = None,
+        sdk_version: str = "",
+        installed_hash: str = "",
         tokens_per_second: float = 0.0,
         ttft_ms: float = 0.0,
         memory_mb: float = 0.0,
         metadata_json: str = "{}",
+        ttl_seconds: int = 1_209_600,
     ) -> None:
         """Insert or replace a benchmark result in the cache."""
         now = time.time()
@@ -173,9 +213,28 @@ class RuntimePlannerStore:
             conn = self._get_conn()
             conn.execute(
                 """INSERT OR REPLACE INTO benchmark_cache
-                   (cache_key, model, capability, engine, tokens_per_second, ttft_ms, memory_mb, metadata_json, created_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (cache_key, model, capability, engine, tokens_per_second, ttft_ms, memory_mb, metadata_json, now),
+                   (cache_key, model, policy, capability, engine, engine_version, platform, arch, chip, sdk_version,
+                    installed_hash, tokens_per_second, ttft_ms, memory_mb, metadata_json, created_at, expires_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    cache_key,
+                    model,
+                    policy,
+                    capability,
+                    engine,
+                    engine_version,
+                    platform,
+                    arch,
+                    chip,
+                    sdk_version,
+                    installed_hash,
+                    tokens_per_second,
+                    ttft_ms,
+                    memory_mb,
+                    metadata_json,
+                    now,
+                    now + ttl_seconds,
+                ),
             )
             conn.commit()
         except sqlite3.Error:

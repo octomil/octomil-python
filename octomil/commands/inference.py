@@ -250,6 +250,70 @@ def _chat_policy_prefers_local(
         return False, ""
 
 
+def _capability_runner_target(
+    kernel,
+    capability: str,
+    model: Optional[str],
+    policy: Optional[str],
+    app: Optional[str],
+) -> tuple[bool, str, Optional[str]]:
+    """Return whether a capability should use the runner, plus model/policy."""
+    try:
+        from octomil._generated.routing_policy import RoutingPolicy as ContractRoutingPolicy
+        from octomil.config.local import CAPABILITY_CHAT
+        from octomil.execution.kernel import _resolve_routing_policy
+
+        if capability == CAPABILITY_CHAT:
+            defaults = kernel.resolve_chat_defaults(model=model, policy=policy, app=app)
+        else:
+            defaults = kernel._resolve(capability, model=model, policy=policy, app=app)
+        if inspect.isawaitable(defaults):
+            close = getattr(defaults, "close", None)
+            if callable(close):
+                close()
+            return False, "", None
+
+        effective_model = defaults.model
+        if not isinstance(effective_model, str) or not effective_model:
+            return False, "", None
+
+        routing_policy = _resolve_routing_policy(defaults)
+        prefers_local = (
+            routing_policy.mode == ContractRoutingPolicy.LOCAL_ONLY
+            or routing_policy.mode == ContractRoutingPolicy.LOCAL_FIRST
+            or routing_policy.prefer_local
+        )
+        if routing_policy.mode == ContractRoutingPolicy.CLOUD_ONLY or not prefers_local:
+            return False, effective_model, None
+
+        return True, effective_model, defaults.policy_preset or policy or "local_first"
+    except Exception:
+        return False, "", None
+
+
+def _planner_engine_for_runner(model: str, capability: str, policy: str) -> Optional[str]:
+    """Use the runtime planner to choose the runner engine when possible."""
+    try:
+        from octomil.config.local import CAPABILITY_CHAT, CAPABILITY_EMBEDDING, CAPABILITY_TRANSCRIPTION
+        from octomil.runtime.planner.planner import RuntimePlanner
+
+        planner_capability = {
+            CAPABILITY_CHAT: "responses",
+            CAPABILITY_EMBEDDING: "embeddings",
+            CAPABILITY_TRANSCRIPTION: "transcription",
+        }.get(capability, capability)
+        selection = RuntimePlanner().resolve(
+            model=model,
+            capability=planner_capability,
+            routing_policy=policy,
+        )
+        if selection.locality == "local":
+            return selection.engine
+    except Exception:
+        logger.debug("Runtime planner could not choose runner engine", exc_info=True)
+    return None
+
+
 def _prepare_runtime_for_local_run(
     kernel,
     model: Optional[str],
@@ -318,6 +382,7 @@ def _try_runner_response(
     model: Optional[str],
     prompt: str,
     *,
+    engine: Optional[str] = None,
     temperature: Optional[float] = None,
     max_output_tokens: Optional[int] = None,
     restart_runner: bool = False,
@@ -331,7 +396,7 @@ def _try_runner_response(
         from ..local_runner.manager import LocalRunnerManager
 
         mgr = LocalRunnerManager()
-        handle = mgr.ensure(model=model, restart=restart_runner)
+        handle = mgr.ensure(model=model, engine=engine, restart=restart_runner)
         client = LocalRunnerClient(handle.base_url, handle.token)
 
         result = _run_async(
@@ -356,6 +421,7 @@ def _try_runner_embed(
     model: Optional[str],
     text_inputs: list[str],
     *,
+    engine: Optional[str] = None,
     restart_runner: bool = False,
 ) -> Optional[dict]:
     """Try to run embeddings via the local runner. Returns result dict or None."""
@@ -366,7 +432,7 @@ def _try_runner_embed(
         from ..local_runner.manager import LocalRunnerManager
 
         mgr = LocalRunnerManager()
-        handle = mgr.ensure(model=model, restart=restart_runner)
+        handle = mgr.ensure(model=model, engine=engine, restart=restart_runner)
         client = LocalRunnerClient(handle.base_url, handle.token)
         result = _run_async(client.create_embedding(model=handle.model, input=text_inputs))
         return result
@@ -379,6 +445,7 @@ def _try_runner_transcribe(
     model: Optional[str],
     audio_file: str,
     *,
+    engine: Optional[str] = None,
     restart_runner: bool = False,
     language: Optional[str] = None,
 ) -> Optional[dict]:
@@ -390,7 +457,7 @@ def _try_runner_transcribe(
         from ..local_runner.manager import LocalRunnerManager
 
         mgr = LocalRunnerManager()
-        handle = mgr.ensure(model=model, restart=restart_runner)
+        handle = mgr.ensure(model=model, engine=engine, restart=restart_runner)
         client = LocalRunnerClient(handle.base_url, handle.token)
         kw: dict[str, str] = {}
         if language:
@@ -456,11 +523,17 @@ def run_cmd(
     if not prompt:
         raise click.UsageError("Missing prompt. Pass a prompt or pipe stdin.")
 
-    # Try invisible local runner first
-    if _runner_enabled(no_runner):
+    kernel = _kernel()
+    runtime_install_attempted = _prepare_runtime_for_local_run(kernel, model, policy, app, install_runtime, yes)
+    should_try_runner, runner_model, runner_policy = _capability_runner_target(kernel, "chat", model, policy, app)
+
+    # Try invisible local runner only when the resolved policy prefers local execution.
+    if _runner_enabled(no_runner) and should_try_runner and runner_model and _has_real_local_runtime(runner_model):
+        runner_engine = _planner_engine_for_runner(runner_model, "chat", runner_policy or "local_first")
         runner_output = _try_runner_response(
-            model,
+            runner_model,
             prompt,
+            engine=runner_engine,
             temperature=temperature,
             max_output_tokens=max_output_tokens,
             restart_runner=restart_runner,
@@ -469,9 +542,6 @@ def run_cmd(
         if runner_output is not None:
             click.echo(runner_output)
             return
-
-    kernel = _kernel()
-    runtime_install_attempted = _prepare_runtime_for_local_run(kernel, model, policy, app, install_runtime, yes)
 
     # Default: stream if TTY and not JSON
     should_stream = stream if stream is not None else (_is_tty() and not output_json)
@@ -575,9 +645,24 @@ def embed_cmd(
     if not text_inputs:
         raise click.UsageError("Missing input. Pass text, files, or pipe stdin.")
 
-    # Try invisible local runner first
-    if _runner_enabled(no_runner) and model:
-        runner_result = _try_runner_embed(model, text_inputs, restart_runner=restart_runner)
+    kernel = _kernel()
+    should_try_runner, runner_model, runner_policy = _capability_runner_target(
+        kernel,
+        "embedding",
+        model,
+        policy,
+        app,
+    )
+
+    # Try invisible local runner only when the resolved policy prefers local execution.
+    if _runner_enabled(no_runner) and should_try_runner and runner_model and _has_real_local_runtime(runner_model):
+        runner_engine = _planner_engine_for_runner(runner_model, "embedding", runner_policy or "local_first")
+        runner_result = _try_runner_embed(
+            runner_model,
+            text_inputs,
+            engine=runner_engine,
+            restart_runner=restart_runner,
+        )
         if runner_result is not None:
             if output_jsonl and "data" in runner_result:
                 for item in runner_result["data"]:
@@ -590,7 +675,6 @@ def embed_cmd(
                 click.echo(f"Generated {count} embedding(s) with {dims} dimensions. Use --json to print vectors.")
             return
 
-    kernel = _kernel()
     result = _run_async(
         kernel.create_embeddings(
             text_inputs,
@@ -659,9 +743,31 @@ def transcribe_cmd(
     else:
         raise click.UsageError("Missing audio input. Pass a file or pipe audio bytes.")
 
-    # Try invisible local runner first
-    if _runner_enabled(no_runner) and model and audio_file:
-        runner_result = _try_runner_transcribe(model, audio_file, restart_runner=restart_runner, language=language)
+    kernel = _kernel()
+    should_try_runner, runner_model, runner_policy = _capability_runner_target(
+        kernel,
+        "transcription",
+        model,
+        policy,
+        app,
+    )
+
+    # Try invisible local runner only when the resolved policy prefers local execution.
+    if (
+        _runner_enabled(no_runner)
+        and should_try_runner
+        and runner_model
+        and audio_file
+        and _has_real_local_runtime(runner_model)
+    ):
+        runner_engine = _planner_engine_for_runner(runner_model, "transcription", runner_policy or "local_first")
+        runner_result = _try_runner_transcribe(
+            runner_model,
+            audio_file,
+            engine=runner_engine,
+            restart_runner=restart_runner,
+            language=language,
+        )
         if runner_result is not None:
             if output_json:
                 click.echo(json.dumps(runner_result, indent=2))
@@ -669,7 +775,6 @@ def transcribe_cmd(
                 click.echo(runner_result.get("text", ""))
             return
 
-    kernel = _kernel()
     result = _run_async(
         kernel.transcribe_audio(
             audio_data,

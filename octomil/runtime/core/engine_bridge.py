@@ -183,6 +183,26 @@ def engine_registry_factory(model_id: str) -> Optional[ModelRuntime]:
         from octomil.runtime.engines import get_registry
 
         registry = get_registry()
+        planner_selection = _select_engine_with_planner(model_id, "responses", "local_first")
+        if planner_selection is not None and planner_selection.locality == "local" and planner_selection.engine:
+            engine = registry.get_engine(planner_selection.engine)
+            if engine is not None and engine.detect() and engine.name != "echo":
+                try:
+                    backend = engine.create_backend(model_id)
+                except (ValueError, RuntimeError, ImportError):
+                    backend = None
+                if backend is not None:
+                    adapter = InferenceBackendAdapter(
+                        backend=backend,
+                        model_name=model_id,
+                        capabilities=RuntimeCapabilities(
+                            tool_call_tier=_infer_tool_call_tier(model_id),
+                            supports_streaming=True,
+                        ),
+                    )
+                    _runtime_cache[model_id] = adapter
+                    return adapter
+
         engine, real_engines = _select_real_engine(registry, model_id)
         if engine is None:
             return None

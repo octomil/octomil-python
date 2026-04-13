@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+from octomil.runtime.core.base import BenchmarkResult
 from octomil.runtime.planner.client import RuntimePlannerClient
 from octomil.runtime.planner.device_profile import collect_device_runtime_profile
 from octomil.runtime.planner.planner import RuntimePlanner
@@ -112,6 +113,22 @@ class TestPlannerStore:
         assert result is not None
         assert result["engine"] == "mlx-lm"
         assert result["tokens_per_second"] == 42.5
+        store.close()
+
+    def test_store_expired_benchmark_returns_none(self, tmp_path: Path):
+        """Expired benchmark cache entries should be ignored and deleted."""
+        db = tmp_path / "test.sqlite3"
+        store = RuntimePlannerStore(db_path=db)
+
+        store.put_benchmark(
+            "expired_bm",
+            model="gemma-2b",
+            capability="text",
+            engine="mlx-lm",
+            ttl_seconds=0,
+        )
+
+        assert store.get_benchmark("expired_bm") is None
         store.close()
 
     def test_store_corrupt_db_recreated(self, tmp_path: Path):
@@ -325,6 +342,39 @@ class TestRuntimePlanner:
         assert result.engine == "mlx-lm"
         mock_client.fetch_plan.assert_called_once()
 
+    def test_planner_canonicalizes_legacy_server_engine_aliases(self, tmp_path: Path):
+        """Old server/cache aliases should resolve to SDK engine ids."""
+        mock_client = MagicMock(spec=RuntimePlannerClient)
+        mock_client.fetch_plan.return_value = RuntimePlanResponse(
+            model="gemma-2b",
+            capability="text",
+            policy="local_first",
+            candidates=[
+                RuntimeCandidatePlan(
+                    locality="local",
+                    priority=1,
+                    confidence=0.95,
+                    reason="legacy alias",
+                    engine="llamacpp",
+                )
+            ],
+        )
+
+        planner = self._make_planner(tmp_path, client=mock_client)
+        device = DeviceRuntimeProfile(
+            sdk="python",
+            sdk_version="4.6.0",
+            platform="Linux",
+            arch="x86_64",
+            installed_runtimes=[InstalledRuntime(engine="llama.cpp")],
+        )
+
+        with patch("octomil.runtime.planner.planner.collect_device_runtime_profile", return_value=device):
+            result = planner.resolve(model="gemma-2b", capability="text")
+
+        assert result.source == "server_plan"
+        assert result.engine == "llama.cpp"
+
     def test_planner_falls_back_to_local_when_server_unreachable(self, tmp_path: Path):
         """When server is unreachable, planner should still work via local path."""
         mock_client = MagicMock(spec=RuntimePlannerClient)
@@ -428,6 +478,49 @@ class TestRuntimePlanner:
             assert result2.source == "cache"
             # fetch_plan should NOT have been called again
             assert mock_client.fetch_plan.call_count == 1
+
+    def test_planner_uploads_contract_shaped_benchmark_payload(self, tmp_path: Path):
+        """Local benchmark telemetry should match the server benchmark contract."""
+        mock_client = MagicMock(spec=RuntimePlannerClient)
+        mock_client.fetch_plan.return_value = None
+        planner = self._make_planner(tmp_path, client=mock_client)
+        device = DeviceRuntimeProfile(
+            sdk="python",
+            sdk_version="4.6.0",
+            platform="Darwin",
+            arch="arm64",
+            chip="M3",
+            installed_runtimes=[InstalledRuntime(engine="mlx-lm", version="0.16.0")],
+        )
+
+        fake_engine = MagicMock()
+        fake_engine.name = "mlx-lm"
+        detection = MagicMock(available=True, engine=fake_engine)
+        benchmark = BenchmarkResult(
+            engine_name="mlx-lm",
+            tokens_per_second=42.0,
+            ttft_ms=120.0,
+            memory_mb=512.0,
+        )
+        ranked = MagicMock(engine=fake_engine, result=benchmark)
+        registry = MagicMock()
+        registry.detect_all.return_value = [detection]
+        registry.benchmark_all.return_value = [ranked]
+
+        with (
+            patch("octomil.runtime.planner.planner.collect_device_runtime_profile", return_value=device),
+            patch("octomil.runtime.engines.get_registry", return_value=registry),
+        ):
+            result = planner.resolve(model="gemma-2b", capability="responses")
+
+        assert result.engine == "mlx-lm"
+        payload = mock_client.upload_benchmark.call_args.args[0]
+        assert payload["source"] == "planner"
+        assert payload["capability"] == "responses"
+        assert payload["device"]["platform"] == "Darwin"
+        assert payload["success"] is True
+        assert payload["tokens_per_second"] == 42.0
+        assert payload["benchmark_tokens"] >= 1
 
 
 # ---------------------------------------------------------------------------

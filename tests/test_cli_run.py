@@ -227,6 +227,54 @@ class TestRunCommand:
             assert "Hello from cloud!" in result.output
             assert "Using hosted cloud fallback" in result.output
 
+    def test_run_uses_runner_for_resolved_default_model(self, runner):
+        with patch("octomil.commands.inference._kernel") as mock_kf:
+            mock_kernel = AsyncMock()
+            mock_kernel.resolve_chat_defaults = MagicMock(
+                return_value=ResolvedExecutionDefaults(
+                    model="gemma3-1b",
+                    policy_preset="local_first",
+                )
+            )
+            mock_kernel.create_response = AsyncMock(return_value=_mock_result("kernel"))
+            mock_kf.return_value = mock_kernel
+
+            with patch("octomil.commands.inference._has_real_local_runtime", return_value=True):
+                with patch("octomil.commands.inference._planner_engine_for_runner", return_value="mlx-lm"):
+                    with patch(
+                        "octomil.commands.inference._try_runner_response",
+                        return_value="runner local",
+                    ) as mock_runner:
+                        result = runner.invoke(main, ["run", "--no-stream", "Hello!"])
+
+            assert result.exit_code == 0
+            assert result.output.strip() == "runner local"
+            mock_runner.assert_called_once()
+            assert mock_runner.call_args.args[:2] == ("gemma3-1b", "Hello!")
+            assert mock_runner.call_args.kwargs["engine"] == "mlx-lm"
+            mock_kernel.create_response.assert_not_awaited()
+
+    def test_run_cloud_only_skips_local_runner(self, runner):
+        with patch("octomil.commands.inference._kernel") as mock_kf:
+            mock_kernel = AsyncMock()
+            mock_kernel.resolve_chat_defaults = MagicMock(
+                return_value=ResolvedExecutionDefaults(
+                    model="gemma3-1b",
+                    policy_preset="cloud_only",
+                )
+            )
+            mock_kernel.create_response = AsyncMock(return_value=_mock_result("cloud path"))
+            mock_kf.return_value = mock_kernel
+
+            with patch("octomil.commands.inference._has_real_local_runtime", return_value=True):
+                with patch("octomil.commands.inference._try_runner_response") as mock_runner:
+                    result = runner.invoke(main, ["run", "--no-stream", "--policy", "cloud_only", "Hello!"])
+
+            assert result.exit_code == 0
+            assert "cloud path" in result.output
+            mock_runner.assert_not_called()
+            mock_kernel.create_response.assert_awaited_once()
+
 
 # ---------------------------------------------------------------------------
 # octomil embed

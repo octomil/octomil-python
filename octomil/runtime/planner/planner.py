@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from dataclasses import asdict
 
 from .client import RuntimePlannerClient
@@ -16,6 +17,16 @@ from .schemas import (
 from .store import RuntimePlannerStore
 
 logger = logging.getLogger(__name__)
+
+_ENGINE_ALIASES = {
+    "mlx": "mlx-lm",
+    "mlx_lm": "mlx-lm",
+    "llamacpp": "llama.cpp",
+    "llama_cpp": "llama.cpp",
+    "whisper": "whisper.cpp",
+    "whispercpp": "whisper.cpp",
+    "whisper_cpp": "whisper.cpp",
+}
 
 
 class RuntimePlanner:
@@ -40,7 +51,7 @@ class RuntimePlanner:
         client: RuntimePlannerClient | None = None,
     ) -> None:
         self._store = store or RuntimePlannerStore()
-        self._client = client
+        self._client = client if client is not None else _client_from_env()
 
     def resolve(
         self,
@@ -134,16 +145,17 @@ class RuntimePlanner:
         is_private: bool,
     ) -> RuntimeSelection | None:
         """Try to select a runtime from a server plan."""
-        installed_engines = {r.engine for r in device.installed_runtimes}
+        installed_engines = {_canonical_engine_id(r.engine) for r in device.installed_runtimes}
 
         # Try primary candidates
         for candidate in plan.candidates:
             if candidate.locality == "local":
-                if candidate.engine and candidate.engine not in installed_engines:
+                engine = _canonical_engine_id(candidate.engine)
+                if engine and engine not in installed_engines:
                     continue  # Skip engines we don't have
                 return RuntimeSelection(
                     locality="local",
-                    engine=candidate.engine,
+                    engine=engine or None,
                     artifact=candidate.artifact,
                     benchmark_ran=False,
                     source="server_plan",
@@ -163,10 +175,11 @@ class RuntimePlanner:
 
         # Try fallback candidates
         for candidate in plan.fallback_candidates:
-            if candidate.locality == "local" and candidate.engine in installed_engines:
+            engine = _canonical_engine_id(candidate.engine)
+            if candidate.locality == "local" and engine in installed_engines:
                 return RuntimeSelection(
                     locality="local",
-                    engine=candidate.engine,
+                    engine=engine,
                     artifact=candidate.artifact,
                     benchmark_ran=False,
                     source="server_plan",
@@ -196,11 +209,7 @@ class RuntimePlanner:
             )
 
         # Step 5: Check local benchmark cache
-        bm_cache_key = self._store._make_cache_key(
-            model=model,
-            capability=capability,
-            type="benchmark",
-        )
+        bm_cache_key = _benchmark_cache_key(model=model, capability=capability, policy=routing_policy, device=device)
         cached_bm = self._store.get_benchmark(bm_cache_key)
         if cached_bm is not None:
             return RuntimeSelection(
@@ -213,19 +222,27 @@ class RuntimePlanner:
 
         # Step 6: Run local benchmark selection
         try:
-            from octomil.runtime.core.engine_bridge import _select_real_engine
             from octomil.runtime.engines import get_registry
 
             registry = get_registry()
-            engine, real_engines = _select_real_engine(registry, model)
+            engine, benchmark_result = _select_local_engine(registry, model)
 
-            if engine is not None:
+            if engine is not None and benchmark_result is not None:
                 # Step 7: Persist benchmark locally
                 self._store.put_benchmark(
                     bm_cache_key,
                     model=model,
                     capability=capability,
                     engine=engine.name,
+                    policy=routing_policy,
+                    platform=device.platform,
+                    arch=device.arch,
+                    chip=device.chip,
+                    sdk_version=device.sdk_version,
+                    installed_hash=_installed_runtimes_hash(device),
+                    tokens_per_second=benchmark_result.tokens_per_second,
+                    ttft_ms=benchmark_result.ttft_ms,
+                    memory_mb=benchmark_result.memory_mb,
                 )
 
                 # Step 8: Upload telemetry best-effort (not for private)
@@ -233,11 +250,19 @@ class RuntimePlanner:
                     try:
                         self._client.upload_benchmark(
                             {
+                                "source": "planner",
                                 "model": model,
                                 "capability": capability,
                                 "engine": engine.name,
-                                "platform": device.platform,
-                                "arch": device.arch,
+                                "device": asdict(device),
+                                "success": True,
+                                "tokens_per_second": benchmark_result.tokens_per_second,
+                                "ttft_ms": benchmark_result.ttft_ms,
+                                "peak_memory_bytes": int(benchmark_result.memory_mb * 1024 * 1024)
+                                if benchmark_result.memory_mb
+                                else None,
+                                "benchmark_tokens": _benchmark_tokens(),
+                                "metadata": {"selection_source": "local_benchmark"},
                             }
                         )
                     except Exception:
@@ -278,16 +303,16 @@ class RuntimePlanner:
     ) -> RuntimeSelection:
         """Convert a cached plan dict back into a RuntimeSelection."""
         candidates = plan_dict.get("candidates", [])
-        installed_engines = {r.engine for r in device.installed_runtimes}
+        installed_engines = {_canonical_engine_id(r.engine) for r in device.installed_runtimes}
 
         for c in candidates:
             if c.get("locality") == "local":
-                engine = c.get("engine")
+                engine = _canonical_engine_id(c.get("engine"))
                 if engine and engine not in installed_engines:
                     continue
                 return RuntimeSelection(
                     locality="local",
-                    engine=engine,
+                    engine=engine or None,
                     source=source,
                     reason=c.get("reason", ""),
                 )
@@ -306,3 +331,75 @@ class RuntimePlanner:
             source="fallback",
             reason="cached plan had no viable candidates",
         )
+
+
+def _client_from_env() -> RuntimePlannerClient | None:
+    api_key = os.environ.get("OCTOMIL_SERVER_KEY") or os.environ.get("OCTOMIL_API_KEY")
+    if not api_key:
+        return None
+    return RuntimePlannerClient(
+        base_url=os.environ.get("OCTOMIL_API_BASE") or "https://api.octomil.com",
+        api_key=api_key,
+    )
+
+
+def _canonical_engine_id(engine: str | None) -> str:
+    if not engine:
+        return ""
+    cleaned = engine.strip()
+    return _ENGINE_ALIASES.get(cleaned.lower(), cleaned)
+
+
+def _benchmark_tokens() -> int:
+    raw = os.environ.get("OCTOMIL_RUNTIME_BENCHMARK_TOKENS")
+    if raw is None:
+        return 16
+    try:
+        return max(1, int(raw))
+    except ValueError:
+        return 16
+
+
+def _installed_runtimes_hash(device: DeviceRuntimeProfile) -> str:
+    import hashlib
+
+    runtimes = ",".join(
+        sorted(
+            f"{runtime.engine}:{runtime.version or ''}" for runtime in device.installed_runtimes if runtime.available
+        )
+    )
+    return hashlib.sha256(runtimes.encode()).hexdigest()[:16]
+
+
+def _benchmark_cache_key(
+    *,
+    model: str,
+    capability: str,
+    policy: str,
+    device: DeviceRuntimeProfile,
+) -> str:
+    return RuntimePlannerStore._make_cache_key(
+        model=model,
+        capability=capability,
+        policy=policy,
+        sdk_version=device.sdk_version,
+        platform=device.platform,
+        arch=device.arch,
+        chip=device.chip,
+        installed_hash=_installed_runtimes_hash(device),
+    )
+
+
+def _select_local_engine(registry, model: str):
+    """Benchmark installed real engines and return the fastest successful one."""
+    detections = registry.detect_all(model)
+    real_engines = [d.engine for d in detections if d.available and d.engine.name != "echo"]
+    if not real_engines:
+        return None, None
+
+    ranked = registry.benchmark_all(model, n_tokens=_benchmark_tokens(), engines=real_engines)
+    for ranked_engine in ranked:
+        if ranked_engine.engine.name == "echo" or not ranked_engine.result.ok:
+            continue
+        return ranked_engine.engine, ranked_engine.result
+    return None, None
