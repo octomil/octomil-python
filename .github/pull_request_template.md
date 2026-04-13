@@ -1,24 +1,23 @@
-## Summary
+## Scope
 
-<\!-- Brief description of what this PR does -->
+- [ ] Contract/API semantics
+- [ ] Server/control plane
+- [ ] Dashboard/docs
+- [ ] SDK facade
+- [ ] Local runtime/runner
+- [ ] Catalog/model data
+- [ ] Generated code only
+- [ ] Tests only
 
-## Changes
+## Source Of Truth
 
--
--
--
+- What is the canonical source changed?
+- Which repos consume this?
 
-## Testing
+## User-Facing Behavior
 
-<\!-- How was this tested? -->
+## Privacy/Security
 
-- [ ] Unit tests pass
-- [ ] Integration tests pass
-- [ ] Manual testing completed
+## Tests
 
-## Checklist
-
-- [ ] Code follows project style guidelines
-- [ ] Tests added/updated for new functionality
-- [ ] Documentation updated (if needed)
-- [ ] No breaking changes (or documented)
+## Follow-Ups
