@@ -16,6 +16,7 @@ COMMAND_SECTIONS: dict[str, list[str]] = {
         "responses",
         "embeddings",
         "audio",
+        "local",
         "train",
         "federation",
         "mcp",

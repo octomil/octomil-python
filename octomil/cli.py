@@ -62,6 +62,7 @@ from octomil.commands import (  # noqa: E402
     federation,
     inference,
     interactive,
+    local,
     model_ops,
     serve,
     setup,
@@ -71,6 +72,7 @@ from octomil.commands import (  # noqa: E402
 for _mod in [
     inference,
     serve,
+    local,
     model_ops,
     deploy,
     benchmark,

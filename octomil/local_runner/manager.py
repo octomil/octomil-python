@@ -66,6 +66,8 @@ class LocalRunnerHandle:
     token: str
     model: str
     engine: str
+    port: int = 0
+    pid: int = 0
 
 
 @dataclass
@@ -77,6 +79,7 @@ class LocalRunnerStatus:
     port: int | None = None
     model: str | None = None
     engine: str | None = None
+    base_url: str | None = None
     uptime_seconds: float = 0.0
     idle_timeout_seconds: int = 0
     warm: bool = False
@@ -151,6 +154,8 @@ class LocalRunnerManager:
                         token=token,
                         model=manifest.model,
                         engine=manifest.engine,
+                        port=manifest.port,
+                        pid=manifest.pid,
                     )
                 # Incompatible or dead -- clean up
                 if self._pid_exists(manifest.pid):
@@ -166,6 +171,8 @@ class LocalRunnerManager:
                 token=token,
                 model=manifest.model,
                 engine=manifest.engine,
+                port=manifest.port,
+                pid=manifest.pid,
             )
 
     def status(self) -> LocalRunnerStatus:
@@ -185,6 +192,7 @@ class LocalRunnerManager:
             port=manifest.port,
             model=manifest.model,
             engine=manifest.engine,
+            base_url=manifest.base_url,
             uptime_seconds=uptime,
             idle_timeout_seconds=manifest.idle_timeout_seconds,
             warm=alive,
