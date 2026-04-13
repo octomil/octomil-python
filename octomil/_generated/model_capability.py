@@ -18,3 +18,5 @@ class ModelCapability(str, Enum):
     """Categorization of text or images into labels."""
     REASONING = "reasoning"
     """Chain-of-thought reasoning with separable thinking tokens (e.g. Qwen3, DeepSeek-R1)."""
+    VISION = "vision"
+    """Image and video understanding. Accepts visual input alongside text for multimodal chat."""

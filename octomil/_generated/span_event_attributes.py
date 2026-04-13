@@ -19,6 +19,9 @@ OCTOMIL_RUNTIME_EXECUTOR = "octomil.runtime.executor"
 OCTOMIL_RUNTIME_INIT_MS = "octomil.runtime.init_ms"
 OCTOMIL_TOOL_EXTRACTION_STRATEGY = "octomil.tool.extraction_strategy"
 OCTOMIL_TOOL_RAW_TEXT_PREVIEW = "octomil.tool.raw_text_preview"
+OCTOMIL_KV_CACHE_STRATEGY = "octomil.kv_cache.strategy"
+OCTOMIL_KV_CACHE_QUANTIZATION_BITS = "octomil.kv_cache.quantization_bits"
+OCTOMIL_KV_CACHE_BACKEND = "octomil.kv_cache.backend"
 
 EVENT_REQUIRED_ATTRIBUTES: dict[str, list[str]] = {
     "first_token": ["octomil.ttft_ms"],
@@ -32,4 +35,5 @@ EVENT_REQUIRED_ATTRIBUTES: dict[str, list[str]] = {
     "runtime_initialized": ["octomil.runtime.executor", "octomil.runtime.init_ms"],
     "tool_call_parse_succeeded": ["octomil.tool.name", "octomil.tool.extraction_strategy"],
     "tool_call_parse_failed": ["octomil.tool.extraction_strategy"],
+    "kv_cache_applied": ["octomil.kv_cache.strategy"],
 }

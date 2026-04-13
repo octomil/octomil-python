@@ -38,6 +38,9 @@ ALL_CODES = [
     "stream_interrupted",
     "policy_denied",
     "cloud_fallback_disallowed",
+    "cloud_credentials_missing",
+    "cloud_credentials_revoked",
+    "cloud_provider_auth_failed",
     "max_tool_rounds_exceeded",
     "control_sync_failed",
     "assignment_not_found",
@@ -51,8 +54,8 @@ ALL_CODES = [
 
 
 class TestOctomilErrorCodeEnum:
-    def test_has_exactly_36_members(self) -> None:
-        assert len(OctomilErrorCode) == 36
+    def test_has_exactly_39_members(self) -> None:
+        assert len(OctomilErrorCode) == 39
 
     @pytest.mark.parametrize("value", ALL_CODES)
     def test_all_canonical_codes_exist(self, value: str) -> None:

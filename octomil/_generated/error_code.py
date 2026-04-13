@@ -59,6 +59,12 @@ class ErrorCode(str, Enum):
     """Routing policy explicitly denied the request"""
     CLOUD_FALLBACK_DISALLOWED = "cloud_fallback_disallowed"
     """Local inference failed and cloud fallback is disabled by policy"""
+    CLOUD_CREDENTIALS_MISSING = "cloud_credentials_missing"
+    """No provider credential configured for the requested cloud provider (no org BYOK and no Octomil-managed credential available)"""
+    CLOUD_CREDENTIALS_REVOKED = "cloud_credentials_revoked"
+    """The provider credential used for cloud inference has been revoked"""
+    CLOUD_PROVIDER_AUTH_FAILED = "cloud_provider_auth_failed"
+    """Cloud provider rejected the credential (invalid API key, expired, or insufficient permissions)"""
     MAX_TOOL_ROUNDS_EXCEEDED = "max_tool_rounds_exceeded"
     """Tool execution loop hit the iteration limit"""
     TRAINING_FAILED = "training_failed"
@@ -228,6 +234,15 @@ ERROR_CLASSIFICATION: dict[ErrorCode, ErrorClassification] = {
     ),
     ErrorCode.CLOUD_FALLBACK_DISALLOWED: ErrorClassification(
         ErrorCategory.POLICY, RetryClass.NEVER, False, SuggestedAction.CHANGE_POLICY_OR_FIX_LOCAL
+    ),
+    ErrorCode.CLOUD_CREDENTIALS_MISSING: ErrorClassification(
+        ErrorCategory.AUTH, RetryClass.NEVER, False, SuggestedAction.FIX_CREDENTIALS
+    ),
+    ErrorCode.CLOUD_CREDENTIALS_REVOKED: ErrorClassification(
+        ErrorCategory.AUTH, RetryClass.NEVER, False, SuggestedAction.FIX_CREDENTIALS
+    ),
+    ErrorCode.CLOUD_PROVIDER_AUTH_FAILED: ErrorClassification(
+        ErrorCategory.AUTH, RetryClass.NEVER, False, SuggestedAction.FIX_CREDENTIALS
     ),
     ErrorCode.MAX_TOOL_ROUNDS_EXCEEDED: ErrorClassification(
         ErrorCategory.POLICY, RetryClass.NEVER, False, SuggestedAction.INCREASE_LIMIT_OR_SIMPLIFY

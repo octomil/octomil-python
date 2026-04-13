@@ -38,3 +38,5 @@ class ArtifactStatus(str, Enum):
     """Runtime loaded the artifact but it failed the post-load health check."""
     ROLLBACK_PENDING = "rollback_pending"
     """Activation failed; system is reverting to the previous artifact version."""
+    ROLLED_BACK = "rolled_back"
+    """Activation failed and device has successfully reverted to the previous artifact version."""
