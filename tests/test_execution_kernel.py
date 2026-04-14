@@ -470,3 +470,102 @@ class TestKernelStreamChatMessages:
         assert chunks[-1].done is True
         assert chunks[-1].result is not None
         assert chunks[-1].result.output_text == "Hi!"
+
+
+# ---------------------------------------------------------------------------
+# Kernel — resolve_chat_routing
+# ---------------------------------------------------------------------------
+
+
+class TestResolveChatRouting:
+    """Unit tests for ExecutionKernel.resolve_chat_routing — covers all presets
+    and missing local/cloud availability cases."""
+
+    def test_private_returns_local_only(self):
+        kernel = _make_kernel(policy="private")
+        decision = kernel.resolve_chat_routing(local_available=True)
+        assert decision.model == "test-model"
+        assert decision.primary_locality == "on_device"
+        assert decision.fallback_locality is None
+        assert decision.policy_preset == "private"
+
+    def test_private_no_local_raises(self):
+        kernel = _make_kernel(policy="private")
+        with pytest.raises(RuntimeError, match="local"):
+            kernel.resolve_chat_routing(local_available=False)
+
+    def test_cloud_only_returns_cloud(self, monkeypatch):
+        monkeypatch.setenv("OCTOMIL_SERVER_KEY", "test-key")
+        config = LocalOctomilConfig(
+            capabilities={CAPABILITY_CHAT: CapabilityDefault(model="test-model", policy="cloud_only")},
+            cloud_profiles={"default": CloudProfile()},
+        )
+        kernel = ExecutionKernel(config_set=LoadedConfigSet(project=config))
+        decision = kernel.resolve_chat_routing(local_available=False, cloud_available=True)
+        assert decision.primary_locality == "cloud"
+        assert decision.fallback_locality is None
+        assert decision.policy_preset == "cloud_only"
+
+    def test_cloud_only_no_cloud_raises(self, monkeypatch):
+        monkeypatch.delenv("OCTOMIL_SERVER_KEY", raising=False)
+        kernel = _make_kernel(policy="cloud_only")
+        with pytest.raises(RuntimeError, match="cloud"):
+            kernel.resolve_chat_routing(local_available=True, cloud_available=False)
+
+    def test_local_first_with_both_available(self):
+        kernel = _make_kernel(policy="local_first")
+        decision = kernel.resolve_chat_routing(local_available=True, cloud_available=True)
+        assert decision.primary_locality == "on_device"
+        assert decision.fallback_locality == "cloud"
+
+    def test_local_first_no_local_falls_back(self):
+        kernel = _make_kernel(policy="local_first")
+        decision = kernel.resolve_chat_routing(local_available=False, cloud_available=True)
+        assert decision.primary_locality == "cloud"
+
+    def test_cloud_first_with_both_available(self, monkeypatch):
+        monkeypatch.setenv("OCTOMIL_SERVER_KEY", "test-key")
+        config = LocalOctomilConfig(
+            capabilities={CAPABILITY_CHAT: CapabilityDefault(model="test-model", policy="cloud_first")},
+            cloud_profiles={"default": CloudProfile()},
+        )
+        kernel = ExecutionKernel(config_set=LoadedConfigSet(project=config))
+        decision = kernel.resolve_chat_routing(local_available=True, cloud_available=True)
+        assert decision.primary_locality == "cloud"
+        assert decision.fallback_locality == "on_device"
+
+    def test_cloud_first_no_cloud_falls_back(self, monkeypatch):
+        monkeypatch.setenv("OCTOMIL_SERVER_KEY", "test-key")
+        config = LocalOctomilConfig(
+            capabilities={CAPABILITY_CHAT: CapabilityDefault(model="test-model", policy="cloud_first")},
+            cloud_profiles={"default": CloudProfile()},
+        )
+        kernel = ExecutionKernel(config_set=LoadedConfigSet(project=config))
+        decision = kernel.resolve_chat_routing(local_available=True, cloud_available=False)
+        assert decision.primary_locality == "on_device"
+
+    def test_performance_first_prefers_local(self):
+        kernel = _make_kernel(policy="performance_first")
+        decision = kernel.resolve_chat_routing(local_available=True, cloud_available=True)
+        assert decision.primary_locality == "on_device"
+
+    def test_explicit_model_overrides_config(self):
+        kernel = _make_kernel(model="config-model")
+        decision = kernel.resolve_chat_routing(model="explicit-model", local_available=True)
+        assert decision.model == "explicit-model"
+
+    def test_no_model_raises(self):
+        config = LocalOctomilConfig(capabilities={})
+        kernel = ExecutionKernel(config_set=LoadedConfigSet(project=config))
+        with patch("octomil.config.local._BUILTIN_DEFAULTS", {}):
+            with pytest.raises(RuntimeError, match="No default model"):
+                kernel.resolve_chat_routing(local_available=True)
+
+    def test_cloud_available_auto_resolved_from_config(self, monkeypatch):
+        """When cloud_available is None, kernel checks config for cloud credentials."""
+        monkeypatch.delenv("OCTOMIL_SERVER_KEY", raising=False)
+        kernel = _make_kernel(policy="local_first")
+        # No cloud profile or key: cloud_available should auto-resolve to False
+        decision = kernel.resolve_chat_routing(local_available=True, cloud_available=None)
+        assert decision.primary_locality == "on_device"
+        assert decision.fallback_locality is None  # no cloud available means no fallback

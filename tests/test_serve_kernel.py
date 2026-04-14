@@ -522,6 +522,69 @@ class TestStreamingRouting:
                 assert "data:" in text
                 assert "[DONE]" in text
 
+    @pytest.mark.asyncio
+    async def test_streaming_does_not_fallback_after_bytes_emitted(self, monkeypatch):
+        """Once streaming has started emitting bytes, fallback must not be attempted.
+
+        The current implementation sends the stream to the primary backend
+        only (no streaming fallback).  If the primary fails mid-stream,
+        the error propagates rather than silently switching backends.
+
+        We verify that _stream_response routes to the primary backend and
+        does not invoke the cloud backend when the local one fails mid-stream.
+        """
+        monkeypatch.setenv("OCTOMIL_SERVER_KEY", "test-key")
+        config = LocalOctomilConfig(
+            capabilities={CAPABILITY_CHAT: CapabilityDefault(model="test-model", policy="local_first")},
+            cloud_profiles={"default": CloudProfile()},
+        )
+        config_set = LoadedConfigSet(project=config)
+
+        # Build a local backend whose stream yields one chunk then errors
+        class _FailMidStreamBackend:
+            name = "fail-mid"
+            attention_backend = "standard"
+
+            def load_model(self, name: str) -> None:
+                pass
+
+            def generate(self, req: Any) -> tuple[str, InferenceMetrics]:
+                return "[fail-mid] ok", InferenceMetrics(total_tokens=1)
+
+            async def generate_stream(self, req: Any):
+                yield GenerationChunk(text="partial")
+                raise RuntimeError("mid-stream failure")
+
+            def list_models(self) -> list[str]:
+                return ["test-model"]
+
+        fail_backend = _FailMidStreamBackend()
+        fake_cloud = _FakeCloudBackend()
+
+        with patch("octomil.serve.app._detect_backend", return_value=fail_backend):
+            with patch("octomil.serve.app._create_cloud_backend_from_profile", return_value=fake_cloud):
+                app = create_app("test-model", config_set=config_set, max_queue_depth=0)
+                await _start_lifespan(app)
+                async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                    # The mid-stream error propagates through ASGI.
+                    # httpx may raise or return partial data depending on
+                    # transport behaviour.  Either way, cloud must NOT be used.
+                    try:
+                        resp = await client.post(
+                            "/v1/chat/completions",
+                            json={
+                                "model": "test-model",
+                                "messages": [{"role": "user", "content": "hello"}],
+                                "stream": True,
+                            },
+                        )
+                        body = resp.text
+                    except Exception:
+                        body = ""
+
+                    # Cloud backend text must NOT appear — no mid-stream fallback
+                    assert "[cloud:" not in body
+
 
 # ---------------------------------------------------------------------------
 # WS10 — Existing --cloud flag still works
@@ -557,6 +620,50 @@ class TestExistingCloudFlag:
                     },
                 )
                 assert resp.status_code == 200
+                instance.generate.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_catalog_cloud_model_path_still_works_or_is_untouched(self):
+        """Catalog :cloud model path uses CloudConfig, not kernel routing.
+
+        When a model is passed with `:cloud` suffix via the CLI serve
+        command, the CloudConfig is constructed from the catalog entry
+        and passed directly to create_app.  The kernel routing path
+        should not interfere with this flow.
+        """
+        from octomil.serve.config import CloudConfig
+
+        # Simulate what the serve command builds for a catalog :cloud model
+        catalog_cloud_cfg = CloudConfig(
+            base_url="https://provider.example.com/v1",
+            api_key="catalog-key",
+            model="gpt-4o-mini",
+        )
+
+        with patch("octomil.serve.backends.cloud.CloudInferenceBackend") as MockCloud:
+            instance = MagicMock()
+            instance.name = "cloud"
+            instance.generate.return_value = (
+                "catalog cloud response",
+                InferenceMetrics(total_tokens=3),
+            )
+            instance.list_models.return_value = ["gpt-4o-mini"]
+            MockCloud.return_value = instance
+
+            # No config_set — catalog :cloud path does not use kernel
+            app = create_app("gpt-4o-mini", cloud_config=catalog_cloud_cfg)
+            await _start_lifespan(app)
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                resp = await client.post(
+                    "/v1/chat/completions",
+                    json={
+                        "model": "gpt-4o-mini",
+                        "messages": [{"role": "user", "content": "hello"}],
+                    },
+                )
+                assert resp.status_code == 200
+                data = resp.json()
+                assert data["choices"][0]["message"]["content"] == "catalog cloud response"
                 instance.generate.assert_called_once()
 
 
