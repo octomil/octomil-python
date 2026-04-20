@@ -37,6 +37,9 @@ jobs:
       - name: Build package
         run: python -m build
 
+      - name: Verify wheel facade export
+        run: scripts/check-wheel-facade-export.sh
+
       - name: Determine version tag
         id: version
         env:

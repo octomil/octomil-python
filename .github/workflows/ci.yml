@@ -42,6 +42,10 @@ jobs:
       - name: Run tests with coverage
         run: pytest --cov=octomil --cov-report=xml --cov-report=term-missing
 
+      - name: Verify wheel facade export
+        if: matrix.python-version == '3.11'
+        run: scripts/check-wheel-facade-export.sh
+
       - name: Upload coverage artifact
         if: matrix.python-version == '3.11'
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
