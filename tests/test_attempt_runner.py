@@ -267,6 +267,69 @@ class TestStreamingFlagPreserved:
         runner = CandidateAttemptRunner()
         assert runner.streaming is False
 
+    def test_streaming_disallows_fallback_after_first_token(self) -> None:
+        runner = CandidateAttemptRunner(fallback_allowed=True, streaming=True)
+        assert runner.should_fallback_after_inference_error(first_token_emitted=False)
+        assert not runner.should_fallback_after_inference_error(first_token_emitted=True)
+
+    def test_non_streaming_allows_inference_fallback(self) -> None:
+        runner = CandidateAttemptRunner(fallback_allowed=True, streaming=False)
+        assert runner.should_fallback_after_inference_error(first_token_emitted=True)
+
+
+class TestInferenceExecutionLoop:
+    @pytest.mark.asyncio
+    async def test_inference_error_before_output_falls_back(self) -> None:
+        runner = CandidateAttemptRunner(fallback_allowed=True)
+
+        async def execute(candidate: dict[str, Any]) -> str:
+            if candidate.get("locality") == "local":
+                raise RuntimeError("local model load failed")
+            return "cloud response"
+
+        result = await runner.run_with_inference(
+            [_local_candidate(), _cloud_candidate()],
+            execute_candidate=execute,
+            runtime_checker=_AlwaysAvailableRuntime(),
+            artifact_checker=_AlwaysOkArtifact(),
+            gate_evaluator=_PassAllGates(),
+        )
+
+        assert result.succeeded
+        assert result.value == "cloud response"
+        assert result.fallback_used
+        assert result.fallback_trigger is not None
+        assert result.fallback_trigger.code == "inference_error"
+        assert result.attempts[0].status == AttemptStatus.FAILED
+        assert result.attempts[0].stage == AttemptStage.INFERENCE
+        assert result.attempts[1].status == AttemptStatus.SELECTED
+
+    @pytest.mark.asyncio
+    async def test_streaming_error_after_first_token_does_not_fallback(self) -> None:
+        class StreamCrashed(RuntimeError):
+            first_token_emitted = True
+
+        runner = CandidateAttemptRunner(fallback_allowed=True, streaming=True)
+
+        async def execute(candidate: dict[str, Any]) -> str:
+            if candidate.get("locality") == "local":
+                raise StreamCrashed("crashed after first token")
+            return "cloud response"
+
+        result = await runner.run_with_inference(
+            [_local_candidate(), _cloud_candidate()],
+            execute_candidate=execute,
+            runtime_checker=_AlwaysAvailableRuntime(),
+            artifact_checker=_AlwaysOkArtifact(),
+            gate_evaluator=_PassAllGates(),
+        )
+
+        assert not result.succeeded
+        assert result.error is not None
+        assert len(result.attempts) == 1
+        assert result.attempts[0].reason_code == "inference_error_after_first_token"
+        assert not result.fallback_used
+
 
 class TestAttemptIndicesSequential:
     def test_indices_are_sequential(self) -> None:

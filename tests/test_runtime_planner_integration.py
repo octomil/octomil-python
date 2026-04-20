@@ -45,7 +45,7 @@ from octomil.execution.kernel import (
     _sanitize_benchmark_payload,
     _upload_benchmark_async,
 )
-from octomil.runtime.core.types import RuntimeResponse, RuntimeUsage
+from octomil.runtime.core.types import RuntimeChunk, RuntimeResponse, RuntimeUsage
 from octomil.runtime.planner.client import RuntimePlannerClient
 from octomil.runtime.planner.schemas import (
     DeviceRuntimeProfile,
@@ -135,6 +135,43 @@ class TestPlannerRequestShape:
         monkeypatch.setenv("OCTOMIL_RUNTIME_PLANNER_CACHE", "0")
         result = _resolve_planner_selection("gemma-2b", CAPABILITY_CHAT, "local_first")
         assert result is None
+
+    def test_plan_response_parser_preserves_gates_and_fallback_allowed(self):
+        """Server-emitted gates and fallback_allowed must survive client parsing."""
+        from octomil.runtime.planner.client import _parse_plan_response
+
+        plan = _parse_plan_response(
+            {
+                "model": "gemma3-1b",
+                "capability": "responses",
+                "policy": "local_first",
+                "candidates": [
+                    {
+                        "locality": "local",
+                        "engine": "mlx-lm",
+                        "priority": 0,
+                        "confidence": 0.9,
+                        "reason": "fast local path",
+                        "gates": [
+                            {
+                                "code": "min_tokens_per_second",
+                                "required": True,
+                                "threshold_number": 12.5,
+                                "source": "server",
+                            }
+                        ],
+                    }
+                ],
+                "fallback_candidates": [{"locality": "cloud", "priority": 1, "confidence": 0.5, "reason": "hosted"}],
+                "fallback_allowed": False,
+                "server_generated_at": "2026-04-20T00:00:00Z",
+            }
+        )
+
+        assert plan.fallback_allowed is False
+        assert len(plan.candidates[0].gates) == 1
+        assert plan.candidates[0].gates[0].code == "min_tokens_per_second"
+        assert plan.candidates[0].gates[0].threshold_number == 12.5
 
 
 # ---------------------------------------------------------------------------
@@ -578,6 +615,124 @@ class TestRouteMetadata:
         assert result.route.execution.locality == "local"
         assert result.route.execution.engine == "mlx-lm"
         assert result.route.planner.source == "cache"
+
+    @pytest.mark.asyncio
+    async def test_create_response_attempt_runner_falls_back_on_inference_error(self):
+        kernel = _make_kernel()
+        selection = RuntimeSelection(
+            locality="local",
+            engine="mlx-lm",
+            source="server_plan",
+            reason="server ordered candidates",
+            fallback_allowed=True,
+            candidates=[
+                RuntimeCandidatePlan(
+                    locality="local",
+                    priority=0,
+                    confidence=0.9,
+                    reason="try local first",
+                    engine="mlx-lm",
+                ),
+                RuntimeCandidatePlan(
+                    locality="cloud",
+                    priority=1,
+                    confidence=0.6,
+                    reason="hosted fallback",
+                ),
+            ],
+        )
+
+        local_router = MagicMock()
+        local_router.run = AsyncMock(side_effect=RuntimeError("local crashed"))
+        cloud_router = MagicMock()
+        cloud_router.run = AsyncMock(return_value=_mock_runtime_response("cloud ok"))
+
+        with (
+            patch("octomil.execution.kernel._resolve_planner_selection", return_value=selection),
+            patch.object(kernel, "_build_router", side_effect=[local_router, cloud_router]),
+        ):
+            result = await kernel.create_response("Hello!")
+
+        assert result.output_text == "cloud ok"
+        assert result.fallback_used is True
+        assert result.locality == "cloud"
+        assert result.route is not None
+        assert result.route.fallback.used is True
+        assert result.route.fallback.trigger is not None
+        assert result.route.fallback.trigger["code"] == "inference_error"
+        assert len(result.route.attempts) == 2
+        assert result.route.attempts[0]["status"] == "failed"
+        assert result.route.attempts[0]["stage"] == "inference"
+        assert result.route.attempts[1]["status"] == "selected"
+
+    @pytest.mark.asyncio
+    async def test_stream_response_falls_back_before_first_token(self):
+        kernel = _make_kernel()
+        selection = RuntimeSelection(
+            locality="local",
+            engine="mlx-lm",
+            source="server_plan",
+            reason="server ordered candidates",
+            fallback_allowed=True,
+            candidates=[
+                RuntimeCandidatePlan(locality="local", priority=0, confidence=0.9, reason="local", engine="mlx-lm"),
+                RuntimeCandidatePlan(locality="cloud", priority=1, confidence=0.6, reason="cloud"),
+            ],
+        )
+
+        class _PreTokenFailureRouter:
+            async def stream(self, request, *, policy=None):
+                if request is None:
+                    yield RuntimeChunk(text="")
+                raise RuntimeError("local crashed before token")
+
+        class _CloudStreamRouter:
+            async def stream(self, request, *, policy=None):
+                yield RuntimeChunk(text="cloud")
+
+        with (
+            patch("octomil.execution.kernel._resolve_planner_selection", return_value=selection),
+            patch.object(kernel, "_build_router", side_effect=[_PreTokenFailureRouter(), _CloudStreamRouter()]),
+        ):
+            chunks = [chunk async for chunk in kernel.stream_response("Hello!")]
+
+        assert [chunk.delta for chunk in chunks] == ["cloud", ""]
+        assert chunks[-1].done is True
+        assert chunks[-1].result is not None
+        assert chunks[-1].result.fallback_used is True
+        assert chunks[-1].result.locality == "cloud"
+
+    @pytest.mark.asyncio
+    async def test_stream_response_does_not_fallback_after_first_token(self):
+        kernel = _make_kernel()
+        selection = RuntimeSelection(
+            locality="local",
+            engine="mlx-lm",
+            source="server_plan",
+            reason="server ordered candidates",
+            fallback_allowed=True,
+            candidates=[
+                RuntimeCandidatePlan(locality="local", priority=0, confidence=0.9, reason="local", engine="mlx-lm"),
+                RuntimeCandidatePlan(locality="cloud", priority=1, confidence=0.6, reason="cloud"),
+            ],
+        )
+
+        class _PostTokenFailureRouter:
+            async def stream(self, request, *, policy=None):
+                yield RuntimeChunk(text="partial")
+                raise RuntimeError("local crashed after token")
+
+        with (
+            patch("octomil.execution.kernel._resolve_planner_selection", return_value=selection),
+            patch.object(kernel, "_build_router", return_value=_PostTokenFailureRouter()) as mock_build,
+        ):
+            chunks = []
+            with pytest.raises(RuntimeError, match="after token"):
+                async for chunk in kernel.stream_response("Hello!"):
+                    chunks.append(chunk)
+
+        assert [chunk.delta for chunk in chunks] == ["partial"]
+        assert mock_build.call_count == 1
 
     @pytest.mark.asyncio
     async def test_create_embeddings_includes_route_metadata(self):

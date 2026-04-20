@@ -23,7 +23,7 @@ import tempfile
 import threading
 import time
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, AsyncIterator, Optional
 
@@ -126,6 +126,9 @@ class FallbackInfo:
     """Fallback status information."""
 
     used: bool = False
+    from_attempt: Optional[int] = None
+    to_attempt: Optional[int] = None
+    trigger: Optional[dict[str, Any]] = None
 
 
 @dataclass
@@ -144,12 +147,13 @@ class RouteMetadata:
     Public locality values are "local" | "cloud" (never "on_device").
     """
 
-    status: str = "selected"  # "selected" | "unavailable"
+    status: str = "selected"  # "selected" | "unavailable" | "failed"
     execution: Optional[RouteExecution] = None
     model: RouteModel = field(default_factory=RouteModel)
     artifact: Optional[RouteArtifact] = None
     planner: PlannerInfo = field(default_factory=PlannerInfo)
     fallback: FallbackInfo = field(default_factory=FallbackInfo)
+    attempts: list[dict[str, Any]] = field(default_factory=list)
     reason: RouteReason = field(default_factory=RouteReason)
 
 
@@ -447,6 +451,8 @@ def _route_metadata_from_selection(
     *,
     model_name: str = "",
     capability: str = "",
+    attempt_loop: Optional[Any] = None,
+    status: str = "selected",
 ) -> RouteMetadata:
     """Build RouteMetadata from a planner RuntimeSelection."""
     from octomil.runtime.planner.app_ref import is_app_ref, parse_app_ref
@@ -465,8 +471,21 @@ def _route_metadata_from_selection(
         else:
             model_kind = "model"
 
+    fallback_info = FallbackInfo(used=fallback_used)
+    attempts: list[dict[str, Any]] = []
+    if attempt_loop is not None:
+        attempts = [attempt.to_dict() for attempt in getattr(attempt_loop, "attempts", [])]
+        trigger = getattr(attempt_loop, "fallback_trigger", None)
+        fallback_info = FallbackInfo(
+            used=bool(getattr(attempt_loop, "fallback_used", False)),
+            from_attempt=getattr(attempt_loop, "from_attempt", None),
+            to_attempt=getattr(attempt_loop, "to_attempt", None),
+            trigger=trigger.to_dict() if trigger is not None else None,
+        )
+
     if selection is None:
         return RouteMetadata(
+            status=status,
             execution=RouteExecution(
                 locality=public_locality,
                 mode=_execution_mode_for_locality(public_locality),
@@ -479,7 +498,8 @@ def _route_metadata_from_selection(
                 ),
             ),
             planner=PlannerInfo(source="offline"),
-            fallback=FallbackInfo(used=fallback_used),
+            fallback=fallback_info,
+            attempts=attempts,
             reason=RouteReason(code="planner_unavailable", message="planner not available"),
         )
 
@@ -500,6 +520,8 @@ def _route_metadata_from_selection(
             variant_id=app_resolution.selected_model_variant_id,
             version_id=app_resolution.selected_model_version,
         )
+
+    selected_attempt = getattr(attempt_loop, "selected_attempt", None) if attempt_loop is not None else None
 
     # Build artifact info with cache status from ArtifactCache
     route_artifact: Optional[RouteArtifact] = None
@@ -528,12 +550,27 @@ def _route_metadata_from_selection(
                 managed_by="octomil",
             ),
         )
+    if selected_attempt is not None:
+        if selected_attempt.artifact is None:
+            route_artifact = None
+        else:
+            route_artifact = RouteArtifact(
+                id=selected_attempt.artifact.id,
+                digest=selected_attempt.artifact.digest,
+                cache=ArtifactCache(
+                    status=selected_attempt.artifact.cache_status,
+                    managed_by=selected_attempt.artifact.managed_by,
+                ),
+            )
+
+    route_engine = selected_attempt.engine if selected_attempt is not None else selection.engine
 
     return RouteMetadata(
+        status=status,
         execution=RouteExecution(
             locality=public_locality,
             mode=_execution_mode_for_locality(public_locality),
-            engine=selection.engine,
+            engine=route_engine,
         ),
         model=RouteModel(
             requested=RouteModelRequested(
@@ -545,7 +582,8 @@ def _route_metadata_from_selection(
         ),
         artifact=route_artifact,
         planner=PlannerInfo(source=source_map.get(selection.source, "offline")),
-        fallback=FallbackInfo(used=fallback_used),
+        fallback=fallback_info,
+        attempts=attempts,
         reason=RouteReason(
             code=selection.source or "",
             message=selection.reason or "",
@@ -606,6 +644,102 @@ def _upload_benchmark_async(
 
     thread = threading.Thread(target=_upload, daemon=True, name="octomil-benchmark-upload")
     thread.start()
+
+
+def _runtime_candidate_to_dict(candidate: Any) -> dict[str, Any]:
+    """Convert a RuntimeCandidatePlan-like object into a JSON-safe dict."""
+    if isinstance(candidate, dict):
+        return candidate
+    return asdict(candidate)
+
+
+def _selection_candidate_dicts(selection: Optional[Any], routing_policy: RoutingPolicy) -> list[dict[str, Any]]:
+    """Return the ordered candidate list the SDK should attempt for this request."""
+    if selection is not None:
+        candidates = getattr(selection, "candidates", None)
+        if candidates:
+            return [_runtime_candidate_to_dict(candidate) for candidate in candidates]
+
+        candidate: dict[str, Any] = {
+            "locality": getattr(selection, "locality", "local"),
+            "priority": 0,
+            "confidence": 1.0,
+            "reason": getattr(selection, "reason", "") or "planner selection",
+        }
+        engine = getattr(selection, "engine", None)
+        artifact = getattr(selection, "artifact", None)
+        if engine is not None:
+            candidate["engine"] = engine
+        if artifact is not None:
+            candidate["artifact"] = asdict(artifact)
+        return [candidate]
+
+    if routing_policy.mode == ContractRoutingPolicy.LOCAL_ONLY:
+        return [{"locality": "local", "priority": 0, "confidence": 0.0, "reason": "local-only policy"}]
+    if routing_policy.mode == ContractRoutingPolicy.CLOUD_ONLY:
+        return [{"locality": "cloud", "priority": 0, "confidence": 0.0, "reason": "cloud-only policy"}]
+
+    prefer_local = routing_policy.prefer_local or routing_policy.mode == ContractRoutingPolicy.LOCAL_FIRST
+    if prefer_local:
+        candidates = [{"locality": "local", "priority": 0, "confidence": 0.0, "reason": "offline local-first"}]
+        if routing_policy.fallback == "cloud":
+            candidates.append({"locality": "cloud", "priority": 1, "confidence": 0.0, "reason": "cloud fallback"})
+        return candidates
+
+    candidates = [{"locality": "cloud", "priority": 0, "confidence": 0.0, "reason": "offline cloud-first"}]
+    if routing_policy.fallback == "local":
+        candidates.append({"locality": "local", "priority": 1, "confidence": 0.0, "reason": "local fallback"})
+    return candidates
+
+
+def _candidate_fallback_allowed(selection: Optional[Any], routing_policy: RoutingPolicy) -> bool:
+    if selection is not None and hasattr(selection, "fallback_allowed"):
+        return bool(selection.fallback_allowed)
+    if routing_policy.mode in (ContractRoutingPolicy.LOCAL_ONLY, ContractRoutingPolicy.CLOUD_ONLY):
+        return False
+    return routing_policy.fallback != "none"
+
+
+def _candidate_to_selection(selection: Optional[Any], candidate: dict[str, Any]) -> Any:
+    """Build a lightweight planner selection for a single candidate."""
+    from octomil.runtime.planner.schemas import RuntimeArtifactPlan, RuntimeSelection
+
+    artifact_data = candidate.get("artifact")
+    artifact = None
+    if isinstance(artifact_data, dict) and artifact_data.get("model_id"):
+        artifact = RuntimeArtifactPlan(
+            model_id=artifact_data.get("model_id", ""),
+            artifact_id=artifact_data.get("artifact_id"),
+            model_version=artifact_data.get("model_version"),
+            format=artifact_data.get("format"),
+            quantization=artifact_data.get("quantization"),
+            uri=artifact_data.get("uri"),
+            digest=artifact_data.get("digest"),
+            size_bytes=artifact_data.get("size_bytes"),
+            min_ram_bytes=artifact_data.get("min_ram_bytes"),
+        )
+
+    return RuntimeSelection(
+        locality=candidate.get("locality", "local"),
+        engine=candidate.get("engine"),
+        artifact=artifact,
+        source=getattr(selection, "source", "fallback") if selection is not None else "fallback",
+        fallback_allowed=getattr(selection, "fallback_allowed", True) if selection is not None else True,
+        reason=candidate.get("reason", getattr(selection, "reason", "") if selection is not None else ""),
+        app_resolution=getattr(selection, "app_resolution", None) if selection is not None else None,
+    )
+
+
+def _routing_policy_for_candidate(candidate: dict[str, Any]) -> RoutingPolicy:
+    if candidate.get("locality") == "cloud":
+        return RoutingPolicy.cloud_only()
+    return RoutingPolicy.local_only()
+
+
+def _internal_locality_for_attempt(attempt: Any) -> str:
+    if attempt is not None and getattr(attempt, "locality", None) == "cloud":
+        return LOCALITY_CLOUD
+    return LOCALITY_ON_DEVICE
 
 
 # ---------------------------------------------------------------------------
@@ -716,8 +850,8 @@ class ExecutionKernel:
         selection = _resolve_planner_selection(effective_model, CAPABILITY_CHAT, policy_preset)
 
         routing_policy = _resolve_routing_policy(defaults)
-        router = await self._build_router(effective_model, CAPABILITY_CHAT, defaults, planner_selection=selection)
-        locality, is_fallback = router.resolve_locality(routing_policy)
+        candidates = _selection_candidate_dicts(selection, routing_policy)
+        fallback_allowed = _candidate_fallback_allowed(selection, routing_policy)
 
         gen_config = GenerationConfig(
             max_tokens=max_output_tokens or 2048,
@@ -733,12 +867,44 @@ class ExecutionKernel:
             generation_config=gen_config,
         )
 
+        from octomil.runtime.routing import CandidateAttemptRunner
+
+        runner = CandidateAttemptRunner(fallback_allowed=fallback_allowed, streaming=False)
+
+        async def _execute_candidate(candidate: dict[str, Any]) -> RuntimeResponse:
+            candidate_selection = _candidate_to_selection(selection, candidate)
+            router = await self._build_router(
+                effective_model,
+                CAPABILITY_CHAT,
+                defaults,
+                planner_selection=candidate_selection,
+            )
+            return await router.run(request, policy=_routing_policy_for_candidate(candidate))
+
         t0 = time.monotonic()
-        response = await router.run(request, policy=routing_policy)
+        attempt_loop = await runner.run_with_inference(
+            candidates,
+            execute_candidate=_execute_candidate,
+        )
+        if not attempt_loop.succeeded:
+            if attempt_loop.error is not None:
+                raise attempt_loop.error
+            raise RuntimeError("No runtime available")
+
+        response = attempt_loop.value
+        if not isinstance(response, RuntimeResponse):
+            raise RuntimeError("Runtime returned an invalid response.")
         latency_ms = (time.monotonic() - t0) * 1000
 
+        locality = _internal_locality_for_attempt(attempt_loop.selected_attempt)
+        is_fallback = attempt_loop.fallback_used
         route = _route_metadata_from_selection(
-            selection, locality, is_fallback, model_name=effective_model, capability=CAPABILITY_CHAT
+            selection,
+            locality,
+            is_fallback,
+            model_name=effective_model,
+            capability=CAPABILITY_CHAT,
+            attempt_loop=attempt_loop,
         )
         usage = _extract_usage(response)
 
@@ -784,8 +950,8 @@ class ExecutionKernel:
         selection = _resolve_planner_selection(effective_model, CAPABILITY_CHAT, policy_preset)
 
         routing_policy = _resolve_routing_policy(defaults)
-        router = await self._build_router(effective_model, CAPABILITY_CHAT, defaults, planner_selection=selection)
-        locality, is_fallback = router.resolve_locality(routing_policy)
+        candidates = _selection_candidate_dicts(selection, routing_policy)
+        fallback_allowed = _candidate_fallback_allowed(selection, routing_policy)
 
         gen_config = GenerationConfig(
             max_tokens=max_output_tokens or 2048,
@@ -801,20 +967,59 @@ class ExecutionKernel:
             generation_config=gen_config,
         )
 
-        route = _route_metadata_from_selection(
-            selection, locality, is_fallback, model_name=effective_model, capability=CAPABILITY_CHAT
-        )
+        from octomil.runtime.routing import CandidateAttemptRunner
+
+        runner = CandidateAttemptRunner(fallback_allowed=fallback_allowed, streaming=True)
 
         t0 = time.monotonic()
         collected_text = ""
-        async for chunk in router.stream(request, policy=routing_policy):
-            text = chunk.text or ""
-            collected_text += text
-            yield StreamChunk(delta=text)
+        selected_locality = LOCALITY_ON_DEVICE
+        is_fallback = False
+        last_error: Exception | None = None
+
+        for idx, candidate in enumerate(candidates):
+            first_token_emitted = False
+            try:
+                candidate_selection = _candidate_to_selection(selection, candidate)
+                router = await self._build_router(
+                    effective_model,
+                    CAPABILITY_CHAT,
+                    defaults,
+                    planner_selection=candidate_selection,
+                )
+                async for chunk in router.stream(request, policy=_routing_policy_for_candidate(candidate)):
+                    text = chunk.text or ""
+                    if text:
+                        first_token_emitted = True
+                    collected_text += text
+                    yield StreamChunk(delta=text)
+                selected_locality = LOCALITY_CLOUD if candidate.get("locality") == "cloud" else LOCALITY_ON_DEVICE
+                is_fallback = idx > 0
+                break
+            except Exception as exc:
+                last_error = exc
+                if (
+                    runner.should_fallback_after_inference_error(first_token_emitted=first_token_emitted)
+                    and idx < len(candidates) - 1
+                ):
+                    continue
+                raise
+        else:
+            if last_error is not None:
+                raise last_error
+            raise RuntimeError("No runtime available")
 
         latency_ms = (time.monotonic() - t0) * 1000
 
-        if locality == LOCALITY_ON_DEVICE:
+        route = _route_metadata_from_selection(
+            selection,
+            selected_locality,
+            is_fallback,
+            model_name=effective_model,
+            capability=CAPABILITY_CHAT,
+        )
+
+        if selected_locality == LOCALITY_ON_DEVICE:
             _upload_benchmark_async(
                 model=effective_model,
                 capability=CAPABILITY_CHAT,
@@ -830,7 +1035,7 @@ class ExecutionKernel:
                 id=f"resp_{uuid.uuid4().hex[:12]}",
                 model=effective_model,
                 capability=CAPABILITY_CHAT,
-                locality=locality,
+                locality=selected_locality,
                 fallback_used=is_fallback,
                 output_text=collected_text,
                 route=route,
@@ -857,8 +1062,8 @@ class ExecutionKernel:
         selection = _resolve_planner_selection(effective_model, CAPABILITY_CHAT, policy_preset)
 
         routing_policy = _resolve_routing_policy(defaults)
-        router = await self._build_router(effective_model, CAPABILITY_CHAT, defaults, planner_selection=selection)
-        locality, is_fallback = router.resolve_locality(routing_policy)
+        candidates = _selection_candidate_dicts(selection, routing_policy)
+        fallback_allowed = _candidate_fallback_allowed(selection, routing_policy)
 
         gen_config = GenerationConfig(
             max_tokens=max_output_tokens or 2048,
@@ -869,20 +1074,59 @@ class ExecutionKernel:
             generation_config=gen_config,
         )
 
-        route = _route_metadata_from_selection(
-            selection, locality, is_fallback, model_name=effective_model, capability=CAPABILITY_CHAT
-        )
+        from octomil.runtime.routing import CandidateAttemptRunner
+
+        runner = CandidateAttemptRunner(fallback_allowed=fallback_allowed, streaming=True)
 
         t0 = time.monotonic()
         collected_text = ""
-        async for chunk in router.stream(request, policy=routing_policy):
-            text = chunk.text or ""
-            collected_text += text
-            yield StreamChunk(delta=text)
+        selected_locality = LOCALITY_ON_DEVICE
+        is_fallback = False
+        last_error: Exception | None = None
+
+        for idx, candidate in enumerate(candidates):
+            first_token_emitted = False
+            try:
+                candidate_selection = _candidate_to_selection(selection, candidate)
+                router = await self._build_router(
+                    effective_model,
+                    CAPABILITY_CHAT,
+                    defaults,
+                    planner_selection=candidate_selection,
+                )
+                async for chunk in router.stream(request, policy=_routing_policy_for_candidate(candidate)):
+                    text = chunk.text or ""
+                    if text:
+                        first_token_emitted = True
+                    collected_text += text
+                    yield StreamChunk(delta=text)
+                selected_locality = LOCALITY_CLOUD if candidate.get("locality") == "cloud" else LOCALITY_ON_DEVICE
+                is_fallback = idx > 0
+                break
+            except Exception as exc:
+                last_error = exc
+                if (
+                    runner.should_fallback_after_inference_error(first_token_emitted=first_token_emitted)
+                    and idx < len(candidates) - 1
+                ):
+                    continue
+                raise
+        else:
+            if last_error is not None:
+                raise last_error
+            raise RuntimeError("No runtime available")
 
         latency_ms = (time.monotonic() - t0) * 1000
 
-        if locality == LOCALITY_ON_DEVICE:
+        route = _route_metadata_from_selection(
+            selection,
+            selected_locality,
+            is_fallback,
+            model_name=effective_model,
+            capability=CAPABILITY_CHAT,
+        )
+
+        if selected_locality == LOCALITY_ON_DEVICE:
             _upload_benchmark_async(
                 model=effective_model,
                 capability=CAPABILITY_CHAT,
@@ -898,7 +1142,7 @@ class ExecutionKernel:
                 id=f"resp_{uuid.uuid4().hex[:12]}",
                 model=effective_model,
                 capability=CAPABILITY_CHAT,
-                locality=locality,
+                locality=selected_locality,
                 fallback_used=is_fallback,
                 output_text=collected_text,
                 route=route,

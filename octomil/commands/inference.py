@@ -982,7 +982,14 @@ def _route_metadata_to_dict(route) -> dict:
         d["artifact"] = None
 
     d["planner"] = {"source": route.planner.source}
-    d["fallback"] = {"used": route.fallback.used}
+    d["fallback"] = {
+        "used": route.fallback.used,
+        "from_attempt": route.fallback.from_attempt,
+        "to_attempt": route.fallback.to_attempt,
+        "trigger": route.fallback.trigger,
+    }
+    if getattr(route, "attempts", None):
+        d["attempts"] = route.attempts
     d["reason"] = {"code": route.reason.code, "message": route.reason.message}
 
     return d

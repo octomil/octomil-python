@@ -11,9 +11,10 @@ Contract schemas:
 
 from __future__ import annotations
 
+import inspect
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any
+from typing import Any, Callable
 
 # ---------------------------------------------------------------------------
 # Enums
@@ -145,6 +146,8 @@ class AttemptLoopResult:
     fallback_trigger: FallbackTrigger | None = None
     from_attempt: int | None = None
     to_attempt: int | None = None
+    value: Any | None = None
+    error: Exception | None = None
 
     @property
     def succeeded(self) -> bool:
@@ -226,9 +229,6 @@ class CandidateAttemptRunner:
 
     If a candidate fails at any stage and fallback is allowed,
     move to the next candidate.
-
-    The runner does NOT perform actual inference — it evaluates readiness.
-    The caller invokes inference after the runner selects a candidate.
     """
 
     def __init__(
@@ -246,6 +246,17 @@ class CandidateAttemptRunner:
         """Whether the caller intends streaming inference."""
         return self._streaming
 
+    def should_fallback_after_inference_error(self, *, first_token_emitted: bool) -> bool:
+        """Return whether an inference error may fall back to another candidate.
+
+        Streaming requests may only fall back before the first token is emitted.
+        After the user has seen output, switching routes would splice two model
+        responses into one stream, so the error must surface instead.
+        """
+        if self._streaming and first_token_emitted:
+            return False
+        return self._fallback_allowed
+
     def run(
         self,
         candidates: list[dict[str, Any]],
@@ -254,7 +265,11 @@ class CandidateAttemptRunner:
         artifact_checker: ArtifactChecker | None = None,
         gate_evaluator: GateEvaluator | None = None,
     ) -> AttemptLoopResult:
-        """Run the attempt loop over candidates.
+        """Run readiness stages over candidates without invoking inference.
+
+        This method is useful for tests and diagnostics. User-facing execution
+        paths should use ``run_with_inference`` so inference failures and
+        streaming first-token semantics participate in fallback decisions.
 
         Args:
             candidates: Ordered list of candidate dicts from the plan response.
@@ -265,6 +280,7 @@ class CandidateAttemptRunner:
         Returns:
             AttemptLoopResult with the selected attempt or failure info.
         """
+        self._attempts = []
         _runtime = runtime_checker or _NoOpRuntimeChecker()
         _artifact = artifact_checker or _NoOpArtifactChecker()
         _gates = gate_evaluator or _NoOpGateEvaluator()
@@ -445,3 +461,127 @@ class CandidateAttemptRunner:
         if locality == "cloud":
             return "hosted_gateway"
         return "sdk_runtime"
+
+    async def run_with_inference(
+        self,
+        candidates: list[dict[str, Any]],
+        *,
+        execute_candidate: Callable[[dict[str, Any]], Any],
+        runtime_checker: RuntimeChecker | None = None,
+        artifact_checker: ArtifactChecker | None = None,
+        gate_evaluator: GateEvaluator | None = None,
+    ) -> AttemptLoopResult:
+        """Run readiness gates and actual inference for each candidate.
+
+        The executor is called only after prepare/verify/gate checks pass. If
+        inference fails and fallback is allowed, the runner records an inference
+        failure and advances to the next candidate. For streaming requests,
+        executor exceptions may set ``first_token_emitted=True`` to prevent
+        fallback after output has reached the caller.
+        """
+        self._attempts = []
+        fallback_trigger: FallbackTrigger | None = None
+        from_attempt: int | None = None
+        to_attempt: int | None = None
+        last_error: Exception | None = None
+
+        for idx, candidate in enumerate(candidates):
+            readiness_runner = CandidateAttemptRunner(
+                fallback_allowed=False,
+                streaming=self._streaming,
+            )
+            readiness = readiness_runner.run(
+                [candidate],
+                runtime_checker=runtime_checker,
+                artifact_checker=artifact_checker,
+                gate_evaluator=gate_evaluator,
+            )
+
+            ready_attempt = readiness.attempts[0] if readiness.attempts else None
+            if ready_attempt is not None:
+                ready_attempt.index = idx
+
+            if not readiness.succeeded:
+                if ready_attempt is not None:
+                    self._attempts.append(ready_attempt)
+                    if fallback_trigger is None:
+                        fallback_trigger = FallbackTrigger(
+                            code=ready_attempt.reason_code,
+                            stage=ready_attempt.stage.value,
+                            message=ready_attempt.reason_message,
+                        )
+                        from_attempt = idx
+                if self._fallback_allowed and idx < len(candidates) - 1:
+                    continue
+                return AttemptLoopResult(
+                    selected_attempt=None,
+                    attempts=self._attempts,
+                    error=last_error,
+                )
+
+            assert ready_attempt is not None
+            try:
+                maybe_value = execute_candidate(candidate)
+                value = await maybe_value if inspect.isawaitable(maybe_value) else maybe_value
+            except Exception as exc:
+                last_error = exc
+                first_token_emitted = bool(getattr(exc, "first_token_emitted", False))
+                reason_code = (
+                    "inference_error_after_first_token"
+                    if first_token_emitted
+                    else "inference_error_before_first_token"
+                    if self._streaming
+                    else "inference_error"
+                )
+                failed_attempt = RouteAttempt(
+                    index=idx,
+                    locality=ready_attempt.locality,
+                    mode=ready_attempt.mode,
+                    engine=ready_attempt.engine,
+                    artifact=ready_attempt.artifact,
+                    status=AttemptStatus.FAILED,
+                    stage=AttemptStage.INFERENCE,
+                    gate_results=ready_attempt.gate_results,
+                    reason_code=reason_code,
+                    reason_message=str(exc) or reason_code,
+                )
+                self._attempts.append(failed_attempt)
+
+                if (
+                    self.should_fallback_after_inference_error(first_token_emitted=first_token_emitted)
+                    and idx < len(candidates) - 1
+                ):
+                    if fallback_trigger is None:
+                        fallback_trigger = FallbackTrigger(
+                            code=reason_code,
+                            stage=AttemptStage.INFERENCE.value,
+                            message=failed_attempt.reason_message,
+                        )
+                        from_attempt = idx
+                    continue
+
+                return AttemptLoopResult(
+                    selected_attempt=None,
+                    attempts=self._attempts,
+                    error=exc,
+                )
+
+            self._attempts.append(ready_attempt)
+            ready_attempt.reason_message = "inference succeeded"
+            if fallback_trigger is not None:
+                to_attempt = idx
+            return AttemptLoopResult(
+                selected_attempt=ready_attempt,
+                attempts=self._attempts,
+                fallback_used=fallback_trigger is not None,
+                fallback_trigger=fallback_trigger,
+                from_attempt=from_attempt if fallback_trigger is not None else None,
+                to_attempt=to_attempt,
+                value=value,
+            )
+
+        return AttemptLoopResult(
+            selected_attempt=None,
+            attempts=self._attempts,
+            error=last_error,
+        )
