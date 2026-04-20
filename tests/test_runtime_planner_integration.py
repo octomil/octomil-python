@@ -33,7 +33,13 @@ from octomil.config.local import (
 from octomil.execution.kernel import (
     ExecutionKernel,
     ExecutionResult,
+    FallbackInfo,
+    PlannerInfo,
+    RouteExecution,
     RouteMetadata,
+    RouteModel,
+    RouteModelRequested,
+    RouteReason,
     _resolve_planner_selection,
     _route_metadata_from_selection,
     _sanitize_benchmark_payload,
@@ -292,8 +298,9 @@ class TestPolicyRoutingMatrix:
         """private policy: local only, never cloud, never telemetry."""
         selection = RuntimeSelection(locality="local", engine="mlx-lm", source="cache", reason="private")
         route = _route_metadata_from_selection(selection, "on_device", False)
-        assert route.locality == "on_device"
-        assert route.engine == "mlx-lm"
+        assert route.execution is not None
+        assert route.execution.locality == "local"
+        assert route.execution.engine == "mlx-lm"
 
     def test_private_never_contacts_server(self, tmp_path: Path):
         """private policy should never call fetch_plan."""
@@ -321,42 +328,48 @@ class TestPolicyRoutingMatrix:
         """local_only should behave identically to private for routing."""
         selection = RuntimeSelection(locality="local", engine="llama.cpp", source="cache", reason="local_only")
         route = _route_metadata_from_selection(selection, "on_device", False)
-        assert route.locality == "on_device"
+        assert route.execution is not None
+        assert route.execution.locality == "local"
 
     def test_cloud_only_routes_cloud(self):
         """cloud_only: cloud only, never local."""
         selection = RuntimeSelection(locality="cloud", engine=None, source="fallback", reason="cloud_only")
         route = _route_metadata_from_selection(selection, "cloud", False)
-        assert route.locality == "cloud"
-        assert route.planner_source == "offline"
+        assert route.execution is not None
+        assert route.execution.locality == "cloud"
+        assert route.planner.source == "offline"
 
     def test_local_first_prefers_local_with_cloud_fallback(self):
         """local_first: local primary, cloud fallback."""
         selection = RuntimeSelection(locality="local", engine="mlx-lm", source="server_plan", reason="local_first")
         route = _route_metadata_from_selection(selection, "on_device", False)
-        assert route.locality == "on_device"
-        assert route.planner_source == "server"
+        assert route.execution is not None
+        assert route.execution.locality == "local"
+        assert route.planner.source == "server"
 
     def test_local_first_falls_back_to_cloud(self):
-        """When local is unavailable, local_first should show fallback_used."""
+        """When local is unavailable, local_first should show fallback.used."""
         selection = RuntimeSelection(locality="cloud", engine=None, source="fallback", reason="no local engine")
         route = _route_metadata_from_selection(selection, "cloud", True)
-        assert route.locality == "cloud"
-        assert route.fallback_used is True
+        assert route.execution is not None
+        assert route.execution.locality == "cloud"
+        assert route.fallback.used is True
 
     def test_cloud_first_prefers_cloud_with_local_fallback(self):
         """cloud_first: cloud primary, local fallback."""
         selection = RuntimeSelection(locality="cloud", engine=None, source="server_plan", reason="cloud_first")
         route = _route_metadata_from_selection(selection, "cloud", False)
-        assert route.locality == "cloud"
-        assert route.planner_source == "server"
+        assert route.execution is not None
+        assert route.execution.locality == "cloud"
+        assert route.planner.source == "server"
 
     def test_performance_first_follows_planner_order(self):
         """performance_first: follow planner candidate order."""
         selection = RuntimeSelection(locality="local", engine="mlx-lm", source="local_benchmark", reason="fastest")
         route = _route_metadata_from_selection(selection, "on_device", False)
-        assert route.locality == "on_device"
-        assert route.planner_source == "offline"
+        assert route.execution is not None
+        assert route.execution.locality == "local"
+        assert route.planner.source == "offline"
 
 
 # ---------------------------------------------------------------------------
@@ -471,11 +484,12 @@ class TestRouteMetadata:
             reason="server recommended mlx-lm",
         )
         route = _route_metadata_from_selection(selection, "on_device", False)
-        assert route.locality == "on_device"
-        assert route.engine == "mlx-lm"
-        assert route.planner_source == "server"
-        assert route.fallback_used is False
-        assert "mlx-lm" in route.reason
+        assert route.execution is not None
+        assert route.execution.locality == "local"
+        assert route.execution.engine == "mlx-lm"
+        assert route.planner.source == "server"
+        assert route.fallback.used is False
+        assert "mlx-lm" in route.reason.message
 
     def test_route_metadata_from_cache(self):
         selection = RuntimeSelection(
@@ -485,7 +499,7 @@ class TestRouteMetadata:
             reason="cached plan",
         )
         route = _route_metadata_from_selection(selection, "on_device", False)
-        assert route.planner_source == "cache"
+        assert route.planner.source == "cache"
 
     def test_route_metadata_from_offline(self):
         selection = RuntimeSelection(
@@ -495,7 +509,7 @@ class TestRouteMetadata:
             reason="local benchmark",
         )
         route = _route_metadata_from_selection(selection, "on_device", False)
-        assert route.planner_source == "offline"
+        assert route.planner.source == "offline"
 
     def test_route_metadata_from_fallback(self):
         selection = RuntimeSelection(
@@ -505,13 +519,38 @@ class TestRouteMetadata:
             reason="no local engine",
         )
         route = _route_metadata_from_selection(selection, "cloud", True)
-        assert route.planner_source == "offline"
-        assert route.fallback_used is True
+        assert route.planner.source == "offline"
+        assert route.fallback.used is True
 
     def test_route_metadata_when_planner_unavailable(self):
         route = _route_metadata_from_selection(None, "on_device", False)
-        assert route.planner_source == "offline"
-        assert route.reason == "planner not available"
+        assert route.planner.source == "offline"
+        assert route.reason.message == "planner not available"
+
+    def test_on_device_never_in_public_route_metadata(self):
+        """Public route metadata must use 'local', never 'on_device'."""
+        selection = RuntimeSelection(locality="local", engine="mlx-lm", source="cache", reason="test")
+        route = _route_metadata_from_selection(selection, "on_device", False)
+        assert route.execution is not None
+        assert route.execution.locality == "local"
+        assert "on_device" not in route.execution.locality
+
+        # Also check when planner is unavailable
+        route2 = _route_metadata_from_selection(None, "on_device", False)
+        assert route2.execution is not None
+        assert route2.execution.locality == "local"
+
+    def test_execution_mode_set_correctly(self):
+        """execution.mode must be sdk_runtime for local, hosted_gateway for cloud."""
+        local_selection = RuntimeSelection(locality="local", engine="mlx-lm", source="cache", reason="local")
+        route_local = _route_metadata_from_selection(local_selection, "on_device", False)
+        assert route_local.execution is not None
+        assert route_local.execution.mode == "sdk_runtime"
+
+        cloud_selection = RuntimeSelection(locality="cloud", engine=None, source="server_plan", reason="cloud")
+        route_cloud = _route_metadata_from_selection(cloud_selection, "cloud", False)
+        assert route_cloud.execution is not None
+        assert route_cloud.execution.mode == "hosted_gateway"
 
     @pytest.mark.asyncio
     async def test_create_response_includes_route_metadata(self):
@@ -535,9 +574,10 @@ class TestRouteMetadata:
                 result = await kernel.create_response("Hello!")
 
         assert result.route is not None
-        assert result.route.locality == "on_device"
-        assert result.route.engine == "mlx-lm"
-        assert result.route.planner_source == "cache"
+        assert result.route.execution is not None
+        assert result.route.execution.locality == "local"
+        assert result.route.execution.engine == "mlx-lm"
+        assert result.route.planner.source == "cache"
 
     @pytest.mark.asyncio
     async def test_create_embeddings_includes_route_metadata(self):
@@ -564,7 +604,7 @@ class TestRouteMetadata:
                     result = await kernel.create_embeddings(["hello"])
 
         assert result.route is not None
-        assert result.route.planner_source == "server"
+        assert result.route.planner.source == "server"
 
     @pytest.mark.asyncio
     async def test_transcribe_audio_includes_route_metadata(self):
@@ -587,8 +627,9 @@ class TestRouteMetadata:
                     result = await kernel.transcribe_audio(b"fake_audio")
 
         assert result.route is not None
-        assert result.route.engine == "whisper.cpp"
-        assert result.route.planner_source == "offline"
+        assert result.route.execution is not None
+        assert result.route.execution.engine == "whisper.cpp"
+        assert result.route.planner.source == "offline"
 
 
 # ---------------------------------------------------------------------------
@@ -608,20 +649,20 @@ class TestCliJsonRouteMetadata:
             fallback_used=False,
             output_text="Hello!",
             route=RouteMetadata(
-                locality="on_device",
-                engine="mlx-lm",
-                planner_source="cache",
-                fallback_used=False,
-                reason="cached plan",
+                execution=RouteExecution(locality="local", mode="sdk_runtime", engine="mlx-lm"),
+                model=RouteModel(requested=RouteModelRequested(ref="gemma-2b", kind="model")),
+                planner=PlannerInfo(source="cache"),
+                fallback=FallbackInfo(used=False),
+                reason=RouteReason(code="cache", message="cached plan"),
             ),
         )
         d = _result_to_dict(result)
         assert "route" in d
-        assert d["route"]["locality"] == "on_device"
-        assert d["route"]["engine"] == "mlx-lm"
-        assert d["route"]["planner_source"] == "cache"
-        assert d["route"]["fallback_used"] is False
-        assert d["route"]["reason"] == "cached plan"
+        assert d["route"]["execution"]["locality"] == "local"
+        assert d["route"]["execution"]["engine"] == "mlx-lm"
+        assert d["route"]["planner"]["source"] == "cache"
+        assert d["route"]["fallback"]["used"] is False
+        assert d["route"]["reason"]["message"] == "cached plan"
 
     def test_result_to_dict_without_route(self):
         from octomil.commands.inference import _result_to_dict
@@ -646,14 +687,13 @@ class TestCliJsonRouteMetadata:
             embeddings=[[0.1, 0.2]],
             dimensions=2,
             route=RouteMetadata(
-                locality="on_device",
-                engine="mlx-lm",
-                planner_source="server",
+                execution=RouteExecution(locality="local", mode="sdk_runtime", engine="mlx-lm"),
+                planner=PlannerInfo(source="server"),
             ),
         )
         d = _embed_result_to_dict(result)
         assert "route" in d
-        assert d["route"]["planner_source"] == "server"
+        assert d["route"]["planner"]["source"] == "server"
 
     def test_transcribe_result_to_dict_includes_route(self):
         from octomil.commands.inference import _transcribe_result_to_dict
@@ -664,14 +704,13 @@ class TestCliJsonRouteMetadata:
             locality="on_device",
             output_text="hello world",
             route=RouteMetadata(
-                locality="on_device",
-                engine="whisper.cpp",
-                planner_source="offline",
+                execution=RouteExecution(locality="local", mode="sdk_runtime", engine="whisper.cpp"),
+                planner=PlannerInfo(source="offline"),
             ),
         )
         d = _transcribe_result_to_dict(result)
         assert "route" in d
-        assert d["route"]["engine"] == "whisper.cpp"
+        assert d["route"]["execution"]["engine"] == "whisper.cpp"
 
     def test_json_output_is_serializable(self):
         """Route metadata must be JSON-serializable."""
@@ -684,17 +723,16 @@ class TestCliJsonRouteMetadata:
             locality="on_device",
             output_text="Hi",
             route=RouteMetadata(
-                locality="on_device",
-                engine="mlx-lm",
-                planner_source="cache",
-                fallback_used=False,
-                reason="cached plan hit",
+                execution=RouteExecution(locality="local", mode="sdk_runtime", engine="mlx-lm"),
+                planner=PlannerInfo(source="cache"),
+                fallback=FallbackInfo(used=False),
+                reason=RouteReason(code="cache", message="cached plan hit"),
             ),
         )
         d = _result_to_dict(result)
         serialized = json.dumps(d)
         parsed = json.loads(serialized)
-        assert parsed["route"]["engine"] == "mlx-lm"
+        assert parsed["route"]["execution"]["engine"] == "mlx-lm"
 
 
 # ---------------------------------------------------------------------------
@@ -760,7 +798,7 @@ class TestPlannerDrivenRouting:
                 result = await kernel.create_response("Hello!")
 
         assert result.route is not None
-        assert result.route.planner_source == "server"
+        assert result.route.planner.source == "server"
 
     @pytest.mark.asyncio
     async def test_planner_local_engine_selection_used_by_router(self):
@@ -788,8 +826,9 @@ class TestPlannerDrivenRouting:
                 result = await kernel.create_response("Hello!")
 
         assert result.route is not None
-        assert result.route.engine == "mlx-lm"
-        assert result.route.planner_source == "cache"
+        assert result.route.execution is not None
+        assert result.route.execution.engine == "mlx-lm"
+        assert result.route.planner.source == "cache"
 
     @pytest.mark.asyncio
     async def test_planner_failure_does_not_break_execution(self):
@@ -810,8 +849,8 @@ class TestPlannerDrivenRouting:
 
         assert result.output_text == "Hello!"
         assert result.route is not None
-        assert result.route.planner_source == "offline"
-        assert result.route.reason == "planner not available"
+        assert result.route.planner.source == "offline"
+        assert result.route.reason.message == "planner not available"
 
 
 # ---------------------------------------------------------------------------

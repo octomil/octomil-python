@@ -937,16 +937,55 @@ audio_group.add_command(transcriptions_group)
 
 
 def _route_metadata_to_dict(route) -> dict:
-    """Serialize RouteMetadata to a JSON-safe dict."""
+    """Serialize RouteMetadata to a JSON-safe dict matching the contract wire format."""
     if route is None:
         return {}
-    return {
-        "locality": route.locality,
-        "engine": route.engine,
-        "planner_source": route.planner_source,
-        "fallback_used": route.fallback_used,
-        "reason": route.reason,
+    d: dict = {"status": route.status}
+
+    if route.execution is not None:
+        d["execution"] = {
+            "locality": route.execution.locality,
+            "mode": route.execution.mode,
+            "engine": route.execution.engine,
+        }
+    else:
+        d["execution"] = None
+
+    d["model"] = {
+        "requested": {
+            "ref": route.model.requested.ref,
+            "kind": route.model.requested.kind,
+            "capability": route.model.requested.capability,
+        },
+        "resolved": None,
     }
+    if route.model.resolved is not None:
+        d["model"]["resolved"] = {
+            "id": route.model.resolved.id,
+            "slug": route.model.resolved.slug,
+            "version_id": route.model.resolved.version_id,
+            "variant_id": route.model.resolved.variant_id,
+        }
+
+    if route.artifact is not None:
+        d["artifact"] = {
+            "id": route.artifact.id,
+            "version": route.artifact.version,
+            "format": route.artifact.format,
+            "digest": route.artifact.digest,
+            "cache": {
+                "status": route.artifact.cache.status,
+                "managed_by": route.artifact.cache.managed_by,
+            },
+        }
+    else:
+        d["artifact"] = None
+
+    d["planner"] = {"source": route.planner.source}
+    d["fallback"] = {"used": route.fallback.used}
+    d["reason"] = {"code": route.reason.code, "message": route.reason.message}
+
+    return d
 
 
 def _result_to_dict(result) -> dict:

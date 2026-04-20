@@ -60,14 +60,97 @@ logger = logging.getLogger(__name__)
 
 
 @dataclass
-class RouteMetadata:
-    """Routing metadata from the runtime planner."""
+class RouteExecution:
+    """Execution details within route metadata."""
 
-    locality: str = ""  # "on_device" | "cloud"
+    locality: str = ""  # "local" | "cloud"
+    mode: str = ""  # "sdk_runtime" | "hosted_gateway" | "external_endpoint"
     engine: Optional[str] = None
-    planner_source: str = ""  # "server" | "cache" | "offline"
-    fallback_used: bool = False
-    reason: str = ""
+
+
+@dataclass
+class RouteModelRequested:
+    """The model reference as requested by the caller."""
+
+    ref: str = ""
+    kind: str = "unknown"  # "model" | "app" | "deployment" | "alias" | "default" | "unknown"
+    capability: Optional[str] = None
+
+
+@dataclass
+class RouteModelResolved:
+    """Server-resolved model identifiers."""
+
+    id: Optional[str] = None
+    slug: Optional[str] = None
+    version_id: Optional[str] = None
+    variant_id: Optional[str] = None
+
+
+@dataclass
+class RouteModel:
+    """Model information within route metadata."""
+
+    requested: RouteModelRequested = field(default_factory=RouteModelRequested)
+    resolved: Optional[RouteModelResolved] = None
+
+
+@dataclass
+class ArtifactCache:
+    """Cache status for a model artifact."""
+
+    status: str = "not_applicable"  # "hit" | "miss" | "downloaded" | "not_applicable" | "unavailable"
+    managed_by: Optional[str] = None  # "octomil" | "runtime" | "external"
+
+
+@dataclass
+class RouteArtifact:
+    """Artifact information within route metadata."""
+
+    id: Optional[str] = None
+    version: Optional[str] = None
+    format: Optional[str] = None
+    digest: Optional[str] = None
+    cache: ArtifactCache = field(default_factory=ArtifactCache)
+
+
+@dataclass
+class PlannerInfo:
+    """Planner source information."""
+
+    source: str = "offline"  # "server" | "cache" | "offline"
+
+
+@dataclass
+class FallbackInfo:
+    """Fallback status information."""
+
+    used: bool = False
+
+
+@dataclass
+class RouteReason:
+    """Reason for the routing decision."""
+
+    code: str = ""
+    message: str = ""
+
+
+@dataclass
+class RouteMetadata:
+    """Contract-backed routing metadata from the runtime planner.
+
+    Follows the canonical RouteMetadata shape from octomil-contracts.
+    Public locality values are "local" | "cloud" (never "on_device").
+    """
+
+    status: str = "selected"  # "selected" | "unavailable"
+    execution: Optional[RouteExecution] = None
+    model: RouteModel = field(default_factory=RouteModel)
+    artifact: Optional[RouteArtifact] = None
+    planner: PlannerInfo = field(default_factory=PlannerInfo)
+    fallback: FallbackInfo = field(default_factory=FallbackInfo)
+    reason: RouteReason = field(default_factory=RouteReason)
 
 
 @dataclass
@@ -339,32 +422,80 @@ def _resolve_planner_selection(
         return None
 
 
+def _locality_to_public(raw: str) -> str:
+    """Map internal locality values to the public contract values.
+
+    Public RouteMetadata uses "local" | "cloud". Internal code may use
+    "on_device" which must never appear in public route metadata.
+    """
+    if raw == LOCALITY_ON_DEVICE or raw == "on_device":
+        return "local"
+    return raw
+
+
+def _execution_mode_for_locality(public_locality: str) -> str:
+    """Determine execution.mode from the public locality."""
+    if public_locality == "local":
+        return "sdk_runtime"
+    return "hosted_gateway"
+
+
 def _route_metadata_from_selection(
     selection: Optional[Any],
     locality: str,
     fallback_used: bool,
+    *,
+    model_name: str = "",
+    capability: str = "",
 ) -> RouteMetadata:
     """Build RouteMetadata from a planner RuntimeSelection."""
+    public_locality = _locality_to_public(locality)
+
     if selection is None:
         return RouteMetadata(
-            locality=locality,
-            planner_source="offline",
-            fallback_used=fallback_used,
-            reason="planner not available",
+            execution=RouteExecution(
+                locality=public_locality,
+                mode=_execution_mode_for_locality(public_locality),
+            ),
+            model=RouteModel(
+                requested=RouteModelRequested(
+                    ref=model_name,
+                    kind="model" if model_name else "unknown",
+                    capability=capability or None,
+                ),
+            ),
+            planner=PlannerInfo(source="offline"),
+            fallback=FallbackInfo(used=fallback_used),
+            reason=RouteReason(code="planner_unavailable", message="planner not available"),
         )
-    # Map planner source to RouteMetadata.planner_source
+
+    # Map planner source to PlannerInfo.source
     source_map = {
         "server_plan": "server",
         "cache": "cache",
         "local_benchmark": "offline",
         "fallback": "offline",
     }
+
     return RouteMetadata(
-        locality=locality,
-        engine=selection.engine,
-        planner_source=source_map.get(selection.source, "offline"),
-        fallback_used=fallback_used,
-        reason=selection.reason or "",
+        execution=RouteExecution(
+            locality=public_locality,
+            mode=_execution_mode_for_locality(public_locality),
+            engine=selection.engine,
+        ),
+        model=RouteModel(
+            requested=RouteModelRequested(
+                ref=model_name,
+                kind="model" if model_name else "unknown",
+                capability=capability or None,
+            ),
+        ),
+        planner=PlannerInfo(source=source_map.get(selection.source, "offline")),
+        fallback=FallbackInfo(used=fallback_used),
+        reason=RouteReason(
+            code=selection.source or "",
+            message=selection.reason or "",
+        ),
     )
 
 
@@ -552,7 +683,9 @@ class ExecutionKernel:
         response = await router.run(request, policy=routing_policy)
         latency_ms = (time.monotonic() - t0) * 1000
 
-        route = _route_metadata_from_selection(selection, locality, is_fallback)
+        route = _route_metadata_from_selection(
+            selection, locality, is_fallback, model_name=effective_model, capability=CAPABILITY_CHAT
+        )
         usage = _extract_usage(response)
 
         # Post-execution benchmark upload for local execution
@@ -560,7 +693,7 @@ class ExecutionKernel:
             _upload_benchmark_async(
                 model=effective_model,
                 capability=CAPABILITY_CHAT,
-                engine=route.engine,
+                engine=route.execution.engine if route.execution else None,
                 policy_preset=policy_preset,
                 tokens_per_second=usage.get("output_tokens", 0) / max(latency_ms / 1000, 0.001),
                 latency_ms=latency_ms,
@@ -614,7 +747,9 @@ class ExecutionKernel:
             generation_config=gen_config,
         )
 
-        route = _route_metadata_from_selection(selection, locality, is_fallback)
+        route = _route_metadata_from_selection(
+            selection, locality, is_fallback, model_name=effective_model, capability=CAPABILITY_CHAT
+        )
 
         t0 = time.monotonic()
         collected_text = ""
@@ -629,7 +764,7 @@ class ExecutionKernel:
             _upload_benchmark_async(
                 model=effective_model,
                 capability=CAPABILITY_CHAT,
-                engine=route.engine,
+                engine=route.execution.engine if route.execution else None,
                 policy_preset=policy_preset,
                 latency_ms=latency_ms,
             )
@@ -680,7 +815,9 @@ class ExecutionKernel:
             generation_config=gen_config,
         )
 
-        route = _route_metadata_from_selection(selection, locality, is_fallback)
+        route = _route_metadata_from_selection(
+            selection, locality, is_fallback, model_name=effective_model, capability=CAPABILITY_CHAT
+        )
 
         t0 = time.monotonic()
         collected_text = ""
@@ -695,7 +832,7 @@ class ExecutionKernel:
             _upload_benchmark_async(
                 model=effective_model,
                 capability=CAPABILITY_CHAT,
-                engine=route.engine,
+                engine=route.execution.engine if route.execution else None,
                 policy_preset=policy_preset,
                 latency_ms=latency_ms,
             )
@@ -746,7 +883,9 @@ class ExecutionKernel:
             capability=CAPABILITY_EMBEDDING,
         )
 
-        route = _route_metadata_from_selection(selection, locality, is_fallback)
+        route = _route_metadata_from_selection(
+            selection, locality, is_fallback, model_name=effective_model, capability=CAPABILITY_EMBEDDING
+        )
 
         if locality == LOCALITY_CLOUD:
             assert defaults.cloud_profile is not None
@@ -762,7 +901,7 @@ class ExecutionKernel:
         _upload_benchmark_async(
             model=effective_model,
             capability=CAPABILITY_EMBEDDING,
-            engine=route.engine,
+            engine=route.execution.engine if route.execution else None,
             policy_preset=policy_preset,
             latency_ms=latency_ms,
         )
@@ -881,7 +1020,9 @@ class ExecutionKernel:
             capability=CAPABILITY_TRANSCRIPTION,
         )
 
-        route = _route_metadata_from_selection(selection, locality, is_fallback)
+        route = _route_metadata_from_selection(
+            selection, locality, is_fallback, model_name=effective_model, capability=CAPABILITY_TRANSCRIPTION
+        )
 
         if locality == LOCALITY_CLOUD:
             assert defaults.cloud_profile is not None
@@ -899,7 +1040,7 @@ class ExecutionKernel:
         _upload_benchmark_async(
             model=effective_model,
             capability=CAPABILITY_TRANSCRIPTION,
-            engine=route.engine,
+            engine=route.execution.engine if route.execution else None,
             policy_preset=policy_preset,
             latency_ms=latency_ms,
         )
