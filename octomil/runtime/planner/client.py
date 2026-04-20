@@ -18,6 +18,7 @@ logger = logging.getLogger(__name__)
 
 _DEFAULT_PLAN_PATH = "/api/v2/runtime/plan"
 _DEFAULT_BENCHMARK_PATH = "/api/v2/runtime/benchmarks"
+_DEFAULT_DEFAULTS_PATH = "/api/v2/runtime/defaults"
 
 
 def _parse_candidate(data: dict[str, Any]) -> RuntimeCandidatePlan:
@@ -123,6 +124,24 @@ class RuntimePlannerClient:
                 return _parse_plan_response(data)
         except (httpx.HTTPError, json.JSONDecodeError, KeyError, TypeError) as exc:
             logger.debug("Failed to fetch runtime plan from %s: %s", url, exc)
+            return None
+
+    def fetch_defaults(self) -> dict[str, Any] | None:
+        """Fetch server runtime defaults. Returns None on any failure."""
+        try:
+            import httpx
+        except ImportError:
+            logger.debug("httpx not available — cannot fetch defaults")
+            return None
+
+        url = f"{self._base_url}{_DEFAULT_DEFAULTS_PATH}"
+        try:
+            with httpx.Client(timeout=10.0) as client:
+                resp = client.get(url, headers=self._headers())
+                resp.raise_for_status()
+                return resp.json()
+        except (httpx.HTTPError, json.JSONDecodeError, KeyError, TypeError) as exc:
+            logger.debug("Failed to fetch runtime defaults from %s: %s", url, exc)
             return None
 
     def upload_benchmark(self, payload: dict[str, Any]) -> bool:

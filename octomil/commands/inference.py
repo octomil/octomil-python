@@ -936,6 +936,19 @@ audio_group.add_command(transcriptions_group)
 # ---------------------------------------------------------------------------
 
 
+def _route_metadata_to_dict(route) -> dict:
+    """Serialize RouteMetadata to a JSON-safe dict."""
+    if route is None:
+        return {}
+    return {
+        "locality": route.locality,
+        "engine": route.engine,
+        "planner_source": route.planner_source,
+        "fallback_used": route.fallback_used,
+        "reason": route.reason,
+    }
+
+
 def _result_to_dict(result) -> dict:
     d = {
         "id": result.id,
@@ -947,6 +960,8 @@ def _result_to_dict(result) -> dict:
     }
     if result.usage:
         d["usage"] = result.usage
+    if result.route is not None:
+        d["route"] = _route_metadata_to_dict(result.route)
     return d
 
 
@@ -961,6 +976,8 @@ def _embed_result_to_dict(result) -> dict:
         d["data"] = [{"index": i, "embedding": v} for i, v in enumerate(result.embeddings)]
     if result.usage:
         d["usage"] = result.usage
+    if result.route is not None:
+        d["route"] = _route_metadata_to_dict(result.route)
     return d
 
 
@@ -974,6 +991,8 @@ def _transcribe_result_to_dict(result) -> dict:
     }
     if result.segments:
         d["segments"] = result.segments
+    if result.route is not None:
+        d["route"] = _route_metadata_to_dict(result.route)
     return d
 
 

@@ -3,10 +3,12 @@
 Encapsulates:
   - model resolution
   - serving-policy evaluation
+  - planner-driven runtime selection
   - local runtime resolution
   - cloud runtime resolution
   - fallback decisions
   - structured response generation
+  - post-execution benchmark upload
   - telemetry
 
 Does NOT require an HTTP server process.
@@ -18,6 +20,8 @@ import asyncio
 import logging
 import os
 import tempfile
+import threading
+import time
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -56,6 +60,17 @@ logger = logging.getLogger(__name__)
 
 
 @dataclass
+class RouteMetadata:
+    """Routing metadata from the runtime planner."""
+
+    locality: str = ""  # "on_device" | "cloud"
+    engine: Optional[str] = None
+    planner_source: str = ""  # "server" | "cache" | "offline"
+    fallback_used: bool = False
+    reason: str = ""
+
+
+@dataclass
 class ExecutionResult:
     """Unified result from any execution kernel call."""
 
@@ -73,6 +88,8 @@ class ExecutionResult:
     segments: Optional[list[dict[str, Any]]] = None
     # Raw data for --json
     raw: Optional[dict[str, Any]] = None
+    # Route metadata from planner
+    route: Optional[RouteMetadata] = None
 
 
 @dataclass
@@ -267,6 +284,146 @@ def _select_locality_for_capability(
 
 
 # ---------------------------------------------------------------------------
+# Planner integration
+# ---------------------------------------------------------------------------
+
+# Capability name mapping: config uses "chat"/"embedding"/"transcription",
+# planner uses "responses"/"embeddings"/"transcription".
+_PLANNER_CAPABILITY_MAP = {
+    CAPABILITY_CHAT: "responses",
+    CAPABILITY_EMBEDDING: "embeddings",
+    CAPABILITY_TRANSCRIPTION: "transcription",
+}
+
+# Keys that must NEVER appear in benchmark upload payloads.
+_BANNED_BENCHMARK_KEYS = frozenset(
+    {
+        "prompt",
+        "input",
+        "output",
+        "response",
+        "audio",
+        "audio_data",
+        "file",
+        "file_path",
+        "text",
+        "content",
+        "messages",
+    }
+)
+
+
+def _resolve_planner_selection(
+    model: str,
+    capability: str,
+    policy_preset: str,
+) -> Optional[Any]:
+    """Try planner-based runtime selection. Returns RuntimeSelection or None.
+
+    Never raises — planner failure is non-fatal.
+    """
+    if os.environ.get("OCTOMIL_RUNTIME_PLANNER_CACHE") == "0":
+        return None
+    try:
+        from octomil.runtime.planner.planner import RuntimePlanner
+
+        planner_cap = _PLANNER_CAPABILITY_MAP.get(capability, capability)
+        planner = RuntimePlanner()
+        return planner.resolve(
+            model=model,
+            capability=planner_cap,
+            routing_policy=policy_preset,
+        )
+    except Exception:
+        logger.debug("Planner selection failed", exc_info=True)
+        return None
+
+
+def _route_metadata_from_selection(
+    selection: Optional[Any],
+    locality: str,
+    fallback_used: bool,
+) -> RouteMetadata:
+    """Build RouteMetadata from a planner RuntimeSelection."""
+    if selection is None:
+        return RouteMetadata(
+            locality=locality,
+            planner_source="offline",
+            fallback_used=fallback_used,
+            reason="planner not available",
+        )
+    # Map planner source to RouteMetadata.planner_source
+    source_map = {
+        "server_plan": "server",
+        "cache": "cache",
+        "local_benchmark": "offline",
+        "fallback": "offline",
+    }
+    return RouteMetadata(
+        locality=locality,
+        engine=selection.engine,
+        planner_source=source_map.get(selection.source, "offline"),
+        fallback_used=fallback_used,
+        reason=selection.reason or "",
+    )
+
+
+def _sanitize_benchmark_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    """Remove any banned keys from a benchmark payload. Returns a clean copy."""
+    return {k: v for k, v in payload.items() if k not in _BANNED_BENCHMARK_KEYS}
+
+
+def _upload_benchmark_async(
+    *,
+    model: str,
+    capability: str,
+    engine: Optional[str],
+    policy_preset: str,
+    tokens_per_second: float = 0.0,
+    ttft_ms: float = 0.0,
+    latency_ms: float = 0.0,
+    peak_memory_bytes: Optional[int] = None,
+) -> None:
+    """Upload benchmark telemetry in a background thread. Best-effort, never blocks.
+
+    Skips upload for private policy or when no server credentials are configured.
+    """
+    if policy_preset in ("private", "local_only"):
+        return
+
+    api_key = os.environ.get("OCTOMIL_SERVER_KEY") or os.environ.get("OCTOMIL_API_KEY")
+    if not api_key:
+        return
+
+    payload = _sanitize_benchmark_payload(
+        {
+            "source": "execution_kernel",
+            "model": model,
+            "capability": _PLANNER_CAPABILITY_MAP.get(capability, capability),
+            "engine": engine or "",
+            "success": True,
+            "tokens_per_second": tokens_per_second,
+            "ttft_ms": ttft_ms,
+            "latency_ms": latency_ms,
+            "peak_memory_bytes": peak_memory_bytes,
+        }
+    )
+
+    def _upload() -> None:
+        try:
+            from octomil.runtime.planner.client import RuntimePlannerClient
+
+            base_url = os.environ.get("OCTOMIL_API_BASE") or "https://api.octomil.com"
+            client = RuntimePlannerClient(base_url=base_url, api_key=api_key)
+            client.upload_benchmark(payload)
+        except Exception:
+            logger.debug("Background benchmark upload failed", exc_info=True)
+
+    thread = threading.Thread(target=_upload, daemon=True, name="octomil-benchmark-upload")
+    thread.start()
+
+
+# ---------------------------------------------------------------------------
 # Execution Kernel
 # ---------------------------------------------------------------------------
 
@@ -368,8 +525,13 @@ class ExecutionKernel:
         if not effective_model:
             raise _no_model_error(CAPABILITY_CHAT)
 
+        policy_preset = defaults.policy_preset or "local_first"
+
+        # Planner-driven routing
+        selection = _resolve_planner_selection(effective_model, CAPABILITY_CHAT, policy_preset)
+
         routing_policy = _resolve_routing_policy(defaults)
-        router = await self._build_router(effective_model, CAPABILITY_CHAT, defaults)
+        router = await self._build_router(effective_model, CAPABILITY_CHAT, defaults, planner_selection=selection)
         locality, is_fallback = router.resolve_locality(routing_policy)
 
         gen_config = GenerationConfig(
@@ -386,7 +548,23 @@ class ExecutionKernel:
             generation_config=gen_config,
         )
 
+        t0 = time.monotonic()
         response = await router.run(request, policy=routing_policy)
+        latency_ms = (time.monotonic() - t0) * 1000
+
+        route = _route_metadata_from_selection(selection, locality, is_fallback)
+        usage = _extract_usage(response)
+
+        # Post-execution benchmark upload for local execution
+        if locality == LOCALITY_ON_DEVICE:
+            _upload_benchmark_async(
+                model=effective_model,
+                capability=CAPABILITY_CHAT,
+                engine=route.engine,
+                policy_preset=policy_preset,
+                tokens_per_second=usage.get("output_tokens", 0) / max(latency_ms / 1000, 0.001),
+                latency_ms=latency_ms,
+            )
 
         return ExecutionResult(
             id=f"resp_{uuid.uuid4().hex[:12]}",
@@ -395,7 +573,8 @@ class ExecutionKernel:
             locality=locality,
             fallback_used=is_fallback,
             output_text=response.text,
-            usage=_extract_usage(response),
+            usage=usage,
+            route=route,
         )
 
     async def stream_response(
@@ -414,8 +593,11 @@ class ExecutionKernel:
         if not effective_model:
             raise _no_model_error(CAPABILITY_CHAT)
 
+        policy_preset = defaults.policy_preset or "local_first"
+        selection = _resolve_planner_selection(effective_model, CAPABILITY_CHAT, policy_preset)
+
         routing_policy = _resolve_routing_policy(defaults)
-        router = await self._build_router(effective_model, CAPABILITY_CHAT, defaults)
+        router = await self._build_router(effective_model, CAPABILITY_CHAT, defaults, planner_selection=selection)
         locality, is_fallback = router.resolve_locality(routing_policy)
 
         gen_config = GenerationConfig(
@@ -432,11 +614,25 @@ class ExecutionKernel:
             generation_config=gen_config,
         )
 
+        route = _route_metadata_from_selection(selection, locality, is_fallback)
+
+        t0 = time.monotonic()
         collected_text = ""
         async for chunk in router.stream(request, policy=routing_policy):
             text = chunk.text or ""
             collected_text += text
             yield StreamChunk(delta=text)
+
+        latency_ms = (time.monotonic() - t0) * 1000
+
+        if locality == LOCALITY_ON_DEVICE:
+            _upload_benchmark_async(
+                model=effective_model,
+                capability=CAPABILITY_CHAT,
+                engine=route.engine,
+                policy_preset=policy_preset,
+                latency_ms=latency_ms,
+            )
 
         yield StreamChunk(
             delta="",
@@ -448,6 +644,7 @@ class ExecutionKernel:
                 locality=locality,
                 fallback_used=is_fallback,
                 output_text=collected_text,
+                route=route,
             ),
         )
 
@@ -467,8 +664,11 @@ class ExecutionKernel:
         if not effective_model:
             raise _no_model_error(CAPABILITY_CHAT)
 
+        policy_preset = defaults.policy_preset or "local_first"
+        selection = _resolve_planner_selection(effective_model, CAPABILITY_CHAT, policy_preset)
+
         routing_policy = _resolve_routing_policy(defaults)
-        router = await self._build_router(effective_model, CAPABILITY_CHAT, defaults)
+        router = await self._build_router(effective_model, CAPABILITY_CHAT, defaults, planner_selection=selection)
         locality, is_fallback = router.resolve_locality(routing_policy)
 
         gen_config = GenerationConfig(
@@ -480,11 +680,25 @@ class ExecutionKernel:
             generation_config=gen_config,
         )
 
+        route = _route_metadata_from_selection(selection, locality, is_fallback)
+
+        t0 = time.monotonic()
         collected_text = ""
         async for chunk in router.stream(request, policy=routing_policy):
             text = chunk.text or ""
             collected_text += text
             yield StreamChunk(delta=text)
+
+        latency_ms = (time.monotonic() - t0) * 1000
+
+        if locality == LOCALITY_ON_DEVICE:
+            _upload_benchmark_async(
+                model=effective_model,
+                capability=CAPABILITY_CHAT,
+                engine=route.engine,
+                policy_preset=policy_preset,
+                latency_ms=latency_ms,
+            )
 
         yield StreamChunk(
             delta="",
@@ -496,6 +710,7 @@ class ExecutionKernel:
                 locality=locality,
                 fallback_used=is_fallback,
                 output_text=collected_text,
+                route=route,
             ),
         )
 
@@ -517,6 +732,9 @@ class ExecutionKernel:
         if not effective_model:
             raise _no_model_error(CAPABILITY_EMBEDDING)
 
+        policy_preset = defaults.policy_preset or "local_first"
+        selection = _resolve_planner_selection(effective_model, CAPABILITY_EMBEDDING, policy_preset)
+
         routing_policy = _resolve_routing_policy(defaults)
 
         local_available = self._can_local(effective_model, CAPABILITY_EMBEDDING)
@@ -528,11 +746,28 @@ class ExecutionKernel:
             capability=CAPABILITY_EMBEDDING,
         )
 
+        route = _route_metadata_from_selection(selection, locality, is_fallback)
+
         if locality == LOCALITY_CLOUD:
             assert defaults.cloud_profile is not None
-            return await self._cloud_embed(inputs, effective_model, defaults.cloud_profile, is_fallback)
+            result = await self._cloud_embed(inputs, effective_model, defaults.cloud_profile, is_fallback)
+            result.route = route
+            return result
 
-        return await self._local_embed(inputs, effective_model, is_fallback)
+        t0 = time.monotonic()
+        result = await self._local_embed(inputs, effective_model, is_fallback)
+        latency_ms = (time.monotonic() - t0) * 1000
+        result.route = route
+
+        _upload_benchmark_async(
+            model=effective_model,
+            capability=CAPABILITY_EMBEDDING,
+            engine=route.engine,
+            policy_preset=policy_preset,
+            latency_ms=latency_ms,
+        )
+
+        return result
 
     async def _cloud_embed(
         self,
@@ -633,6 +868,9 @@ class ExecutionKernel:
         if not effective_model:
             raise _no_model_error(CAPABILITY_TRANSCRIPTION)
 
+        policy_preset = defaults.policy_preset or "local_first"
+        selection = _resolve_planner_selection(effective_model, CAPABILITY_TRANSCRIPTION, policy_preset)
+
         routing_policy = _resolve_routing_policy(defaults)
         local_available = self._has_local_transcription_backend(effective_model)
         cloud_available = _cloud_available(defaults)
@@ -643,13 +881,30 @@ class ExecutionKernel:
             capability=CAPABILITY_TRANSCRIPTION,
         )
 
+        route = _route_metadata_from_selection(selection, locality, is_fallback)
+
         if locality == LOCALITY_CLOUD:
             assert defaults.cloud_profile is not None
-            return await self._cloud_transcribe(
+            result = await self._cloud_transcribe(
                 audio_data, effective_model, defaults.cloud_profile, language, is_fallback
             )
+            result.route = route
+            return result
 
-        return await self._local_transcribe(audio_data, effective_model, language, is_fallback)
+        t0 = time.monotonic()
+        result = await self._local_transcribe(audio_data, effective_model, language, is_fallback)
+        latency_ms = (time.monotonic() - t0) * 1000
+        result.route = route
+
+        _upload_benchmark_async(
+            model=effective_model,
+            capability=CAPABILITY_TRANSCRIPTION,
+            engine=route.engine,
+            policy_preset=policy_preset,
+            latency_ms=latency_ms,
+        )
+
+        return result
 
     async def _cloud_transcribe(
         self,
@@ -787,13 +1042,59 @@ class ExecutionKernel:
         model: str,
         capability: str,
         defaults: ResolvedExecutionDefaults,
+        *,
+        planner_selection: Optional[Any] = None,
     ) -> RouterModelRuntime:
-        """Build a RouterModelRuntime for the given model and capability."""
+        """Build a RouterModelRuntime for the given model and capability.
+
+        When a planner_selection is provided and recommends a specific engine,
+        the local factory tries that engine first before falling back to the
+        default registry resolution.
+        """
         from octomil.runtime.core.registry import ModelRuntimeRegistry
 
         registry = ModelRuntimeRegistry.shared()
 
+        # If planner says cloud, force cloud by returning None from local factory
+        planner_forces_cloud = planner_selection is not None and planner_selection.locality == "cloud"
+        planner_engine = (
+            planner_selection.engine
+            if planner_selection is not None and planner_selection.locality == "local"
+            else None
+        )
+
         def local_factory(hint: str):
+            if planner_forces_cloud:
+                return None
+
+            # If planner recommends a specific local engine, try it first
+            if planner_engine:
+                try:
+                    from octomil.runtime.engines import get_registry as get_engine_registry
+
+                    engine_registry = get_engine_registry()
+                    engine = engine_registry.get_engine(planner_engine)
+                    if engine is not None and engine.detect() and engine.name != "echo":
+                        from octomil.runtime.core.adapter import InferenceBackendAdapter
+                        from octomil.runtime.core.engine_bridge import _infer_tool_call_tier
+                        from octomil.runtime.core.types import RuntimeCapabilities
+
+                        backend = engine.create_backend(model)
+                        return InferenceBackendAdapter(
+                            backend=backend,
+                            model_name=model,
+                            capabilities=RuntimeCapabilities(
+                                tool_call_tier=_infer_tool_call_tier(model),
+                                supports_streaming=True,
+                            ),
+                        )
+                except Exception:
+                    logger.debug(
+                        "Planner-recommended engine %s failed, falling back to registry",
+                        planner_engine,
+                        exc_info=True,
+                    )
+
             return registry.resolve(model)
 
         def cloud_factory(hint: str):
