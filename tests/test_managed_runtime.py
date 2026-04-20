@@ -8,7 +8,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from octomil.runtime.planner.artifact_cache import ArtifactCache, _warn_if_large_download_non_tty
+from octomil.runtime.planner.artifact_cache import ArtifactCache, _warn_if_large_artifact_non_tty
 
 # ---------------------------------------------------------------------------
 # TestNoEchoInUserPaths
@@ -216,27 +216,27 @@ class TestArtifactCache:
 
 
 class TestNonTtyGuard:
-    """Non-TTY guard warns about large artifact downloads in scripts/CI."""
+    """Non-TTY guard warns about large artifacts in scripts/CI."""
 
     def test_tty_no_warning(self, monkeypatch):
         monkeypatch.setattr("sys.stdout.isatty", lambda: True)
-        # Should not warn for large download in TTY mode
+        # Should not warn for large artifact in TTY mode
         with warnings.catch_warnings(record=True) as w:
             warnings.simplefilter("always")
-            _warn_if_large_download_non_tty(500_000_000)
+            _warn_if_large_artifact_non_tty(500_000_000)
             assert len(w) == 0
 
-    def test_non_tty_large_download_warns(self, monkeypatch):
+    def test_non_tty_large_artifact_warns(self, monkeypatch):
         monkeypatch.setattr("sys.stdout.isatty", lambda: False)
         with pytest.warns(UserWarning, match="non-interactive"):
-            _warn_if_large_download_non_tty(500_000_000)
+            _warn_if_large_artifact_non_tty(500_000_000)
 
-    def test_non_tty_small_download_no_warning(self, monkeypatch):
+    def test_non_tty_small_artifact_no_warning(self, monkeypatch):
         monkeypatch.setattr("sys.stdout.isatty", lambda: False)
         # Under 100MB threshold — no warning
         with warnings.catch_warnings(record=True) as w:
             warnings.simplefilter("always")
-            _warn_if_large_download_non_tty(50_000_000)
+            _warn_if_large_artifact_non_tty(50_000_000)
             assert len(w) == 0
 
     def test_none_size_no_warning(self, monkeypatch):
@@ -244,7 +244,7 @@ class TestNonTtyGuard:
         # None size — no warning
         with warnings.catch_warnings(record=True) as w:
             warnings.simplefilter("always")
-            _warn_if_large_download_non_tty(None)
+            _warn_if_large_artifact_non_tty(None)
             assert len(w) == 0
 
 

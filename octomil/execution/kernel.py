@@ -484,14 +484,14 @@ def _route_metadata_from_selection(
         cache_status_value = "not_applicable"
         try:
             from octomil.runtime.planner.artifact_cache import ArtifactCache as ArtifactCacheManager
-            from octomil.runtime.planner.artifact_cache import _warn_if_large_download_non_tty
+            from octomil.runtime.planner.artifact_cache import _warn_if_large_artifact_non_tty
 
             artifact_cache = ArtifactCacheManager()
             cache_status_value = artifact_cache.cache_status(artifact_digest)
 
-            # Warn in non-TTY environments about large artifact downloads
+            # Warn in non-TTY environments about large artifacts
             if cache_status_value == "miss":
-                _warn_if_large_download_non_tty(selection.artifact.size_bytes)
+                _warn_if_large_artifact_non_tty(selection.artifact.size_bytes)
         except Exception:
             pass
         route_artifact = RouteArtifact(

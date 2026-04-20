@@ -575,8 +575,8 @@ def run_cmd(
 ) -> None:
     """Run a one-shot inference request.
 
-    The primary command for local AI inference. Resolves the model,
-    downloads if needed, and executes locally or via cloud based on policy.
+    The primary command for local AI inference. Resolves the model
+    and executes locally or via cloud based on routing policy.
 
     \b
     Examples:

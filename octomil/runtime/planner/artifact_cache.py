@@ -46,11 +46,15 @@ class ArtifactCache:
         return self.artifact_path(digest).exists()
 
     def acquire_lock(self, digest: str):
-        """Acquire a file lock for downloading an artifact.
+        """Acquire an exclusive file lock for an artifact digest.
 
         Returns an open file descriptor with an exclusive advisory lock.
         The caller is responsible for closing the fd when done (which
         releases the lock).  Blocks until the lock is acquired.
+
+        Note: the actual artifact download is not yet implemented — this
+        lock exists so a future download implementation can coordinate
+        concurrent writers safely.
         """
         lock_path = self._cache_dir / f"{digest}.lock"
         fd = open(lock_path, "w")  # noqa: SIM115
@@ -69,20 +73,23 @@ class ArtifactCache:
         return "miss"
 
 
-def _warn_if_large_download_non_tty(artifact_size_bytes: int | None) -> None:
+def _warn_if_large_artifact_non_tty(artifact_size_bytes: int | None) -> None:
     """Emit a warning for large artifacts in non-interactive environments.
 
     For artifacts >100 MB, emits a ``UserWarning`` when stdout is not a TTY
     so that CI/script environments can pre-cache artifacts via
     ``OCTOMIL_ARTIFACT_CACHE``.  This is advisory only — it does not block
     execution.
+
+    Note: artifact download is not yet implemented.  This warning is placed
+    here so the UX exists when download logic is added.
     """
     if artifact_size_bytes and artifact_size_bytes > 100_000_000:  # 100 MB
         if not sys.stdout.isatty():
             import warnings
 
             warnings.warn(
-                f"About to download {artifact_size_bytes / 1e9:.1f}GB artifact in non-interactive mode. "
-                "Set OCTOMIL_ARTIFACT_CACHE to pre-cache artifacts.",
+                f"Large artifact ({artifact_size_bytes / 1e9:.1f}GB) required in non-interactive mode. "
+                "Pre-cache artifacts via OCTOMIL_ARTIFACT_CACHE to avoid future download delays.",
                 stacklevel=2,
             )
