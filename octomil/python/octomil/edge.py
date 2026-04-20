@@ -25,6 +25,25 @@ class Octomil:
         self.experiments = ExperimentsAPI(self.api, org_id=org_id)
         self.federation = Federation(auth_token_provider, org_id=org_id, api_base=api_base)
 
+    @classmethod
+    def from_env(cls, **kwargs):
+        """Compatibility bridge to the unified facade environment constructor.
+
+        Some previously published wheels exported this legacy edge class from
+        ``from octomil import Octomil``. Keep the modern server-side entrypoint
+        available even when that legacy export path is encountered.
+        """
+        from octomil.facade import Octomil as FacadeOctomil
+
+        return FacadeOctomil.from_env(**kwargs)
+
+    @classmethod
+    def local(cls, **kwargs):
+        """Compatibility bridge to the unified facade local constructor."""
+        from octomil.facade import Octomil as FacadeOctomil
+
+        return FacadeOctomil.local(**kwargs)
+
     def client(
         self, device_identifier: Optional[str] = None, platform: str = "python"
     ) -> FederatedClient:

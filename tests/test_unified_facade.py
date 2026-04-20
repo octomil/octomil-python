@@ -3,14 +3,27 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+import octomil
 from octomil.embeddings import EmbeddingResult, EmbeddingUsage
 from octomil.errors import OctomilError
 from octomil.facade import FacadeEmbeddings, FacadeResponses, Octomil, OctomilNotInitializedError
 from octomil.responses.types import Response, ResponseToolCall, TextOutput, ToolCallOutput
+
+
+class TestTopLevelFacadeExport:
+    def test_top_level_octomil_exports_unified_facade(self):
+        from octomil import Octomil as TopLevelOctomil
+
+        assert TopLevelOctomil is Octomil
+        assert hasattr(TopLevelOctomil, "from_env")
+        assert inspect.getsourcefile(TopLevelOctomil) == inspect.getsourcefile(Octomil)
+        assert octomil.__version__ == "4.6.1"
+
 
 # ---------------------------------------------------------------------------
 # Constructor

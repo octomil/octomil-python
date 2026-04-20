@@ -1,3 +1,4 @@
+import os
 import unittest
 from unittest.mock import patch
 
@@ -31,6 +32,21 @@ class OctomilTests(unittest.TestCase):
             self.assertIsInstance(fed_client, FederatedClient)
             self.assertIsNotNone(fed_client.device_identifier)  # Generated automatically
             self.assertEqual(fed_client.platform, "python")
+
+    def test_from_env_delegates_to_unified_facade(self):
+        from octomil.facade import Octomil as FacadeOctomil
+
+        with patch.dict(
+            os.environ,
+            {
+                "OCTOMIL_SERVER_KEY": "oct_sk_test_123",
+                "OCTOMIL_ORG_ID": "org_1",
+            },
+            clear=True,
+        ):
+            client = Octomil.from_env()
+
+        self.assertIsInstance(client, FacadeOctomil)
 
 
 if __name__ == "__main__":

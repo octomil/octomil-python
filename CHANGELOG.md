@@ -4,6 +4,7 @@
 
 - Added `DeviceAuthClient` runtime auth helper for device token bootstrap, refresh, and revoke flows.
 - Added optional `auth` extra with `keyring` secure storage dependency.
+- Fixed the published wheel surface so `from octomil import Octomil` resolves to the unified facade with `Octomil.from_env()`.
 
 ## 4.6.0 (2026-03-25)
 
