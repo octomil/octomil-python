@@ -92,8 +92,12 @@ class TestRouteMetadataDecoding:
             exec_info = meta["execution"]
             assert "locality" in exec_info
             assert "mode" in exec_info
-        elif meta["status"] in ("unavailable", "failed"):
+        elif meta["status"] == "unavailable":
             assert meta["execution"] is None
+        elif meta["status"] == "failed" and meta["execution"] is not None:
+            exec_info = meta["execution"]
+            assert exec_info["locality"] in ("local", "cloud")
+            assert exec_info["mode"] in ("sdk_runtime", "hosted_gateway")
 
     def test_can_parse_attempts(self, fixture_data: dict[str, Any]) -> None:
         meta = _require_section(fixture_data, "expected_route_metadata")
@@ -177,11 +181,19 @@ class TestTelemetrySafety:
         assert not violations, f"Forbidden route metadata keys found: {violations}"
 
     def test_telemetry_has_required_fields(self, fixture_data: dict[str, Any]) -> None:
-        """Telemetry must contain at minimum: route_id, policy, model_id."""
+        """Telemetry must contain the server-ingested route event fields."""
         telem = fixture_data.get("expected_telemetry", {})
-        assert "route_id" in telem
-        assert "policy" in telem
-        assert "model_id" in telem
+        required = {
+            "route_id",
+            "request_id",
+            "capability",
+            "policy",
+            "planner_source",
+            "final_locality",
+            "fallback_used",
+            "candidate_attempts",
+        }
+        assert required <= set(telem.keys())
 
 
 class TestPolicyResult:
@@ -202,7 +214,7 @@ class TestPolicyResult:
         policy = _require_section(fixture_data, "expected_policy_result")
         if request["routing_policy"] == "local_only":
             assert policy["cloud_allowed"] is False
-            assert policy["private"] is True
+            assert policy["local_allowed"] is True
 
     def test_cloud_only_implies_cloud_allowed(self, fixture_data: dict[str, Any]) -> None:
         """If routing_policy is cloud_only, cloud must be allowed."""
@@ -301,7 +313,6 @@ class TestFixtureIntegrity:
             "description",
             "request",
             "planner_response",
-            "expected_route_metadata",
             "expected_telemetry",
             "expected_policy_result",
             "rules_tested",
