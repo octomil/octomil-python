@@ -63,6 +63,23 @@ class RuntimeCandidatePlan:
 
 
 @dataclass
+class AppResolution:
+    """Server-resolved app ref details from ``@app/{slug}/{capability}`` routing."""
+
+    app_id: str
+    capability: str
+    routing_policy: str
+    selected_model: str
+    app_slug: str | None = None
+    selected_model_variant_id: str | None = None
+    selected_model_version: str | None = None
+    artifact_candidates: list[RuntimeArtifactPlan] = field(default_factory=list)
+    preferred_engines: list[str] = field(default_factory=list)
+    fallback_policy: str | None = None
+    plan_ttl_seconds: int = 604800
+
+
+@dataclass
 class RuntimePlanResponse:
     """Full plan response from the server planner API."""
 
@@ -73,6 +90,7 @@ class RuntimePlanResponse:
     fallback_candidates: list[RuntimeCandidatePlan] = field(default_factory=list)
     plan_ttl_seconds: int = 604800
     server_generated_at: str = ""
+    app_resolution: AppResolution | None = None
 
 
 @dataclass
@@ -86,3 +104,4 @@ class RuntimeSelection:
     source: str = ""  # "cache", "server_plan", "local_benchmark", "fallback"
     fallback_candidates: list[RuntimeCandidatePlan] = field(default_factory=list)
     reason: str = ""
+    app_resolution: AppResolution | None = None

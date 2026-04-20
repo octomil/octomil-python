@@ -105,6 +105,7 @@ class Octomil:
         self._client: Any = None
         self._responses_wrapper: FacadeResponses | None = None
         self._embeddings_wrapper: FacadeEmbeddings | None = None
+        self._force_hosted: bool = False
 
         if auth is not None:
             self._auth: AuthConfig = auth
@@ -157,6 +158,37 @@ class Octomil:
         if api_base:
             return cls(auth=OrgApiKeyAuth(api_key=api_key, org_id=org_id, api_base=api_base), **kwargs)
         return cls(auth=OrgApiKeyAuth(api_key=api_key, org_id=org_id), **kwargs)
+
+    @classmethod
+    def hosted_from_env(
+        cls,
+        *,
+        server_key_var: str = "OCTOMIL_SERVER_KEY",
+        legacy_api_key_var: str = "OCTOMIL_API_KEY",
+        org_id_var: str = "OCTOMIL_ORG_ID",
+        api_base_var: str = "OCTOMIL_API_BASE",
+        **kwargs: Any,
+    ) -> "Octomil":
+        """Create an Octomil client that always uses hosted gateway inference.
+
+        Unlike ``from_env()``, this never routes to the local SDK runtime.
+        All inference goes through ``api.octomil.com`` (or the configured
+        endpoint).
+
+        ``from_env()`` remains config-driven (respects routing policy from
+        ``.octomil.toml``).  ``hosted_from_env()`` is the explicit cloud-only
+        escape hatch for server-side deployments that always want hosted
+        gateway inference.
+        """
+        instance = cls.from_env(
+            server_key_var=server_key_var,
+            legacy_api_key_var=legacy_api_key_var,
+            org_id_var=org_id_var,
+            api_base_var=api_base_var,
+            **kwargs,
+        )
+        instance._force_hosted = True
+        return instance
 
     async def initialize(self) -> None:
         """Validate auth and prepare the underlying client. Idempotent."""
@@ -286,7 +318,7 @@ class LocalOctomil:
 
         if effective_model == "default":
             raise ValueError(
-                "No default chat model configured. " "Pass model= explicitly or set a default in .octomil.toml."
+                "No default chat model configured. Pass model= explicitly or set a default in .octomil.toml."
             )
 
         self._handle = mgr.ensure(model=effective_model, engine=self._engine)

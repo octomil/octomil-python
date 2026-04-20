@@ -7,6 +7,7 @@ import logging
 import os
 from dataclasses import asdict
 
+from .app_ref import is_app_ref, parse_app_ref
 from .client import RuntimePlannerClient
 from .device_profile import collect_device_runtime_profile
 from .schemas import (
@@ -66,7 +67,8 @@ class RuntimePlanner:
         Parameters
         ----------
         model:
-            Model identifier (e.g. "gemma-2b", "llama-8b").
+            Model identifier (e.g. "gemma-2b", "llama-8b") or an
+            ``@app/{slug}/{capability}`` app ref.
         capability:
             The capability needed (e.g. "text", "embeddings", "audio").
         routing_policy:
@@ -76,14 +78,24 @@ class RuntimePlanner:
             Whether to contact the server for plan/telemetry.  Set to False
             for fully-offline operation.
         """
+        # Parse @app/{slug}/{capability} refs
+        app_slug: str | None = None
+        app_capability: str | None = None
+        effective_model = model
+
+        if is_app_ref(model):
+            app_slug, app_capability = parse_app_ref(model)
+            if app_capability:
+                capability = app_capability
+
         # Step 1: Collect device profile
-        device = collect_device_runtime_profile(model_id=model)
+        device = collect_device_runtime_profile(model_id=effective_model)
 
         # Step 2: Check local plan cache
         from octomil import __version__
 
         cache_key = self._store._make_cache_key(
-            model=model,
+            model=effective_model,
             capability=capability,
             policy=routing_policy,
             sdk_version=__version__,
@@ -93,7 +105,7 @@ class RuntimePlanner:
 
         cached_plan = self._store.get_plan(cache_key)
         if cached_plan is not None:
-            logger.debug("Using cached plan for %s/%s", model, capability)
+            logger.debug("Using cached plan for %s/%s", effective_model, capability)
             return self._selection_from_plan_dict(cached_plan, device=device, source="cache")
 
         # Step 3: Fetch server plan if network is allowed
@@ -102,19 +114,32 @@ class RuntimePlanner:
 
         if allow_network and self._client is not None and not is_private:
             server_plan = self._client.fetch_plan(
-                model=model,
+                model=effective_model,
                 capability=capability,
                 routing_policy=routing_policy,
                 device=device,
                 allow_cloud_fallback=routing_policy != "local_only",
+                app_slug=app_slug,
             )
             if server_plan is not None:
-                logger.debug("Received server plan for %s/%s", model, capability)
+                logger.debug("Received server plan for %s/%s", effective_model, capability)
+
+                # If the server returned an app_resolution, use the resolved
+                # model as the effective model for local engine selection and
+                # honour the app-level routing policy.
+                if server_plan.app_resolution is not None:
+                    ar = server_plan.app_resolution
+                    if ar.selected_model:
+                        effective_model = ar.selected_model
+                    if ar.routing_policy:
+                        routing_policy = ar.routing_policy
+                        is_private = routing_policy == "private"
+
                 # Cache the server plan
                 plan_dict = asdict(server_plan)
                 self._store.put_plan(
                     cache_key,
-                    model=model,
+                    model=effective_model,
                     capability=capability,
                     policy=routing_policy,
                     plan_json=json.dumps(plan_dict),
@@ -126,16 +151,21 @@ class RuntimePlanner:
         if server_plan is not None:
             selection = self._resolve_from_server_plan(server_plan, device=device, is_private=is_private)
             if selection is not None:
+                # Attach app_resolution to selection so callers can inspect it
+                selection.app_resolution = server_plan.app_resolution
                 return selection
 
         # Step 5-8: Fall back to local engine selection
-        return self._resolve_locally(
-            model=model,
+        selection = self._resolve_locally(
+            model=effective_model,
             capability=capability,
             routing_policy=routing_policy,
             device=device,
             is_private=is_private,
         )
+        if server_plan is not None and server_plan.app_resolution is not None:
+            selection.app_resolution = server_plan.app_resolution
+        return selection
 
     def _resolve_from_server_plan(
         self,
