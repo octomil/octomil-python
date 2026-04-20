@@ -6,6 +6,7 @@ and that backward compatibility is preserved when no plan exists.
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -98,7 +99,7 @@ def clean_registry():
 
 def _make_selection(
     locality: str = "local",
-    engine: str | None = "mlx-lm",
+    engine: str | None = None,
     fallback_allowed: bool = True,
     candidates: list[dict[str, Any]] | None = None,
 ):
@@ -143,7 +144,7 @@ class TestCreateUsesAttemptRunnerWhenPlanAvailable:
         mock_rt = MockRuntime("planned response")
         ModelRuntimeRegistry.shared().default_factory = lambda model_id: mock_rt
 
-        selection = _make_selection(locality="local", engine="mlx-lm")
+        selection = _make_selection(locality="local")
 
         with patch(
             "octomil.responses.responses._try_resolve_planner_selection",
@@ -157,6 +158,63 @@ class TestCreateUsesAttemptRunnerWhenPlanAvailable:
         assert response.output[0].text == "planned response"
         # Route metadata should be present
         assert response.route is not None
+
+    @pytest.mark.asyncio
+    async def test_create_uses_planner_selected_engine_and_resolved_app_model(self) -> None:
+        """A selected local candidate must drive the concrete engine/model used."""
+        created_for: list[str] = []
+
+        class _Backend:
+            def generate(self, request):
+                return "engine-bound response", SimpleNamespace(prompt_tokens=1, total_tokens=4)
+
+        class _Engine:
+            name = "fake-engine"
+
+            def detect(self):
+                return True
+
+            def create_backend(self, model_name: str):
+                created_for.append(model_name)
+                return _Backend()
+
+        class _Registry:
+            def get_engine(self, name: str):
+                return _Engine() if name == "fake-engine" else None
+
+        app_resolution = MagicMock()
+        app_resolution.selected_model = "resolved-chat-model"
+        app_resolution.selected_model_variant_id = "variant-a"
+        app_resolution.selected_model_version = "1.0.0"
+
+        selection = _make_selection(
+            locality="local",
+            engine="fake-engine",
+            candidates=[
+                {
+                    "locality": "local",
+                    "engine": "fake-engine",
+                    "priority": 0,
+                    "confidence": 1.0,
+                    "reason": "planner selected fake-engine",
+                }
+            ],
+        )
+        selection.app_resolution = app_resolution
+
+        with (
+            patch("octomil.responses.responses._try_resolve_planner_selection", return_value=selection),
+            patch("octomil.runtime.engines.get_registry", return_value=_Registry()),
+        ):
+            responses = OctomilResponses(planner_enabled=True)
+            response = await responses.create(ResponseRequest(model="@app/demo/chat", input=[text_input("Hello")]))
+
+        assert isinstance(response.output[0], TextOutput)
+        assert response.output[0].text == "engine-bound response"
+        assert created_for == ["resolved-chat-model"]
+        assert response.route is not None
+        assert response.route.execution is not None
+        assert response.route.execution.engine == "fake-engine"
 
 
 class TestCreateBypassesRunnerWhenNoPlan:
@@ -204,7 +262,7 @@ class TestStreamUsesAttemptRunner:
         mock_rt = MockRuntime("streamed content here")
         ModelRuntimeRegistry.shared().default_factory = lambda model_id: mock_rt
 
-        selection = _make_selection(locality="local", engine="mlx-lm")
+        selection = _make_selection(locality="local")
 
         with patch(
             "octomil.responses.responses._try_resolve_planner_selection",
@@ -221,6 +279,7 @@ class TestStreamUsesAttemptRunner:
         assert len(text_deltas) > 0
         assert len(done_events) == 1
         assert done_events[0].response.route is not None
+        assert done_events[0].response.route.attempts
 
 
 class TestStreamFallbackBeforeFirstToken:
@@ -251,7 +310,7 @@ class TestStreamFallbackBeforeFirstToken:
         selection = _make_selection(
             fallback_allowed=True,
             candidates=[
-                {"locality": "local", "engine": "mlx-lm", "priority": 0, "confidence": 1.0, "reason": "primary"},
+                {"locality": "local", "engine": None, "priority": 0, "confidence": 1.0, "reason": "primary"},
                 {"locality": "cloud", "priority": 1, "confidence": 0.5, "reason": "fallback"},
             ],
         )
@@ -273,6 +332,12 @@ class TestStreamFallbackBeforeFirstToken:
         assert "cloud" in full_text
         # Locality should reflect fallback
         assert done_events[0].response.locality is not None
+        route = done_events[0].response.route
+        assert route is not None
+        assert route.fallback.used is True
+        assert [attempt["status"] for attempt in route.attempts] == ["failed", "selected"]
+        assert route.fallback.trigger is not None
+        assert route.fallback.trigger["code"] == "inference_error_before_first_token"
 
 
 class TestStreamNoFallbackAfterFirstToken:
@@ -285,7 +350,7 @@ class TestStreamNoFallbackAfterFirstToken:
         selection = _make_selection(
             fallback_allowed=True,
             candidates=[
-                {"locality": "local", "engine": "mlx-lm", "priority": 0, "confidence": 1.0, "reason": "primary"},
+                {"locality": "local", "engine": None, "priority": 0, "confidence": 1.0, "reason": "primary"},
                 {"locality": "cloud", "priority": 1, "confidence": 0.5, "reason": "fallback"},
             ],
         )
@@ -308,7 +373,7 @@ class TestResponseIncludesRouteMetadata:
         mock_rt = MockRuntime("with metadata")
         ModelRuntimeRegistry.shared().default_factory = lambda model_id: mock_rt
 
-        selection = _make_selection(locality="local", engine="mlx-lm")
+        selection = _make_selection(locality="local")
 
         with patch(
             "octomil.responses.responses._try_resolve_planner_selection",
@@ -383,7 +448,7 @@ class TestAttemptRunnerIsInvokedNotBypassed:
         mock_rt = MockRuntime("runner output")
         ModelRuntimeRegistry.shared().default_factory = lambda model_id: mock_rt
 
-        selection = _make_selection(locality="local", engine="mlx-lm")
+        selection = _make_selection(locality="local")
 
         with (
             patch(
