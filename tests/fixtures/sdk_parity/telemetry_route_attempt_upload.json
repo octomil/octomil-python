@@ -1,0 +1,80 @@
+{
+  "description": "Telemetry upload must include route attempts without leaking unsafe fields",
+  "request": {
+    "model": "llama-3.2-1b",
+    "capability": "chat",
+    "routing_policy": "auto"
+  },
+  "planner_response": {
+    "model": "llama-3.2-1b",
+    "candidates": [
+      {
+        "locality": "local",
+        "priority": 0,
+        "engine": "llamacpp",
+        "artifact": {
+          "artifact_id": "llama-3.2-1b-q4_k_m",
+          "digest": "sha256:tel001"
+        },
+        "gates": [
+          {
+            "code": "runtime_available",
+            "required": true,
+            "source": "platform"
+          }
+        ]
+      },
+      {
+        "locality": "cloud",
+        "priority": 1,
+        "engine": null,
+        "gates": []
+      }
+    ],
+    "fallback_allowed": true
+  },
+  "expected_route_metadata": {
+    "status": "selected",
+    "execution": {
+      "locality": "local",
+      "engine": "llamacpp",
+      "mode": "sdk_runtime"
+    },
+    "attempts": [
+      {
+        "index": 0,
+        "locality": "local",
+        "status": "selected",
+        "stage": "inference",
+        "reason": "all gates passed, candidate selected"
+      }
+    ],
+    "fallback": {
+      "used": false,
+      "trigger": null
+    }
+  },
+  "expected_telemetry": {
+    "route_id": "route-tel-001",
+    "policy": "auto",
+    "locality": "local",
+    "engine": "llamacpp",
+    "model_id": "llama-3.2-1b",
+    "attempt_count": 1,
+    "fallback_used": false,
+    "latency_ms": 142,
+    "tokens_generated": 87,
+    "time_to_first_token_ms": 23
+  },
+  "expected_policy_result": {
+    "cloud_allowed": true,
+    "fallback_allowed": true,
+    "private": false
+  },
+  "rules_tested": [
+    "telemetry_includes_route_metadata",
+    "telemetry_excludes_prompt_content",
+    "telemetry_excludes_output_content",
+    "telemetry_safe_for_upload"
+  ]
+}

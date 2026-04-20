@@ -1,0 +1,86 @@
+{
+  "description": "Streaming request cannot fall back after first token has been emitted",
+  "request": {
+    "model": "llama-3.2-3b",
+    "capability": "chat",
+    "routing_policy": "local_first"
+  },
+  "planner_response": {
+    "model": "llama-3.2-3b",
+    "candidates": [
+      {
+        "locality": "local",
+        "priority": 0,
+        "engine": "llamacpp",
+        "artifact": {
+          "artifact_id": "llama-3.2-3b-q4_k_m",
+          "digest": "sha256:strm002"
+        },
+        "gates": [
+          {
+            "code": "runtime_available",
+            "required": true,
+            "source": "platform"
+          },
+          {
+            "code": "artifact_verified",
+            "required": true,
+            "source": "platform"
+          }
+        ]
+      },
+      {
+        "locality": "cloud",
+        "priority": 1,
+        "engine": null,
+        "gates": [
+          {
+            "code": "cloud_quota_remaining",
+            "required": true,
+            "source": "account"
+          }
+        ]
+      }
+    ],
+    "fallback_allowed": true
+  },
+  "expected_route_metadata": {
+    "status": "failed",
+    "execution": null,
+    "attempts": [
+      {
+        "index": 0,
+        "locality": "local",
+        "status": "failed",
+        "stage": "inference",
+        "reason": "inference_error_after_first_token"
+      }
+    ],
+    "fallback": {
+      "used": false,
+      "trigger": null
+    }
+  },
+  "expected_telemetry": {
+    "route_id": "route-strm-002",
+    "policy": "local_first",
+    "locality": "local",
+    "engine": "llamacpp",
+    "model_id": "llama-3.2-3b",
+    "attempt_count": 1,
+    "fallback_used": false,
+    "error_code": "inference_error_after_first_token",
+    "streaming": true,
+    "first_token_emitted_before_fallback": true
+  },
+  "expected_policy_result": {
+    "cloud_allowed": true,
+    "fallback_allowed": true,
+    "private": false
+  },
+  "rules_tested": [
+    "streaming_post_first_token_blocks_fallback",
+    "error_surfaces_to_caller",
+    "no_stream_splicing"
+  ]
+}

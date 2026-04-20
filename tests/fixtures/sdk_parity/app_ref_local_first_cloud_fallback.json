@@ -1,0 +1,100 @@
+{
+  "description": "App ref resolves local-first with cloud fallback when local candidate fails",
+  "request": {
+    "model": "llama-3.2-1b",
+    "capability": "chat",
+    "routing_policy": "local_first"
+  },
+  "planner_response": {
+    "model": "llama-3.2-1b",
+    "candidates": [
+      {
+        "locality": "local",
+        "priority": 0,
+        "engine": "llamacpp",
+        "artifact": {
+          "artifact_id": "llama-3.2-1b-q4_k_m",
+          "digest": "sha256:def456"
+        },
+        "gates": [
+          {
+            "code": "runtime_available",
+            "required": true,
+            "source": "platform"
+          },
+          {
+            "code": "memory_headroom",
+            "required": true,
+            "source": "device",
+            "threshold_number": 1073741824
+          }
+        ]
+      },
+      {
+        "locality": "cloud",
+        "priority": 1,
+        "engine": null,
+        "gates": [
+          {
+            "code": "cloud_quota_remaining",
+            "required": true,
+            "source": "account"
+          }
+        ]
+      }
+    ],
+    "fallback_allowed": true
+  },
+  "expected_route_metadata": {
+    "status": "selected",
+    "execution": {
+      "locality": "cloud",
+      "engine": null,
+      "mode": "hosted_gateway"
+    },
+    "attempts": [
+      {
+        "index": 0,
+        "locality": "local",
+        "status": "failed",
+        "stage": "gate",
+        "reason": "memory_headroom gate failed"
+      },
+      {
+        "index": 1,
+        "locality": "cloud",
+        "status": "selected",
+        "stage": "inference",
+        "reason": "all gates passed, candidate selected"
+      }
+    ],
+    "fallback": {
+      "used": true,
+      "trigger": {
+        "code": "gate_failed",
+        "stage": "gate",
+        "message": "memory_headroom gate failed"
+      }
+    }
+  },
+  "expected_telemetry": {
+    "route_id": "route-fallback-001",
+    "policy": "local_first",
+    "locality": "cloud",
+    "engine": null,
+    "model_id": "llama-3.2-1b",
+    "attempt_count": 2,
+    "fallback_used": true,
+    "fallback_reason": "gate_failed"
+  },
+  "expected_policy_result": {
+    "cloud_allowed": true,
+    "fallback_allowed": true,
+    "private": false
+  },
+  "rules_tested": [
+    "local_first_tries_local_then_cloud",
+    "gate_failure_triggers_fallback",
+    "fallback_trigger_recorded"
+  ]
+}

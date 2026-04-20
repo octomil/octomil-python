@@ -1,0 +1,95 @@
+{
+  "description": "Experiment variant resolves to specific model and routing config",
+  "request": {
+    "model": "phi-3-mini",
+    "capability": "chat",
+    "routing_policy": "local_first"
+  },
+  "planner_response": {
+    "model": "phi-3-mini",
+    "candidates": [
+      {
+        "locality": "local",
+        "priority": 0,
+        "engine": "llamacpp",
+        "artifact": {
+          "artifact_id": "phi-3-mini-q4_k_m",
+          "digest": "sha256:exp001"
+        },
+        "gates": [
+          {
+            "code": "runtime_available",
+            "required": true,
+            "source": "platform"
+          },
+          {
+            "code": "experiment_eligible",
+            "required": true,
+            "source": "experiment"
+          },
+          {
+            "code": "disk_space",
+            "required": false,
+            "source": "device",
+            "threshold_number": 2147483648
+          }
+        ]
+      },
+      {
+        "locality": "cloud",
+        "priority": 1,
+        "engine": null,
+        "gates": [
+          {
+            "code": "cloud_quota_remaining",
+            "required": true,
+            "source": "account"
+          }
+        ]
+      }
+    ],
+    "fallback_allowed": true
+  },
+  "expected_route_metadata": {
+    "status": "selected",
+    "execution": {
+      "locality": "local",
+      "engine": "llamacpp",
+      "mode": "sdk_runtime"
+    },
+    "attempts": [
+      {
+        "index": 0,
+        "locality": "local",
+        "status": "selected",
+        "stage": "inference",
+        "reason": "all gates passed, candidate selected"
+      }
+    ],
+    "fallback": {
+      "used": false,
+      "trigger": null
+    }
+  },
+  "expected_telemetry": {
+    "route_id": "route-exp-001",
+    "policy": "local_first",
+    "locality": "local",
+    "engine": "llamacpp",
+    "model_id": "phi-3-mini",
+    "attempt_count": 1,
+    "fallback_used": false,
+    "experiment_id": "exp-routing-v2",
+    "variant": "treatment_a"
+  },
+  "expected_policy_result": {
+    "cloud_allowed": true,
+    "fallback_allowed": true,
+    "private": false
+  },
+  "rules_tested": [
+    "experiment_variant_resolved",
+    "experiment_gate_evaluated",
+    "optional_gate_does_not_block"
+  ]
+}

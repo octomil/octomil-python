@@ -1,0 +1,71 @@
+{
+  "description": "Deployment reference forces cloud-only routing with no local candidates",
+  "request": {
+    "model": "gpt-4o",
+    "capability": "chat",
+    "routing_policy": "cloud_only"
+  },
+  "planner_response": {
+    "model": "gpt-4o",
+    "candidates": [
+      {
+        "locality": "cloud",
+        "priority": 0,
+        "engine": null,
+        "gates": [
+          {
+            "code": "cloud_quota_remaining",
+            "required": true,
+            "source": "account"
+          },
+          {
+            "code": "byok_key_valid",
+            "required": true,
+            "source": "config"
+          }
+        ]
+      }
+    ],
+    "fallback_allowed": false
+  },
+  "expected_route_metadata": {
+    "status": "selected",
+    "execution": {
+      "locality": "cloud",
+      "engine": null,
+      "mode": "hosted_gateway"
+    },
+    "attempts": [
+      {
+        "index": 0,
+        "locality": "cloud",
+        "status": "selected",
+        "stage": "inference",
+        "reason": "all gates passed, candidate selected"
+      }
+    ],
+    "fallback": {
+      "used": false,
+      "trigger": null
+    }
+  },
+  "expected_telemetry": {
+    "route_id": "route-cloud-001",
+    "policy": "cloud_only",
+    "locality": "cloud",
+    "engine": null,
+    "model_id": "gpt-4o",
+    "attempt_count": 1,
+    "fallback_used": false
+  },
+  "expected_policy_result": {
+    "cloud_allowed": true,
+    "fallback_allowed": false,
+    "private": false
+  },
+  "rules_tested": [
+    "cloud_only_no_local_candidates",
+    "byok_key_gate_checked",
+    "no_fallback_single_candidate"
+  ]
+}

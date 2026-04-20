@@ -1,0 +1,78 @@
+{
+  "description": "Runtime plan where all local candidates fail and cloud fallback is disallowed",
+  "request": {
+    "model": "gemma-2-2b",
+    "capability": "chat",
+    "routing_policy": "local_only"
+  },
+  "planner_response": {
+    "model": "gemma-2-2b",
+    "candidates": [
+      {
+        "locality": "local",
+        "priority": 0,
+        "engine": "llamacpp",
+        "artifact": {
+          "artifact_id": "gemma-2-2b-q4_k_m",
+          "digest": "sha256:nofb001"
+        },
+        "gates": [
+          {
+            "code": "runtime_available",
+            "required": true,
+            "source": "platform"
+          },
+          {
+            "code": "memory_headroom",
+            "required": true,
+            "source": "device",
+            "threshold_number": 2147483648
+          },
+          {
+            "code": "thermal_throttle",
+            "required": true,
+            "source": "device"
+          }
+        ]
+      }
+    ],
+    "fallback_allowed": false
+  },
+  "expected_route_metadata": {
+    "status": "unavailable",
+    "execution": null,
+    "attempts": [
+      {
+        "index": 0,
+        "locality": "local",
+        "status": "failed",
+        "stage": "gate",
+        "reason": "memory_headroom gate failed"
+      }
+    ],
+    "fallback": {
+      "used": false,
+      "trigger": null
+    }
+  },
+  "expected_telemetry": {
+    "route_id": "route-nofb-001",
+    "policy": "local_only",
+    "locality": null,
+    "engine": null,
+    "model_id": "gemma-2-2b",
+    "attempt_count": 1,
+    "fallback_used": false,
+    "error_code": "no_viable_candidate"
+  },
+  "expected_policy_result": {
+    "cloud_allowed": false,
+    "fallback_allowed": false,
+    "private": true
+  },
+  "rules_tested": [
+    "fallback_disallowed_surfaces_error",
+    "single_candidate_gate_failure_is_terminal",
+    "local_only_never_routes_to_cloud"
+  ]
+}

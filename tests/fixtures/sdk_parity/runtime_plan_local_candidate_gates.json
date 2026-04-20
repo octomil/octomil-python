@@ -1,0 +1,116 @@
+{
+  "description": "Runtime plan with multiple local candidates gated by hardware and benchmark checks",
+  "request": {
+    "model": "llama-3.2-1b",
+    "capability": "chat",
+    "routing_policy": "local_only"
+  },
+  "planner_response": {
+    "model": "llama-3.2-1b",
+    "candidates": [
+      {
+        "locality": "local",
+        "priority": 0,
+        "engine": "coreml",
+        "artifact": {
+          "artifact_id": "llama-3.2-1b-coreml-fp16",
+          "digest": "sha256:gate001"
+        },
+        "gates": [
+          {
+            "code": "runtime_available",
+            "required": true,
+            "source": "platform"
+          },
+          {
+            "code": "hardware_compatible",
+            "required": true,
+            "source": "device"
+          },
+          {
+            "code": "benchmark_latency",
+            "required": true,
+            "source": "benchmark",
+            "threshold_number": 100
+          }
+        ]
+      },
+      {
+        "locality": "local",
+        "priority": 1,
+        "engine": "llamacpp",
+        "artifact": {
+          "artifact_id": "llama-3.2-1b-q4_k_m",
+          "digest": "sha256:gate002"
+        },
+        "gates": [
+          {
+            "code": "runtime_available",
+            "required": true,
+            "source": "platform"
+          },
+          {
+            "code": "memory_headroom",
+            "required": true,
+            "source": "device",
+            "threshold_number": 536870912
+          }
+        ]
+      }
+    ],
+    "fallback_allowed": true
+  },
+  "expected_route_metadata": {
+    "status": "selected",
+    "execution": {
+      "locality": "local",
+      "engine": "llamacpp",
+      "mode": "sdk_runtime"
+    },
+    "attempts": [
+      {
+        "index": 0,
+        "locality": "local",
+        "status": "failed",
+        "stage": "gate",
+        "reason": "hardware_compatible gate failed"
+      },
+      {
+        "index": 1,
+        "locality": "local",
+        "status": "selected",
+        "stage": "inference",
+        "reason": "all gates passed, candidate selected"
+      }
+    ],
+    "fallback": {
+      "used": true,
+      "trigger": {
+        "code": "gate_failed",
+        "stage": "gate",
+        "message": "hardware_compatible gate failed"
+      }
+    }
+  },
+  "expected_telemetry": {
+    "route_id": "route-gates-001",
+    "policy": "local_only",
+    "locality": "local",
+    "engine": "llamacpp",
+    "model_id": "llama-3.2-1b",
+    "attempt_count": 2,
+    "fallback_used": true,
+    "fallback_reason": "gate_failed"
+  },
+  "expected_policy_result": {
+    "cloud_allowed": false,
+    "fallback_allowed": true,
+    "private": true
+  },
+  "rules_tested": [
+    "multiple_local_candidates_ordered",
+    "gate_failure_triggers_fallback_to_next_local",
+    "hardware_gate_platform_specific",
+    "benchmark_gate_evaluated"
+  ]
+}
