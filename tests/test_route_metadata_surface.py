@@ -372,3 +372,151 @@ class TestFacadeResponsesRouteThreading:
         result = asyncio.run(facade.create(model="phi-4-mini", input="hi"))
 
         assert result.route is None
+
+
+# ---------------------------------------------------------------------------
+# Real OctomilResponses integration tests (not mocks)
+# ---------------------------------------------------------------------------
+
+
+class _StubRuntime:
+    """Minimal ModelRuntime that returns a canned response."""
+
+    def __init__(self, text: str = "Hello from stub") -> None:
+        self._text = text
+
+    @property
+    def capabilities(self):
+        from octomil.runtime.core.types import RuntimeCapabilities
+
+        return RuntimeCapabilities()
+
+    async def run(self, request):
+        from octomil.runtime.core.types import RuntimeResponse, RuntimeUsage
+
+        return RuntimeResponse(
+            text=self._text,
+            usage=RuntimeUsage(prompt_tokens=5, completion_tokens=3, total_tokens=8),
+        )
+
+    async def stream(self, request):
+        from octomil.runtime.core.types import RuntimeChunk, RuntimeUsage
+
+        yield RuntimeChunk(
+            text=self._text,
+            usage=RuntimeUsage(prompt_tokens=5, completion_tokens=3, total_tokens=8),
+        )
+
+
+class TestOctomilResponsesRoutePopulation:
+    """Verify OctomilResponses.create() populates response.route with RouteMetadata."""
+
+    def test_route_is_populated_on_create(self):
+        """OctomilResponses.create() must set response.route to a RouteMetadata instance."""
+        from octomil.responses import OctomilResponses
+        from octomil.responses.types import ResponseRequest, text_input
+
+        runtime = _StubRuntime()
+        responses = OctomilResponses(runtime_resolver=lambda _: runtime)
+        request = ResponseRequest(model="test-model", input=[text_input("Hi")])
+        response = asyncio.run(responses.create(request))
+
+        assert response.route is not None
+        assert isinstance(response.route, RouteMetadata)
+
+    def test_route_execution_is_local_sdk_runtime(self):
+        """A plain runtime (not cloud) defaults to locality='local', mode='sdk_runtime'."""
+        from octomil.responses import OctomilResponses
+        from octomil.responses.types import ResponseRequest, text_input
+
+        runtime = _StubRuntime()
+        responses = OctomilResponses(runtime_resolver=lambda _: runtime)
+        request = ResponseRequest(model="gemma3-1b", input=[text_input("Hello")])
+        response = asyncio.run(responses.create(request))
+
+        route = response.route
+        assert route is not None
+        assert route.execution is not None
+        assert route.execution.locality == "local"
+        assert route.execution.mode == "sdk_runtime"
+
+    def test_route_model_requested_ref_matches_input(self):
+        """route.model.requested.ref matches the model string passed to create()."""
+        from octomil.responses import OctomilResponses
+        from octomil.responses.types import ResponseRequest, text_input
+
+        runtime = _StubRuntime()
+        responses = OctomilResponses(runtime_resolver=lambda _: runtime)
+        request = ResponseRequest(model="phi-4-mini", input=[text_input("Test")])
+        response = asyncio.run(responses.create(request))
+
+        route = response.route
+        assert route is not None
+        assert route.model.requested.ref == "phi-4-mini"
+        assert route.model.requested.kind == "model"
+        assert route.model.requested.capability == "chat"
+
+    def test_route_planner_source_offline_without_planner(self):
+        """Without a planner, planner.source should be 'offline'."""
+        from octomil.responses import OctomilResponses
+        from octomil.responses.types import ResponseRequest, text_input
+
+        runtime = _StubRuntime()
+        responses = OctomilResponses(runtime_resolver=lambda _: runtime)
+        request = ResponseRequest(model="test-model", input=[text_input("Hi")])
+        response = asyncio.run(responses.create(request))
+
+        assert response.route is not None
+        assert response.route.planner.source == "offline"
+
+    def test_route_fallback_not_used(self):
+        """Direct runtime (no fallback) should have fallback.used=False."""
+        from octomil.responses import OctomilResponses
+        from octomil.responses.types import ResponseRequest, text_input
+
+        runtime = _StubRuntime()
+        responses = OctomilResponses(runtime_resolver=lambda _: runtime)
+        request = ResponseRequest(model="test-model", input=[text_input("Hi")])
+        response = asyncio.run(responses.create(request))
+
+        assert response.route is not None
+        assert response.route.fallback.used is False
+
+    def test_route_status_is_selected(self):
+        """Default status should be 'selected'."""
+        from octomil.responses import OctomilResponses
+        from octomil.responses.types import ResponseRequest, text_input
+
+        runtime = _StubRuntime()
+        responses = OctomilResponses(runtime_resolver=lambda _: runtime)
+        request = ResponseRequest(model="test-model", input=[text_input("Hi")])
+        response = asyncio.run(responses.create(request))
+
+        assert response.route is not None
+        assert response.route.status == "selected"
+
+    def test_stream_done_event_has_route(self):
+        """The DoneEvent from stream() must carry RouteMetadata."""
+        from octomil.responses import OctomilResponses
+        from octomil.responses.types import DoneEvent, ResponseRequest, text_input
+
+        runtime = _StubRuntime()
+        responses = OctomilResponses(runtime_resolver=lambda _: runtime)
+        request = ResponseRequest(model="test-model", input=[text_input("Hi")])
+
+        async def _collect():
+            events = []
+            async for event in responses.stream(request):
+                events.append(event)
+            return events
+
+        events = asyncio.run(_collect())
+        done_events = [e for e in events if isinstance(e, DoneEvent)]
+        assert len(done_events) == 1
+
+        route = done_events[0].response.route
+        assert route is not None
+        assert isinstance(route, RouteMetadata)
+        assert route.execution is not None
+        assert route.execution.locality == "local"
+        assert route.model.requested.ref == "test-model"
