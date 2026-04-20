@@ -99,7 +99,7 @@ class RouteModel:
 class ArtifactCache:
     """Cache status for a model artifact."""
 
-    status: str = "not_applicable"  # "hit" | "miss" | "downloaded" | "not_applicable" | "unavailable"
+    status: str = "not_applicable"  # "hit" | "miss" | "not_applicable"
     managed_by: Optional[str] = None  # "octomil" | "runtime" | "external"
 
 
@@ -484,14 +484,14 @@ def _route_metadata_from_selection(
         cache_status_value = "not_applicable"
         try:
             from octomil.runtime.planner.artifact_cache import ArtifactCache as ArtifactCacheManager
-            from octomil.runtime.planner.artifact_cache import _check_tty_for_download
+            from octomil.runtime.planner.artifact_cache import _warn_if_large_download_non_tty
 
             artifact_cache = ArtifactCacheManager()
             cache_status_value = artifact_cache.cache_status(artifact_digest)
 
             # Warn in non-TTY environments about large artifact downloads
             if cache_status_value == "miss":
-                _check_tty_for_download(selection.artifact.size_bytes)
+                _warn_if_large_download_non_tty(selection.artifact.size_bytes)
         except Exception:
             pass
         route_artifact = RouteArtifact(

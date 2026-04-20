@@ -1,4 +1,4 @@
-"""Tests for managed runtime lifecycle — no-echo, artifact cache, --explain, non-TTY guard."""
+"""Tests for no-echo guard, --explain routing flag, and artifact cache scaffold."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from octomil.runtime.planner.artifact_cache import ArtifactCache, _check_tty_for_download
+from octomil.runtime.planner.artifact_cache import ArtifactCache, _warn_if_large_download_non_tty
 
 # ---------------------------------------------------------------------------
 # TestNoEchoInUserPaths
@@ -159,7 +159,7 @@ class TestExplainFlag:
 
 
 class TestArtifactCache:
-    """ArtifactCache provides no-repeat-download status tracking."""
+    """ArtifactCache provides cache status tracking (hit/miss) for planner artifacts."""
 
     def test_cache_hit(self, tmp_path: Path):
         cache = ArtifactCache(cache_dir=tmp_path)
@@ -223,20 +223,20 @@ class TestNonTtyGuard:
         # Should not warn for large download in TTY mode
         with warnings.catch_warnings(record=True) as w:
             warnings.simplefilter("always")
-            _check_tty_for_download(500_000_000)
+            _warn_if_large_download_non_tty(500_000_000)
             assert len(w) == 0
 
     def test_non_tty_large_download_warns(self, monkeypatch):
         monkeypatch.setattr("sys.stdout.isatty", lambda: False)
         with pytest.warns(UserWarning, match="non-interactive"):
-            _check_tty_for_download(500_000_000)
+            _warn_if_large_download_non_tty(500_000_000)
 
     def test_non_tty_small_download_no_warning(self, monkeypatch):
         monkeypatch.setattr("sys.stdout.isatty", lambda: False)
         # Under 100MB threshold — no warning
         with warnings.catch_warnings(record=True) as w:
             warnings.simplefilter("always")
-            _check_tty_for_download(50_000_000)
+            _warn_if_large_download_non_tty(50_000_000)
             assert len(w) == 0
 
     def test_none_size_no_warning(self, monkeypatch):
@@ -244,7 +244,7 @@ class TestNonTtyGuard:
         # None size — no warning
         with warnings.catch_warnings(record=True) as w:
             warnings.simplefilter("always")
-            _check_tty_for_download(None)
+            _warn_if_large_download_non_tty(None)
             assert len(w) == 0
 
 

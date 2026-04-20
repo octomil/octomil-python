@@ -1,11 +1,15 @@
-"""Download-once artifact cache with file locks.
+"""Cache status tracking for planner artifacts.
 
-Provides no-repeat-download semantics: once an artifact is cached by
-its digest, subsequent invocations skip the download.  The actual
-download implementation depends on the artifact URI scheme and is left
-as a follow-up.  This module provides cache status tracking for
-RouteMetadata.
+Does NOT download or manage model files — that is a future follow-up.
+This module provides cache status tracking (hit/miss) for RouteMetadata
+based on whether a file matching the artifact digest already exists on disk.
+The actual download implementation depends on the artifact URI scheme and
+is not yet implemented.
 """
+
+# TODO(managed-lifecycle): Implement actual artifact download using planner
+# artifact_candidates + preferred_engines. Current implementation only tracks
+# cache status — it does not download, verify, or prepare model files.
 
 from __future__ import annotations
 
@@ -18,7 +22,11 @@ _DEFAULT_CACHE_DIR = Path.home() / ".cache" / "octomil" / "artifacts"
 
 
 class ArtifactCache:
-    """Download-once artifact cache with file locks."""
+    """Cache status tracking for planner artifacts.
+
+    Checks whether a file matching a given digest exists on disk.
+    Does NOT download or manage model files — that is a future follow-up.
+    """
 
     def __init__(self, cache_dir: Path | None = None) -> None:
         self._cache_dir = cache_dir or Path(os.environ.get("OCTOMIL_ARTIFACT_CACHE", str(_DEFAULT_CACHE_DIR)))
@@ -61,12 +69,13 @@ class ArtifactCache:
         return "miss"
 
 
-def _check_tty_for_download(artifact_size_bytes: int | None) -> None:
-    """Warn if about to download a large artifact in non-interactive mode.
+def _warn_if_large_download_non_tty(artifact_size_bytes: int | None) -> None:
+    """Emit a warning for large artifacts in non-interactive environments.
 
-    For artifacts >100 MB, emits a warning when stdout is not a TTY so
-    that CI/script environments can pre-cache artifacts via
-    ``OCTOMIL_ARTIFACT_CACHE``.
+    For artifacts >100 MB, emits a ``UserWarning`` when stdout is not a TTY
+    so that CI/script environments can pre-cache artifacts via
+    ``OCTOMIL_ARTIFACT_CACHE``.  This is advisory only — it does not block
+    execution.
     """
     if artifact_size_bytes and artifact_size_bytes > 100_000_000:  # 100 MB
         if not sys.stdout.isatty():

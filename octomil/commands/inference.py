@@ -339,7 +339,13 @@ def _explain_route(
     capability: str,
     policy: Optional[str],
 ) -> bool:
-    """Print human-readable routing decision. Returns True if route is available."""
+    """Print planner routing decisions (engine, locality, policy) to stderr.
+
+    Shows which engine the planner selected and whether execution will be
+    local or cloud. Does NOT reflect artifact download readiness — cache
+    status is advisory only and the cache scaffold does not yet download
+    model files. Returns True if the route is available.
+    """
     try:
         from octomil.config.local import CAPABILITY_CHAT, CAPABILITY_EMBEDDING, CAPABILITY_TRANSCRIPTION
         from octomil.runtime.planner.planner import RuntimePlanner
@@ -547,7 +553,11 @@ def _try_runner_transcribe(
 @click.option("-y", "--yes", is_flag=True, help="Accept runtime installation prompts.")
 @click.option("--no-runner", is_flag=True, help="Disable the invisible local runner.")
 @click.option("--restart-runner", is_flag=True, help="Force restart the local runner.")
-@click.option("--explain", is_flag=True, help="Show routing decision details before inference.")
+@click.option(
+    "--explain",
+    is_flag=True,
+    help="Show planner routing decisions (engine, locality, policy) before inference. Does not reflect artifact readiness.",
+)
 def run_cmd(
     prompt: Optional[str],
     model: Optional[str],
@@ -670,7 +680,11 @@ async def _stream_run(kernel, prompt, model, policy, app, temperature, max_outpu
 @click.option("--jsonl", "output_jsonl", is_flag=True, help="Output NDJSON (one object per input).")
 @click.option("--no-runner", is_flag=True, help="Disable the invisible local runner.")
 @click.option("--restart-runner", is_flag=True, help="Force restart the local runner.")
-@click.option("--explain", is_flag=True, help="Show routing decision details before inference.")
+@click.option(
+    "--explain",
+    is_flag=True,
+    help="Show planner routing decisions (engine, locality, policy) before inference. Does not reflect artifact readiness.",
+)
 def embed_cmd(
     inputs: tuple[str, ...],
     model: Optional[str],
@@ -779,7 +793,11 @@ def embed_cmd(
 @click.option("--language", default=None, help="Language hint (BCP 47 code).")
 @click.option("--no-runner", is_flag=True, help="Disable the invisible local runner.")
 @click.option("--restart-runner", is_flag=True, help="Force restart the local runner.")
-@click.option("--explain", is_flag=True, help="Show routing decision details before inference.")
+@click.option(
+    "--explain",
+    is_flag=True,
+    help="Show planner routing decisions (engine, locality, policy) before inference. Does not reflect artifact readiness.",
+)
 def transcribe_cmd(
     audio_file: Optional[str],
     model: Optional[str],
