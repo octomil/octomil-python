@@ -1,4 +1,4 @@
-"""Tests for @app/{slug}/{capability} ref parsing, planner integration, and hosted_from_env."""
+"""Tests for @app/{slug}/{capability} ref parsing and planner integration."""
 
 from __future__ import annotations
 
@@ -423,55 +423,6 @@ class TestAppRefResolvesThroughPlanner:
         call_kwargs = mock_local.call_args[1]
         assert call_kwargs["routing_policy"] == "private"
         assert call_kwargs["is_private"] is True
-
-
-# ---------------------------------------------------------------------------
-# hosted_from_env
-# ---------------------------------------------------------------------------
-
-
-class TestHostedFromEnv:
-    def test_hosted_from_env_creates_client(self, monkeypatch):
-        from octomil import Octomil
-
-        monkeypatch.setenv("OCTOMIL_SERVER_KEY", "srv_key")
-        monkeypatch.setenv("OCTOMIL_ORG_ID", "org_pub")
-
-        client = Octomil.hosted_from_env()
-        assert client._force_hosted is True
-        assert client._auth.api_key == "srv_key"
-        assert client._auth.org_id == "org_pub"
-
-    def test_hosted_from_env_sets_force_hosted_flag(self, monkeypatch):
-        from octomil import Octomil
-
-        monkeypatch.setenv("OCTOMIL_SERVER_KEY", "srv_key")
-        monkeypatch.setenv("OCTOMIL_ORG_ID", "org_pub")
-
-        client = Octomil.hosted_from_env()
-        assert client._force_hosted is True
-
-    def test_from_env_does_not_set_force_hosted(self, monkeypatch):
-        from octomil import Octomil
-
-        monkeypatch.setenv("OCTOMIL_SERVER_KEY", "srv_key")
-        monkeypatch.setenv("OCTOMIL_ORG_ID", "org_pub")
-
-        client = Octomil.from_env()
-        assert client._force_hosted is False
-
-    def test_hosted_from_env_uses_custom_vars(self, monkeypatch):
-        from octomil import Octomil
-
-        monkeypatch.setenv("MY_KEY", "custom_key")
-        monkeypatch.setenv("MY_ORG", "custom_org")
-
-        client = Octomil.hosted_from_env(
-            server_key_var="MY_KEY",
-            org_id_var="MY_ORG",
-        )
-        assert client._force_hosted is True
-        assert client._auth.api_key == "custom_key"
 
 
 # ---------------------------------------------------------------------------
