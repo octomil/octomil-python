@@ -174,6 +174,26 @@ def _select_real_engine(registry: Any, model_id: str) -> tuple[Optional[EnginePl
     return None, real_engines
 
 
+def _reject_echo_only(registry: Any, model_id: str) -> None:
+    """Raise if echo is the ONLY available engine.
+
+    The echo engine must never silently serve user-facing requests.  If no
+    real engine is installed the caller should get a clear error rather than
+    a fake response.
+    """
+    detections = registry.detect_all(model_id)
+    available = [d.engine for d in detections if d.available]
+    real = [e for e in available if e.name != "echo"]
+    if available and not real:
+        raise RuntimeError(
+            "No real inference engine is available (only the echo testing stub is installed).\n\n"
+            "Install a local runtime for on-device execution:\n"
+            "  pip install 'octomil[mlx]'      # Apple Silicon\n"
+            "  pip install 'octomil[llama]'    # Cross-platform\n"
+            "Or set OCTOMIL_SERVER_KEY to allow hosted cloud fallback."
+        )
+
+
 def engine_registry_factory(model_id: str) -> Optional[ModelRuntime]:
     """RuntimeFactory that benchmark-selects the fastest real local engine."""
     if model_id in _runtime_cache:
@@ -183,6 +203,10 @@ def engine_registry_factory(model_id: str) -> Optional[ModelRuntime]:
         from octomil.runtime.engines import get_registry
 
         registry = get_registry()
+
+        # Hard gate: never silently use echo for user-facing inference.
+        _reject_echo_only(registry, model_id)
+
         planner_selection = _select_engine_with_planner(model_id, "responses", "local_first")
         if planner_selection is not None and planner_selection.locality == "local" and planner_selection.engine:
             engine = registry.get_engine(planner_selection.engine)
