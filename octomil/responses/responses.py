@@ -9,7 +9,8 @@ import base64
 import json
 import logging
 import uuid
-from typing import TYPE_CHECKING, AsyncIterator, Callable, Optional, Union
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any, AsyncIterator, Callable, Optional, Union
 
 from octomil._generated.message_role import MessageRole
 from octomil.execution.kernel import (
@@ -25,6 +26,7 @@ from octomil.runtime.core.registry import ModelRuntimeRegistry
 from octomil.runtime.core.router import LOCALITY_CLOUD, LOCALITY_ON_DEVICE, RouterModelRuntime
 from octomil.runtime.core.types import (
     GenerationConfig,
+    RuntimeCapabilities,
     RuntimeContentPart,
     RuntimeMessage,
     RuntimeRequest,
@@ -34,6 +36,14 @@ from octomil.runtime.core.types import (
 )
 from octomil.runtime.core.types import (
     RuntimeResponse as _RuntimeResponse,
+)
+from octomil.runtime.routing.attempt_runner import (
+    AttemptLoopResult,
+    AttemptStage,
+    AttemptStatus,
+    CandidateAttemptRunner,
+    FallbackTrigger,
+    RouteAttempt,
 )
 
 from .types import (
@@ -65,8 +75,96 @@ from .types import (
 
 if TYPE_CHECKING:
     from octomil.manifest.catalog_service import ModelCatalogService
+    from octomil.runtime.planner.schemas import RuntimeSelection
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Attempt runner resolution result
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class _AttemptRunnerResult:
+    """Result from _resolve_via_attempt_runner when a plan is available."""
+
+    response: _RuntimeResponse
+    locality: str  # "on_device" | "cloud"
+    is_fallback: bool
+    attempt_loop: AttemptLoopResult
+    route: RouteMetadata
+
+
+# ---------------------------------------------------------------------------
+# Planner plan resolution (non-fatal)
+# ---------------------------------------------------------------------------
+
+
+def _try_resolve_planner_selection(model_id: str) -> Optional[RuntimeSelection]:
+    """Attempt to resolve a planner selection for the given model.
+
+    Returns None if the planner is unavailable or fails.
+    Never raises.
+    """
+    import os
+
+    if os.environ.get("OCTOMIL_RUNTIME_PLANNER_CACHE") == "0":
+        return None
+    try:
+        from octomil.runtime.planner.planner import RuntimePlanner
+
+        planner = RuntimePlanner()
+        return planner.resolve(
+            model=model_id,
+            capability="responses",
+            routing_policy="local_first",
+        )
+    except Exception:
+        logger.debug("Planner selection failed in OctomilResponses", exc_info=True)
+        return None
+
+
+def _selection_to_candidate_dicts(selection: Any) -> list[dict[str, Any]]:
+    """Convert a RuntimeSelection into candidate dicts for the attempt runner."""
+    from dataclasses import asdict as _asdict
+
+    candidates = getattr(selection, "candidates", None)
+    if candidates:
+        result: list[dict[str, Any]] = []
+        for c in candidates:
+            d: dict[str, Any] = {
+                "locality": c.locality,
+                "priority": c.priority,
+                "confidence": c.confidence,
+                "reason": c.reason,
+            }
+            if c.engine:
+                d["engine"] = c.engine
+            if c.artifact:
+                d["artifact"] = _asdict(c.artifact)
+            if c.gates:
+                d["gates"] = [_asdict(g) for g in c.gates]
+            result.append(d)
+        return result
+
+    # Single selection without structured candidates
+    d2: dict[str, Any] = {
+        "locality": selection.locality,
+        "priority": 0,
+        "confidence": 1.0,
+        "reason": getattr(selection, "reason", "") or "planner selection",
+    }
+    if getattr(selection, "engine", None):
+        d2["engine"] = selection.engine
+    if getattr(selection, "artifact", None):
+        d2["artifact"] = _asdict(selection.artifact)
+    return [d2]
+
+
+# ---------------------------------------------------------------------------
+# Locality helpers
+# ---------------------------------------------------------------------------
 
 
 def _determine_locality(
@@ -88,8 +186,28 @@ def _determine_locality(
         return LOCALITY_CLOUD, False
     if isinstance(runtime, InferenceBackendAdapter):
         return LOCALITY_ON_DEVICE, False
-    # Unknown runtime type — default to on_device (conservative)
     return LOCALITY_ON_DEVICE, False
+
+
+def _locality_for_candidate(candidate: dict[str, Any]) -> str:
+    """Map candidate locality to internal constant."""
+    if candidate.get("locality") == "cloud":
+        return LOCALITY_CLOUD
+    return LOCALITY_ON_DEVICE
+
+
+def _runtime_model_for_selection(selection: Any, requested_model: str) -> str:
+    """Return the concrete model a planner selection resolved to."""
+    app_resolution = getattr(selection, "app_resolution", None)
+    selected_model = getattr(app_resolution, "selected_model", None)
+    if selected_model:
+        return str(selected_model)
+    return requested_model
+
+
+# ---------------------------------------------------------------------------
+# OctomilResponses
+# ---------------------------------------------------------------------------
 
 
 class OctomilResponses:
@@ -102,6 +220,9 @@ class OctomilResponses:
       1. ModelCatalogService (if configured)
       2. Custom runtime_resolver callback (if provided)
       3. ModelRuntimeRegistry (global fallback)
+
+    When a planner plan is available, the CandidateAttemptRunner is used to
+    evaluate candidates with fallback semantics before invoking inference.
     """
 
     def __init__(
@@ -112,6 +233,7 @@ class OctomilResponses:
         routing_policies: Optional[dict[str, RoutingPolicy]] = None,
         model_deployment_map: Optional[dict[str, str]] = None,
         default_routing_policy: Optional[RoutingPolicy] = None,
+        planner_enabled: bool = True,
     ) -> None:
         self._runtime_resolver = runtime_resolver
         self._catalog = catalog
@@ -120,6 +242,7 @@ class OctomilResponses:
         self._routing_policies = routing_policies or {}
         self._model_deployment_map = model_deployment_map or {}
         self._default_routing_policy = default_routing_policy
+        self._planner_enabled = planner_enabled
 
     def _resolve_routing_policy(
         self,
@@ -130,12 +253,10 @@ class OctomilResponses:
         explicit = RoutingPolicy.from_metadata(metadata)
         if explicit is not None:
             return explicit
-        # Explicit deployment_id in metadata
         if metadata and self._routing_policies:
             dep_id = metadata.get("deployment_id")
             if dep_id and dep_id in self._routing_policies:
                 return self._routing_policies[dep_id]
-        # Auto-resolve: model_id → deployment_id → policy
         if self._model_deployment_map and self._routing_policies:
             model_id = _model_id_str(model)
             dep_id = self._model_deployment_map.get(model_id)
@@ -143,9 +264,120 @@ class OctomilResponses:
                 return self._routing_policies[dep_id]
         return self._default_routing_policy
 
+    # ------------------------------------------------------------------
+    # Attempt runner integration
+    # ------------------------------------------------------------------
+
+    async def _resolve_via_attempt_runner(
+        self,
+        model_id: str,
+        runtime_request: RuntimeRequest,
+        *,
+        streaming: bool = False,
+    ) -> Optional[_AttemptRunnerResult]:
+        """Try planner-driven candidate selection with CandidateAttemptRunner.
+
+        Returns an _AttemptRunnerResult if a plan is available and inference
+        succeeds via the attempt loop. Returns None if no plan is available.
+        """
+        if not self._planner_enabled:
+            return None
+
+        selection = _try_resolve_planner_selection(model_id)
+        if selection is None:
+            return None
+
+        candidates = _selection_to_candidate_dicts(selection)
+        if not candidates:
+            return None
+
+        fallback_allowed = getattr(selection, "fallback_allowed", True)
+        runner = CandidateAttemptRunner(
+            fallback_allowed=fallback_allowed,
+            streaming=streaming,
+        )
+        runtime_model_id = _runtime_model_for_selection(selection, model_id)
+
+        async def _execute_candidate(candidate: dict[str, Any]) -> _RuntimeResponse:
+            locality = candidate.get("locality", "local")
+            runtime = self._resolve_runtime_for_candidate(runtime_model_id, candidate)
+            if locality == "cloud":
+                if isinstance(runtime, RouterModelRuntime):
+                    return await runtime.run(runtime_request, policy=RoutingPolicy.cloud_only())
+                return await runtime.run(runtime_request)
+            else:
+                if isinstance(runtime, RouterModelRuntime):
+                    return await runtime.run(runtime_request, policy=RoutingPolicy.local_only())
+                return await runtime.run(runtime_request)
+
+        attempt_loop = await runner.run_with_inference(
+            candidates,
+            execute_candidate=_execute_candidate,
+        )
+
+        if not attempt_loop.succeeded:
+            if attempt_loop.error is not None:
+                raise attempt_loop.error
+            return None
+
+        response = attempt_loop.value
+        if not isinstance(response, _RuntimeResponse):
+            return None
+
+        selected = attempt_loop.selected_attempt
+        locality = LOCALITY_ON_DEVICE
+        if selected is not None and selected.locality == "cloud":
+            locality = LOCALITY_CLOUD
+
+        route = _route_metadata_from_selection(
+            selection,
+            locality,
+            attempt_loop.fallback_used,
+            model_name=model_id,
+            capability="chat",
+            attempt_loop=attempt_loop,
+        )
+
+        return _AttemptRunnerResult(
+            response=response,
+            locality=locality,
+            is_fallback=attempt_loop.fallback_used,
+            attempt_loop=attempt_loop,
+            route=route,
+        )
+
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
+
     async def create(self, request: ResponseRequest) -> Response:
-        runtime = self._resolve_runtime(request.model)
+        """Create a response, using planner-driven routing when available."""
         model_id = _model_id_str(request.model)
+        effective_request = self._apply_previous_response(request)
+        runtime_request = self._build_runtime_request(effective_request)
+
+        # Try planner-driven attempt runner first
+        runner_result = await self._resolve_via_attempt_runner(model_id, runtime_request, streaming=False)
+        if runner_result is not None:
+            if runner_result.is_fallback and self._telemetry is not None:
+                try:
+                    self._telemetry.report_fallback_cloud(  # type: ignore[attr-defined]
+                        model_id=model_id,
+                        fallback_reason="local_unavailable",
+                    )
+                except Exception:
+                    pass
+            response = self._build_response(
+                request.model,
+                runner_result.response,
+                locality=runner_result.locality,
+                route=runner_result.route,
+            )
+            self._response_cache[response.id] = response
+            return response
+
+        # Fallback: direct runtime call (no plan available)
+        runtime = self._resolve_runtime(request.model)
         routing_policy = self._resolve_routing_policy(request.model, request.metadata)
         locality, is_fallback = _determine_locality(runtime, model_id, routing_policy)
 
@@ -166,8 +398,6 @@ class OctomilResponses:
             capability="chat",
         )
 
-        effective_request = self._apply_previous_response(request)
-        runtime_request = self._build_runtime_request(effective_request)
         if isinstance(runtime, RouterModelRuntime) and routing_policy is not None:
             runtime_response = await runtime.run(runtime_request, policy=routing_policy)
         else:
@@ -177,8 +407,29 @@ class OctomilResponses:
         return response
 
     async def stream(self, request: ResponseRequest) -> AsyncIterator[ResponseStreamEvent]:
-        runtime = self._resolve_runtime(request.model)
+        """Stream a response, using planner-driven routing when available."""
         model_id = _model_id_str(request.model)
+        runtime_request = self._build_runtime_request(request)
+
+        # Try planner-driven attempt runner for streaming
+        if self._planner_enabled:
+            selection = _try_resolve_planner_selection(model_id)
+            if selection is not None:
+                candidates = _selection_to_candidate_dicts(selection)
+                if candidates:
+                    fallback_allowed = getattr(selection, "fallback_allowed", True)
+                    runner = CandidateAttemptRunner(
+                        fallback_allowed=fallback_allowed,
+                        streaming=True,
+                    )
+                    async for event in self._stream_with_attempt_runner(
+                        request, model_id, runtime_request, candidates, runner, selection
+                    ):
+                        yield event
+                    return
+
+        # Fallback: direct runtime streaming (no plan available)
+        runtime = self._resolve_runtime(request.model)
         routing_policy = self._resolve_routing_policy(request.model, request.metadata)
         locality, is_fallback = _determine_locality(runtime, model_id, routing_policy)
 
@@ -199,7 +450,6 @@ class OctomilResponses:
             capability="chat",
         )
 
-        runtime_request = self._build_runtime_request(request)
         response_id = _generate_id()
         text_parts: list[str] = []
         tool_call_buffers: dict[int, _ToolCallBuffer] = {}
@@ -213,7 +463,6 @@ class OctomilResponses:
             if chunk.text is not None:
                 text_parts.append(chunk.text)
                 yield TextDeltaEvent(delta=chunk.text)
-
             if chunk.tool_call_delta is not None:
                 delta = chunk.tool_call_delta
                 buffer = tool_call_buffers.setdefault(delta.index, _ToolCallBuffer())
@@ -223,14 +472,12 @@ class OctomilResponses:
                     buffer.name = delta.name
                 if delta.arguments_delta is not None:
                     buffer.arguments += delta.arguments_delta
-
                 yield ToolCallDeltaEvent(
                     index=delta.index,
                     id=delta.id,
                     name=delta.name,
                     arguments_delta=delta.arguments_delta,
                 )
-
             if chunk.usage is not None:
                 last_usage = chunk.usage
 
@@ -273,9 +520,214 @@ class OctomilResponses:
             )
         )
 
+    # ------------------------------------------------------------------
+    # Streaming with attempt runner (first-token fallback)
+    # ------------------------------------------------------------------
+
+    async def _stream_with_attempt_runner(
+        self,
+        request: ResponseRequest,
+        model_id: str,
+        runtime_request: RuntimeRequest,
+        candidates: list[dict[str, Any]],
+        runner: CandidateAttemptRunner,
+        selection: Any,
+    ) -> AsyncIterator[ResponseStreamEvent]:
+        """Stream with CandidateAttemptRunner fallback semantics.
+
+        - If streaming fails BEFORE first token: fall back to next candidate
+        - If streaming fails AFTER first token: raise (do not fall back)
+        """
+        response_id = _generate_id()
+        text_parts: list[str] = []
+        tool_call_buffers: dict[int, _ToolCallBuffer] = {}
+        last_usage: Optional[RuntimeUsage] = None
+        selected_locality = LOCALITY_ON_DEVICE
+        is_fallback = False
+        last_error: Optional[Exception] = None
+        runtime_model_id = _runtime_model_for_selection(selection, model_id)
+        stream_attempts: list[RouteAttempt] = []
+        selected_attempt: RouteAttempt | None = None
+        fallback_trigger: FallbackTrigger | None = None
+        from_attempt: int | None = None
+
+        for idx, candidate in enumerate(candidates):
+            first_token_emitted = False
+            readiness = CandidateAttemptRunner(
+                fallback_allowed=False,
+                streaming=True,
+            ).run([candidate])
+            ready_attempt = readiness.attempts[0] if readiness.attempts else None
+            if ready_attempt is not None:
+                ready_attempt.index = idx
+            if not readiness.succeeded:
+                if ready_attempt is not None:
+                    stream_attempts.append(ready_attempt)
+                    if fallback_trigger is None:
+                        fallback_trigger = FallbackTrigger(
+                            code=ready_attempt.reason_code,
+                            stage=ready_attempt.stage.value,
+                            message=ready_attempt.reason_message,
+                        )
+                        from_attempt = idx
+                if (
+                    runner.should_fallback_after_inference_error(first_token_emitted=False)
+                    and idx < len(candidates) - 1
+                ):
+                    continue
+                raise RuntimeError(ready_attempt.reason_message if ready_attempt else "No runtime available")
+
+            try:
+                runtime = self._resolve_runtime_for_candidate(runtime_model_id, candidate)
+                policy = (
+                    RoutingPolicy.cloud_only() if candidate.get("locality") == "cloud" else RoutingPolicy.local_only()
+                )
+                if isinstance(runtime, RouterModelRuntime):
+                    stream_iter = runtime.stream(runtime_request, policy=policy)
+                else:
+                    stream_iter = runtime.stream(runtime_request)
+
+                async for chunk in stream_iter:
+                    if chunk.text is not None:
+                        first_token_emitted = True
+                        text_parts.append(chunk.text)
+                        yield TextDeltaEvent(delta=chunk.text)
+                    if chunk.tool_call_delta is not None:
+                        first_token_emitted = True
+                        delta = chunk.tool_call_delta
+                        buffer = tool_call_buffers.setdefault(delta.index, _ToolCallBuffer())
+                        if delta.id is not None:
+                            buffer.id = delta.id
+                        if delta.name is not None:
+                            buffer.name = delta.name
+                        if delta.arguments_delta is not None:
+                            buffer.arguments += delta.arguments_delta
+                        yield ToolCallDeltaEvent(
+                            index=delta.index,
+                            id=delta.id,
+                            name=delta.name,
+                            arguments_delta=delta.arguments_delta,
+                        )
+                    if chunk.usage is not None:
+                        last_usage = chunk.usage
+
+                selected_locality = _locality_for_candidate(candidate)
+                is_fallback = idx > 0
+                selected_attempt = ready_attempt
+                if selected_attempt is not None:
+                    selected_attempt.reason_message = "stream completed"
+                    stream_attempts.append(selected_attempt)
+                break
+
+            except Exception as exc:
+                last_error = exc
+                reason_code = (
+                    "inference_error_after_first_token" if first_token_emitted else "inference_error_before_first_token"
+                )
+                failed_attempt = RouteAttempt(
+                    index=idx,
+                    locality=candidate.get("locality", "local"),
+                    mode=CandidateAttemptRunner._mode_for_candidate(candidate),
+                    engine=candidate.get("engine"),
+                    artifact=ready_attempt.artifact if ready_attempt is not None else None,
+                    status=AttemptStatus.FAILED,
+                    stage=AttemptStage.INFERENCE,
+                    gate_results=ready_attempt.gate_results if ready_attempt is not None else [],
+                    reason_code=reason_code,
+                    reason_message=str(exc) or reason_code,
+                )
+                stream_attempts.append(failed_attempt)
+                if (
+                    runner.should_fallback_after_inference_error(first_token_emitted=first_token_emitted)
+                    and idx < len(candidates) - 1
+                ):
+                    if fallback_trigger is None:
+                        fallback_trigger = FallbackTrigger(
+                            code=reason_code,
+                            stage=AttemptStage.INFERENCE.value,
+                            message=failed_attempt.reason_message,
+                        )
+                        from_attempt = idx
+                    text_parts.clear()
+                    tool_call_buffers.clear()
+                    last_usage = None
+                    continue
+                raise
+        else:
+            if last_error is not None:
+                raise last_error
+            raise RuntimeError("No runtime available")
+
+        route = _route_metadata_from_selection(
+            selection,
+            selected_locality,
+            is_fallback,
+            model_name=model_id,
+            capability="chat",
+            attempt_loop=AttemptLoopResult(
+                selected_attempt=selected_attempt,
+                attempts=stream_attempts,
+                fallback_used=is_fallback,
+                fallback_trigger=fallback_trigger if is_fallback else None,
+                from_attempt=from_attempt if is_fallback else None,
+                to_attempt=selected_attempt.index if is_fallback and selected_attempt is not None else None,
+            ),
+        )
+
+        if is_fallback and self._telemetry is not None:
+            try:
+                self._telemetry.report_fallback_cloud(  # type: ignore[attr-defined]
+                    model_id=model_id,
+                    fallback_reason="local_unavailable",
+                )
+            except Exception:
+                pass
+
+        output: list[OutputItem] = []
+        full_text = "".join(text_parts)
+        if full_text:
+            output.append(TextOutput(text=full_text))
+        for idx_buf in sorted(tool_call_buffers):
+            buf = tool_call_buffers[idx_buf]
+            output.append(
+                ToolCallOutput(
+                    tool_call=ResponseToolCall(
+                        id=buf.id or _generate_id(),
+                        name=buf.name or "",
+                        arguments=buf.arguments,
+                    )
+                )
+            )
+
+        finish_reason = "tool_calls" if tool_call_buffers else "stop"
+        usage = (
+            ResponseUsage(
+                prompt_tokens=last_usage.prompt_tokens,
+                completion_tokens=last_usage.completion_tokens,
+                total_tokens=last_usage.total_tokens,
+            )
+            if last_usage
+            else None
+        )
+
+        yield DoneEvent(
+            response=Response(
+                id=response_id,
+                model=request.model,
+                output=output,
+                finish_reason=finish_reason,
+                usage=usage,
+                locality=selected_locality,
+                route=route,
+            )
+        )
+
+    # ------------------------------------------------------------------
+    # Internal resolution and building
+    # ------------------------------------------------------------------
+
     def _resolve_runtime(self, model: Union[str, ModelRef]) -> ModelRuntime:
         """3-step resolution: catalog -> custom resolver -> registry."""
-        # Step 1: ModelCatalogService (if configured)
         if self._catalog is not None:
             if isinstance(model, (_ModelRefId, _ModelRefCapability)):
                 runtime = self._catalog.runtime_for_ref(model)
@@ -284,7 +736,6 @@ class OctomilResponses:
             if runtime is not None:
                 return runtime
 
-        # Normalize to string model ID for steps 2-3
         model_id: str
         if isinstance(model, _ModelRefId):
             model_id = model.model_id
@@ -293,32 +744,65 @@ class OctomilResponses:
         else:
             model_id = model
 
-        # Step 2: Custom resolver (if provided)
         if self._runtime_resolver is not None:
             runtime = self._runtime_resolver(model_id)
             if runtime is not None:
                 return runtime
 
-        # Step 3: ModelRuntimeRegistry (global fallback)
         runtime = ModelRuntimeRegistry.shared().resolve(model_id)
         if runtime is not None:
             return runtime
 
         raise RuntimeError(f"No ModelRuntime registered for model: {model_id}")
 
+    def _resolve_runtime_for_candidate(self, model_id: str, candidate: dict[str, Any]) -> ModelRuntime:
+        """Resolve the concrete runtime for a planner candidate.
+
+        For planner-selected local candidates with an explicit engine, execute
+        that engine or fail the attempt. Falling back to an unrelated local
+        runtime would make route metadata lie about what actually ran.
+        """
+        locality = candidate.get("locality", "local")
+        engine_id = candidate.get("engine")
+        if locality != "local" or not engine_id:
+            return self._resolve_runtime(model_id)
+
+        try:
+            from octomil.runtime.core.engine_bridge import _infer_tool_call_tier
+            from octomil.runtime.engines import get_registry as get_engine_registry
+            from octomil.runtime.planner.planner import _canonical_engine_id
+
+            canonical_engine = _canonical_engine_id(str(engine_id)) or str(engine_id)
+            engine_registry = get_engine_registry()
+            engine = engine_registry.get_engine(canonical_engine)
+            if engine is None or not engine.detect() or engine.name == "echo":
+                raise RuntimeError(f"Planner-selected engine '{canonical_engine}' is not available")
+
+            backend = engine.create_backend(model_id)
+            return InferenceBackendAdapter(
+                backend=backend,
+                model_name=model_id,
+                capabilities=RuntimeCapabilities(
+                    supports_streaming=True,
+                    tool_call_tier=_infer_tool_call_tier(model_id),
+                ),
+            )
+        except RuntimeError:
+            raise
+        except Exception as exc:
+            raise RuntimeError(f"Planner-selected engine '{engine_id}' failed to initialize: {exc}") from exc
+
     def _apply_previous_response(self, request: ResponseRequest) -> ResponseRequest:
-        """Prepend previous response output as assistant context when previous_response_id is set."""
+        """Prepend previous response output as assistant context."""
         if not request.previous_response_id:
             return request
         prev = self._response_cache.get(request.previous_response_id)
         if prev is None:
             return request
 
-        # Build assistant input from previous response output
         assistant_text = "".join(item.text for item in prev.output if isinstance(item, TextOutput))
         assistant_item = AssistantInput(content=[TextContent(text=assistant_text)] if assistant_text else None)
 
-        # Normalize current input
         input_items: list[InputItem]
         if isinstance(request.input, str):
             input_items = [text_input(request.input)]
@@ -341,18 +825,16 @@ class OctomilResponses:
         )
 
     def _build_runtime_request(self, request: ResponseRequest) -> RuntimeRequest:
-        # Normalize string input
+        """Build a RuntimeRequest from a ResponseRequest."""
         input_items: list[InputItem]
         if isinstance(request.input, str):
             input_items = [text_input(request.input)]
         else:
             input_items = list(request.input)
 
-        # Prepend instructions as system input
         if request.instructions:
             input_items = [system_input(request.instructions)] + input_items
 
-        # Convert Layer 2 InputItems to Layer 1 RuntimeMessages
         messages = _input_items_to_messages(input_items)
 
         tool_defs: Optional[list[RuntimeToolDef]] = None
@@ -385,7 +867,7 @@ class OctomilResponses:
             ),
             tool_definitions=tool_defs,
             json_schema=json_schema,
-            model=request.model,  # Propagate model for per-request override
+            model=request.model,
         )
 
     def _build_response(
@@ -395,11 +877,10 @@ class OctomilResponses:
         locality: Optional[str] = None,
         route: Optional[RouteMetadata] = None,
     ) -> Response:
+        """Build a Response from a RuntimeResponse."""
         output: list[OutputItem] = []
-
         if runtime_response.text:
             output.append(TextOutput(text=runtime_response.text))
-
         if runtime_response.tool_calls:
             for call in runtime_response.tool_calls:
                 output.append(
@@ -413,7 +894,6 @@ class OctomilResponses:
                 )
 
         finish_reason = "tool_calls" if runtime_response.tool_calls else runtime_response.finish_reason
-
         usage = (
             ResponseUsage(
                 prompt_tokens=runtime_response.usage.prompt_tokens,
@@ -435,15 +915,11 @@ class OctomilResponses:
         )
 
 
-# -- Layer 2 → Layer 1 bridge --
+# -- Layer 2 -> Layer 1 bridge --
 
 
 def _input_items_to_messages(input_items: list[InputItem]) -> list[RuntimeMessage]:
-    """Convert Layer 2 InputItems to Layer 1 RuntimeMessages.
-
-    Resolves base64 data to raw bytes for media parts.
-    Raises ValueError for unresolvable file types.
-    """
+    """Convert Layer 2 InputItems to Layer 1 RuntimeMessages."""
     messages: list[RuntimeMessage] = []
     for item in input_items:
         if isinstance(item, SystemInput):
@@ -462,18 +938,10 @@ def _input_items_to_messages(input_items: list[InputItem]) -> list[RuntimeMessag
                 for p in item.content:
                     if isinstance(p, TextContent):
                         asst_parts.append(RuntimeContentPart.text_part(p.text))
-            # Preserve tool calls as structured metadata instead of
-            # serializing to text — this lets runtimes with native tool
-            # calling (e.g. CloudModelRuntime) emit the correct wire format.
             rt_tool_calls: Optional[list[RuntimeToolCall]] = None
             if item.tool_calls:
                 rt_tool_calls = [
-                    RuntimeToolCall(
-                        id=call.id,
-                        name=call.name,
-                        arguments=call.arguments,
-                    )
-                    for call in item.tool_calls
+                    RuntimeToolCall(id=call.id, name=call.name, arguments=call.arguments) for call in item.tool_calls
                 ]
             if not asst_parts:
                 asst_parts = [RuntimeContentPart.text_part("")]
@@ -496,25 +964,18 @@ def _input_items_to_messages(input_items: list[InputItem]) -> list[RuntimeMessag
 
 
 def _resolve_content_part(part: object) -> RuntimeContentPart:
-    """Convert a Layer 2 ContentPart to a Layer 1 RuntimeContentPart.
-
-    Decodes base64 data to raw bytes.
-    Raises ValueError for unsupported file media types.
-    """
+    """Convert a Layer 2 ContentPart to a Layer 1 RuntimeContentPart."""
     if isinstance(part, TextContent):
         return RuntimeContentPart.text_part(part.text)
-
     if isinstance(part, ImageContent):
         if part.data:
             raw = base64.b64decode(part.data)
             return RuntimeContentPart.image_part(raw, part.media_type or "image/png")
-        logger.warning("ImageContent without data — URL/assetId not resolved at runtime layer")
+        logger.warning("ImageContent without data")
         return RuntimeContentPart.text_part("[image: unresolved]")
-
     if isinstance(part, AudioContent):
         raw = base64.b64decode(part.data)
         return RuntimeContentPart.audio_part(raw, part.media_type)
-
     if isinstance(part, FileContent):
         mt = part.media_type.lower()
         raw = base64.b64decode(part.data)
@@ -528,7 +989,6 @@ def _resolve_content_part(part: object) -> RuntimeContentPart:
             f"Cannot resolve FileContent with mediaType '{part.media_type}' "
             f"to a runtime content part. Supported prefixes: image/*, audio/*, video/*"
         )
-
     raise TypeError(f"Unknown content part type: {type(part)}")
 
 
