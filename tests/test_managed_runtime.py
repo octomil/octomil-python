@@ -367,6 +367,31 @@ class TestArtifactCache:
         expected = hashlib.sha256(content).hexdigest()
         assert _compute_sha256(f) == expected
 
+    def test_default_cache_uses_octomil_cache_dir(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """OCTOMIL_CACHE_DIR overrides the managed cache root."""
+        monkeypatch.setenv("OCTOMIL_CACHE_DIR", str(tmp_path / "octomil-cache"))
+        monkeypatch.delenv("XDG_CACHE_HOME", raising=False)
+
+        cache = ArtifactCache()
+
+        assert cache.cache_dir == tmp_path / "octomil-cache" / "artifacts"
+
+    def test_default_cache_uses_xdg_cache_home(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """XDG_CACHE_HOME is respected when OCTOMIL_CACHE_DIR is unset."""
+        monkeypatch.delenv("OCTOMIL_CACHE_DIR", raising=False)
+        monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "xdg-cache"))
+
+        cache = ArtifactCache()
+
+        assert cache.cache_dir == tmp_path / "xdg-cache" / "octomil" / "artifacts"
+
+    def test_default_lock_dir_uses_cache_root(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Default artifact locks live next to managed artifacts in the cache root."""
+        monkeypatch.setenv("OCTOMIL_CACHE_DIR", str(tmp_path / "octomil-cache"))
+        lock = FileLock("model", timeout=0.1)
+
+        assert lock.lock_path.parent == tmp_path / "octomil-cache" / "artifacts" / ".locks"
+
 
 # ---------------------------------------------------------------------------
 # File lock tests

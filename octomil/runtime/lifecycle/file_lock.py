@@ -15,7 +15,17 @@ from types import TracebackType
 
 logger = logging.getLogger(__name__)
 
-_DEFAULT_LOCK_DIR = Path.home() / ".octomil" / "artifacts" / ".locks"
+
+def _default_lock_dir() -> Path:
+    cache_root = os.environ.get("OCTOMIL_CACHE_DIR")
+    if cache_root:
+        return Path(cache_root).expanduser() / "artifacts" / ".locks"
+
+    xdg_cache_home = os.environ.get("XDG_CACHE_HOME")
+    if xdg_cache_home:
+        return Path(xdg_cache_home).expanduser() / "octomil" / "artifacts" / ".locks"
+
+    return Path.home() / ".cache" / "octomil" / "artifacts" / ".locks"
 
 
 class FileLock:
@@ -28,7 +38,7 @@ class FileLock:
             # download the artifact ...
             pass
 
-    The lock file is created at ``~/.octomil/artifacts/.locks/{name}.lock``
+    The lock file is created at ``<cache-root>/artifacts/.locks/{name}.lock``
     by default. The lock is released on context exit or explicit ``release()``.
     """
 
@@ -39,7 +49,7 @@ class FileLock:
         timeout: float = 300.0,
         poll_interval: float = 0.5,
     ) -> None:
-        self._lock_dir = lock_dir or _DEFAULT_LOCK_DIR
+        self._lock_dir = lock_dir or _default_lock_dir()
         self._lock_dir.mkdir(parents=True, exist_ok=True)
         # Sanitise name for filesystem safety
         safe_name = name.replace("/", "_").replace("\\", "_").replace(":", "_")

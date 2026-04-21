@@ -254,6 +254,27 @@ class TestCreateBypassesRunnerWhenNoPlan:
         assert isinstance(response.output[0], TextOutput)
         assert response.output[0].text == "direct response"
 
+    @pytest.mark.asyncio
+    async def test_synthetic_cloud_fallback_defers_to_direct_runtime(self) -> None:
+        """Offline planner fallback must not override an available runtime."""
+        mock_rt = MockRuntime("direct local response")
+        ModelRuntimeRegistry.shared().default_factory = lambda model_id: mock_rt
+        selection = _make_selection(locality="cloud")
+        selection.source = "fallback"
+        selection.engine = None
+        selection.candidates = []
+
+        with patch(
+            "octomil.responses.responses._try_resolve_planner_selection",
+            return_value=selection,
+        ):
+            responses = OctomilResponses(planner_enabled=True)
+            response = await responses.create(ResponseRequest(model="test-model", input=[text_input("Hello")]))
+
+        assert isinstance(response.output[0], TextOutput)
+        assert response.output[0].text == "direct local response"
+        assert response.locality == "on_device"
+
 
 class TestStreamUsesAttemptRunner:
     @pytest.mark.asyncio
@@ -437,6 +458,110 @@ class TestCliRunUsesAttemptRunner:
             # The kernel should have called _build_router (which is invoked
             # through the CandidateAttemptRunner's execute_candidate callback)
             assert mock_build_router.called
+
+
+class TestRefKindInRouteMetadata:
+    """Verify that model reference kinds propagate correctly through the production path."""
+
+    @pytest.mark.asyncio
+    async def test_deployment_ref_kind_in_route_metadata(self) -> None:
+        """deploy_xxx model ref should produce kind='deployment' in route metadata."""
+        mock_rt = MockRuntime("deployed response")
+        ModelRuntimeRegistry.shared().default_factory = lambda model_id: mock_rt
+
+        with patch(
+            "octomil.responses.responses._try_resolve_planner_selection",
+            return_value=None,
+        ):
+            responses = OctomilResponses(planner_enabled=False)
+            response = await responses.create(ResponseRequest(model="deploy_abc123", input=[text_input("Hi")]))
+
+        assert response.route is not None
+        assert response.route.model.requested.kind == "deployment"
+        assert response.route.model.requested.ref == "deploy_abc123"
+
+    @pytest.mark.asyncio
+    async def test_experiment_ref_kind_in_route_metadata(self) -> None:
+        """exp_xxx/variant model ref should produce kind='experiment' in route metadata."""
+        mock_rt = MockRuntime("experiment response")
+        ModelRuntimeRegistry.shared().default_factory = lambda model_id: mock_rt
+
+        with patch(
+            "octomil.responses.responses._try_resolve_planner_selection",
+            return_value=None,
+        ):
+            responses = OctomilResponses(planner_enabled=False)
+            response = await responses.create(ResponseRequest(model="exp_v1/variant_a", input=[text_input("Hi")]))
+
+        assert response.route is not None
+        assert response.route.model.requested.kind == "experiment"
+
+    @pytest.mark.asyncio
+    async def test_app_ref_kind_in_route_metadata(self) -> None:
+        """@app/slug/cap model ref should produce kind='app' in route metadata."""
+        mock_rt = MockRuntime("app response")
+        ModelRuntimeRegistry.shared().default_factory = lambda model_id: mock_rt
+
+        with patch(
+            "octomil.responses.responses._try_resolve_planner_selection",
+            return_value=None,
+        ):
+            responses = OctomilResponses(planner_enabled=False)
+            response = await responses.create(ResponseRequest(model="@app/my-app/chat", input=[text_input("Hi")]))
+
+        assert response.route is not None
+        assert response.route.model.requested.kind == "app"
+        assert response.route.model.requested.ref == "@app/my-app/chat"
+
+    @pytest.mark.asyncio
+    async def test_plain_model_ref_kind_in_route_metadata(self) -> None:
+        """Plain model name should produce kind='model' in route metadata."""
+        mock_rt = MockRuntime("model response")
+        ModelRuntimeRegistry.shared().default_factory = lambda model_id: mock_rt
+
+        with patch(
+            "octomil.responses.responses._try_resolve_planner_selection",
+            return_value=None,
+        ):
+            responses = OctomilResponses(planner_enabled=False)
+            response = await responses.create(ResponseRequest(model="gemma-2b", input=[text_input("Hi")]))
+
+        assert response.route is not None
+        assert response.route.model.requested.kind == "model"
+        assert response.route.model.requested.ref == "gemma-2b"
+
+    @pytest.mark.asyncio
+    async def test_capability_ref_kind_in_route_metadata(self) -> None:
+        """@capability/xxx model ref should produce kind='capability' in route metadata."""
+        mock_rt = MockRuntime("cap response")
+        ModelRuntimeRegistry.shared().default_factory = lambda model_id: mock_rt
+
+        with patch(
+            "octomil.responses.responses._try_resolve_planner_selection",
+            return_value=None,
+        ):
+            responses = OctomilResponses(planner_enabled=False)
+            response = await responses.create(ResponseRequest(model="@capability/embeddings", input=[text_input("Hi")]))
+
+        assert response.route is not None
+        assert response.route.model.requested.kind == "capability"
+
+    @pytest.mark.asyncio
+    async def test_route_event_never_contains_prompt_or_output(self) -> None:
+        """Route metadata must not leak prompt or output content."""
+        mock_rt = MockRuntime("SECRET_OUTPUT")
+        ModelRuntimeRegistry.shared().default_factory = lambda model_id: mock_rt
+
+        with patch(
+            "octomil.responses.responses._try_resolve_planner_selection",
+            return_value=None,
+        ):
+            responses = OctomilResponses(planner_enabled=False)
+            response = await responses.create(ResponseRequest(model="test-model", input=[text_input("SECRET_PROMPT")]))
+
+        route_str = str(response.route)
+        assert "SECRET_PROMPT" not in route_str
+        assert "SECRET_OUTPUT" not in route_str
 
 
 class TestAttemptRunnerIsInvokedNotBypassed:
