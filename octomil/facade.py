@@ -202,22 +202,11 @@ class Octomil:
 
         from .client import OctomilClient
 
-        # When planner routing is enabled, create a RuntimePlanner with
-        # a client that can reach the server planner API.
-        planner_kwargs: dict[str, Any] = {}
-        if self._planner_enabled:
-            try:
-                from .runtime.planner.client import RuntimePlannerClient
-
-                api_key = getattr(self._auth, "api_key", None) or getattr(self._auth, "token", None)
-                api_base = getattr(self._auth, "api_base", None) or "https://api.octomil.com"
-                if api_key:
-                    planner_client = RuntimePlannerClient(base_url=api_base, api_key=api_key)
-                    planner_kwargs["planner_client"] = planner_client
-            except ImportError:
-                pass
-
-        self._client = OctomilClient(auth=self._auth, **{**self._kwargs, **planner_kwargs})
+        self._client = OctomilClient(
+            auth=self._auth,
+            planner_enabled=self._planner_enabled,
+            **self._kwargs,
+        )
         self._responses_wrapper = FacadeResponses(self._client.responses)
         self._embeddings_wrapper = FacadeEmbeddings(self._client)
         self._initialized = True

@@ -5,6 +5,11 @@ from __future__ import annotations
 import os
 from unittest.mock import patch
 
+import pytest
+
+from octomil.auth import OrgApiKeyAuth
+from octomil.client import OctomilClient
+from octomil.facade import Octomil
 from octomil.planner_defaults import (
     default_routing_policy,
     is_cloud_blocked,
@@ -128,3 +133,27 @@ class TestDefaultRoutingPolicy:
 
     def test_local_first_when_planner_disabled(self):
         assert default_routing_policy(planner_enabled=False) == "local_first"
+
+
+class TestPlannerFlagWiring:
+    def test_client_passes_planner_flag_to_responses(self):
+        client = OctomilClient(
+            auth=OrgApiKeyAuth(api_key="oct_sk_test_123", org_id="org_abc"),
+            planner_enabled=False,
+        )
+
+        assert client.responses._planner_enabled is False
+
+    @pytest.mark.asyncio
+    async def test_facade_passes_explicit_override_to_client(self):
+        client = Octomil(
+            api_key="oct_sk_test_123",
+            org_id="org_abc",
+            planner_routing=False,
+        )
+
+        await client.initialize()
+
+        assert client.planner_enabled is False
+        assert client._client._planner_enabled is False
+        assert client._client.responses._planner_enabled is False
