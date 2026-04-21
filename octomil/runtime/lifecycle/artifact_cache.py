@@ -1,6 +1,6 @@
 """Artifact cache — local disk cache for downloaded model artifacts.
 
-Manages the ``~/.octomil/artifacts/`` directory with a JSON manifest
+Manages the Octomil artifact cache directory with a JSON manifest
 tracking cached files, their digests, sizes, and access timestamps.
 """
 
@@ -9,13 +9,32 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import os
 import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-_DEFAULT_CACHE_DIR = Path.home() / ".octomil" / "artifacts"
+
+def _default_cache_dir() -> Path:
+    """Return the managed artifact cache directory.
+
+    Large artifacts live under the platform cache root, not under
+    ``~/.octomil`` where we keep credentials/config-style state.
+    """
+
+    cache_root = os.environ.get("OCTOMIL_CACHE_DIR")
+    if cache_root:
+        return Path(cache_root).expanduser() / "artifacts"
+
+    xdg_cache_home = os.environ.get("XDG_CACHE_HOME")
+    if xdg_cache_home:
+        return Path(xdg_cache_home).expanduser() / "octomil" / "artifacts"
+
+    return Path.home() / ".cache" / "octomil" / "artifacts"
+
+
 _MANIFEST_FILENAME = "manifest.json"
 _CHUNK_SIZE = 8192  # 8KB read chunks for digest calculation
 
@@ -55,7 +74,7 @@ class ArtifactManifest:
 class ArtifactCache:
     """Local disk cache for model artifacts.
 
-    Artifacts are stored as files under ``~/.octomil/artifacts/{artifact_id}/``.
+    Artifacts are stored as files under ``<cache-root>/artifacts/{artifact_id}/``.
     A manifest.json in the cache root tracks metadata.
 
     Usage::
@@ -71,7 +90,7 @@ class ArtifactCache:
     """
 
     def __init__(self, cache_dir: Path | None = None) -> None:
-        self._cache_dir = cache_dir or _DEFAULT_CACHE_DIR
+        self._cache_dir = cache_dir or _default_cache_dir()
         self._cache_dir.mkdir(parents=True, exist_ok=True)
         self._manifest_path = self._cache_dir / _MANIFEST_FILENAME
         self._manifest = self._load_manifest()
