@@ -3,10 +3,12 @@
 Encapsulates:
   - model resolution
   - serving-policy evaluation
+  - planner-driven runtime selection
   - local runtime resolution
   - cloud runtime resolution
   - fallback decisions
   - structured response generation
+  - post-execution benchmark upload
   - telemetry
 
 Does NOT require an HTTP server process.
@@ -18,8 +20,10 @@ import asyncio
 import logging
 import os
 import tempfile
+import threading
+import time
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, AsyncIterator, Optional
 
@@ -56,6 +60,104 @@ logger = logging.getLogger(__name__)
 
 
 @dataclass
+class RouteExecution:
+    """Execution details within route metadata."""
+
+    locality: str = ""  # "local" | "cloud"
+    mode: str = ""  # "sdk_runtime" | "hosted_gateway" | "external_endpoint"
+    engine: Optional[str] = None
+
+
+@dataclass
+class RouteModelRequested:
+    """The model reference as requested by the caller."""
+
+    ref: str = ""
+    kind: str = "unknown"  # "model" | "app" | "deployment" | "alias" | "default" | "unknown"
+    capability: Optional[str] = None
+
+
+@dataclass
+class RouteModelResolved:
+    """Server-resolved model identifiers."""
+
+    id: Optional[str] = None
+    slug: Optional[str] = None
+    version_id: Optional[str] = None
+    variant_id: Optional[str] = None
+
+
+@dataclass
+class RouteModel:
+    """Model information within route metadata."""
+
+    requested: RouteModelRequested = field(default_factory=RouteModelRequested)
+    resolved: Optional[RouteModelResolved] = None
+
+
+@dataclass
+class ArtifactCache:
+    """Cache status for a model artifact."""
+
+    status: str = "not_applicable"  # "hit" | "miss" | "downloaded" | "not_applicable" | "unavailable"
+    managed_by: Optional[str] = None  # "octomil" | "runtime" | "external"
+
+
+@dataclass
+class RouteArtifact:
+    """Artifact information within route metadata."""
+
+    id: Optional[str] = None
+    version: Optional[str] = None
+    format: Optional[str] = None
+    digest: Optional[str] = None
+    cache: ArtifactCache = field(default_factory=ArtifactCache)
+
+
+@dataclass
+class PlannerInfo:
+    """Planner source information."""
+
+    source: str = "offline"  # "server" | "cache" | "offline"
+
+
+@dataclass
+class FallbackInfo:
+    """Fallback status information."""
+
+    used: bool = False
+    from_attempt: Optional[int] = None
+    to_attempt: Optional[int] = None
+    trigger: Optional[dict[str, Any]] = None
+
+
+@dataclass
+class RouteReason:
+    """Reason for the routing decision."""
+
+    code: str = ""
+    message: str = ""
+
+
+@dataclass
+class RouteMetadata:
+    """Contract-backed routing metadata from the runtime planner.
+
+    Follows the canonical RouteMetadata shape from octomil-contracts.
+    Public locality values are "local" | "cloud" (never "on_device").
+    """
+
+    status: str = "selected"  # "selected" | "unavailable" | "failed"
+    execution: Optional[RouteExecution] = None
+    model: RouteModel = field(default_factory=RouteModel)
+    artifact: Optional[RouteArtifact] = None
+    planner: PlannerInfo = field(default_factory=PlannerInfo)
+    fallback: FallbackInfo = field(default_factory=FallbackInfo)
+    attempts: list[dict[str, Any]] = field(default_factory=list)
+    reason: RouteReason = field(default_factory=RouteReason)
+
+
+@dataclass
 class ExecutionResult:
     """Unified result from any execution kernel call."""
 
@@ -73,6 +175,8 @@ class ExecutionResult:
     segments: Optional[list[dict[str, Any]]] = None
     # Raw data for --json
     raw: Optional[dict[str, Any]] = None
+    # Route metadata from planner
+    route: Optional[RouteMetadata] = None
 
 
 @dataclass
@@ -267,6 +371,378 @@ def _select_locality_for_capability(
 
 
 # ---------------------------------------------------------------------------
+# Planner integration
+# ---------------------------------------------------------------------------
+
+# Capability name mapping: config uses "chat"/"embedding"/"transcription",
+# planner uses "responses"/"embeddings"/"transcription".
+_PLANNER_CAPABILITY_MAP = {
+    CAPABILITY_CHAT: "responses",
+    CAPABILITY_EMBEDDING: "embeddings",
+    CAPABILITY_TRANSCRIPTION: "transcription",
+}
+
+# Keys that must NEVER appear in benchmark upload payloads.
+_BANNED_BENCHMARK_KEYS = frozenset(
+    {
+        "prompt",
+        "input",
+        "output",
+        "response",
+        "audio",
+        "audio_data",
+        "file",
+        "file_path",
+        "text",
+        "content",
+        "messages",
+    }
+)
+
+
+def _resolve_planner_selection(
+    model: str,
+    capability: str,
+    policy_preset: str,
+) -> Optional[Any]:
+    """Try planner-based runtime selection. Returns RuntimeSelection or None.
+
+    Never raises — planner failure is non-fatal.
+    """
+    if os.environ.get("OCTOMIL_RUNTIME_PLANNER_CACHE") == "0":
+        return None
+    try:
+        from octomil.runtime.planner.planner import RuntimePlanner
+
+        planner_cap = _PLANNER_CAPABILITY_MAP.get(capability, capability)
+        planner = RuntimePlanner()
+        return planner.resolve(
+            model=model,
+            capability=planner_cap,
+            routing_policy=policy_preset,
+        )
+    except Exception:
+        logger.debug("Planner selection failed", exc_info=True)
+        return None
+
+
+def _locality_to_public(raw: str) -> str:
+    """Map internal locality values to the public contract values.
+
+    Public RouteMetadata uses "local" | "cloud". Internal code may use
+    "on_device" which must never appear in public route metadata.
+    """
+    if raw == LOCALITY_ON_DEVICE or raw == "on_device":
+        return "local"
+    return raw
+
+
+def _execution_mode_for_locality(public_locality: str) -> str:
+    """Determine execution.mode from the public locality."""
+    if public_locality == "local":
+        return "sdk_runtime"
+    return "hosted_gateway"
+
+
+def _route_metadata_from_selection(
+    selection: Optional[Any],
+    locality: str,
+    fallback_used: bool,
+    *,
+    model_name: str = "",
+    capability: str = "",
+    attempt_loop: Optional[Any] = None,
+    status: str = "selected",
+) -> RouteMetadata:
+    """Build RouteMetadata from a planner RuntimeSelection."""
+    from octomil.runtime.planner.app_ref import is_app_ref, parse_app_ref
+
+    public_locality = _locality_to_public(locality)
+
+    # Determine model.requested.kind and capability from model_name
+    model_kind = "unknown"
+    req_capability = capability or None
+    if model_name:
+        if is_app_ref(model_name):
+            model_kind = "app"
+            _, parsed_cap = parse_app_ref(model_name)
+            if parsed_cap:
+                req_capability = parsed_cap
+        else:
+            model_kind = "model"
+
+    fallback_info = FallbackInfo(used=fallback_used)
+    attempts: list[dict[str, Any]] = []
+    if attempt_loop is not None:
+        attempts = [attempt.to_dict() for attempt in getattr(attempt_loop, "attempts", [])]
+        trigger = getattr(attempt_loop, "fallback_trigger", None)
+        fallback_info = FallbackInfo(
+            used=bool(getattr(attempt_loop, "fallback_used", False)),
+            from_attempt=getattr(attempt_loop, "from_attempt", None),
+            to_attempt=getattr(attempt_loop, "to_attempt", None),
+            trigger=trigger.to_dict() if trigger is not None else None,
+        )
+
+    if selection is None:
+        return RouteMetadata(
+            status=status,
+            execution=RouteExecution(
+                locality=public_locality,
+                mode=_execution_mode_for_locality(public_locality),
+            ),
+            model=RouteModel(
+                requested=RouteModelRequested(
+                    ref=model_name,
+                    kind=model_kind,
+                    capability=req_capability,
+                ),
+            ),
+            planner=PlannerInfo(source="offline"),
+            fallback=fallback_info,
+            attempts=attempts,
+            reason=RouteReason(code="planner_unavailable", message="planner not available"),
+        )
+
+    # Map planner source to PlannerInfo.source
+    source_map = {
+        "server_plan": "server",
+        "cache": "cache",
+        "local_benchmark": "offline",
+        "fallback": "offline",
+    }
+
+    # Build resolved model info from app_resolution when available
+    resolved: Optional[RouteModelResolved] = None
+    app_resolution = getattr(selection, "app_resolution", None)
+    if app_resolution is not None:
+        resolved = RouteModelResolved(
+            slug=app_resolution.selected_model,
+            variant_id=app_resolution.selected_model_variant_id,
+            version_id=app_resolution.selected_model_version,
+        )
+
+    selected_attempt = getattr(attempt_loop, "selected_attempt", None) if attempt_loop is not None else None
+
+    # Build artifact info with cache status from ArtifactCache
+    route_artifact: Optional[RouteArtifact] = None
+    if selection.artifact is not None:
+        artifact_digest = selection.artifact.digest
+        cache_status_value = "not_applicable"
+        try:
+            from octomil.runtime.planner.artifact_cache import ArtifactCache as ArtifactCacheManager
+            from octomil.runtime.planner.artifact_cache import _warn_if_large_artifact_non_tty
+
+            artifact_cache = ArtifactCacheManager()
+            cache_status_value = artifact_cache.cache_status(artifact_digest)
+
+            # Warn in non-TTY environments about large artifacts
+            if cache_status_value == "miss":
+                _warn_if_large_artifact_non_tty(selection.artifact.size_bytes)
+        except Exception:
+            pass
+        route_artifact = RouteArtifact(
+            id=selection.artifact.artifact_id,
+            version=selection.artifact.model_version,
+            format=selection.artifact.format,
+            digest=artifact_digest,
+            cache=ArtifactCache(
+                status=cache_status_value,
+                managed_by="octomil",
+            ),
+        )
+    if selected_attempt is not None:
+        if selected_attempt.artifact is None:
+            route_artifact = None
+        else:
+            route_artifact = RouteArtifact(
+                id=selected_attempt.artifact.id,
+                digest=selected_attempt.artifact.digest,
+                cache=ArtifactCache(
+                    status=selected_attempt.artifact.cache_status,
+                    managed_by=selected_attempt.artifact.managed_by,
+                ),
+            )
+
+    route_engine = selected_attempt.engine if selected_attempt is not None else selection.engine
+
+    return RouteMetadata(
+        status=status,
+        execution=RouteExecution(
+            locality=public_locality,
+            mode=_execution_mode_for_locality(public_locality),
+            engine=route_engine,
+        ),
+        model=RouteModel(
+            requested=RouteModelRequested(
+                ref=model_name,
+                kind=model_kind,
+                capability=req_capability,
+            ),
+            resolved=resolved,
+        ),
+        artifact=route_artifact,
+        planner=PlannerInfo(source=source_map.get(selection.source, "offline")),
+        fallback=fallback_info,
+        attempts=attempts,
+        reason=RouteReason(
+            code=selection.source or "",
+            message=selection.reason or "",
+        ),
+    )
+
+
+def _sanitize_benchmark_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    """Remove any banned keys from a benchmark payload. Returns a clean copy."""
+    return {k: v for k, v in payload.items() if k not in _BANNED_BENCHMARK_KEYS}
+
+
+def _upload_benchmark_async(
+    *,
+    model: str,
+    capability: str,
+    engine: Optional[str],
+    policy_preset: str,
+    tokens_per_second: float = 0.0,
+    ttft_ms: float = 0.0,
+    latency_ms: float = 0.0,
+    peak_memory_bytes: Optional[int] = None,
+) -> None:
+    """Upload benchmark telemetry in a background thread. Best-effort, never blocks.
+
+    Skips upload for private policy or when no server credentials are configured.
+    """
+    if policy_preset in ("private", "local_only"):
+        return
+
+    api_key = os.environ.get("OCTOMIL_SERVER_KEY") or os.environ.get("OCTOMIL_API_KEY")
+    if not api_key:
+        return
+
+    payload = _sanitize_benchmark_payload(
+        {
+            "source": "execution_kernel",
+            "model": model,
+            "capability": _PLANNER_CAPABILITY_MAP.get(capability, capability),
+            "engine": engine or "",
+            "success": True,
+            "tokens_per_second": tokens_per_second,
+            "ttft_ms": ttft_ms,
+            "latency_ms": latency_ms,
+            "peak_memory_bytes": peak_memory_bytes,
+        }
+    )
+
+    def _upload() -> None:
+        try:
+            from octomil.runtime.planner.client import RuntimePlannerClient
+
+            base_url = os.environ.get("OCTOMIL_API_BASE") or "https://api.octomil.com"
+            client = RuntimePlannerClient(base_url=base_url, api_key=api_key)
+            client.upload_benchmark(payload)
+        except Exception:
+            logger.debug("Background benchmark upload failed", exc_info=True)
+
+    thread = threading.Thread(target=_upload, daemon=True, name="octomil-benchmark-upload")
+    thread.start()
+
+
+def _runtime_candidate_to_dict(candidate: Any) -> dict[str, Any]:
+    """Convert a RuntimeCandidatePlan-like object into a JSON-safe dict."""
+    if isinstance(candidate, dict):
+        return candidate
+    return asdict(candidate)
+
+
+def _selection_candidate_dicts(selection: Optional[Any], routing_policy: RoutingPolicy) -> list[dict[str, Any]]:
+    """Return the ordered candidate list the SDK should attempt for this request."""
+    if selection is not None:
+        candidates = getattr(selection, "candidates", None)
+        if candidates:
+            return [_runtime_candidate_to_dict(candidate) for candidate in candidates]
+
+        candidate: dict[str, Any] = {
+            "locality": getattr(selection, "locality", "local"),
+            "priority": 0,
+            "confidence": 1.0,
+            "reason": getattr(selection, "reason", "") or "planner selection",
+        }
+        engine = getattr(selection, "engine", None)
+        artifact = getattr(selection, "artifact", None)
+        if engine is not None:
+            candidate["engine"] = engine
+        if artifact is not None:
+            candidate["artifact"] = asdict(artifact)
+        return [candidate]
+
+    if routing_policy.mode == ContractRoutingPolicy.LOCAL_ONLY:
+        return [{"locality": "local", "priority": 0, "confidence": 0.0, "reason": "local-only policy"}]
+    if routing_policy.mode == ContractRoutingPolicy.CLOUD_ONLY:
+        return [{"locality": "cloud", "priority": 0, "confidence": 0.0, "reason": "cloud-only policy"}]
+
+    prefer_local = routing_policy.prefer_local or routing_policy.mode == ContractRoutingPolicy.LOCAL_FIRST
+    if prefer_local:
+        candidates = [{"locality": "local", "priority": 0, "confidence": 0.0, "reason": "offline local-first"}]
+        if routing_policy.fallback == "cloud":
+            candidates.append({"locality": "cloud", "priority": 1, "confidence": 0.0, "reason": "cloud fallback"})
+        return candidates
+
+    candidates = [{"locality": "cloud", "priority": 0, "confidence": 0.0, "reason": "offline cloud-first"}]
+    if routing_policy.fallback == "local":
+        candidates.append({"locality": "local", "priority": 1, "confidence": 0.0, "reason": "local fallback"})
+    return candidates
+
+
+def _candidate_fallback_allowed(selection: Optional[Any], routing_policy: RoutingPolicy) -> bool:
+    if selection is not None and hasattr(selection, "fallback_allowed"):
+        return bool(selection.fallback_allowed)
+    if routing_policy.mode in (ContractRoutingPolicy.LOCAL_ONLY, ContractRoutingPolicy.CLOUD_ONLY):
+        return False
+    return routing_policy.fallback != "none"
+
+
+def _candidate_to_selection(selection: Optional[Any], candidate: dict[str, Any]) -> Any:
+    """Build a lightweight planner selection for a single candidate."""
+    from octomil.runtime.planner.schemas import RuntimeArtifactPlan, RuntimeSelection
+
+    artifact_data = candidate.get("artifact")
+    artifact = None
+    if isinstance(artifact_data, dict) and artifact_data.get("model_id"):
+        artifact = RuntimeArtifactPlan(
+            model_id=artifact_data.get("model_id", ""),
+            artifact_id=artifact_data.get("artifact_id"),
+            model_version=artifact_data.get("model_version"),
+            format=artifact_data.get("format"),
+            quantization=artifact_data.get("quantization"),
+            uri=artifact_data.get("uri"),
+            digest=artifact_data.get("digest"),
+            size_bytes=artifact_data.get("size_bytes"),
+            min_ram_bytes=artifact_data.get("min_ram_bytes"),
+        )
+
+    return RuntimeSelection(
+        locality=candidate.get("locality", "local"),
+        engine=candidate.get("engine"),
+        artifact=artifact,
+        source=getattr(selection, "source", "fallback") if selection is not None else "fallback",
+        fallback_allowed=getattr(selection, "fallback_allowed", True) if selection is not None else True,
+        reason=candidate.get("reason", getattr(selection, "reason", "") if selection is not None else ""),
+        app_resolution=getattr(selection, "app_resolution", None) if selection is not None else None,
+    )
+
+
+def _routing_policy_for_candidate(candidate: dict[str, Any]) -> RoutingPolicy:
+    if candidate.get("locality") == "cloud":
+        return RoutingPolicy.cloud_only()
+    return RoutingPolicy.local_only()
+
+
+def _internal_locality_for_attempt(attempt: Any) -> str:
+    if attempt is not None and getattr(attempt, "locality", None) == "cloud":
+        return LOCALITY_CLOUD
+    return LOCALITY_ON_DEVICE
+
+
+# ---------------------------------------------------------------------------
 # Execution Kernel
 # ---------------------------------------------------------------------------
 
@@ -368,9 +844,14 @@ class ExecutionKernel:
         if not effective_model:
             raise _no_model_error(CAPABILITY_CHAT)
 
+        policy_preset = defaults.policy_preset or "local_first"
+
+        # Planner-driven routing
+        selection = _resolve_planner_selection(effective_model, CAPABILITY_CHAT, policy_preset)
+
         routing_policy = _resolve_routing_policy(defaults)
-        router = await self._build_router(effective_model, CAPABILITY_CHAT, defaults)
-        locality, is_fallback = router.resolve_locality(routing_policy)
+        candidates = _selection_candidate_dicts(selection, routing_policy)
+        fallback_allowed = _candidate_fallback_allowed(selection, routing_policy)
 
         gen_config = GenerationConfig(
             max_tokens=max_output_tokens or 2048,
@@ -386,7 +867,57 @@ class ExecutionKernel:
             generation_config=gen_config,
         )
 
-        response = await router.run(request, policy=routing_policy)
+        from octomil.runtime.routing import CandidateAttemptRunner
+
+        runner = CandidateAttemptRunner(fallback_allowed=fallback_allowed, streaming=False)
+
+        async def _execute_candidate(candidate: dict[str, Any]) -> RuntimeResponse:
+            candidate_selection = _candidate_to_selection(selection, candidate)
+            router = await self._build_router(
+                effective_model,
+                CAPABILITY_CHAT,
+                defaults,
+                planner_selection=candidate_selection,
+            )
+            return await router.run(request, policy=_routing_policy_for_candidate(candidate))
+
+        t0 = time.monotonic()
+        attempt_loop = await runner.run_with_inference(
+            candidates,
+            execute_candidate=_execute_candidate,
+        )
+        if not attempt_loop.succeeded:
+            if attempt_loop.error is not None:
+                raise attempt_loop.error
+            raise RuntimeError("No runtime available")
+
+        response = attempt_loop.value
+        if not isinstance(response, RuntimeResponse):
+            raise RuntimeError("Runtime returned an invalid response.")
+        latency_ms = (time.monotonic() - t0) * 1000
+
+        locality = _internal_locality_for_attempt(attempt_loop.selected_attempt)
+        is_fallback = attempt_loop.fallback_used
+        route = _route_metadata_from_selection(
+            selection,
+            locality,
+            is_fallback,
+            model_name=effective_model,
+            capability=CAPABILITY_CHAT,
+            attempt_loop=attempt_loop,
+        )
+        usage = _extract_usage(response)
+
+        # Post-execution benchmark upload for local execution
+        if locality == LOCALITY_ON_DEVICE:
+            _upload_benchmark_async(
+                model=effective_model,
+                capability=CAPABILITY_CHAT,
+                engine=route.execution.engine if route.execution else None,
+                policy_preset=policy_preset,
+                tokens_per_second=usage.get("output_tokens", 0) / max(latency_ms / 1000, 0.001),
+                latency_ms=latency_ms,
+            )
 
         return ExecutionResult(
             id=f"resp_{uuid.uuid4().hex[:12]}",
@@ -395,7 +926,8 @@ class ExecutionKernel:
             locality=locality,
             fallback_used=is_fallback,
             output_text=response.text,
-            usage=_extract_usage(response),
+            usage=usage,
+            route=route,
         )
 
     async def stream_response(
@@ -414,9 +946,12 @@ class ExecutionKernel:
         if not effective_model:
             raise _no_model_error(CAPABILITY_CHAT)
 
+        policy_preset = defaults.policy_preset or "local_first"
+        selection = _resolve_planner_selection(effective_model, CAPABILITY_CHAT, policy_preset)
+
         routing_policy = _resolve_routing_policy(defaults)
-        router = await self._build_router(effective_model, CAPABILITY_CHAT, defaults)
-        locality, is_fallback = router.resolve_locality(routing_policy)
+        candidates = _selection_candidate_dicts(selection, routing_policy)
+        fallback_allowed = _candidate_fallback_allowed(selection, routing_policy)
 
         gen_config = GenerationConfig(
             max_tokens=max_output_tokens or 2048,
@@ -432,11 +967,66 @@ class ExecutionKernel:
             generation_config=gen_config,
         )
 
+        from octomil.runtime.routing import CandidateAttemptRunner
+
+        runner = CandidateAttemptRunner(fallback_allowed=fallback_allowed, streaming=True)
+
+        t0 = time.monotonic()
         collected_text = ""
-        async for chunk in router.stream(request, policy=routing_policy):
-            text = chunk.text or ""
-            collected_text += text
-            yield StreamChunk(delta=text)
+        selected_locality = LOCALITY_ON_DEVICE
+        is_fallback = False
+        last_error: Exception | None = None
+
+        for idx, candidate in enumerate(candidates):
+            first_token_emitted = False
+            try:
+                candidate_selection = _candidate_to_selection(selection, candidate)
+                router = await self._build_router(
+                    effective_model,
+                    CAPABILITY_CHAT,
+                    defaults,
+                    planner_selection=candidate_selection,
+                )
+                async for chunk in router.stream(request, policy=_routing_policy_for_candidate(candidate)):
+                    text = chunk.text or ""
+                    if text:
+                        first_token_emitted = True
+                    collected_text += text
+                    yield StreamChunk(delta=text)
+                selected_locality = LOCALITY_CLOUD if candidate.get("locality") == "cloud" else LOCALITY_ON_DEVICE
+                is_fallback = idx > 0
+                break
+            except Exception as exc:
+                last_error = exc
+                if (
+                    runner.should_fallback_after_inference_error(first_token_emitted=first_token_emitted)
+                    and idx < len(candidates) - 1
+                ):
+                    continue
+                raise
+        else:
+            if last_error is not None:
+                raise last_error
+            raise RuntimeError("No runtime available")
+
+        latency_ms = (time.monotonic() - t0) * 1000
+
+        route = _route_metadata_from_selection(
+            selection,
+            selected_locality,
+            is_fallback,
+            model_name=effective_model,
+            capability=CAPABILITY_CHAT,
+        )
+
+        if selected_locality == LOCALITY_ON_DEVICE:
+            _upload_benchmark_async(
+                model=effective_model,
+                capability=CAPABILITY_CHAT,
+                engine=route.execution.engine if route.execution else None,
+                policy_preset=policy_preset,
+                latency_ms=latency_ms,
+            )
 
         yield StreamChunk(
             delta="",
@@ -445,9 +1035,10 @@ class ExecutionKernel:
                 id=f"resp_{uuid.uuid4().hex[:12]}",
                 model=effective_model,
                 capability=CAPABILITY_CHAT,
-                locality=locality,
+                locality=selected_locality,
                 fallback_used=is_fallback,
                 output_text=collected_text,
+                route=route,
             ),
         )
 
@@ -467,9 +1058,12 @@ class ExecutionKernel:
         if not effective_model:
             raise _no_model_error(CAPABILITY_CHAT)
 
+        policy_preset = defaults.policy_preset or "local_first"
+        selection = _resolve_planner_selection(effective_model, CAPABILITY_CHAT, policy_preset)
+
         routing_policy = _resolve_routing_policy(defaults)
-        router = await self._build_router(effective_model, CAPABILITY_CHAT, defaults)
-        locality, is_fallback = router.resolve_locality(routing_policy)
+        candidates = _selection_candidate_dicts(selection, routing_policy)
+        fallback_allowed = _candidate_fallback_allowed(selection, routing_policy)
 
         gen_config = GenerationConfig(
             max_tokens=max_output_tokens or 2048,
@@ -480,11 +1074,66 @@ class ExecutionKernel:
             generation_config=gen_config,
         )
 
+        from octomil.runtime.routing import CandidateAttemptRunner
+
+        runner = CandidateAttemptRunner(fallback_allowed=fallback_allowed, streaming=True)
+
+        t0 = time.monotonic()
         collected_text = ""
-        async for chunk in router.stream(request, policy=routing_policy):
-            text = chunk.text or ""
-            collected_text += text
-            yield StreamChunk(delta=text)
+        selected_locality = LOCALITY_ON_DEVICE
+        is_fallback = False
+        last_error: Exception | None = None
+
+        for idx, candidate in enumerate(candidates):
+            first_token_emitted = False
+            try:
+                candidate_selection = _candidate_to_selection(selection, candidate)
+                router = await self._build_router(
+                    effective_model,
+                    CAPABILITY_CHAT,
+                    defaults,
+                    planner_selection=candidate_selection,
+                )
+                async for chunk in router.stream(request, policy=_routing_policy_for_candidate(candidate)):
+                    text = chunk.text or ""
+                    if text:
+                        first_token_emitted = True
+                    collected_text += text
+                    yield StreamChunk(delta=text)
+                selected_locality = LOCALITY_CLOUD if candidate.get("locality") == "cloud" else LOCALITY_ON_DEVICE
+                is_fallback = idx > 0
+                break
+            except Exception as exc:
+                last_error = exc
+                if (
+                    runner.should_fallback_after_inference_error(first_token_emitted=first_token_emitted)
+                    and idx < len(candidates) - 1
+                ):
+                    continue
+                raise
+        else:
+            if last_error is not None:
+                raise last_error
+            raise RuntimeError("No runtime available")
+
+        latency_ms = (time.monotonic() - t0) * 1000
+
+        route = _route_metadata_from_selection(
+            selection,
+            selected_locality,
+            is_fallback,
+            model_name=effective_model,
+            capability=CAPABILITY_CHAT,
+        )
+
+        if selected_locality == LOCALITY_ON_DEVICE:
+            _upload_benchmark_async(
+                model=effective_model,
+                capability=CAPABILITY_CHAT,
+                engine=route.execution.engine if route.execution else None,
+                policy_preset=policy_preset,
+                latency_ms=latency_ms,
+            )
 
         yield StreamChunk(
             delta="",
@@ -493,9 +1142,10 @@ class ExecutionKernel:
                 id=f"resp_{uuid.uuid4().hex[:12]}",
                 model=effective_model,
                 capability=CAPABILITY_CHAT,
-                locality=locality,
+                locality=selected_locality,
                 fallback_used=is_fallback,
                 output_text=collected_text,
+                route=route,
             ),
         )
 
@@ -517,6 +1167,9 @@ class ExecutionKernel:
         if not effective_model:
             raise _no_model_error(CAPABILITY_EMBEDDING)
 
+        policy_preset = defaults.policy_preset or "local_first"
+        selection = _resolve_planner_selection(effective_model, CAPABILITY_EMBEDDING, policy_preset)
+
         routing_policy = _resolve_routing_policy(defaults)
 
         local_available = self._can_local(effective_model, CAPABILITY_EMBEDDING)
@@ -528,11 +1181,30 @@ class ExecutionKernel:
             capability=CAPABILITY_EMBEDDING,
         )
 
+        route = _route_metadata_from_selection(
+            selection, locality, is_fallback, model_name=effective_model, capability=CAPABILITY_EMBEDDING
+        )
+
         if locality == LOCALITY_CLOUD:
             assert defaults.cloud_profile is not None
-            return await self._cloud_embed(inputs, effective_model, defaults.cloud_profile, is_fallback)
+            result = await self._cloud_embed(inputs, effective_model, defaults.cloud_profile, is_fallback)
+            result.route = route
+            return result
 
-        return await self._local_embed(inputs, effective_model, is_fallback)
+        t0 = time.monotonic()
+        result = await self._local_embed(inputs, effective_model, is_fallback)
+        latency_ms = (time.monotonic() - t0) * 1000
+        result.route = route
+
+        _upload_benchmark_async(
+            model=effective_model,
+            capability=CAPABILITY_EMBEDDING,
+            engine=route.execution.engine if route.execution else None,
+            policy_preset=policy_preset,
+            latency_ms=latency_ms,
+        )
+
+        return result
 
     async def _cloud_embed(
         self,
@@ -633,6 +1305,9 @@ class ExecutionKernel:
         if not effective_model:
             raise _no_model_error(CAPABILITY_TRANSCRIPTION)
 
+        policy_preset = defaults.policy_preset or "local_first"
+        selection = _resolve_planner_selection(effective_model, CAPABILITY_TRANSCRIPTION, policy_preset)
+
         routing_policy = _resolve_routing_policy(defaults)
         local_available = self._has_local_transcription_backend(effective_model)
         cloud_available = _cloud_available(defaults)
@@ -643,13 +1318,32 @@ class ExecutionKernel:
             capability=CAPABILITY_TRANSCRIPTION,
         )
 
+        route = _route_metadata_from_selection(
+            selection, locality, is_fallback, model_name=effective_model, capability=CAPABILITY_TRANSCRIPTION
+        )
+
         if locality == LOCALITY_CLOUD:
             assert defaults.cloud_profile is not None
-            return await self._cloud_transcribe(
+            result = await self._cloud_transcribe(
                 audio_data, effective_model, defaults.cloud_profile, language, is_fallback
             )
+            result.route = route
+            return result
 
-        return await self._local_transcribe(audio_data, effective_model, language, is_fallback)
+        t0 = time.monotonic()
+        result = await self._local_transcribe(audio_data, effective_model, language, is_fallback)
+        latency_ms = (time.monotonic() - t0) * 1000
+        result.route = route
+
+        _upload_benchmark_async(
+            model=effective_model,
+            capability=CAPABILITY_TRANSCRIPTION,
+            engine=route.execution.engine if route.execution else None,
+            policy_preset=policy_preset,
+            latency_ms=latency_ms,
+        )
+
+        return result
 
     async def _cloud_transcribe(
         self,
@@ -787,14 +1481,68 @@ class ExecutionKernel:
         model: str,
         capability: str,
         defaults: ResolvedExecutionDefaults,
+        *,
+        planner_selection: Optional[Any] = None,
     ) -> RouterModelRuntime:
-        """Build a RouterModelRuntime for the given model and capability."""
+        """Build a RouterModelRuntime for the given model and capability.
+
+        When a planner_selection is provided and recommends a specific engine,
+        the local factory tries that engine first before falling back to the
+        default registry resolution.
+        """
         from octomil.runtime.core.registry import ModelRuntimeRegistry
 
         registry = ModelRuntimeRegistry.shared()
 
+        # If planner says cloud, force cloud by returning None from local factory
+        planner_forces_cloud = planner_selection is not None and planner_selection.locality == "cloud"
+        planner_engine = (
+            planner_selection.engine
+            if planner_selection is not None and planner_selection.locality == "local"
+            else None
+        )
+
         def local_factory(hint: str):
-            return registry.resolve(model)
+            if planner_forces_cloud:
+                return None
+
+            # If planner recommends a specific local engine, try it first
+            if planner_engine:
+                try:
+                    from octomil.runtime.engines import get_registry as get_engine_registry
+
+                    engine_registry = get_engine_registry()
+                    engine = engine_registry.get_engine(planner_engine)
+                    if engine is not None and engine.detect() and engine.name != "echo":
+                        from octomil.runtime.core.adapter import InferenceBackendAdapter
+                        from octomil.runtime.core.engine_bridge import _infer_tool_call_tier
+                        from octomil.runtime.core.types import RuntimeCapabilities
+
+                        backend = engine.create_backend(model)
+                        return InferenceBackendAdapter(
+                            backend=backend,
+                            model_name=model,
+                            capabilities=RuntimeCapabilities(
+                                tool_call_tier=_infer_tool_call_tier(model),
+                                supports_streaming=True,
+                            ),
+                        )
+                except Exception:
+                    logger.debug(
+                        "Planner-recommended engine %s failed, falling back to registry",
+                        planner_engine,
+                        exc_info=True,
+                    )
+
+            resolved = registry.resolve(model)
+            # Never let echo leak into user-facing execution paths
+            if resolved is not None:
+                backend = getattr(resolved, "_backend", None)
+                backend_cls = type(backend).__name__ if backend else ""
+                if backend_cls == "EchoBackend":
+                    logger.debug("Rejecting echo backend from user-facing execution path")
+                    return None
+            return resolved
 
         def cloud_factory(hint: str):
             if defaults.cloud_profile is None:

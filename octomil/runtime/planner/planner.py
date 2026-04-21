@@ -7,10 +7,14 @@ import logging
 import os
 from dataclasses import asdict
 
+from .app_ref import is_app_ref, parse_app_ref
 from .client import RuntimePlannerClient
 from .device_profile import collect_device_runtime_profile
 from .schemas import (
+    CandidateGate,
     DeviceRuntimeProfile,
+    RuntimeArtifactPlan,
+    RuntimeCandidatePlan,
     RuntimePlanResponse,
     RuntimeSelection,
 )
@@ -66,7 +70,8 @@ class RuntimePlanner:
         Parameters
         ----------
         model:
-            Model identifier (e.g. "gemma-2b", "llama-8b").
+            Model identifier (e.g. "gemma-2b", "llama-8b") or an
+            ``@app/{slug}/{capability}`` app ref.
         capability:
             The capability needed (e.g. "text", "embeddings", "audio").
         routing_policy:
@@ -76,14 +81,24 @@ class RuntimePlanner:
             Whether to contact the server for plan/telemetry.  Set to False
             for fully-offline operation.
         """
+        # Parse @app/{slug}/{capability} refs
+        app_slug: str | None = None
+        app_capability: str | None = None
+        effective_model = model
+
+        if is_app_ref(model):
+            app_slug, app_capability = parse_app_ref(model)
+            if app_capability:
+                capability = app_capability
+
         # Step 1: Collect device profile
-        device = collect_device_runtime_profile(model_id=model)
+        device = collect_device_runtime_profile(model_id=effective_model)
 
         # Step 2: Check local plan cache
         from octomil import __version__
 
         cache_key = self._store._make_cache_key(
-            model=model,
+            model=effective_model,
             capability=capability,
             policy=routing_policy,
             sdk_version=__version__,
@@ -93,7 +108,7 @@ class RuntimePlanner:
 
         cached_plan = self._store.get_plan(cache_key)
         if cached_plan is not None:
-            logger.debug("Using cached plan for %s/%s", model, capability)
+            logger.debug("Using cached plan for %s/%s", effective_model, capability)
             return self._selection_from_plan_dict(cached_plan, device=device, source="cache")
 
         # Step 3: Fetch server plan if network is allowed
@@ -102,19 +117,32 @@ class RuntimePlanner:
 
         if allow_network and self._client is not None and not is_private:
             server_plan = self._client.fetch_plan(
-                model=model,
+                model=effective_model,
                 capability=capability,
                 routing_policy=routing_policy,
                 device=device,
                 allow_cloud_fallback=routing_policy != "local_only",
+                app_slug=app_slug,
             )
             if server_plan is not None:
-                logger.debug("Received server plan for %s/%s", model, capability)
+                logger.debug("Received server plan for %s/%s", effective_model, capability)
+
+                # If the server returned an app_resolution, use the resolved
+                # model as the effective model for local engine selection and
+                # honour the app-level routing policy.
+                if server_plan.app_resolution is not None:
+                    ar = server_plan.app_resolution
+                    if ar.selected_model:
+                        effective_model = ar.selected_model
+                    if ar.routing_policy:
+                        routing_policy = ar.routing_policy
+                        is_private = routing_policy == "private"
+
                 # Cache the server plan
                 plan_dict = asdict(server_plan)
                 self._store.put_plan(
                     cache_key,
-                    model=model,
+                    model=effective_model,
                     capability=capability,
                     policy=routing_policy,
                     plan_json=json.dumps(plan_dict),
@@ -126,16 +154,21 @@ class RuntimePlanner:
         if server_plan is not None:
             selection = self._resolve_from_server_plan(server_plan, device=device, is_private=is_private)
             if selection is not None:
+                # Attach app_resolution to selection so callers can inspect it
+                selection.app_resolution = server_plan.app_resolution
                 return selection
 
         # Step 5-8: Fall back to local engine selection
-        return self._resolve_locally(
-            model=model,
+        selection = self._resolve_locally(
+            model=effective_model,
             capability=capability,
             routing_policy=routing_policy,
             device=device,
             is_private=is_private,
         )
+        if server_plan is not None and server_plan.app_resolution is not None:
+            selection.app_resolution = server_plan.app_resolution
+        return selection
 
     def _resolve_from_server_plan(
         self,
@@ -159,7 +192,9 @@ class RuntimePlanner:
                     artifact=candidate.artifact,
                     benchmark_ran=False,
                     source="server_plan",
+                    candidates=[*plan.candidates, *plan.fallback_candidates],
                     fallback_candidates=plan.fallback_candidates,
+                    fallback_allowed=plan.fallback_allowed,
                     reason=candidate.reason,
                 )
             elif candidate.locality == "cloud":
@@ -169,7 +204,9 @@ class RuntimePlanner:
                     artifact=candidate.artifact,
                     benchmark_ran=False,
                     source="server_plan",
+                    candidates=[*plan.candidates, *plan.fallback_candidates],
                     fallback_candidates=plan.fallback_candidates,
+                    fallback_allowed=plan.fallback_allowed,
                     reason=candidate.reason,
                 )
 
@@ -183,7 +220,9 @@ class RuntimePlanner:
                     artifact=candidate.artifact,
                     benchmark_ran=False,
                     source="server_plan",
+                    candidates=[*plan.candidates, *plan.fallback_candidates],
                     fallback_candidates=[],
+                    fallback_allowed=plan.fallback_allowed,
                     reason=f"fallback: {candidate.reason}",
                 )
 
@@ -205,6 +244,7 @@ class RuntimePlanner:
                 locality="cloud",
                 engine=None,
                 source="fallback",
+                fallback_allowed=False,
                 reason="cloud_only policy — no local engines attempted",
             )
 
@@ -217,6 +257,7 @@ class RuntimePlanner:
                 engine=cached_bm.get("engine"),
                 benchmark_ran=False,
                 source="cache",
+                fallback_allowed=routing_policy not in ("local_only", "private"),
                 reason=f"cached benchmark: {cached_bm.get('tokens_per_second', 0):.1f} tok/s",
             )
 
@@ -273,6 +314,7 @@ class RuntimePlanner:
                     engine=engine.name,
                     benchmark_ran=True,
                     source="local_benchmark",
+                    fallback_allowed=routing_policy not in ("local_only", "private"),
                     reason=f"local benchmark selected {engine.name}",
                 )
         except Exception:
@@ -284,6 +326,7 @@ class RuntimePlanner:
                 locality="local",
                 engine=None,
                 source="fallback",
+                fallback_allowed=False,
                 reason="no local engine available",
             )
 
@@ -291,6 +334,7 @@ class RuntimePlanner:
             locality="cloud",
             engine=None,
             source="fallback",
+            fallback_allowed=True,
             reason="no local engine available — falling back to cloud",
         )
 
@@ -313,6 +357,9 @@ class RuntimePlanner:
                 return RuntimeSelection(
                     locality="local",
                     engine=engine or None,
+                    candidates=plan_dict_to_candidates(candidates),
+                    fallback_candidates=plan_dict_to_candidates(plan_dict.get("fallback_candidates", [])),
+                    fallback_allowed=plan_dict.get("fallback_allowed", True),
                     source=source,
                     reason=c.get("reason", ""),
                 )
@@ -320,6 +367,9 @@ class RuntimePlanner:
                 return RuntimeSelection(
                     locality="cloud",
                     engine=c.get("engine"),
+                    candidates=plan_dict_to_candidates(candidates),
+                    fallback_candidates=plan_dict_to_candidates(plan_dict.get("fallback_candidates", [])),
+                    fallback_allowed=plan_dict.get("fallback_allowed", True),
                     source=source,
                     reason=c.get("reason", ""),
                 )
@@ -329,6 +379,7 @@ class RuntimePlanner:
             locality="local",
             engine=None,
             source="fallback",
+            fallback_allowed=False,
             reason="cached plan had no viable candidates",
         )
 
@@ -348,6 +399,55 @@ def _canonical_engine_id(engine: str | None) -> str:
         return ""
     cleaned = engine.strip()
     return _ENGINE_ALIASES.get(cleaned.lower(), cleaned)
+
+
+def plan_dict_to_candidates(candidates: list[dict]) -> list[RuntimeCandidatePlan]:
+    """Rehydrate cached candidate dictionaries into typed candidate plans."""
+    parsed: list[RuntimeCandidatePlan] = []
+    for candidate in candidates:
+        artifact_data = candidate.get("artifact")
+        artifact = None
+        if isinstance(artifact_data, dict):
+            artifact = RuntimeArtifactPlan(
+                model_id=artifact_data.get("model_id", ""),
+                artifact_id=artifact_data.get("artifact_id"),
+                model_version=artifact_data.get("model_version"),
+                format=artifact_data.get("format"),
+                quantization=artifact_data.get("quantization"),
+                uri=artifact_data.get("uri"),
+                digest=artifact_data.get("digest"),
+                size_bytes=artifact_data.get("size_bytes"),
+                min_ram_bytes=artifact_data.get("min_ram_bytes"),
+            )
+
+        gates = []
+        for gate in candidate.get("gates", []):
+            if isinstance(gate, dict):
+                gates.append(
+                    CandidateGate(
+                        code=gate.get("code", ""),
+                        required=gate.get("required", True),
+                        threshold_number=gate.get("threshold_number"),
+                        threshold_string=gate.get("threshold_string"),
+                        window_seconds=gate.get("window_seconds"),
+                        source=gate.get("source", "server"),
+                    )
+                )
+
+        parsed.append(
+            RuntimeCandidatePlan(
+                locality=candidate.get("locality", "local"),
+                priority=candidate.get("priority", 0),
+                confidence=candidate.get("confidence", 0.0),
+                reason=candidate.get("reason", ""),
+                engine=candidate.get("engine"),
+                engine_version_constraint=candidate.get("engine_version_constraint"),
+                artifact=artifact,
+                benchmark_required=candidate.get("benchmark_required", False),
+                gates=gates,
+            )
+        )
+    return parsed
 
 
 def _benchmark_tokens() -> int:

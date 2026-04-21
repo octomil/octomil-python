@@ -79,6 +79,18 @@ from .streaming import (
 )
 from .telemetry import TelemetryReporter
 from .telemetry_client import TelemetryClient
+from .types import (  # noqa: F401
+    ArtifactCache,
+    FallbackInfo,
+    PlannerInfo,
+    RouteArtifact,
+    RouteExecution,
+    RouteMetadata,
+    RouteModel,
+    RouteModelRequested,
+    RouteModelResolved,
+    RouteReason,
+)
 
 # The inner SDK package has heavy optional deps (torch, cryptography, etc.)
 # that are not bundled in the standalone CLI binary (PyInstaller).
@@ -333,4 +345,14 @@ __all__ = [
     "RegistrationState",
     "TokenState",
     "MonitoringConfig",
+    "RouteMetadata",
+    "RouteExecution",
+    "RouteModel",
+    "RouteModelRequested",
+    "RouteModelResolved",
+    "RouteArtifact",
+    "ArtifactCache",
+    "PlannerInfo",
+    "FallbackInfo",
+    "RouteReason",
 ]

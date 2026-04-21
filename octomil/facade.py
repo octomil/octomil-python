@@ -158,6 +158,11 @@ class Octomil:
             return cls(auth=OrgApiKeyAuth(api_key=api_key, org_id=org_id, api_base=api_base), **kwargs)
         return cls(auth=OrgApiKeyAuth(api_key=api_key, org_id=org_id), **kwargs)
 
+    # TODO: Add hosted_from_env() once cloud dispatch is wired through
+    # ExecutionKernel. The facade delegates to OctomilResponses which resolves
+    # runtimes via ModelRuntimeRegistry (local only). Re-add once the facade
+    # uses ExecutionKernel or OctomilResponses gains a cloud dispatch path.
+
     async def initialize(self) -> None:
         """Validate auth and prepare the underlying client. Idempotent."""
         if self._initialized:
@@ -286,7 +291,7 @@ class LocalOctomil:
 
         if effective_model == "default":
             raise ValueError(
-                "No default chat model configured. " "Pass model= explicitly or set a default in .octomil.toml."
+                "No default chat model configured. Pass model= explicitly or set a default in .octomil.toml."
             )
 
         self._handle = mgr.ensure(model=effective_model, engine=self._engine)

@@ -8,7 +8,10 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import Any, Union
+from typing import TYPE_CHECKING, Any, Optional, Union
+
+if TYPE_CHECKING:
+    from octomil.execution.kernel import RouteMetadata
 
 import httpx
 
@@ -32,6 +35,7 @@ class EmbeddingResult:
     embeddings: list[list[float]]
     model: str
     usage: EmbeddingUsage
+    route: Optional["RouteMetadata"] = None
 
 
 def embed(
