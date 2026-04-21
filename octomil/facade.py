@@ -98,8 +98,28 @@ class Octomil:
         api_key: str | None = None,
         org_id: str | None = None,
         auth: AuthConfig | None = None,
+        planner_routing: bool | None = None,
         **kwargs: Any,
     ) -> None:
+        """Initialize the Octomil facade.
+
+        Parameters
+        ----------
+        publishable_key:
+            Client-side publishable key (oct_pub_test_... or oct_pub_live_...).
+        api_key:
+            Server-side API key. Requires ``org_id``.
+        org_id:
+            Organization ID (required with ``api_key``).
+        auth:
+            Pre-built AuthConfig object.
+        planner_routing:
+            Explicit override for planner routing behavior.
+            - ``None`` (default): ON when credentials exist, OFF otherwise.
+              Respects ``OCTOMIL_DISABLE_PLANNER=1`` env var.
+            - ``True``: force planner routing ON.
+            - ``False``: force planner routing OFF (direct/legacy only).
+        """
         self._initialized = False
         self._kwargs = kwargs
         self._client: Any = None
@@ -123,6 +143,13 @@ class Octomil:
             self._auth = OrgApiKeyAuth(api_key=api_key, org_id=org_id)
         else:
             raise ValueError("One of publishable_key=, api_key= + org_id=, or auth= must be provided.")
+
+        from .planner_defaults import resolve_planner_enabled
+
+        self._planner_enabled = resolve_planner_enabled(
+            explicit_override=planner_routing,
+            auth=self._auth,
+        )
 
     @classmethod
     def from_env(
@@ -163,6 +190,11 @@ class Octomil:
     # runtimes via ModelRuntimeRegistry (local only). Re-add once the facade
     # uses ExecutionKernel or OctomilResponses gains a cloud dispatch path.
 
+    @property
+    def planner_enabled(self) -> bool:
+        """Whether planner routing is active for this client."""
+        return self._planner_enabled
+
     async def initialize(self) -> None:
         """Validate auth and prepare the underlying client. Idempotent."""
         if self._initialized:
@@ -170,7 +202,11 @@ class Octomil:
 
         from .client import OctomilClient
 
-        self._client = OctomilClient(auth=self._auth, **self._kwargs)
+        self._client = OctomilClient(
+            auth=self._auth,
+            planner_enabled=self._planner_enabled,
+            **self._kwargs,
+        )
         self._responses_wrapper = FacadeResponses(self._client.responses)
         self._embeddings_wrapper = FacadeEmbeddings(self._client)
         self._initialized = True

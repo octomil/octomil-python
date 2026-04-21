@@ -77,6 +77,7 @@ class OctomilClient(ModelOpsMixin):
         self,
         auth: AuthConfig,
         device_id: str | None = None,
+        planner_enabled: bool = True,
     ) -> None:
         from .auth import PublishableKeyAuth
 
@@ -99,6 +100,7 @@ class OctomilClient(ModelOpsMixin):
 
         self._auth = auth
         self._device_id: str | None = device_id
+        self._planner_enabled = planner_enabled
         self._models: dict[str, "Model"] = {}
 
         def _token_provider() -> str:
@@ -152,6 +154,7 @@ class OctomilClient(ModelOpsMixin):
         cls,
         *,
         device_id: str | None = None,
+        planner_enabled: bool = True,
     ) -> OctomilClient:
         """Construct an OctomilClient from environment variables.
 
@@ -165,7 +168,7 @@ class OctomilClient(ModelOpsMixin):
         Raises:
             ValueError: If ``OCTOMIL_API_KEY`` is not set.
         """
-        return cls(auth=OrgApiKeyAuth.from_env(), device_id=device_id)
+        return cls(auth=OrgApiKeyAuth.from_env(), device_id=device_id, planner_enabled=planner_enabled)
 
     # ------------------------------------------------------------------
     # Device ID — stable identifier for this device
@@ -227,6 +230,7 @@ class OctomilClient(ModelOpsMixin):
                 routing_policies=self._routing_policies,
                 model_deployment_map=self._model_deployment_map,
                 default_routing_policy=self._default_routing_policy,
+                planner_enabled=self._planner_enabled,
             )
         return self._responses
 
