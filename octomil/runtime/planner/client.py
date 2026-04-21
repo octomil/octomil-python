@@ -9,6 +9,7 @@ from typing import Any
 
 from .schemas import (
     AppResolution,
+    CandidateGate,
     DeviceRuntimeProfile,
     RuntimeArtifactPlan,
     RuntimeCandidatePlan,
@@ -38,6 +39,20 @@ def _parse_candidate(data: dict[str, Any]) -> RuntimeCandidatePlan:
             size_bytes=artifact_data.get("size_bytes"),
             min_ram_bytes=artifact_data.get("min_ram_bytes"),
         )
+    gates = []
+    for gate_data in data.get("gates", []):
+        if isinstance(gate_data, dict):
+            gates.append(
+                CandidateGate(
+                    code=gate_data.get("code", ""),
+                    required=gate_data.get("required", True),
+                    threshold_number=gate_data.get("threshold_number"),
+                    threshold_string=gate_data.get("threshold_string"),
+                    window_seconds=gate_data.get("window_seconds"),
+                    source=gate_data.get("source", "server"),
+                )
+            )
+
     return RuntimeCandidatePlan(
         locality=data.get("locality", "local"),
         priority=data.get("priority", 0),
@@ -47,6 +62,7 @@ def _parse_candidate(data: dict[str, Any]) -> RuntimeCandidatePlan:
         engine_version_constraint=data.get("engine_version_constraint"),
         artifact=artifact,
         benchmark_required=data.get("benchmark_required", False),
+        gates=gates,
     )
 
 
@@ -99,6 +115,7 @@ def _parse_plan_response(data: dict[str, Any]) -> RuntimePlanResponse:
         policy=data.get("policy", ""),
         candidates=candidates,
         fallback_candidates=fallback,
+        fallback_allowed=data.get("fallback_allowed", True),
         plan_ttl_seconds=data.get("plan_ttl_seconds", 604800),
         server_generated_at=data.get("server_generated_at", ""),
         app_resolution=app_resolution,

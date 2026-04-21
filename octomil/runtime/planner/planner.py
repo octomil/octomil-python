@@ -11,7 +11,10 @@ from .app_ref import is_app_ref, parse_app_ref
 from .client import RuntimePlannerClient
 from .device_profile import collect_device_runtime_profile
 from .schemas import (
+    CandidateGate,
     DeviceRuntimeProfile,
+    RuntimeArtifactPlan,
+    RuntimeCandidatePlan,
     RuntimePlanResponse,
     RuntimeSelection,
 )
@@ -189,7 +192,9 @@ class RuntimePlanner:
                     artifact=candidate.artifact,
                     benchmark_ran=False,
                     source="server_plan",
+                    candidates=[*plan.candidates, *plan.fallback_candidates],
                     fallback_candidates=plan.fallback_candidates,
+                    fallback_allowed=plan.fallback_allowed,
                     reason=candidate.reason,
                 )
             elif candidate.locality == "cloud":
@@ -199,7 +204,9 @@ class RuntimePlanner:
                     artifact=candidate.artifact,
                     benchmark_ran=False,
                     source="server_plan",
+                    candidates=[*plan.candidates, *plan.fallback_candidates],
                     fallback_candidates=plan.fallback_candidates,
+                    fallback_allowed=plan.fallback_allowed,
                     reason=candidate.reason,
                 )
 
@@ -213,7 +220,9 @@ class RuntimePlanner:
                     artifact=candidate.artifact,
                     benchmark_ran=False,
                     source="server_plan",
+                    candidates=[*plan.candidates, *plan.fallback_candidates],
                     fallback_candidates=[],
+                    fallback_allowed=plan.fallback_allowed,
                     reason=f"fallback: {candidate.reason}",
                 )
 
@@ -235,6 +244,7 @@ class RuntimePlanner:
                 locality="cloud",
                 engine=None,
                 source="fallback",
+                fallback_allowed=False,
                 reason="cloud_only policy — no local engines attempted",
             )
 
@@ -247,6 +257,7 @@ class RuntimePlanner:
                 engine=cached_bm.get("engine"),
                 benchmark_ran=False,
                 source="cache",
+                fallback_allowed=routing_policy not in ("local_only", "private"),
                 reason=f"cached benchmark: {cached_bm.get('tokens_per_second', 0):.1f} tok/s",
             )
 
@@ -303,6 +314,7 @@ class RuntimePlanner:
                     engine=engine.name,
                     benchmark_ran=True,
                     source="local_benchmark",
+                    fallback_allowed=routing_policy not in ("local_only", "private"),
                     reason=f"local benchmark selected {engine.name}",
                 )
         except Exception:
@@ -314,6 +326,7 @@ class RuntimePlanner:
                 locality="local",
                 engine=None,
                 source="fallback",
+                fallback_allowed=False,
                 reason="no local engine available",
             )
 
@@ -321,6 +334,7 @@ class RuntimePlanner:
             locality="cloud",
             engine=None,
             source="fallback",
+            fallback_allowed=True,
             reason="no local engine available — falling back to cloud",
         )
 
@@ -343,6 +357,9 @@ class RuntimePlanner:
                 return RuntimeSelection(
                     locality="local",
                     engine=engine or None,
+                    candidates=plan_dict_to_candidates(candidates),
+                    fallback_candidates=plan_dict_to_candidates(plan_dict.get("fallback_candidates", [])),
+                    fallback_allowed=plan_dict.get("fallback_allowed", True),
                     source=source,
                     reason=c.get("reason", ""),
                 )
@@ -350,6 +367,9 @@ class RuntimePlanner:
                 return RuntimeSelection(
                     locality="cloud",
                     engine=c.get("engine"),
+                    candidates=plan_dict_to_candidates(candidates),
+                    fallback_candidates=plan_dict_to_candidates(plan_dict.get("fallback_candidates", [])),
+                    fallback_allowed=plan_dict.get("fallback_allowed", True),
                     source=source,
                     reason=c.get("reason", ""),
                 )
@@ -359,6 +379,7 @@ class RuntimePlanner:
             locality="local",
             engine=None,
             source="fallback",
+            fallback_allowed=False,
             reason="cached plan had no viable candidates",
         )
 
@@ -378,6 +399,55 @@ def _canonical_engine_id(engine: str | None) -> str:
         return ""
     cleaned = engine.strip()
     return _ENGINE_ALIASES.get(cleaned.lower(), cleaned)
+
+
+def plan_dict_to_candidates(candidates: list[dict]) -> list[RuntimeCandidatePlan]:
+    """Rehydrate cached candidate dictionaries into typed candidate plans."""
+    parsed: list[RuntimeCandidatePlan] = []
+    for candidate in candidates:
+        artifact_data = candidate.get("artifact")
+        artifact = None
+        if isinstance(artifact_data, dict):
+            artifact = RuntimeArtifactPlan(
+                model_id=artifact_data.get("model_id", ""),
+                artifact_id=artifact_data.get("artifact_id"),
+                model_version=artifact_data.get("model_version"),
+                format=artifact_data.get("format"),
+                quantization=artifact_data.get("quantization"),
+                uri=artifact_data.get("uri"),
+                digest=artifact_data.get("digest"),
+                size_bytes=artifact_data.get("size_bytes"),
+                min_ram_bytes=artifact_data.get("min_ram_bytes"),
+            )
+
+        gates = []
+        for gate in candidate.get("gates", []):
+            if isinstance(gate, dict):
+                gates.append(
+                    CandidateGate(
+                        code=gate.get("code", ""),
+                        required=gate.get("required", True),
+                        threshold_number=gate.get("threshold_number"),
+                        threshold_string=gate.get("threshold_string"),
+                        window_seconds=gate.get("window_seconds"),
+                        source=gate.get("source", "server"),
+                    )
+                )
+
+        parsed.append(
+            RuntimeCandidatePlan(
+                locality=candidate.get("locality", "local"),
+                priority=candidate.get("priority", 0),
+                confidence=candidate.get("confidence", 0.0),
+                reason=candidate.get("reason", ""),
+                engine=candidate.get("engine"),
+                engine_version_constraint=candidate.get("engine_version_constraint"),
+                artifact=artifact,
+                benchmark_required=candidate.get("benchmark_required", False),
+                gates=gates,
+            )
+        )
+    return parsed
 
 
 def _benchmark_tokens() -> int:

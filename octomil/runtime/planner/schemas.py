@@ -49,6 +49,18 @@ class RuntimeArtifactPlan:
 
 
 @dataclass
+class CandidateGate:
+    """A planner gate the SDK must evaluate before using a candidate."""
+
+    code: str
+    required: bool
+    threshold_number: float | None = None
+    threshold_string: str | None = None
+    window_seconds: int | None = None
+    source: Literal["server", "sdk", "runtime"] = "server"
+
+
+@dataclass
 class RuntimeCandidatePlan:
     """A single candidate in a runtime plan (local or cloud)."""
 
@@ -60,6 +72,7 @@ class RuntimeCandidatePlan:
     engine_version_constraint: str | None = None
     artifact: RuntimeArtifactPlan | None = None
     benchmark_required: bool = False
+    gates: list[CandidateGate] = field(default_factory=list)
 
 
 @dataclass
@@ -88,6 +101,7 @@ class RuntimePlanResponse:
     policy: str
     candidates: list[RuntimeCandidatePlan]
     fallback_candidates: list[RuntimeCandidatePlan] = field(default_factory=list)
+    fallback_allowed: bool = True
     plan_ttl_seconds: int = 604800
     server_generated_at: str = ""
     app_resolution: AppResolution | None = None
@@ -102,6 +116,8 @@ class RuntimeSelection:
     artifact: RuntimeArtifactPlan | None = None
     benchmark_ran: bool = False
     source: str = ""  # "cache", "server_plan", "local_benchmark", "fallback"
+    candidates: list[RuntimeCandidatePlan] = field(default_factory=list)
     fallback_candidates: list[RuntimeCandidatePlan] = field(default_factory=list)
+    fallback_allowed: bool = True
     reason: str = ""
     app_resolution: AppResolution | None = None

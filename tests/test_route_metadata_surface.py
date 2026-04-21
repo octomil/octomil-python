@@ -265,7 +265,16 @@ class TestRouteMetadataContract:
     """RouteMetadata shape matches the octomil-contracts spec."""
 
     def test_all_expected_fields(self):
-        expected = {"status", "execution", "model", "artifact", "planner", "fallback", "reason"}
+        expected = {
+            "status",
+            "execution",
+            "model",
+            "artifact",
+            "planner",
+            "fallback",
+            "attempts",
+            "reason",
+        }
         actual = {f.name for f in dataclasses.fields(RouteMetadata)}
         assert expected == actual
 
@@ -305,7 +314,7 @@ class TestRouteMetadataContract:
         assert expected == actual
 
     def test_fallback_info_fields(self):
-        expected = {"used"}
+        expected = {"used", "from_attempt", "to_attempt", "trigger"}
         actual = {f.name for f in dataclasses.fields(FallbackInfo)}
         assert expected == actual
 
@@ -417,7 +426,7 @@ class TestOctomilResponsesRoutePopulation:
         from octomil.responses.types import ResponseRequest, text_input
 
         runtime = _StubRuntime()
-        responses = OctomilResponses(runtime_resolver=lambda _: runtime)
+        responses = OctomilResponses(runtime_resolver=lambda _: runtime, planner_enabled=False)
         request = ResponseRequest(model="test-model", input=[text_input("Hi")])
         response = asyncio.run(responses.create(request))
 
@@ -430,7 +439,7 @@ class TestOctomilResponsesRoutePopulation:
         from octomil.responses.types import ResponseRequest, text_input
 
         runtime = _StubRuntime()
-        responses = OctomilResponses(runtime_resolver=lambda _: runtime)
+        responses = OctomilResponses(runtime_resolver=lambda _: runtime, planner_enabled=False)
         request = ResponseRequest(model="gemma3-1b", input=[text_input("Hello")])
         response = asyncio.run(responses.create(request))
 
@@ -446,7 +455,7 @@ class TestOctomilResponsesRoutePopulation:
         from octomil.responses.types import ResponseRequest, text_input
 
         runtime = _StubRuntime()
-        responses = OctomilResponses(runtime_resolver=lambda _: runtime)
+        responses = OctomilResponses(runtime_resolver=lambda _: runtime, planner_enabled=False)
         request = ResponseRequest(model="phi-4-mini", input=[text_input("Test")])
         response = asyncio.run(responses.create(request))
 
@@ -462,7 +471,7 @@ class TestOctomilResponsesRoutePopulation:
         from octomil.responses.types import ResponseRequest, text_input
 
         runtime = _StubRuntime()
-        responses = OctomilResponses(runtime_resolver=lambda _: runtime)
+        responses = OctomilResponses(runtime_resolver=lambda _: runtime, planner_enabled=False)
         request = ResponseRequest(model="test-model", input=[text_input("Hi")])
         response = asyncio.run(responses.create(request))
 
@@ -475,7 +484,7 @@ class TestOctomilResponsesRoutePopulation:
         from octomil.responses.types import ResponseRequest, text_input
 
         runtime = _StubRuntime()
-        responses = OctomilResponses(runtime_resolver=lambda _: runtime)
+        responses = OctomilResponses(runtime_resolver=lambda _: runtime, planner_enabled=False)
         request = ResponseRequest(model="test-model", input=[text_input("Hi")])
         response = asyncio.run(responses.create(request))
 
@@ -488,7 +497,7 @@ class TestOctomilResponsesRoutePopulation:
         from octomil.responses.types import ResponseRequest, text_input
 
         runtime = _StubRuntime()
-        responses = OctomilResponses(runtime_resolver=lambda _: runtime)
+        responses = OctomilResponses(runtime_resolver=lambda _: runtime, planner_enabled=False)
         request = ResponseRequest(model="test-model", input=[text_input("Hi")])
         response = asyncio.run(responses.create(request))
 
@@ -501,7 +510,7 @@ class TestOctomilResponsesRoutePopulation:
         from octomil.responses.types import DoneEvent, ResponseRequest, text_input
 
         runtime = _StubRuntime()
-        responses = OctomilResponses(runtime_resolver=lambda _: runtime)
+        responses = OctomilResponses(runtime_resolver=lambda _: runtime, planner_enabled=False)
         request = ResponseRequest(model="test-model", input=[text_input("Hi")])
 
         async def _collect():
