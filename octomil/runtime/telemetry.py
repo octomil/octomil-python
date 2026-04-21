@@ -33,6 +33,10 @@ FORBIDDEN_TELEMETRY_KEYS = frozenset(
         "messages",
         "system_prompt",
         "documents",
+        "image",
+        "image_url",
+        "embedding",
+        "embeddings",
     }
 )
 
@@ -117,13 +121,18 @@ class RouteEventPayload:
     variant_id: str | None = None
     policy: str | None = None
     planner_source: str | None = None  # "server" | "cache" | "offline"
+    model_ref: str | None = None
+    model_ref_kind: str | None = None
     candidate_attempts: int = 0
     fallback_used: bool = False
     fallback_trigger_code: str | None = None
     fallback_trigger_stage: str | None = None
+    selected_locality: str | None = None
     final_locality: str | None = None  # "local" | "cloud"
+    final_mode: str | None = None
     engine: str | None = None
     artifact_id: str | None = None
+    cache_status: str | None = None
     # Safe benchmark metrics (no prompt/output data)
     ttft_ms: float | None = None
     tokens_per_second: float | None = None
@@ -191,6 +200,10 @@ def build_route_event(
     variant_id: str | None = None,
     policy: str | None = None,
     planner_source: str | None = None,
+    model_ref: str | None = None,
+    model_ref_kind: str | None = None,
+    final_mode: str | None = None,
+    cache_status: str | None = None,
 ) -> RouteEventPayload:
     """Build a RouteEventPayload from an AttemptLoopResult and context.
 
@@ -242,13 +255,18 @@ def build_route_event(
         variant_id=variant_id,
         policy=policy,
         planner_source=planner_source,
+        model_ref=model_ref,
+        model_ref_kind=model_ref_kind,
         candidate_attempts=attempt_result.candidate_count,
         fallback_used=attempt_result.fallback_used,
         fallback_trigger_code=attempt_result.fallback_trigger_code,
         fallback_trigger_stage=attempt_result.fallback_trigger_stage,
+        selected_locality=attempt_result.final_locality,
         final_locality=attempt_result.final_locality,
+        final_mode=final_mode,
         engine=attempt_result.final_engine,
         artifact_id=attempt_result.final_artifact_id,
+        cache_status=cache_status,
         ttft_ms=attempt_result.ttft_ms,
         tokens_per_second=attempt_result.tokens_per_second,
         total_tokens=attempt_result.total_tokens,

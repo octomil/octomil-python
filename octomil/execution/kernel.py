@@ -455,21 +455,14 @@ def _route_metadata_from_selection(
     status: str = "selected",
 ) -> RouteMetadata:
     """Build RouteMetadata from a planner RuntimeSelection."""
-    from octomil.runtime.planner.app_ref import is_app_ref, parse_app_ref
+    from octomil.runtime.routing.model_ref import parse_model_ref
 
     public_locality = _locality_to_public(locality)
 
     # Determine model.requested.kind and capability from model_name
-    model_kind = "unknown"
-    req_capability = capability or None
-    if model_name:
-        if is_app_ref(model_name):
-            model_kind = "app"
-            _, parsed_cap = parse_app_ref(model_name)
-            if parsed_cap:
-                req_capability = parsed_cap
-        else:
-            model_kind = "model"
+    parsed_ref = parse_model_ref(model_name)
+    model_kind = parsed_ref.kind
+    req_capability = parsed_ref.capability or capability or None
 
     fallback_info = FallbackInfo(used=fallback_used)
     attempts: list[dict[str, Any]] = []

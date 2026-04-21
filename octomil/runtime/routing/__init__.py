@@ -14,6 +14,11 @@ from octomil.runtime.routing.attempt_runner import (
     RouteAttempt,
     RuntimeChecker,
 )
+from octomil.runtime.routing.model_ref import (
+    CANONICAL_MODEL_REF_KINDS,
+    ParsedModelRef,
+    parse_model_ref,
+)
 from octomil.runtime.routing.route_event import (
     FORBIDDEN_TELEMETRY_KEYS,
     CandidateAttemptSummary,
@@ -32,6 +37,7 @@ __all__ = [
     "CandidateAttemptRunner",
     "FallbackTrigger",
     "FORBIDDEN_TELEMETRY_KEYS",
+    "CANONICAL_MODEL_REF_KINDS",
     "GateEvaluator",
     "GateResult",
     "GateStatus",
@@ -39,7 +45,9 @@ __all__ = [
     "RouteAttempt",
     "RouteEvent",
     "RuntimeChecker",
+    "ParsedModelRef",
     "build_route_event",
     "emit_route_event",
+    "parse_model_ref",
     "strip_forbidden_keys",
 ]

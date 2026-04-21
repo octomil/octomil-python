@@ -107,7 +107,11 @@
     "content",
     "messages",
     "system_prompt",
-    "documents"
+    "documents",
+    "image",
+    "image_url",
+    "embedding",
+    "embeddings"
   ],
   "expected_policy_result": {
     "cloud_allowed": true,
