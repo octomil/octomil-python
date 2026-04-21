@@ -8,6 +8,7 @@ from dataclasses import asdict
 from typing import Any
 
 from .schemas import (
+    AppResolution,
     DeviceRuntimeProfile,
     RuntimeArtifactPlan,
     RuntimeCandidatePlan,
@@ -18,6 +19,7 @@ logger = logging.getLogger(__name__)
 
 _DEFAULT_PLAN_PATH = "/api/v2/runtime/plan"
 _DEFAULT_BENCHMARK_PATH = "/api/v2/runtime/benchmarks"
+_DEFAULT_DEFAULTS_PATH = "/api/v2/runtime/defaults"
 
 
 def _parse_candidate(data: dict[str, Any]) -> RuntimeCandidatePlan:
@@ -48,10 +50,49 @@ def _parse_candidate(data: dict[str, Any]) -> RuntimeCandidatePlan:
     )
 
 
+def _parse_app_resolution(data: dict[str, Any]) -> AppResolution:
+    """Parse an app_resolution dict from the server response."""
+    artifact_candidates = []
+    for ac in data.get("artifact_candidates", []):
+        if isinstance(ac, dict):
+            artifact_candidates.append(
+                RuntimeArtifactPlan(
+                    model_id=ac.get("model_id", ""),
+                    artifact_id=ac.get("artifact_id"),
+                    model_version=ac.get("model_version"),
+                    format=ac.get("format"),
+                    quantization=ac.get("quantization"),
+                    uri=ac.get("uri"),
+                    digest=ac.get("digest"),
+                    size_bytes=ac.get("size_bytes"),
+                    min_ram_bytes=ac.get("min_ram_bytes"),
+                )
+            )
+    return AppResolution(
+        app_id=data.get("app_id", ""),
+        capability=data.get("capability", ""),
+        routing_policy=data.get("routing_policy", ""),
+        selected_model=data.get("selected_model", ""),
+        app_slug=data.get("app_slug"),
+        selected_model_variant_id=data.get("selected_model_variant_id"),
+        selected_model_version=data.get("selected_model_version"),
+        artifact_candidates=artifact_candidates,
+        preferred_engines=data.get("preferred_engines", []),
+        fallback_policy=data.get("fallback_policy"),
+        plan_ttl_seconds=data.get("plan_ttl_seconds", 604800),
+    )
+
+
 def _parse_plan_response(data: dict[str, Any]) -> RuntimePlanResponse:
     """Parse a full plan response dict into a RuntimePlanResponse."""
     candidates = [_parse_candidate(c) for c in data.get("candidates", [])]
     fallback = [_parse_candidate(c) for c in data.get("fallback_candidates", [])]
+
+    app_resolution: AppResolution | None = None
+    ar_data = data.get("app_resolution")
+    if ar_data and isinstance(ar_data, dict):
+        app_resolution = _parse_app_resolution(ar_data)
+
     return RuntimePlanResponse(
         model=data.get("model", ""),
         capability=data.get("capability", ""),
@@ -60,6 +101,7 @@ def _parse_plan_response(data: dict[str, Any]) -> RuntimePlanResponse:
         fallback_candidates=fallback,
         plan_ttl_seconds=data.get("plan_ttl_seconds", 604800),
         server_generated_at=data.get("server_generated_at", ""),
+        app_resolution=app_resolution,
     )
 
 
@@ -96,6 +138,7 @@ class RuntimePlannerClient:
         routing_policy: str | None = None,
         device: DeviceRuntimeProfile,
         allow_cloud_fallback: bool | None = None,
+        app_slug: str | None = None,
     ) -> RuntimePlanResponse | None:
         """Fetch runtime plan from server. Returns None on any failure."""
         try:
@@ -113,6 +156,8 @@ class RuntimePlannerClient:
             payload["routing_policy"] = routing_policy
         if allow_cloud_fallback is not None:
             payload["allow_cloud_fallback"] = allow_cloud_fallback
+        if app_slug is not None:
+            payload["app_slug"] = app_slug
 
         url = f"{self._base_url}{_DEFAULT_PLAN_PATH}"
         try:
@@ -123,6 +168,24 @@ class RuntimePlannerClient:
                 return _parse_plan_response(data)
         except (httpx.HTTPError, json.JSONDecodeError, KeyError, TypeError) as exc:
             logger.debug("Failed to fetch runtime plan from %s: %s", url, exc)
+            return None
+
+    def fetch_defaults(self) -> dict[str, Any] | None:
+        """Fetch server runtime defaults. Returns None on any failure."""
+        try:
+            import httpx
+        except ImportError:
+            logger.debug("httpx not available — cannot fetch defaults")
+            return None
+
+        url = f"{self._base_url}{_DEFAULT_DEFAULTS_PATH}"
+        try:
+            with httpx.Client(timeout=10.0) as client:
+                resp = client.get(url, headers=self._headers())
+                resp.raise_for_status()
+                return resp.json()
+        except (httpx.HTTPError, json.JSONDecodeError, KeyError, TypeError) as exc:
+            logger.debug("Failed to fetch runtime defaults from %s: %s", url, exc)
             return None
 
     def upload_benchmark(self, payload: dict[str, Any]) -> bool:

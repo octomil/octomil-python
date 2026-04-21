@@ -12,6 +12,10 @@ import uuid
 from typing import TYPE_CHECKING, AsyncIterator, Callable, Optional, Union
 
 from octomil._generated.message_role import MessageRole
+from octomil.execution.kernel import (
+    RouteMetadata,
+    _route_metadata_from_selection,
+)
 from octomil.model_ref import ModelRef, _ModelRefCapability, _ModelRefId
 from octomil.runtime.core.adapter import InferenceBackendAdapter
 from octomil.runtime.core.cloud_runtime import CloudModelRuntime
@@ -154,13 +158,21 @@ class OctomilResponses:
             except Exception:
                 pass
 
+        route = _route_metadata_from_selection(
+            None,
+            locality,
+            is_fallback,
+            model_name=model_id,
+            capability="chat",
+        )
+
         effective_request = self._apply_previous_response(request)
         runtime_request = self._build_runtime_request(effective_request)
         if isinstance(runtime, RouterModelRuntime) and routing_policy is not None:
             runtime_response = await runtime.run(runtime_request, policy=routing_policy)
         else:
             runtime_response = await runtime.run(runtime_request)
-        response = self._build_response(request.model, runtime_response, locality=locality)
+        response = self._build_response(request.model, runtime_response, locality=locality, route=route)
         self._response_cache[response.id] = response
         return response
 
@@ -178,6 +190,14 @@ class OctomilResponses:
                 )
             except Exception:
                 pass
+
+        route = _route_metadata_from_selection(
+            None,
+            locality,
+            is_fallback,
+            model_name=model_id,
+            capability="chat",
+        )
 
         runtime_request = self._build_runtime_request(request)
         response_id = _generate_id()
@@ -249,6 +269,7 @@ class OctomilResponses:
                 finish_reason=finish_reason,
                 usage=usage,
                 locality=locality,
+                route=route,
             )
         )
 
@@ -372,6 +393,7 @@ class OctomilResponses:
         model: str,
         runtime_response: _RuntimeResponse,
         locality: Optional[str] = None,
+        route: Optional[RouteMetadata] = None,
     ) -> Response:
         output: list[OutputItem] = []
 
@@ -409,6 +431,7 @@ class OctomilResponses:
             finish_reason=finish_reason,
             usage=usage,
             locality=locality,
+            route=route,
         )
 
 

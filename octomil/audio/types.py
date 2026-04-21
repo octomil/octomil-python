@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
+
+if TYPE_CHECKING:
+    from octomil.execution.kernel import RouteMetadata
 
 
 @dataclass
@@ -12,6 +15,7 @@ class TranscriptionResult:
 
     text: str
     language: Optional[str] = None
+    route: Optional["RouteMetadata"] = None
 
 
 @dataclass
