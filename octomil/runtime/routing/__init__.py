@@ -1,4 +1,4 @@
-"""Routing layer — candidate attempt runner and supporting types."""
+"""Routing layer: candidate attempt runner and route event telemetry."""
 
 from octomil.runtime.routing.attempt_runner import (
     ArtifactChecker,
@@ -14,6 +14,14 @@ from octomil.runtime.routing.attempt_runner import (
     RouteAttempt,
     RuntimeChecker,
 )
+from octomil.runtime.routing.route_event import (
+    FORBIDDEN_TELEMETRY_KEYS,
+    CandidateAttemptSummary,
+    RouteEvent,
+    build_route_event,
+    emit_route_event,
+    strip_forbidden_keys,
+)
 
 __all__ = [
     "ArtifactChecker",
@@ -23,9 +31,15 @@ __all__ = [
     "AttemptStatus",
     "CandidateAttemptRunner",
     "FallbackTrigger",
+    "FORBIDDEN_TELEMETRY_KEYS",
     "GateEvaluator",
     "GateResult",
     "GateStatus",
+    "CandidateAttemptSummary",
     "RouteAttempt",
+    "RouteEvent",
     "RuntimeChecker",
+    "build_route_event",
+    "emit_route_event",
+    "strip_forbidden_keys",
 ]
