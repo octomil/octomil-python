@@ -11,6 +11,7 @@ from .schemas import (
     AppResolution,
     CandidateGate,
     DeviceRuntimeProfile,
+    ModelResolution,
     RuntimeArtifactPlan,
     RuntimeCandidatePlan,
     RuntimePlanResponse,
@@ -99,6 +100,22 @@ def _parse_app_resolution(data: dict[str, Any]) -> AppResolution:
     )
 
 
+def _parse_model_resolution(data: dict[str, Any]) -> ModelResolution:
+    """Parse a resolution dict from the server response."""
+    return ModelResolution(
+        ref_kind=data.get("ref_kind", ""),
+        original_ref=data.get("original_ref", ""),
+        resolved_model=data.get("resolved_model", ""),
+        deployment_id=data.get("deployment_id"),
+        deployment_key=data.get("deployment_key"),
+        experiment_id=data.get("experiment_id"),
+        variant_id=data.get("variant_id"),
+        variant_name=data.get("variant_name"),
+        capability=data.get("capability"),
+        routing_policy=data.get("routing_policy"),
+    )
+
+
 def _parse_plan_response(data: dict[str, Any]) -> RuntimePlanResponse:
     """Parse a full plan response dict into a RuntimePlanResponse."""
     candidates = [_parse_candidate(c) for c in data.get("candidates", [])]
@@ -108,6 +125,11 @@ def _parse_plan_response(data: dict[str, Any]) -> RuntimePlanResponse:
     ar_data = data.get("app_resolution")
     if ar_data and isinstance(ar_data, dict):
         app_resolution = _parse_app_resolution(ar_data)
+
+    resolution: ModelResolution | None = None
+    res_data = data.get("resolution")
+    if res_data and isinstance(res_data, dict):
+        resolution = _parse_model_resolution(res_data)
 
     return RuntimePlanResponse(
         model=data.get("model", ""),
@@ -119,6 +141,7 @@ def _parse_plan_response(data: dict[str, Any]) -> RuntimePlanResponse:
         plan_ttl_seconds=data.get("plan_ttl_seconds", 604800),
         server_generated_at=data.get("server_generated_at", ""),
         app_resolution=app_resolution,
+        resolution=resolution,
     )
 
 

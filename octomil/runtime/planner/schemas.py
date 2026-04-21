@@ -93,6 +93,28 @@ class AppResolution:
 
 
 @dataclass
+class ModelResolution:
+    """Generalized resolution metadata for non-app model ref types.
+
+    Returned by the server when the model ref resolves through a deployment,
+    experiment, capability default, or plain model lookup. Carries the
+    deployment_id, experiment_id, and variant_id needed for SDK route
+    telemetry correlation.
+    """
+
+    ref_kind: str
+    original_ref: str
+    resolved_model: str
+    deployment_id: str | None = None
+    deployment_key: str | None = None
+    experiment_id: str | None = None
+    variant_id: str | None = None
+    variant_name: str | None = None
+    capability: str | None = None
+    routing_policy: str | None = None
+
+
+@dataclass
 class RuntimePlanResponse:
     """Full plan response from the server planner API."""
 
@@ -105,6 +127,7 @@ class RuntimePlanResponse:
     plan_ttl_seconds: int = 604800
     server_generated_at: str = ""
     app_resolution: AppResolution | None = None
+    resolution: ModelResolution | None = None
 
 
 @dataclass
