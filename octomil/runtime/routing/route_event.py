@@ -119,13 +119,14 @@ class RouteEvent:
     planner_source: Optional[str] = None  # "config" | "server" | "default"
 
     # Outcome
-    selected_locality: str = ""  # "on_device" | "cloud"
+    final_locality: str = ""  # "local" | "cloud"
     fallback_used: bool = False
     fallback_trigger_code: Optional[str] = None
     fallback_trigger_stage: Optional[str] = None
 
     # Candidate attempts
-    candidate_attempts: list[CandidateAttemptSummary] = field(default_factory=list)
+    candidate_attempts: int = 0
+    attempt_details: list[CandidateAttemptSummary] = field(default_factory=list)
 
     # Performance (final successful candidate)
     engine: Optional[str] = None
@@ -141,10 +142,6 @@ class RouteEvent:
         Applies privacy stripping as a safety net.
         """
         raw = asdict(self)
-        # Rename selected_locality to final_locality for server compatibility
-        raw["final_locality"] = raw.pop("selected_locality", "")
-        # Flatten candidate_attempts count
-        raw["candidate_attempts_count"] = len(raw.get("candidate_attempts", []))
         # Ensure no forbidden keys leaked in
         clean, stripped = strip_forbidden_keys(raw)
         if stripped:
@@ -171,7 +168,8 @@ def build_route_event(
     capability: Optional[str] = None,
     policy: Optional[str] = None,
     planner_source: Optional[str] = None,
-    selected_locality: str = "",
+    final_locality: str = "",
+    selected_locality: Optional[str] = None,
     fallback_used: bool = False,
     fallback_trigger_code: Optional[str] = None,
     fallback_trigger_stage: Optional[str] = None,
@@ -184,6 +182,7 @@ def build_route_event(
     duration_ms: Optional[float] = None,
 ) -> RouteEvent:
     """Construct a RouteEvent with a fresh route_id."""
+    attempt_details = candidate_attempts or []
     return RouteEvent(
         route_id=f"route_{uuid.uuid4().hex[:16]}",
         request_id=request_id or f"req_{uuid.uuid4().hex[:12]}",
@@ -195,11 +194,12 @@ def build_route_event(
         capability=capability,
         policy=policy,
         planner_source=planner_source,
-        selected_locality=selected_locality,
+        final_locality=final_locality or selected_locality or "",
         fallback_used=fallback_used,
         fallback_trigger_code=fallback_trigger_code,
         fallback_trigger_stage=fallback_trigger_stage,
-        candidate_attempts=candidate_attempts or [],
+        candidate_attempts=len(attempt_details),
+        attempt_details=attempt_details,
         engine=engine,
         artifact_id=artifact_id,
         ttft_ms=ttft_ms,
@@ -236,14 +236,14 @@ def emit_route_event(
         payload = event.to_dict()
         # Use the reporter's internal _enqueue to send as a structured event
         reporter._enqueue(
-            name="route.decision_completed",
+            name="route.decision",
             attributes=_flatten_for_telemetry(payload),
         )
         logger.debug(
             "Route event emitted: route_id=%s request_id=%s locality=%s fallback=%s",
             event.route_id,
             event.request_id,
-            event.selected_locality,
+            event.final_locality,
             event.fallback_used,
         )
     except Exception:
@@ -253,16 +253,15 @@ def emit_route_event(
 def _flatten_for_telemetry(payload: dict[str, Any]) -> dict[str, Any]:
     """Flatten nested structures for OTLP attribute format.
 
-    Candidate attempts are serialized as a JSON-encoded list summary
-    rather than individual nested attributes.
+    Attempt details are serialized as a JSON-encoded list summary rather
+    than nested OTLP attributes.
     """
     import json
 
     flat: dict[str, Any] = {}
     for key, value in payload.items():
-        if key == "candidate_attempts" and isinstance(value, list):
-            # Summarize attempts as compact JSON array
-            flat["route.candidate_attempts"] = json.dumps(value)
+        if key == "attempt_details" and isinstance(value, list):
+            flat["route.attempt_details"] = json.dumps(value)
         elif value is None:
             continue
         elif isinstance(value, (str, int, float, bool)):
