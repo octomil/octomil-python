@@ -449,7 +449,21 @@ def _route_metadata_from_selection(
     capability: str = "",
 ) -> RouteMetadata:
     """Build RouteMetadata from a planner RuntimeSelection."""
+    from octomil.runtime.planner.app_ref import is_app_ref, parse_app_ref
+
     public_locality = _locality_to_public(locality)
+
+    # Determine model.requested.kind and capability from model_name
+    model_kind = "unknown"
+    req_capability = capability or None
+    if model_name:
+        if is_app_ref(model_name):
+            model_kind = "app"
+            _, parsed_cap = parse_app_ref(model_name)
+            if parsed_cap:
+                req_capability = parsed_cap
+        else:
+            model_kind = "model"
 
     if selection is None:
         return RouteMetadata(
@@ -460,8 +474,8 @@ def _route_metadata_from_selection(
             model=RouteModel(
                 requested=RouteModelRequested(
                     ref=model_name,
-                    kind="model" if model_name else "unknown",
-                    capability=capability or None,
+                    kind=model_kind,
+                    capability=req_capability,
                 ),
             ),
             planner=PlannerInfo(source="offline"),
@@ -476,6 +490,16 @@ def _route_metadata_from_selection(
         "local_benchmark": "offline",
         "fallback": "offline",
     }
+
+    # Build resolved model info from app_resolution when available
+    resolved: Optional[RouteModelResolved] = None
+    app_resolution = getattr(selection, "app_resolution", None)
+    if app_resolution is not None:
+        resolved = RouteModelResolved(
+            slug=app_resolution.selected_model,
+            variant_id=app_resolution.selected_model_variant_id,
+            version_id=app_resolution.selected_model_version,
+        )
 
     # Build artifact info with cache status from ArtifactCache
     route_artifact: Optional[RouteArtifact] = None
@@ -514,9 +538,10 @@ def _route_metadata_from_selection(
         model=RouteModel(
             requested=RouteModelRequested(
                 ref=model_name,
-                kind="model" if model_name else "unknown",
-                capability=capability or None,
+                kind=model_kind,
+                capability=req_capability,
             ),
+            resolved=resolved,
         ),
         artifact=route_artifact,
         planner=PlannerInfo(source=source_map.get(selection.source, "offline")),
