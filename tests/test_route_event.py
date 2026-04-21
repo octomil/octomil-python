@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from octomil.runtime.routing.model_ref import parse_model_ref
 from octomil.runtime.routing.route_event import (
     CandidateAttemptSummary,
     build_route_event,
@@ -37,8 +38,8 @@ def test_build_route_event_uses_canonical_fields() -> None:
     payload = event.to_dict()
     assert payload["request_id"] == "req_123"
     assert payload["final_locality"] == "cloud"
+    assert payload["selected_locality"] == "cloud"
     assert payload["candidate_attempts"] == 1
-    assert "selected_locality" not in payload
     assert payload["attempt_details"][0]["failure_reason"] == "runtime missing"
 
 
@@ -61,3 +62,22 @@ def test_emit_route_event_uses_route_decision_and_json_attempt_details() -> None
     assert attributes["route.final_locality"] == "local"
     assert attributes["route.candidate_attempts"] == 1
     assert "route.attempt_details" in attributes
+
+
+def test_parse_model_ref_uses_canonical_kinds() -> None:
+    cases = {
+        "gemma3-1b": "model",
+        "@app/translator/chat": "app",
+        "@capability/embeddings": "capability",
+        "deploy_abc123": "deployment",
+        "exp_v1/variant_a": "experiment",
+        "alias:prod-chat": "alias",
+        "": "default",
+        "@bad/ref": "unknown",
+        "https://example.com/model.gguf": "unknown",
+    }
+
+    for model, expected_kind in cases.items():
+        assert parse_model_ref(model).kind == expected_kind
+
+    assert parse_model_ref("deploy_abc123").deployment_id == "deploy_abc123"
