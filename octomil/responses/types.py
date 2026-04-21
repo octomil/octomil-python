@@ -4,7 +4,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Optional, Union
+from typing import TYPE_CHECKING, Any, Optional, Union
+
+if TYPE_CHECKING:
+    from octomil.execution.kernel import RouteMetadata
 
 # -- Content Parts (multimodal input) --
 
@@ -171,6 +174,7 @@ class Response:
     finish_reason: str
     usage: Optional[ResponseUsage] = None
     locality: Optional[str] = None
+    route: Optional["RouteMetadata"] = None
 
     @property
     def output_text(self) -> str:

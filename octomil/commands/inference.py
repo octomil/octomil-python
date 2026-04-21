@@ -334,6 +334,68 @@ def _prepare_runtime_for_local_run(
     return True
 
 
+def _explain_route(
+    model: Optional[str],
+    capability: str,
+    policy: Optional[str],
+) -> bool:
+    """Print planner routing decisions (engine, locality, policy) to stderr.
+
+    Shows which engine the planner selected and whether execution will be
+    local or cloud. Does NOT reflect artifact download readiness — cache
+    status is advisory only and the cache scaffold does not yet download
+    model files. Returns True if the route is available.
+    """
+    try:
+        from octomil.config.local import CAPABILITY_CHAT, CAPABILITY_EMBEDDING, CAPABILITY_TRANSCRIPTION
+        from octomil.runtime.planner.planner import RuntimePlanner
+
+        planner_capability = {
+            CAPABILITY_CHAT: "responses",
+            CAPABILITY_EMBEDDING: "embeddings",
+            CAPABILITY_TRANSCRIPTION: "transcription",
+        }.get(capability, capability)
+
+        planner = RuntimePlanner()
+        selection = planner.resolve(
+            model=model or "default",
+            capability=planner_capability,
+            routing_policy=policy or "local_first",
+        )
+
+        # Determine artifact cache status
+        cache_status = "not_applicable"
+        artifact_info = "none"
+        if selection.artifact is not None:
+            try:
+                from octomil.runtime.planner.artifact_cache import ArtifactCache
+
+                cache = ArtifactCache()
+                cache_status = cache.cache_status(selection.artifact.digest)
+            except Exception:
+                pass
+            fmt = selection.artifact.format or "unknown"
+            artifact_info = f"{fmt} format, cache {cache_status} (managed by octomil)"
+
+        engine_label = selection.engine or "auto"
+        mode = "sdk_runtime" if selection.locality == "local" else "hosted_gateway"
+
+        click.echo(f"Route: {selection.locality} via {mode} (engine: {engine_label})", err=True)
+        click.echo(f"Model: {model or 'default'} (resolved from config)", err=True)
+        click.echo(f"Planner: {selection.source}", err=True)
+        click.echo(f"Artifact: {artifact_info}", err=True)
+
+        if selection.engine is None and selection.locality == "local":
+            click.echo("Status: unavailable — no local engine resolved", err=True)
+            return False
+
+        return True
+
+    except Exception as exc:
+        click.echo(f"Route: unavailable — {exc}", err=True)
+        return False
+
+
 def _warn_if_cloud_execution(result) -> None:
     if result.locality != "cloud":
         return
@@ -491,6 +553,11 @@ def _try_runner_transcribe(
 @click.option("-y", "--yes", is_flag=True, help="Accept runtime installation prompts.")
 @click.option("--no-runner", is_flag=True, help="Disable the invisible local runner.")
 @click.option("--restart-runner", is_flag=True, help="Force restart the local runner.")
+@click.option(
+    "--explain",
+    is_flag=True,
+    help="Show planner routing decisions (engine, locality, policy) before inference. Does not reflect artifact readiness.",
+)
 def run_cmd(
     prompt: Optional[str],
     model: Optional[str],
@@ -504,11 +571,12 @@ def run_cmd(
     yes: bool,
     no_runner: bool,
     restart_runner: bool,
+    explain: bool,
 ) -> None:
     """Run a one-shot inference request.
 
-    The primary command for local AI inference. Resolves the model,
-    downloads if needed, and executes locally or via cloud based on policy.
+    The primary command for local AI inference. Resolves the model
+    and executes locally or via cloud based on routing policy.
 
     \b
     Examples:
@@ -522,6 +590,11 @@ def run_cmd(
         prompt = _read_stdin_text()
     if not prompt:
         raise click.UsageError("Missing prompt. Pass a prompt or pipe stdin.")
+
+    if explain:
+        available = _explain_route(model, "chat", policy)
+        if not available:
+            raise click.ClickException("Route unavailable. See details above.")
 
     kernel = _kernel()
     runtime_install_attempted = _prepare_runtime_for_local_run(kernel, model, policy, app, install_runtime, yes)
@@ -607,6 +680,11 @@ async def _stream_run(kernel, prompt, model, policy, app, temperature, max_outpu
 @click.option("--jsonl", "output_jsonl", is_flag=True, help="Output NDJSON (one object per input).")
 @click.option("--no-runner", is_flag=True, help="Disable the invisible local runner.")
 @click.option("--restart-runner", is_flag=True, help="Force restart the local runner.")
+@click.option(
+    "--explain",
+    is_flag=True,
+    help="Show planner routing decisions (engine, locality, policy) before inference. Does not reflect artifact readiness.",
+)
 def embed_cmd(
     inputs: tuple[str, ...],
     model: Optional[str],
@@ -616,6 +694,7 @@ def embed_cmd(
     output_jsonl: bool,
     no_runner: bool,
     restart_runner: bool,
+    explain: bool,
 ) -> None:
     """Generate embeddings for text or files.
 
@@ -644,6 +723,11 @@ def embed_cmd(
 
     if not text_inputs:
         raise click.UsageError("Missing input. Pass text, files, or pipe stdin.")
+
+    if explain:
+        available = _explain_route(model, "embedding", policy)
+        if not available:
+            raise click.ClickException("Route unavailable. See details above.")
 
     kernel = _kernel()
     should_try_runner, runner_model, runner_policy = _capability_runner_target(
@@ -709,6 +793,11 @@ def embed_cmd(
 @click.option("--language", default=None, help="Language hint (BCP 47 code).")
 @click.option("--no-runner", is_flag=True, help="Disable the invisible local runner.")
 @click.option("--restart-runner", is_flag=True, help="Force restart the local runner.")
+@click.option(
+    "--explain",
+    is_flag=True,
+    help="Show planner routing decisions (engine, locality, policy) before inference. Does not reflect artifact readiness.",
+)
 def transcribe_cmd(
     audio_file: Optional[str],
     model: Optional[str],
@@ -718,6 +807,7 @@ def transcribe_cmd(
     language: Optional[str],
     no_runner: bool,
     restart_runner: bool,
+    explain: bool,
 ) -> None:
     """Transcribe audio to text.
 
@@ -742,6 +832,11 @@ def transcribe_cmd(
             raise click.UsageError("Missing audio input. Pass a file or pipe audio bytes.")
     else:
         raise click.UsageError("Missing audio input. Pass a file or pipe audio bytes.")
+
+    if explain:
+        available = _explain_route(model, "transcription", policy)
+        if not available:
+            raise click.ClickException("Route unavailable. See details above.")
 
     kernel = _kernel()
     should_try_runner, runner_model, runner_policy = _capability_runner_target(
@@ -936,6 +1031,65 @@ audio_group.add_command(transcriptions_group)
 # ---------------------------------------------------------------------------
 
 
+def _route_metadata_to_dict(route) -> dict:
+    """Serialize RouteMetadata to a JSON-safe dict matching the contract wire format."""
+    if route is None:
+        return {}
+    d: dict = {"status": route.status}
+
+    if route.execution is not None:
+        d["execution"] = {
+            "locality": route.execution.locality,
+            "mode": route.execution.mode,
+            "engine": route.execution.engine,
+        }
+    else:
+        d["execution"] = None
+
+    d["model"] = {
+        "requested": {
+            "ref": route.model.requested.ref,
+            "kind": route.model.requested.kind,
+            "capability": route.model.requested.capability,
+        },
+        "resolved": None,
+    }
+    if route.model.resolved is not None:
+        d["model"]["resolved"] = {
+            "id": route.model.resolved.id,
+            "slug": route.model.resolved.slug,
+            "version_id": route.model.resolved.version_id,
+            "variant_id": route.model.resolved.variant_id,
+        }
+
+    if route.artifact is not None:
+        d["artifact"] = {
+            "id": route.artifact.id,
+            "version": route.artifact.version,
+            "format": route.artifact.format,
+            "digest": route.artifact.digest,
+            "cache": {
+                "status": route.artifact.cache.status,
+                "managed_by": route.artifact.cache.managed_by,
+            },
+        }
+    else:
+        d["artifact"] = None
+
+    d["planner"] = {"source": route.planner.source}
+    d["fallback"] = {
+        "used": route.fallback.used,
+        "from_attempt": route.fallback.from_attempt,
+        "to_attempt": route.fallback.to_attempt,
+        "trigger": route.fallback.trigger,
+    }
+    if getattr(route, "attempts", None):
+        d["attempts"] = route.attempts
+    d["reason"] = {"code": route.reason.code, "message": route.reason.message}
+
+    return d
+
+
 def _result_to_dict(result) -> dict:
     d = {
         "id": result.id,
@@ -947,6 +1101,8 @@ def _result_to_dict(result) -> dict:
     }
     if result.usage:
         d["usage"] = result.usage
+    if result.route is not None:
+        d["route"] = _route_metadata_to_dict(result.route)
     return d
 
 
@@ -961,6 +1117,8 @@ def _embed_result_to_dict(result) -> dict:
         d["data"] = [{"index": i, "embedding": v} for i, v in enumerate(result.embeddings)]
     if result.usage:
         d["usage"] = result.usage
+    if result.route is not None:
+        d["route"] = _route_metadata_to_dict(result.route)
     return d
 
 
@@ -974,6 +1132,8 @@ def _transcribe_result_to_dict(result) -> dict:
     }
     if result.segments:
         d["segments"] = result.segments
+    if result.route is not None:
+        d["route"] = _route_metadata_to_dict(result.route)
     return d
 
 

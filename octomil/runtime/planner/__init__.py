@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from .schemas import (
+    AppResolution,
     DeviceRuntimeProfile,
     InstalledRuntime,
     RuntimeArtifactPlan,
@@ -12,6 +13,7 @@ from .schemas import (
 )
 
 __all__ = [
+    "AppResolution",
     "DeviceRuntimeProfile",
     "InstalledRuntime",
     "RuntimeArtifactPlan",
