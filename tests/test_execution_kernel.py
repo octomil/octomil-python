@@ -115,6 +115,28 @@ class TestKernelCreateResponse:
             assert result.fallback_used is False
 
     @pytest.mark.asyncio
+    async def test_offline_planner_cloud_fallback_defers_to_policy(self):
+        kernel = _make_kernel()
+        selection = MagicMock()
+        selection.source = "fallback"
+        selection.locality = "cloud"
+        selection.engine = None
+        selection.candidates = []
+
+        with (
+            patch("octomil.execution.kernel._resolve_planner_selection", return_value=selection),
+            patch.object(kernel, "_build_router") as mock_build,
+        ):
+            mock_router = MagicMock()
+            mock_router.run = AsyncMock(return_value=_mock_runtime_response())
+            mock_build.return_value = mock_router
+
+            result = await kernel.create_response("Hello!")
+
+        assert result.locality == "on_device"
+        assert result.fallback_used is False
+
+    @pytest.mark.asyncio
     async def test_missing_model_raises(self):
         config = LocalOctomilConfig(capabilities={})
         kernel = ExecutionKernel(config_set=LoadedConfigSet(project=config))

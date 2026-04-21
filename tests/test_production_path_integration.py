@@ -254,6 +254,27 @@ class TestCreateBypassesRunnerWhenNoPlan:
         assert isinstance(response.output[0], TextOutput)
         assert response.output[0].text == "direct response"
 
+    @pytest.mark.asyncio
+    async def test_synthetic_cloud_fallback_defers_to_direct_runtime(self) -> None:
+        """Offline planner fallback must not override an available runtime."""
+        mock_rt = MockRuntime("direct local response")
+        ModelRuntimeRegistry.shared().default_factory = lambda model_id: mock_rt
+        selection = _make_selection(locality="cloud")
+        selection.source = "fallback"
+        selection.engine = None
+        selection.candidates = []
+
+        with patch(
+            "octomil.responses.responses._try_resolve_planner_selection",
+            return_value=selection,
+        ):
+            responses = OctomilResponses(planner_enabled=True)
+            response = await responses.create(ResponseRequest(model="test-model", input=[text_input("Hello")]))
+
+        assert isinstance(response.output[0], TextOutput)
+        assert response.output[0].text == "direct local response"
+        assert response.locality == "on_device"
+
 
 class TestStreamUsesAttemptRunner:
     @pytest.mark.asyncio

@@ -646,8 +646,26 @@ def _runtime_candidate_to_dict(candidate: Any) -> dict[str, Any]:
     return asdict(candidate)
 
 
+def _is_synthetic_cloud_fallback(selection: Any) -> bool:
+    """Return true for offline planner "no local engine" cloud fallbacks.
+
+    This is not a binding server-side route. It should defer to the normal
+    policy candidate list so injected/test runtimes, registry runtimes, and
+    policy-gated cloud fallback are still evaluated by the request path.
+    """
+    return (
+        getattr(selection, "source", None) == "fallback"
+        and getattr(selection, "locality", None) == "cloud"
+        and not getattr(selection, "engine", None)
+        and not getattr(selection, "candidates", None)
+    )
+
+
 def _selection_candidate_dicts(selection: Optional[Any], routing_policy: RoutingPolicy) -> list[dict[str, Any]]:
     """Return the ordered candidate list the SDK should attempt for this request."""
+    if selection is not None and _is_synthetic_cloud_fallback(selection):
+        selection = None
+
     if selection is not None:
         candidates = getattr(selection, "candidates", None)
         if candidates:

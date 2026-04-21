@@ -205,6 +205,23 @@ def _runtime_model_for_selection(selection: Any, requested_model: str) -> str:
     return requested_model
 
 
+def _is_synthetic_cloud_fallback(selection: Any) -> bool:
+    """True when the offline planner merely reported local engine absence.
+
+    A ``source="fallback"`` cloud selection is not a server plan and does not
+    prove the app should run in cloud. It only means the planner's cheap engine
+    probe found no managed local engine. The concrete response path may still
+    have an injected runtime, catalog runtime, registry runtime, or policy-gated
+    local-first fallback to evaluate.
+    """
+    return (
+        getattr(selection, "source", None) == "fallback"
+        and getattr(selection, "locality", None) == "cloud"
+        and not getattr(selection, "engine", None)
+        and not getattr(selection, "candidates", None)
+    )
+
+
 # ---------------------------------------------------------------------------
 # OctomilResponses
 # ---------------------------------------------------------------------------
@@ -285,6 +302,8 @@ class OctomilResponses:
 
         selection = _try_resolve_planner_selection(model_id)
         if selection is None:
+            return None
+        if _is_synthetic_cloud_fallback(selection):
             return None
 
         candidates = _selection_to_candidate_dicts(selection)
@@ -414,7 +433,7 @@ class OctomilResponses:
         # Try planner-driven attempt runner for streaming
         if self._planner_enabled:
             selection = _try_resolve_planner_selection(model_id)
-            if selection is not None:
+            if selection is not None and not _is_synthetic_cloud_fallback(selection):
                 candidates = _selection_to_candidate_dicts(selection)
                 if candidates:
                     fallback_allowed = getattr(selection, "fallback_allowed", True)
