@@ -33,6 +33,10 @@ FORBIDDEN_TELEMETRY_KEYS = frozenset(
         "messages",
         "system_prompt",
         "documents",
+        "image",
+        "image_url",
+        "embedding",
+        "embeddings",
     }
 )
 

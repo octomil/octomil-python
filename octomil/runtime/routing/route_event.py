@@ -105,6 +105,7 @@ class RouteEvent:
     # Correlation
     route_id: str = field(default_factory=lambda: f"route_{uuid.uuid4().hex[:16]}")
     request_id: str = ""
+    plan_id: Optional[str] = None
 
     # Context identifiers
     app_id: Optional[str] = None
@@ -116,13 +117,19 @@ class RouteEvent:
     # Policy / planning
     capability: Optional[str] = None
     policy: Optional[str] = None
-    planner_source: Optional[str] = None  # "config" | "server" | "default"
+    planner_source: Optional[str] = None  # "server" | "local_default" | "cached"
+
+    # Model ref metadata
+    model_ref: Optional[str] = None
+    model_ref_kind: Optional[str] = None  # model|app|capability|deployment|experiment|alias|default|unknown
 
     # Outcome
-    final_locality: str = ""  # "local" | "cloud"
+    selected_locality: str = ""  # "local" | "cloud"
+    final_locality: str = ""  # backward-compat alias for selected_locality
+    final_mode: str = ""  # "sdk_runtime" | "hosted_gateway" | "external_endpoint"
     fallback_used: bool = False
     fallback_trigger_code: Optional[str] = None
-    fallback_trigger_stage: Optional[str] = None
+    fallback_trigger_stage: Optional[str] = None  # "prepare" | "verify" | "gate" | "inference"
 
     # Candidate attempts
     candidate_attempts: int = 0
@@ -131,6 +138,7 @@ class RouteEvent:
     # Performance (final successful candidate)
     engine: Optional[str] = None
     artifact_id: Optional[str] = None
+    cache_status: Optional[str] = None  # "hit" | "miss" | "not_applicable"
     ttft_ms: Optional[float] = None
     tokens_per_second: Optional[float] = None
     total_tokens: Optional[int] = None
@@ -160,6 +168,7 @@ class RouteEvent:
 def build_route_event(
     *,
     request_id: str = "",
+    plan_id: Optional[str] = None,
     app_id: Optional[str] = None,
     app_slug: Optional[str] = None,
     deployment_id: Optional[str] = None,
@@ -168,14 +177,18 @@ def build_route_event(
     capability: Optional[str] = None,
     policy: Optional[str] = None,
     planner_source: Optional[str] = None,
-    final_locality: str = "",
-    selected_locality: Optional[str] = None,
+    model_ref: Optional[str] = None,
+    model_ref_kind: Optional[str] = None,
+    selected_locality: str = "",
+    final_locality: Optional[str] = None,
+    final_mode: str = "",
     fallback_used: bool = False,
     fallback_trigger_code: Optional[str] = None,
     fallback_trigger_stage: Optional[str] = None,
     candidate_attempts: Optional[list[CandidateAttemptSummary]] = None,
     engine: Optional[str] = None,
     artifact_id: Optional[str] = None,
+    cache_status: Optional[str] = None,
     ttft_ms: Optional[float] = None,
     tokens_per_second: Optional[float] = None,
     total_tokens: Optional[int] = None,
@@ -183,9 +196,11 @@ def build_route_event(
 ) -> RouteEvent:
     """Construct a RouteEvent with a fresh route_id."""
     attempt_details = candidate_attempts or []
+    locality = selected_locality or final_locality or ""
     return RouteEvent(
         route_id=f"route_{uuid.uuid4().hex[:16]}",
         request_id=request_id or f"req_{uuid.uuid4().hex[:12]}",
+        plan_id=plan_id,
         app_id=app_id,
         app_slug=app_slug,
         deployment_id=deployment_id,
@@ -194,7 +209,11 @@ def build_route_event(
         capability=capability,
         policy=policy,
         planner_source=planner_source,
-        final_locality=final_locality or selected_locality or "",
+        model_ref=model_ref,
+        model_ref_kind=model_ref_kind,
+        selected_locality=locality,
+        final_locality=locality,
+        final_mode=final_mode,
         fallback_used=fallback_used,
         fallback_trigger_code=fallback_trigger_code,
         fallback_trigger_stage=fallback_trigger_stage,
@@ -202,6 +221,7 @@ def build_route_event(
         attempt_details=attempt_details,
         engine=engine,
         artifact_id=artifact_id,
+        cache_status=cache_status,
         ttft_ms=ttft_ms,
         tokens_per_second=tokens_per_second,
         total_tokens=total_tokens,
