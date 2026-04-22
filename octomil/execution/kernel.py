@@ -496,13 +496,8 @@ def _route_metadata_from_selection(
             reason=RouteReason(code="planner_unavailable", message="planner not available"),
         )
 
-    # Map planner source to PlannerInfo.source
-    source_map = {
-        "server_plan": "server",
-        "cache": "cache",
-        "local_benchmark": "offline",
-        "fallback": "offline",
-    }
+    # Normalize planner source to canonical enum: server | cache | offline
+    from octomil.runtime.planner.schemas import normalize_planner_source
 
     # Build resolved model info from app_resolution when available
     resolved: Optional[RouteModelResolved] = None
@@ -574,7 +569,7 @@ def _route_metadata_from_selection(
             resolved=resolved,
         ),
         artifact=route_artifact,
-        planner=PlannerInfo(source=source_map.get(selection.source, "offline")),
+        planner=PlannerInfo(source=normalize_planner_source(selection.source)),
         fallback=fallback_info,
         attempts=attempts,
         reason=RouteReason(
