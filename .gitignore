@@ -63,3 +63,7 @@ uv.lock
 *.tar.gz
 octomil/python/dist/
 .aider*
+
+# Logs & test output
+*.log
+test-results/
