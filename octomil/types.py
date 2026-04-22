@@ -7,7 +7,7 @@ Provides a convenient import path for route metadata types::
 
 from __future__ import annotations
 
-from octomil.execution.kernel import (
+from octomil.execution.route_metadata_mapper import (
     ArtifactCache,
     FallbackInfo,
     PlannerInfo,
