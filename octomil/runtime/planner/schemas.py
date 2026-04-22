@@ -151,9 +151,12 @@ def normalize_planner_source(source: str) -> str:
 
     Canonical values: ``"server"``, ``"cache"``, ``"offline"``.
     Deprecated aliases are mapped to their canonical equivalent.
-    Unknown values pass through unchanged (callers should validate).
+    Unknown or blank values collapse to ``"offline"`` so SDK output
+    boundaries never emit a contract-invalid planner source.
     """
-    return _PLANNER_SOURCE_ALIASES.get(source, source)
+    if source in CANONICAL_PLANNER_SOURCES:
+        return source
+    return _PLANNER_SOURCE_ALIASES.get(source, "offline")
 
 
 @dataclass

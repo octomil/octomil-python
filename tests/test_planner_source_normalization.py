@@ -12,9 +12,9 @@ from octomil.execution.kernel import (
     _route_metadata_from_selection,
 )
 from octomil.runtime.planner.schemas import (
+    _PLANNER_SOURCE_ALIASES,
     CANONICAL_PLANNER_SOURCES,
     RuntimeSelection,
-    _PLANNER_SOURCE_ALIASES,
     normalize_planner_source,
 )
 
@@ -41,13 +41,13 @@ class TestNormalizePlannerSource:
             result = normalize_planner_source(alias)
             assert result == canonical, f"Expected {alias!r} -> {canonical!r}, got {result!r}"
 
-    def test_unknown_values_pass_through(self) -> None:
-        """Unknown source strings pass through unchanged."""
-        assert normalize_planner_source("future_value") == "future_value"
+    def test_unknown_values_collapse_to_offline(self) -> None:
+        """Unknown source strings must not escape the canonical wire enum."""
+        assert normalize_planner_source("future_value") == "offline"
 
-    def test_empty_string_passes_through(self) -> None:
-        """Empty string is not aliased -- passes through."""
-        assert normalize_planner_source("") == ""
+    def test_empty_string_collapses_to_offline(self) -> None:
+        """Empty string must not escape the canonical wire enum."""
+        assert normalize_planner_source("") == "offline"
 
     def test_alias_map_covers_all_known_aliases(self) -> None:
         """The alias map must include at least the 6 documented aliases."""
@@ -57,9 +57,7 @@ class TestNormalizePlannerSource:
     def test_all_alias_targets_are_canonical(self) -> None:
         """Every alias must map to a value in CANONICAL_PLANNER_SOURCES."""
         for alias, target in _PLANNER_SOURCE_ALIASES.items():
-            assert target in CANONICAL_PLANNER_SOURCES, (
-                f"Alias {alias!r} maps to {target!r} which is not canonical"
-            )
+            assert target in CANONICAL_PLANNER_SOURCES, f"Alias {alias!r} maps to {target!r} which is not canonical"
 
     def test_canonical_set_contains_exactly_three(self) -> None:
         """The canonical set must be exactly server, cache, offline."""
@@ -127,6 +125,6 @@ class TestRouteMetadataSerializationShape:
             selection = RuntimeSelection(locality="local", source=src)
             route = _route_metadata_from_selection(selection, "local", False, model_name="test")
             data = asdict(route)
-            assert data["planner"]["source"] in CANONICAL_PLANNER_SOURCES, (
-                f"Internal source {src!r} leaked as {data['planner']['source']!r}"
-            )
+            assert (
+                data["planner"]["source"] in CANONICAL_PLANNER_SOURCES
+            ), f"Internal source {src!r} leaked as {data['planner']['source']!r}"
