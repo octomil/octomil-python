@@ -33,8 +33,7 @@ from octomil import Octomil
 from octomil.edge import Octomil as LegacyEdgeOctomil
 from octomil.facade import Octomil as FacadeOctomil
 
-assert metadata.version("octomil") == "4.6.1"
-assert octomil.__version__ == "4.6.1"
+assert metadata.version("octomil") == octomil.__version__
 assert Octomil is FacadeOctomil
 assert hasattr(Octomil, "from_env")
 assert inspect.getsourcefile(Octomil) == inspect.getsourcefile(FacadeOctomil)
