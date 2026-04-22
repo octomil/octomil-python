@@ -117,7 +117,7 @@ class RouteEvent:
     # Policy / planning
     capability: Optional[str] = None
     policy: Optional[str] = None
-    planner_source: Optional[str] = None  # "server" | "local_default" | "cached"
+    planner_source: Optional[str] = None  # canonical: "server" | "cache" | "offline"
 
     # Model ref metadata
     model_ref: Optional[str] = None
@@ -195,8 +195,13 @@ def build_route_event(
     duration_ms: Optional[float] = None,
 ) -> RouteEvent:
     """Construct a RouteEvent with a fresh route_id."""
+    from octomil.runtime.planner.schemas import normalize_planner_source
+
     attempt_details = candidate_attempts or []
     locality = selected_locality or final_locality or ""
+    # Normalize planner_source to canonical enum: server | cache | offline
+    if planner_source is not None:
+        planner_source = normalize_planner_source(planner_source)
     return RouteEvent(
         route_id=f"route_{uuid.uuid4().hex[:16]}",
         request_id=request_id or f"req_{uuid.uuid4().hex[:12]}",

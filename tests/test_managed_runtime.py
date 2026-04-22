@@ -847,7 +847,7 @@ class TestPlannerSelectedEngine:
         selection = RuntimeSelection(
             locality="local",
             engine="mlx-lm",
-            source="server_plan",
+            source="server",
             reason="planner selected mlx-lm",
         )
         assert selection.engine == "mlx-lm"
@@ -875,7 +875,7 @@ class TestPlannerSelectedEngine:
         selection = RuntimeSelection(
             locality="local",
             engine="mlx-lm",
-            source="server_plan",
+            source="server",
             reason="server plan selected mlx-lm",
             artifact=RuntimeArtifactPlan(
                 model_id="gemma-3-1b",

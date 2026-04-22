@@ -496,12 +496,19 @@ def _route_metadata_from_selection(
             reason=RouteReason(code="planner_unavailable", message="planner not available"),
         )
 
-    # Map planner source to PlannerInfo.source
+    # Map planner source to PlannerInfo.source (canonical + legacy aliases)
     source_map = {
-        "server_plan": "server",
+        # Canonical values (identity)
+        "server": "server",
         "cache": "cache",
+        "offline": "offline",
+        # Legacy aliases (kept for backward compatibility with cached plans)
+        "server_plan": "server",
+        "cached": "cache",
+        "local_default": "offline",
         "local_benchmark": "offline",
         "fallback": "offline",
+        "none": "offline",
     }
 
     # Build resolved model info from app_resolution when available

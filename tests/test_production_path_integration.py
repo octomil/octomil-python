@@ -111,7 +111,7 @@ def _make_selection(
     mock.fallback_allowed = fallback_allowed
     mock.reason = "test selection"
     mock.app_resolution = None
-    mock.source = "server_plan"
+    mock.source = "server"
 
     if candidates is not None:
         mock_candidates = []
@@ -260,7 +260,7 @@ class TestCreateBypassesRunnerWhenNoPlan:
         mock_rt = MockRuntime("direct local response")
         ModelRuntimeRegistry.shared().default_factory = lambda model_id: mock_rt
         selection = _make_selection(locality="cloud")
-        selection.source = "fallback"
+        selection.source = "offline"
         selection.engine = None
         selection.candidates = []
 

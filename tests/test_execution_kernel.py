@@ -118,7 +118,7 @@ class TestKernelCreateResponse:
     async def test_offline_planner_cloud_fallback_defers_to_policy(self):
         kernel = _make_kernel()
         selection = MagicMock()
-        selection.source = "fallback"
+        selection.source = "offline"
         selection.locality = "cloud"
         selection.engine = None
         selection.candidates = []

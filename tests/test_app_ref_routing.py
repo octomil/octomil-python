@@ -307,7 +307,7 @@ class TestAppRefResolvesThroughPlanner:
 
         assert result.app_resolution is not None
         assert result.app_resolution.selected_model == "gemma3-1b"
-        assert result.source == "server_plan"
+        assert result.source == "server"
 
     def test_app_ref_private_never_calls_hosted(self, tmp_path: Path):
         """When app_resolution.routing_policy is 'private', planner must not call cloud."""
@@ -328,7 +328,7 @@ class TestAppRefResolvesThroughPlanner:
             mock_local.return_value = RuntimeSelection(
                 locality="local",
                 engine="mlx-lm",
-                source="local_benchmark",
+                source="offline",
                 reason="private local",
             )
             result = planner.resolve(
@@ -408,7 +408,7 @@ class TestAppRefResolvesThroughPlanner:
             mock_local.return_value = RuntimeSelection(
                 locality="local",
                 engine="mlx-lm",
-                source="local_benchmark",
+                source="offline",
                 reason="local",
             )
             planner.resolve(
@@ -435,7 +435,7 @@ class TestRouteMetadataForAppRefs:
         selection = RuntimeSelection(
             locality="local",
             engine="mlx-lm",
-            source="server_plan",
+            source="server",
             reason="test",
         )
         route = _route_metadata_from_selection(
@@ -451,7 +451,7 @@ class TestRouteMetadataForAppRefs:
         selection = RuntimeSelection(
             locality="local",
             engine="mlx-lm",
-            source="server_plan",
+            source="server",
             reason="test",
         )
         route = _route_metadata_from_selection(
@@ -467,7 +467,7 @@ class TestRouteMetadataForAppRefs:
         selection = RuntimeSelection(
             locality="local",
             engine="mlx-lm",
-            source="server_plan",
+            source="server",
             reason="test",
             app_resolution=AppResolution(
                 app_id="app-123",
@@ -494,7 +494,7 @@ class TestRouteMetadataForAppRefs:
         selection = RuntimeSelection(
             locality="local",
             engine="mlx-lm",
-            source="server_plan",
+            source="server",
             reason="test",
         )
         route = _route_metadata_from_selection(
@@ -522,7 +522,7 @@ class TestRouteMetadataForAppRefs:
         selection = RuntimeSelection(
             locality="local",
             engine="mlx-lm",
-            source="server_plan",
+            source="server",
             reason="test",
         )
         route = _route_metadata_from_selection(
@@ -539,7 +539,7 @@ class TestRouteMetadataForAppRefs:
         selection = RuntimeSelection(
             locality="cloud",
             engine=None,
-            source="server_plan",
+            source="server",
             reason="cloud route",
         )
         route = _route_metadata_from_selection(

@@ -65,7 +65,7 @@ class TestPlannerStore:
             capability="text",
             policy="local_first",
             plan_json=json.dumps(plan_data),
-            source="server_plan",
+            source="server",
             ttl_seconds=3600,
         )
 
@@ -86,7 +86,7 @@ class TestPlannerStore:
             capability="text",
             policy="local_first",
             plan_json='{"model": "gemma-2b"}',
-            source="server_plan",
+            source="server",
             ttl_seconds=0,
         )
 
@@ -275,7 +275,7 @@ class TestRuntimePlanner:
                 mock_local.return_value = RuntimeSelection(
                     locality="local",
                     engine="mlx-lm",
-                    source="local_benchmark",
+                    source="offline",
                     reason="local engine selected",
                 )
                 result = planner.resolve(
@@ -338,7 +338,7 @@ class TestRuntimePlanner:
                 routing_policy="local_first",
             )
 
-        assert result.source == "server_plan"
+        assert result.source == "server"
         assert result.engine == "mlx-lm"
         mock_client.fetch_plan.assert_called_once()
 
@@ -372,7 +372,7 @@ class TestRuntimePlanner:
         with patch("octomil.runtime.planner.planner.collect_device_runtime_profile", return_value=device):
             result = planner.resolve(model="gemma-2b", capability="text")
 
-        assert result.source == "server_plan"
+        assert result.source == "server"
         assert result.engine == "llama.cpp"
 
     def test_planner_falls_back_to_local_when_server_unreachable(self, tmp_path: Path):
@@ -395,7 +395,7 @@ class TestRuntimePlanner:
             mock_local.return_value = RuntimeSelection(
                 locality="local",
                 engine="llama.cpp",
-                source="local_benchmark",
+                source="offline",
                 reason="fallback to local",
             )
             result = planner.resolve(
@@ -405,7 +405,7 @@ class TestRuntimePlanner:
             )
 
         assert result.locality == "local"
-        assert result.source == "local_benchmark"
+        assert result.source == "offline"
 
     def test_planner_private_no_telemetry_upload(self, tmp_path: Path):
         """Private policy should never call fetch_plan or upload_benchmark."""
@@ -425,7 +425,7 @@ class TestRuntimePlanner:
             mock_local.return_value = RuntimeSelection(
                 locality="local",
                 engine="mlx-lm",
-                source="local_benchmark",
+                source="offline",
                 reason="private local selection",
             )
             planner.resolve(
@@ -470,7 +470,7 @@ class TestRuntimePlanner:
         with patch("octomil.runtime.planner.planner.collect_device_runtime_profile", return_value=device):
             # First call fetches from server
             result1 = planner.resolve(model="gemma-2b", capability="text")
-            assert result1.source == "server_plan"
+            assert result1.source == "server"
             assert mock_client.fetch_plan.call_count == 1
 
             # Second call should use cache

@@ -217,7 +217,7 @@ class TestPlanCache:
         with patch("octomil.runtime.planner.planner.collect_device_runtime_profile", return_value=device):
             # First call populates cache
             r1 = planner.resolve(model="gemma-2b", capability="responses")
-            assert r1.source == "server_plan"
+            assert r1.source == "server"
             assert mock_client.fetch_plan.call_count == 1
 
             # Second call should use cache, no server call
@@ -261,7 +261,7 @@ class TestPlanCache:
         with patch("octomil.runtime.planner.planner.collect_device_runtime_profile", return_value=device):
             result = planner.resolve(model="gemma-2b", capability="responses")
 
-        assert result.source == "server_plan"
+        assert result.source == "server"
         assert result.engine == "llama.cpp"
         mock_client.fetch_plan.assert_called_once()
         store.close()
@@ -303,7 +303,7 @@ class TestPlanCache:
         with patch("octomil.runtime.planner.planner.collect_device_runtime_profile", return_value=device):
             # First call populates cache (but TTL=0 means it's immediately stale)
             r1 = planner.resolve(model="gemma-2b", capability="responses")
-            assert r1.source == "server_plan"
+            assert r1.source == "server"
 
             # Now server is unavailable
             mock_client.fetch_plan.return_value = None
@@ -378,7 +378,7 @@ class TestPolicyRoutingMatrix:
 
     def test_local_first_prefers_local_with_cloud_fallback(self):
         """local_first: local primary, cloud fallback."""
-        selection = RuntimeSelection(locality="local", engine="mlx-lm", source="server_plan", reason="local_first")
+        selection = RuntimeSelection(locality="local", engine="mlx-lm", source="server", reason="local_first")
         route = _route_metadata_from_selection(selection, "on_device", False)
         assert route.execution is not None
         assert route.execution.locality == "local"
@@ -394,7 +394,7 @@ class TestPolicyRoutingMatrix:
 
     def test_cloud_first_prefers_cloud_with_local_fallback(self):
         """cloud_first: cloud primary, local fallback."""
-        selection = RuntimeSelection(locality="cloud", engine=None, source="server_plan", reason="cloud_first")
+        selection = RuntimeSelection(locality="cloud", engine=None, source="server", reason="cloud_first")
         route = _route_metadata_from_selection(selection, "cloud", False)
         assert route.execution is not None
         assert route.execution.locality == "cloud"
@@ -402,7 +402,7 @@ class TestPolicyRoutingMatrix:
 
     def test_performance_first_follows_planner_order(self):
         """performance_first: follow planner candidate order."""
-        selection = RuntimeSelection(locality="local", engine="mlx-lm", source="local_benchmark", reason="fastest")
+        selection = RuntimeSelection(locality="local", engine="mlx-lm", source="offline", reason="fastest")
         route = _route_metadata_from_selection(selection, "on_device", False)
         assert route.execution is not None
         assert route.execution.locality == "local"
@@ -517,7 +517,7 @@ class TestRouteMetadata:
         selection = RuntimeSelection(
             locality="local",
             engine="mlx-lm",
-            source="server_plan",
+            source="server",
             reason="server recommended mlx-lm",
         )
         route = _route_metadata_from_selection(selection, "on_device", False)
@@ -542,7 +542,7 @@ class TestRouteMetadata:
         selection = RuntimeSelection(
             locality="local",
             engine="mlx-lm",
-            source="local_benchmark",
+            source="offline",
             reason="local benchmark",
         )
         route = _route_metadata_from_selection(selection, "on_device", False)
@@ -584,7 +584,7 @@ class TestRouteMetadata:
         assert route_local.execution is not None
         assert route_local.execution.mode == "sdk_runtime"
 
-        cloud_selection = RuntimeSelection(locality="cloud", engine=None, source="server_plan", reason="cloud")
+        cloud_selection = RuntimeSelection(locality="cloud", engine=None, source="server", reason="cloud")
         route_cloud = _route_metadata_from_selection(cloud_selection, "cloud", False)
         assert route_cloud.execution is not None
         assert route_cloud.execution.mode == "hosted_gateway"
@@ -622,7 +622,7 @@ class TestRouteMetadata:
         selection = RuntimeSelection(
             locality="local",
             engine="mlx-lm",
-            source="server_plan",
+            source="server",
             reason="server ordered candidates",
             fallback_allowed=True,
             candidates=[
@@ -671,7 +671,7 @@ class TestRouteMetadata:
         selection = RuntimeSelection(
             locality="local",
             engine="mlx-lm",
-            source="server_plan",
+            source="server",
             reason="server ordered candidates",
             fallback_allowed=True,
             candidates=[
@@ -708,7 +708,7 @@ class TestRouteMetadata:
         selection = RuntimeSelection(
             locality="local",
             engine="mlx-lm",
-            source="server_plan",
+            source="server",
             reason="server ordered candidates",
             fallback_allowed=True,
             candidates=[
@@ -752,7 +752,7 @@ class TestRouteMetadata:
                     return_value=RuntimeSelection(
                         locality="local",
                         engine="mlx-lm",
-                        source="server_plan",
+                        source="server",
                         reason="server",
                     ),
                 ):
@@ -775,7 +775,7 @@ class TestRouteMetadata:
                     return_value=RuntimeSelection(
                         locality="local",
                         engine="whisper.cpp",
-                        source="local_benchmark",
+                        source="offline",
                         reason="local whisper",
                     ),
                 ):
@@ -936,7 +936,7 @@ class TestPlannerDrivenRouting:
         cloud_selection = RuntimeSelection(
             locality="cloud",
             engine=None,
-            source="server_plan",
+            source="server",
             reason="cloud preferred",
         )
 

@@ -146,7 +146,7 @@ class RuntimePlanner:
                     capability=capability,
                     policy=routing_policy,
                     plan_json=json.dumps(plan_dict),
-                    source="server_plan",
+                    source="server",
                     ttl_seconds=server_plan.plan_ttl_seconds,
                 )
 
@@ -191,7 +191,7 @@ class RuntimePlanner:
                     engine=engine or None,
                     artifact=candidate.artifact,
                     benchmark_ran=False,
-                    source="server_plan",
+                    source="server",
                     candidates=[*plan.candidates, *plan.fallback_candidates],
                     fallback_candidates=plan.fallback_candidates,
                     fallback_allowed=plan.fallback_allowed,
@@ -203,7 +203,7 @@ class RuntimePlanner:
                     engine=candidate.engine,
                     artifact=candidate.artifact,
                     benchmark_ran=False,
-                    source="server_plan",
+                    source="server",
                     candidates=[*plan.candidates, *plan.fallback_candidates],
                     fallback_candidates=plan.fallback_candidates,
                     fallback_allowed=plan.fallback_allowed,
@@ -219,7 +219,7 @@ class RuntimePlanner:
                     engine=engine,
                     artifact=candidate.artifact,
                     benchmark_ran=False,
-                    source="server_plan",
+                    source="server",
                     candidates=[*plan.candidates, *plan.fallback_candidates],
                     fallback_candidates=[],
                     fallback_allowed=plan.fallback_allowed,
@@ -243,7 +243,7 @@ class RuntimePlanner:
             return RuntimeSelection(
                 locality="cloud",
                 engine=None,
-                source="fallback",
+                source="offline",
                 fallback_allowed=False,
                 reason="cloud_only policy — no local engines attempted",
             )
@@ -313,7 +313,7 @@ class RuntimePlanner:
                     locality="local",
                     engine=engine.name,
                     benchmark_ran=True,
-                    source="local_benchmark",
+                    source="offline",
                     fallback_allowed=routing_policy not in ("local_only", "private"),
                     reason=f"local benchmark selected {engine.name}",
                 )
@@ -325,7 +325,7 @@ class RuntimePlanner:
             return RuntimeSelection(
                 locality="local",
                 engine=None,
-                source="fallback",
+                source="offline",
                 fallback_allowed=False,
                 reason="no local engine available",
             )
@@ -333,7 +333,7 @@ class RuntimePlanner:
         return RuntimeSelection(
             locality="cloud",
             engine=None,
-            source="fallback",
+            source="offline",
             fallback_allowed=True,
             reason="no local engine available — falling back to cloud",
         )
@@ -378,7 +378,7 @@ class RuntimePlanner:
         return RuntimeSelection(
             locality="local",
             engine=None,
-            source="fallback",
+            source="offline",
             fallback_allowed=False,
             reason="cached plan had no viable candidates",
         )
