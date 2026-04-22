@@ -22,7 +22,7 @@ class TestTopLevelFacadeExport:
         assert TopLevelOctomil is Octomil
         assert hasattr(TopLevelOctomil, "from_env")
         assert inspect.getsourcefile(TopLevelOctomil) == inspect.getsourcefile(Octomil)
-        assert octomil.__version__ == "4.6.1"
+        assert octomil.__version__ == "4.7.0"
 
 
 # ---------------------------------------------------------------------------
