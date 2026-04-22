@@ -46,11 +46,12 @@ def parse_model_ref(model: str | None) -> ParsedModelRef:
             return ParsedModelRef(raw=raw, kind="capability", capability=capability)
         return ParsedModelRef(raw=raw, kind="unknown")
 
-    if raw.startswith("deploy_") and len(raw) > len("deploy_"):
-        return ParsedModelRef(raw=raw, kind="deployment", deployment_id=raw)
+    if raw.startswith("deploy_"):
+        return ParsedModelRef(raw=raw, kind="deployment", deployment_id=raw.removeprefix("deploy_"))
 
     if raw.startswith("exp_") and "/" in raw:
-        experiment_id, variant_id = raw.split("/", 1)
+        prefix, variant_id = raw.split("/", 1)
+        experiment_id = prefix.removeprefix("exp_")
         if experiment_id and variant_id:
             return ParsedModelRef(
                 raw=raw,
