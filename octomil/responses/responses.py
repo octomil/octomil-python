@@ -13,7 +13,10 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, AsyncIterator, Callable, Optional, Union
 
 from octomil._generated.message_role import MessageRole
-from octomil.execution.kernel import (
+from octomil.execution.planner_resolution import (
+    _is_synthetic_cloud_fallback as _is_synthetic_cloud_fallback_impl,
+)
+from octomil.execution.route_metadata_mapper import (
     RouteMetadata,
     _route_metadata_from_selection,
 )
@@ -208,18 +211,9 @@ def _runtime_model_for_selection(selection: Any, requested_model: str) -> str:
 def _is_synthetic_cloud_fallback(selection: Any) -> bool:
     """True when the offline planner merely reported local engine absence.
 
-    A ``source="fallback"`` cloud selection is not a server plan and does not
-    prove the app should run in cloud. It only means the planner's cheap engine
-    probe found no managed local engine. The concrete response path may still
-    have an injected runtime, catalog runtime, registry runtime, or policy-gated
-    local-first fallback to evaluate.
+    Delegates to ``octomil.execution.planner_resolution._is_synthetic_cloud_fallback``.
     """
-    return (
-        getattr(selection, "source", None) == "fallback"
-        and getattr(selection, "locality", None) == "cloud"
-        and not getattr(selection, "engine", None)
-        and not getattr(selection, "candidates", None)
-    )
+    return _is_synthetic_cloud_fallback_impl(selection)
 
 
 # ---------------------------------------------------------------------------

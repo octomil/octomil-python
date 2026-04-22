@@ -1,4 +1,4 @@
-"""Shared execution kernel — the single execution path for all Octomil surfaces.
+"""Shared execution kernel -- the single execution path for all Octomil surfaces.
 
 Encapsulates:
   - model resolution
@@ -12,6 +12,13 @@ Encapsulates:
   - telemetry
 
 Does NOT require an HTTP server process.
+
+Extracted sub-modules (prefer importing from them directly):
+  - route_metadata_mapper: RouteMetadata types + builder
+  - planner_resolution: planner call wrappers + candidate helpers
+  - cloud_dispatch: cloud URL/key helpers
+  - benchmark_upload: background benchmark telemetry upload
+  - attempt_execution: locality decision logic + policy resolution
 """
 
 from __future__ import annotations
@@ -20,15 +27,13 @@ import asyncio
 import logging
 import os
 import tempfile
-import threading
 import time
 import uuid
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, AsyncIterator, Optional
 
 from octomil._generated.message_role import MessageRole
-from octomil._generated.routing_policy import RoutingPolicy as ContractRoutingPolicy
 from octomil.config.local import (
     CAPABILITY_CHAT,
     CAPABILITY_EMBEDDING,
@@ -41,7 +46,46 @@ from octomil.config.local import (
     load_standalone_config,
     resolve_capability_defaults,
 )
-from octomil.runtime.core.policy import RoutingPolicy
+
+# --- Re-exports from extracted modules (backward compatibility) ---
+from octomil.execution.attempt_execution import (  # noqa: F401
+    _cloud_available,
+    _inline_to_routing_policy,
+    _resolve_localities,
+    _resolve_routing_policy,
+    _select_locality_for_capability,
+)
+from octomil.execution.benchmark_upload import (  # noqa: F401
+    _sanitize_benchmark_payload,
+    _upload_benchmark_async,
+)
+from octomil.execution.cloud_dispatch import (  # noqa: F401
+    _cloud_api_key,
+    _openai_base_url,
+    _platform_api_base_url,
+)
+from octomil.execution.planner_resolution import (  # noqa: F401
+    _PLANNER_CAPABILITY_MAP,
+    _candidate_fallback_allowed,
+    _candidate_to_selection,
+    _is_synthetic_cloud_fallback,
+    _resolve_planner_selection,
+    _routing_policy_for_candidate,
+    _selection_candidate_dicts,
+)
+from octomil.execution.route_metadata_mapper import (  # noqa: F401
+    ArtifactCache,
+    FallbackInfo,
+    PlannerInfo,
+    RouteArtifact,
+    RouteExecution,
+    RouteMetadata,
+    RouteModel,
+    RouteModelRequested,
+    RouteModelResolved,
+    RouteReason,
+    _route_metadata_from_selection,
+)
 from octomil.runtime.core.router import LOCALITY_CLOUD, LOCALITY_ON_DEVICE, RouterModelRuntime
 from octomil.runtime.core.types import (
     GenerationConfig,
@@ -55,106 +99,8 @@ logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
-# Result types
+# Result types (ExecutionResult, StreamChunk, ChatRoutingDecision stay here)
 # ---------------------------------------------------------------------------
-
-
-@dataclass
-class RouteExecution:
-    """Execution details within route metadata."""
-
-    locality: str = ""  # "local" | "cloud"
-    mode: str = ""  # "sdk_runtime" | "hosted_gateway" | "external_endpoint"
-    engine: Optional[str] = None
-
-
-@dataclass
-class RouteModelRequested:
-    """The model reference as requested by the caller."""
-
-    ref: str = ""
-    kind: str = "unknown"  # "model" | "app" | "deployment" | "alias" | "default" | "unknown"
-    capability: Optional[str] = None
-
-
-@dataclass
-class RouteModelResolved:
-    """Server-resolved model identifiers."""
-
-    id: Optional[str] = None
-    slug: Optional[str] = None
-    version_id: Optional[str] = None
-    variant_id: Optional[str] = None
-
-
-@dataclass
-class RouteModel:
-    """Model information within route metadata."""
-
-    requested: RouteModelRequested = field(default_factory=RouteModelRequested)
-    resolved: Optional[RouteModelResolved] = None
-
-
-@dataclass
-class ArtifactCache:
-    """Cache status for a model artifact."""
-
-    status: str = "not_applicable"  # "hit" | "miss" | "downloaded" | "not_applicable" | "unavailable"
-    managed_by: Optional[str] = None  # "octomil" | "runtime" | "external"
-
-
-@dataclass
-class RouteArtifact:
-    """Artifact information within route metadata."""
-
-    id: Optional[str] = None
-    version: Optional[str] = None
-    format: Optional[str] = None
-    digest: Optional[str] = None
-    cache: ArtifactCache = field(default_factory=ArtifactCache)
-
-
-@dataclass
-class PlannerInfo:
-    """Planner source information."""
-
-    source: str = "offline"  # "server" | "cache" | "offline"
-
-
-@dataclass
-class FallbackInfo:
-    """Fallback status information."""
-
-    used: bool = False
-    from_attempt: Optional[int] = None
-    to_attempt: Optional[int] = None
-    trigger: Optional[dict[str, Any]] = None
-
-
-@dataclass
-class RouteReason:
-    """Reason for the routing decision."""
-
-    code: str = ""
-    message: str = ""
-
-
-@dataclass
-class RouteMetadata:
-    """Contract-backed routing metadata from the runtime planner.
-
-    Follows the canonical RouteMetadata shape from octomil-contracts.
-    Public locality values are "local" | "cloud" (never "on_device").
-    """
-
-    status: str = "selected"  # "selected" | "unavailable" | "failed"
-    execution: Optional[RouteExecution] = None
-    model: RouteModel = field(default_factory=RouteModel)
-    artifact: Optional[RouteArtifact] = None
-    planner: PlannerInfo = field(default_factory=PlannerInfo)
-    fallback: FallbackInfo = field(default_factory=FallbackInfo)
-    attempts: list[dict[str, Any]] = field(default_factory=list)
-    reason: RouteReason = field(default_factory=RouteReason)
 
 
 @dataclass
@@ -203,543 +149,6 @@ class ChatRoutingDecision:
     cloud_profile: Optional[CloudProfile] = None
     policy_preset: Optional[str] = None
     inline_policy: Optional[InlinePolicy] = None
-
-
-# ---------------------------------------------------------------------------
-# Policy conversion
-# ---------------------------------------------------------------------------
-
-
-def _resolve_routing_policy(defaults: ResolvedExecutionDefaults) -> RoutingPolicy:
-    """Convert resolved config defaults into a runtime RoutingPolicy."""
-    preset = defaults.policy_preset
-    inline = defaults.inline_policy
-
-    if inline is not None:
-        return _inline_to_routing_policy(inline)
-
-    if preset is None or preset == "local_first":
-        return RoutingPolicy.local_first()
-    if preset == "private":
-        return RoutingPolicy.local_only()
-    if preset == "cloud_only":
-        return RoutingPolicy.cloud_only()
-    if preset == "cloud_first":
-        return RoutingPolicy(
-            mode=ContractRoutingPolicy.AUTO,
-            prefer_local=False,
-            fallback="local",
-        )
-    if preset == "performance_first":
-        return RoutingPolicy.auto(prefer_local=True)
-
-    return RoutingPolicy.local_first()
-
-
-def _inline_to_routing_policy(ip: InlinePolicy) -> RoutingPolicy:
-    rm = ip.routing_mode
-    rp = ip.routing_preference
-
-    if rm == "local_only":
-        return RoutingPolicy.local_only()
-    if rm == "cloud_only":
-        return RoutingPolicy.cloud_only()
-    if rp == "local":
-        fb = "cloud" if ip.fallback.allow_cloud_fallback else "none"
-        return RoutingPolicy.local_first(fallback=fb)
-    if rp == "cloud":
-        return RoutingPolicy(
-            mode=ContractRoutingPolicy.AUTO,
-            prefer_local=False,
-            fallback="local" if ip.fallback.allow_local_fallback else "none",
-        )
-    if rp == "performance":
-        return RoutingPolicy.auto(prefer_local=True)
-    return RoutingPolicy.auto()
-
-
-def _openai_base_url(profile: CloudProfile) -> str:
-    """Return an OpenAI-compatible hosted base URL ending in /v1."""
-    base = profile.base_url.rstrip("/")
-    if base.endswith("/v1") and not base.endswith("/api/v1"):
-        return base
-    if base.endswith("/api/v1"):
-        return base[: -len("/api/v1")] + "/v1"
-    return f"{base}/v1"
-
-
-def _platform_api_base_url(profile: CloudProfile) -> str:
-    """Return the legacy platform API base URL ending in /api/v1."""
-    base = profile.base_url.rstrip("/")
-    if base.endswith("/api/v1"):
-        return base
-    if base.endswith("/v1"):
-        return base[: -len("/v1")] + "/api/v1"
-    return f"{base}/api/v1"
-
-
-def _cloud_api_key(profile: Optional[CloudProfile]) -> str:
-    if profile is None:
-        return ""
-    return os.environ.get(profile.api_key_env, "")
-
-
-def _cloud_available(defaults: ResolvedExecutionDefaults) -> bool:
-    return bool(defaults.cloud_profile and _cloud_api_key(defaults.cloud_profile))
-
-
-def _resolve_localities(
-    routing_policy: RoutingPolicy,
-    *,
-    local_available: bool,
-    cloud_available: bool,
-) -> tuple[str, Optional[str]]:
-    """Return (primary_locality, fallback_locality | None).
-
-    This mirrors ``_select_locality_for_capability`` but returns the
-    configured primary and fallback localities for callers that own backend
-    lifecycle.  Disabled fallbacks are exact: if the preferred locality is
-    unavailable and fallback is ``"none"``, this raises instead of silently
-    switching execution locations.
-    """
-    if routing_policy.mode == ContractRoutingPolicy.LOCAL_ONLY:
-        if not local_available:
-            raise RuntimeError("Private/local-only policy requires a local backend, but none is available.")
-        return LOCALITY_ON_DEVICE, None
-
-    if routing_policy.mode == ContractRoutingPolicy.CLOUD_ONLY:
-        if not cloud_available:
-            raise RuntimeError("Cloud-only policy requires cloud credentials, but none are configured.")
-        return LOCALITY_CLOUD, None
-
-    # AUTO or LOCAL_FIRST — determine prefer_local from policy
-    prefer_local = routing_policy.prefer_local
-    if routing_policy.mode == ContractRoutingPolicy.LOCAL_FIRST:
-        prefer_local = True
-
-    if prefer_local:
-        if local_available:
-            fallback = LOCALITY_CLOUD if routing_policy.fallback == "cloud" and cloud_available else None
-            return LOCALITY_ON_DEVICE, fallback
-        if routing_policy.fallback == "cloud" and cloud_available:
-            return LOCALITY_CLOUD, None
-        if cloud_available:
-            raise RuntimeError("Local chat execution is required by policy, but cloud fallback is disabled.")
-        raise RuntimeError("No local or cloud backend available for chat.")
-
-    # cloud-first
-    if cloud_available:
-        fallback = LOCALITY_ON_DEVICE if routing_policy.fallback == "local" and local_available else None
-        return LOCALITY_CLOUD, fallback
-    if routing_policy.fallback == "local" and local_available:
-        return LOCALITY_ON_DEVICE, None
-    if local_available:
-        raise RuntimeError("Cloud chat execution is required by policy, but local fallback is disabled.")
-    raise RuntimeError("No local or cloud backend available for chat.")
-
-
-def _select_locality_for_capability(
-    routing_policy: RoutingPolicy,
-    *,
-    local_available: bool,
-    cloud_available: bool,
-    capability: str,
-) -> tuple[str, bool]:
-    """Select local/cloud for non-ModelRuntime capabilities using exact policy semantics."""
-    if routing_policy.mode == ContractRoutingPolicy.LOCAL_ONLY:
-        if local_available:
-            return LOCALITY_ON_DEVICE, False
-        raise RuntimeError(f"Local {capability} execution is required by policy, but no local runtime is available.")
-
-    if routing_policy.mode == ContractRoutingPolicy.CLOUD_ONLY:
-        if cloud_available:
-            return LOCALITY_CLOUD, False
-        raise RuntimeError(f"Cloud {capability} execution is required by policy, but cloud is not configured.")
-
-    if routing_policy.mode == ContractRoutingPolicy.LOCAL_FIRST or routing_policy.prefer_local:
-        if local_available:
-            return LOCALITY_ON_DEVICE, False
-        if routing_policy.fallback == "cloud" and cloud_available:
-            return LOCALITY_CLOUD, True
-        raise RuntimeError(f"No local {capability} runtime available and cloud fallback is not configured.")
-
-    if cloud_available:
-        return LOCALITY_CLOUD, False
-    if routing_policy.fallback == "local" and local_available:
-        return LOCALITY_ON_DEVICE, True
-    raise RuntimeError(f"No cloud {capability} runtime available and local fallback is not configured.")
-
-
-# ---------------------------------------------------------------------------
-# Planner integration
-# ---------------------------------------------------------------------------
-
-# Capability name mapping: config uses "chat"/"embedding"/"transcription",
-# planner uses "responses"/"embeddings"/"transcription".
-_PLANNER_CAPABILITY_MAP = {
-    CAPABILITY_CHAT: "responses",
-    CAPABILITY_EMBEDDING: "embeddings",
-    CAPABILITY_TRANSCRIPTION: "transcription",
-}
-
-# Keys that must NEVER appear in benchmark upload payloads.
-_BANNED_BENCHMARK_KEYS = frozenset(
-    {
-        "prompt",
-        "input",
-        "output",
-        "response",
-        "audio",
-        "audio_data",
-        "file",
-        "file_path",
-        "text",
-        "content",
-        "messages",
-    }
-)
-
-
-def _resolve_planner_selection(
-    model: str,
-    capability: str,
-    policy_preset: str,
-) -> Optional[Any]:
-    """Try planner-based runtime selection. Returns RuntimeSelection or None.
-
-    Never raises — planner failure is non-fatal.
-    """
-    if os.environ.get("OCTOMIL_RUNTIME_PLANNER_CACHE") == "0":
-        return None
-    try:
-        from octomil.runtime.planner.planner import RuntimePlanner
-
-        planner_cap = _PLANNER_CAPABILITY_MAP.get(capability, capability)
-        planner = RuntimePlanner()
-        return planner.resolve(
-            model=model,
-            capability=planner_cap,
-            routing_policy=policy_preset,
-        )
-    except Exception:
-        logger.debug("Planner selection failed", exc_info=True)
-        return None
-
-
-def _locality_to_public(raw: str) -> str:
-    """Map internal locality values to the public contract values.
-
-    Public RouteMetadata uses "local" | "cloud". Internal code may use
-    "on_device" which must never appear in public route metadata.
-    """
-    if raw == LOCALITY_ON_DEVICE or raw == "on_device":
-        return "local"
-    return raw
-
-
-def _execution_mode_for_locality(public_locality: str) -> str:
-    """Determine execution.mode from the public locality."""
-    if public_locality == "local":
-        return "sdk_runtime"
-    return "hosted_gateway"
-
-
-def _route_metadata_from_selection(
-    selection: Optional[Any],
-    locality: str,
-    fallback_used: bool,
-    *,
-    model_name: str = "",
-    capability: str = "",
-    attempt_loop: Optional[Any] = None,
-    status: str = "selected",
-) -> RouteMetadata:
-    """Build RouteMetadata from a planner RuntimeSelection."""
-    from octomil.runtime.routing.model_ref import parse_model_ref
-
-    public_locality = _locality_to_public(locality)
-
-    # Determine model.requested.kind and capability from model_name
-    parsed_ref = parse_model_ref(model_name)
-    model_kind = parsed_ref.kind
-    req_capability = parsed_ref.capability or capability or None
-
-    fallback_info = FallbackInfo(used=fallback_used)
-    attempts: list[dict[str, Any]] = []
-    if attempt_loop is not None:
-        attempts = [attempt.to_dict() for attempt in getattr(attempt_loop, "attempts", [])]
-        trigger = getattr(attempt_loop, "fallback_trigger", None)
-        fallback_info = FallbackInfo(
-            used=bool(getattr(attempt_loop, "fallback_used", False)),
-            from_attempt=getattr(attempt_loop, "from_attempt", None),
-            to_attempt=getattr(attempt_loop, "to_attempt", None),
-            trigger=trigger.to_dict() if trigger is not None else None,
-        )
-
-    if selection is None:
-        return RouteMetadata(
-            status=status,
-            execution=RouteExecution(
-                locality=public_locality,
-                mode=_execution_mode_for_locality(public_locality),
-            ),
-            model=RouteModel(
-                requested=RouteModelRequested(
-                    ref=model_name,
-                    kind=model_kind,
-                    capability=req_capability,
-                ),
-            ),
-            planner=PlannerInfo(source="offline"),
-            fallback=fallback_info,
-            attempts=attempts,
-            reason=RouteReason(code="planner_unavailable", message="planner not available"),
-        )
-
-    # Normalize planner source to canonical enum: server | cache | offline
-    from octomil.runtime.planner.schemas import normalize_planner_source
-
-    # Build resolved model info from app_resolution when available
-    resolved: Optional[RouteModelResolved] = None
-    app_resolution = getattr(selection, "app_resolution", None)
-    if app_resolution is not None:
-        resolved = RouteModelResolved(
-            slug=app_resolution.selected_model,
-            variant_id=app_resolution.selected_model_variant_id,
-            version_id=app_resolution.selected_model_version,
-        )
-
-    selected_attempt = getattr(attempt_loop, "selected_attempt", None) if attempt_loop is not None else None
-
-    # Build artifact info with cache status from ArtifactCache
-    route_artifact: Optional[RouteArtifact] = None
-    if selection.artifact is not None:
-        artifact_digest = selection.artifact.digest
-        cache_status_value = "not_applicable"
-        try:
-            from octomil.runtime.planner.artifact_cache import ArtifactCache as ArtifactCacheManager
-            from octomil.runtime.planner.artifact_cache import _warn_if_large_artifact_non_tty
-
-            artifact_cache = ArtifactCacheManager()
-            cache_status_value = artifact_cache.cache_status(artifact_digest)
-
-            # Warn in non-TTY environments about large artifacts
-            if cache_status_value == "miss":
-                _warn_if_large_artifact_non_tty(selection.artifact.size_bytes)
-        except Exception:
-            pass
-        route_artifact = RouteArtifact(
-            id=selection.artifact.artifact_id,
-            version=selection.artifact.model_version,
-            format=selection.artifact.format,
-            digest=artifact_digest,
-            cache=ArtifactCache(
-                status=cache_status_value,
-                managed_by="octomil",
-            ),
-        )
-    if selected_attempt is not None:
-        if selected_attempt.artifact is None:
-            route_artifact = None
-        else:
-            route_artifact = RouteArtifact(
-                id=selected_attempt.artifact.id,
-                digest=selected_attempt.artifact.digest,
-                cache=ArtifactCache(
-                    status=selected_attempt.artifact.cache_status,
-                    managed_by=selected_attempt.artifact.managed_by,
-                ),
-            )
-
-    route_engine = selected_attempt.engine if selected_attempt is not None else selection.engine
-
-    return RouteMetadata(
-        status=status,
-        execution=RouteExecution(
-            locality=public_locality,
-            mode=_execution_mode_for_locality(public_locality),
-            engine=route_engine,
-        ),
-        model=RouteModel(
-            requested=RouteModelRequested(
-                ref=model_name,
-                kind=model_kind,
-                capability=req_capability,
-            ),
-            resolved=resolved,
-        ),
-        artifact=route_artifact,
-        planner=PlannerInfo(source=normalize_planner_source(selection.source)),
-        fallback=fallback_info,
-        attempts=attempts,
-        reason=RouteReason(
-            code=selection.source or "",
-            message=selection.reason or "",
-        ),
-    )
-
-
-def _sanitize_benchmark_payload(payload: dict[str, Any]) -> dict[str, Any]:
-    """Remove any banned keys from a benchmark payload. Returns a clean copy."""
-    return {k: v for k, v in payload.items() if k not in _BANNED_BENCHMARK_KEYS}
-
-
-def _upload_benchmark_async(
-    *,
-    model: str,
-    capability: str,
-    engine: Optional[str],
-    policy_preset: str,
-    tokens_per_second: float = 0.0,
-    ttft_ms: float = 0.0,
-    latency_ms: float = 0.0,
-    peak_memory_bytes: Optional[int] = None,
-) -> None:
-    """Upload benchmark telemetry in a background thread. Best-effort, never blocks.
-
-    Skips upload for private policy or when no server credentials are configured.
-    """
-    if policy_preset in ("private", "local_only"):
-        return
-
-    api_key = os.environ.get("OCTOMIL_SERVER_KEY") or os.environ.get("OCTOMIL_API_KEY")
-    if not api_key:
-        return
-
-    payload = _sanitize_benchmark_payload(
-        {
-            "source": "execution_kernel",
-            "model": model,
-            "capability": _PLANNER_CAPABILITY_MAP.get(capability, capability),
-            "engine": engine or "",
-            "success": True,
-            "tokens_per_second": tokens_per_second,
-            "ttft_ms": ttft_ms,
-            "latency_ms": latency_ms,
-            "peak_memory_bytes": peak_memory_bytes,
-        }
-    )
-
-    def _upload() -> None:
-        try:
-            from octomil.runtime.planner.client import RuntimePlannerClient
-
-            base_url = os.environ.get("OCTOMIL_API_BASE") or "https://api.octomil.com"
-            client = RuntimePlannerClient(base_url=base_url, api_key=api_key)
-            client.upload_benchmark(payload)
-        except Exception:
-            logger.debug("Background benchmark upload failed", exc_info=True)
-
-    thread = threading.Thread(target=_upload, daemon=True, name="octomil-benchmark-upload")
-    thread.start()
-
-
-def _runtime_candidate_to_dict(candidate: Any) -> dict[str, Any]:
-    """Convert a RuntimeCandidatePlan-like object into a JSON-safe dict."""
-    if isinstance(candidate, dict):
-        return candidate
-    return asdict(candidate)
-
-
-def _is_synthetic_cloud_fallback(selection: Any) -> bool:
-    """Return true for offline planner "no local engine" cloud fallbacks.
-
-    This is not a binding server-side route. It should defer to the normal
-    policy candidate list so injected/test runtimes, registry runtimes, and
-    policy-gated cloud fallback are still evaluated by the request path.
-    """
-    return (
-        getattr(selection, "source", None) == "fallback"
-        and getattr(selection, "locality", None) == "cloud"
-        and not getattr(selection, "engine", None)
-        and not getattr(selection, "candidates", None)
-    )
-
-
-def _selection_candidate_dicts(selection: Optional[Any], routing_policy: RoutingPolicy) -> list[dict[str, Any]]:
-    """Return the ordered candidate list the SDK should attempt for this request."""
-    if selection is not None and _is_synthetic_cloud_fallback(selection):
-        selection = None
-
-    if selection is not None:
-        candidates = getattr(selection, "candidates", None)
-        if candidates:
-            return [_runtime_candidate_to_dict(candidate) for candidate in candidates]
-
-        candidate: dict[str, Any] = {
-            "locality": getattr(selection, "locality", "local"),
-            "priority": 0,
-            "confidence": 1.0,
-            "reason": getattr(selection, "reason", "") or "planner selection",
-        }
-        engine = getattr(selection, "engine", None)
-        artifact = getattr(selection, "artifact", None)
-        if engine is not None:
-            candidate["engine"] = engine
-        if artifact is not None:
-            candidate["artifact"] = asdict(artifact)
-        return [candidate]
-
-    if routing_policy.mode == ContractRoutingPolicy.LOCAL_ONLY:
-        return [{"locality": "local", "priority": 0, "confidence": 0.0, "reason": "local-only policy"}]
-    if routing_policy.mode == ContractRoutingPolicy.CLOUD_ONLY:
-        return [{"locality": "cloud", "priority": 0, "confidence": 0.0, "reason": "cloud-only policy"}]
-
-    prefer_local = routing_policy.prefer_local or routing_policy.mode == ContractRoutingPolicy.LOCAL_FIRST
-    if prefer_local:
-        candidates = [{"locality": "local", "priority": 0, "confidence": 0.0, "reason": "offline local-first"}]
-        if routing_policy.fallback == "cloud":
-            candidates.append({"locality": "cloud", "priority": 1, "confidence": 0.0, "reason": "cloud fallback"})
-        return candidates
-
-    candidates = [{"locality": "cloud", "priority": 0, "confidence": 0.0, "reason": "offline cloud-first"}]
-    if routing_policy.fallback == "local":
-        candidates.append({"locality": "local", "priority": 1, "confidence": 0.0, "reason": "local fallback"})
-    return candidates
-
-
-def _candidate_fallback_allowed(selection: Optional[Any], routing_policy: RoutingPolicy) -> bool:
-    if selection is not None and hasattr(selection, "fallback_allowed"):
-        return bool(selection.fallback_allowed)
-    if routing_policy.mode in (ContractRoutingPolicy.LOCAL_ONLY, ContractRoutingPolicy.CLOUD_ONLY):
-        return False
-    return routing_policy.fallback != "none"
-
-
-def _candidate_to_selection(selection: Optional[Any], candidate: dict[str, Any]) -> Any:
-    """Build a lightweight planner selection for a single candidate."""
-    from octomil.runtime.planner.schemas import RuntimeArtifactPlan, RuntimeSelection
-
-    artifact_data = candidate.get("artifact")
-    artifact = None
-    if isinstance(artifact_data, dict) and artifact_data.get("model_id"):
-        artifact = RuntimeArtifactPlan(
-            model_id=artifact_data.get("model_id", ""),
-            artifact_id=artifact_data.get("artifact_id"),
-            model_version=artifact_data.get("model_version"),
-            format=artifact_data.get("format"),
-            quantization=artifact_data.get("quantization"),
-            uri=artifact_data.get("uri"),
-            digest=artifact_data.get("digest"),
-            size_bytes=artifact_data.get("size_bytes"),
-            min_ram_bytes=artifact_data.get("min_ram_bytes"),
-        )
-
-    return RuntimeSelection(
-        locality=candidate.get("locality", "local"),
-        engine=candidate.get("engine"),
-        artifact=artifact,
-        source=getattr(selection, "source", "fallback") if selection is not None else "fallback",
-        fallback_allowed=getattr(selection, "fallback_allowed", True) if selection is not None else True,
-        reason=candidate.get("reason", getattr(selection, "reason", "") if selection is not None else ""),
-        app_resolution=getattr(selection, "app_resolution", None) if selection is not None else None,
-    )
-
-
-def _routing_policy_for_candidate(candidate: dict[str, Any]) -> RoutingPolicy:
-    if candidate.get("locality") == "cloud":
-        return RoutingPolicy.cloud_only()
-    return RoutingPolicy.local_only()
 
 
 def _internal_locality_for_attempt(attempt: Any) -> str:

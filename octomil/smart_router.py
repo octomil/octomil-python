@@ -1,5 +1,10 @@
 """Multi-engine inference router.
 
+.. deprecated::
+    SmartRouter is superseded by the planner-driven CandidateAttemptRunner
+    in ``octomil.runtime.routing``.  New code should use ExecutionKernel or
+    OctomilResponses which handle candidate routing automatically.
+
 Loads multiple inference backends for the same model and dispatches each
 request to the most suitable engine based on runtime conditions and request
 characteristics.  The router is itself an ``InferenceBackend``, so it
