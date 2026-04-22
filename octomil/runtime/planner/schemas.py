@@ -130,6 +130,35 @@ class RuntimePlanResponse:
     resolution: ModelResolution | None = None
 
 
+# ---------------------------------------------------------------------------
+# Planner source normalization
+# ---------------------------------------------------------------------------
+
+CANONICAL_PLANNER_SOURCES: frozenset[str] = frozenset({"server", "cache", "offline"})
+
+_PLANNER_SOURCE_ALIASES: dict[str, str] = {
+    "local_default": "offline",
+    "server_plan": "server",
+    "cached": "cache",
+    "fallback": "offline",
+    "none": "offline",
+    "local_benchmark": "offline",
+}
+
+
+def normalize_planner_source(source: str) -> str:
+    """Normalize a planner source string to a canonical value.
+
+    Canonical values: ``"server"``, ``"cache"``, ``"offline"``.
+    Deprecated aliases are mapped to their canonical equivalent.
+    Unknown or blank values collapse to ``"offline"`` so SDK output
+    boundaries never emit a contract-invalid planner source.
+    """
+    if source in CANONICAL_PLANNER_SOURCES:
+        return source
+    return _PLANNER_SOURCE_ALIASES.get(source, "offline")
+
+
 @dataclass
 class RuntimeSelection:
     """Final resolved runtime selection from the planner."""
@@ -138,7 +167,7 @@ class RuntimeSelection:
     engine: str | None = None
     artifact: RuntimeArtifactPlan | None = None
     benchmark_ran: bool = False
-    source: str = ""  # "cache", "server_plan", "local_benchmark", "fallback"
+    source: str = ""  # Internal value; normalized via normalize_planner_source()
     candidates: list[RuntimeCandidatePlan] = field(default_factory=list)
     fallback_candidates: list[RuntimeCandidatePlan] = field(default_factory=list)
     fallback_allowed: bool = True
