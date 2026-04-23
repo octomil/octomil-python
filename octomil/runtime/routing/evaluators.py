@@ -20,6 +20,12 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
+from octomil.runtime.routing.attempt_runner import (
+    GateResult,
+    GateStatus,
+    OutputQualityGateEvaluator,
+)
+
 # ---------------------------------------------------------------------------
 # EvaluatorResult
 # ---------------------------------------------------------------------------
@@ -257,7 +263,7 @@ class RegexPredicateEvaluator:
                 safe_metadata={"evaluator_name": self.name},
             )
 
-        pattern = (gate.get("config") or {}).get("pattern") or self._default_pattern
+        pattern = (gate.get("config") or {}).get("pattern") or gate.get("threshold_string") or self._default_pattern
         if pattern is None:
             return EvaluatorResult(
                 passed=False,
@@ -291,9 +297,8 @@ class SafetyPassedEvaluator:
     """Adapter stub for app-provided safety evaluation.
 
     This evaluator does NOT implement a classifier itself. It delegates to
-    an app-provided ``check`` callback. If no callback is provided, it
-    passes by default (fail-open for advisory, fail-closed handled by the
-    runner when no evaluator is registered).
+    an app-provided ``check`` callback. If no callback is provided, it fails
+    closed so required ``safety_passed`` gates cannot accidentally pass.
 
     Maps to gate code ``safety_passed``.
     """
@@ -310,7 +315,7 @@ class SafetyPassedEvaluator:
     def evaluate(self, *, gate: dict[str, Any], response: Any) -> EvaluatorResult:
         if self._check is None:
             return EvaluatorResult(
-                passed=True,
+                passed=False,
                 reason_code="no_safety_checker_configured",
                 safe_metadata={"evaluator_name": self.name},
             )
@@ -379,7 +384,8 @@ class EvaluatorRegistry:
         reg.register("json_parseable", JsonParseableEvaluator())
         reg.register("schema_valid", JsonSchemaEvaluator(default_schema=json_schema))
         reg.register("tool_call_valid", ToolCallValidEvaluator())
-        reg.register("safety_passed", SafetyPassedEvaluator(check=safety_check))
+        if safety_check is not None:
+            reg.register("safety_passed", SafetyPassedEvaluator(check=safety_check))
         if extra:
             for code, evaluator in extra.items():
                 reg.register(code, evaluator)
@@ -391,7 +397,7 @@ class EvaluatorRegistry:
 # ---------------------------------------------------------------------------
 
 
-class RegistryBackedEvaluator:
+class RegistryBackedEvaluator(OutputQualityGateEvaluator):
     """OutputQualityGateEvaluator that delegates to an EvaluatorRegistry.
 
     This bridges the per-gate evaluator registry into the single-evaluator
@@ -403,13 +409,11 @@ class RegistryBackedEvaluator:
     def __init__(self, registry: EvaluatorRegistry) -> None:
         self._registry = registry
 
-    def evaluate(self, gate: dict[str, Any], response: Any) -> Any:
+    def evaluate(self, gate: dict[str, Any], response: Any) -> GateResult:
         """Evaluate a gate using the registered evaluator.
 
         Returns a GateResult-compatible object for the attempt runner.
         """
-        from octomil.runtime.routing.attempt_runner import GateResult, GateStatus
-
         code = gate.get("code", "")
         evaluator = self._registry.get(code)
         if evaluator is None:
@@ -424,6 +428,7 @@ class RegistryBackedEvaluator:
             status=GateStatus.PASSED if result.passed else GateStatus.FAILED,
             observed_number=result.score,
             reason_code=result.reason_code,
+            safe_metadata=result.safe_metadata,
         )
 
 

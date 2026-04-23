@@ -68,6 +68,8 @@ class GateResult:
     reason_code: str | None = None
     gate_class: str | None = None
     evaluation_phase: str | None = None
+    observed_string: str | None = None
+    safe_metadata: dict[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         d: dict[str, Any] = {"code": self.code, "status": self.status.value}
@@ -81,6 +83,10 @@ class GateResult:
             d["gate_class"] = self.gate_class
         if self.evaluation_phase is not None:
             d["evaluation_phase"] = self.evaluation_phase
+        if self.observed_string is not None:
+            d["observed_string"] = self.observed_string
+        if self.safe_metadata is not None:
+            d["safe_metadata"] = self.safe_metadata
         return d
 
 
