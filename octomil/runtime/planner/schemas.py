@@ -180,3 +180,4 @@ class RuntimeSelection:
     fallback_allowed: bool = True
     reason: str = ""
     app_resolution: AppResolution | None = None
+    resolution: ModelResolution | None = None

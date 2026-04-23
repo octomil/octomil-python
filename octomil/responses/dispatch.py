@@ -13,6 +13,9 @@ from typing import TYPE_CHECKING, Any, Callable, Optional, Union
 from octomil.execution.planner_resolution import (
     _is_synthetic_cloud_fallback as _is_synthetic_cloud_fallback_impl,
 )
+from octomil.execution.planner_resolution import (
+    _runtime_model_for_selection,
+)
 from octomil.execution.route_metadata_mapper import (
     RouteMetadata,
     _route_metadata_from_selection,
@@ -126,15 +129,6 @@ def selection_to_candidate_dicts(selection: Any) -> list[dict[str, Any]]:
     if getattr(selection, "artifact", None):
         d2["artifact"] = _asdict(selection.artifact)
     return [d2]
-
-
-def _runtime_model_for_selection(selection: Any, requested_model: str) -> str:
-    """Return the concrete model a planner selection resolved to."""
-    app_resolution = getattr(selection, "app_resolution", None)
-    selected_model = getattr(app_resolution, "selected_model", None)
-    if selected_model:
-        return str(selected_model)
-    return requested_model
 
 
 def is_synthetic_cloud_fallback(selection: Any) -> bool:

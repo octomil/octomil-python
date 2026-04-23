@@ -111,6 +111,7 @@ def _make_selection(
     mock.fallback_allowed = fallback_allowed
     mock.reason = "test selection"
     mock.app_resolution = None
+    mock.resolution = None
     mock.source = "server_plan"
 
     if candidates is not None:
@@ -215,6 +216,63 @@ class TestCreateUsesAttemptRunnerWhenPlanAvailable:
         assert response.route is not None
         assert response.route.execution is not None
         assert response.route.execution.engine == "fake-engine"
+
+    @pytest.mark.asyncio
+    async def test_create_uses_generic_resolution_for_local_engine(self) -> None:
+        """Generic planner resolution must override the raw caller ref for local engines."""
+        created_for: list[str] = []
+
+        class _Backend:
+            def generate(self, request):
+                return "resolved alias response", SimpleNamespace(prompt_tokens=1, total_tokens=4)
+
+        class _Engine:
+            name = "fake-engine"
+
+            def detect(self):
+                return True
+
+            def create_backend(self, model_name: str):
+                created_for.append(model_name)
+                return _Backend()
+
+        class _Registry:
+            def get_engine(self, name: str):
+                return _Engine() if name == "fake-engine" else None
+
+        resolution = MagicMock()
+        resolution.resolved_model = "phi-4-mini"
+        resolution.variant_id = "variant-b"
+
+        selection = _make_selection(
+            locality="local",
+            engine="fake-engine",
+            candidates=[
+                {
+                    "locality": "local",
+                    "engine": "fake-engine",
+                    "priority": 0,
+                    "confidence": 1.0,
+                    "reason": "planner resolved alias to fake-engine",
+                }
+            ],
+        )
+        selection.resolution = resolution
+
+        with (
+            patch("octomil.responses.responses._try_resolve_planner_selection", return_value=selection),
+            patch("octomil.runtime.engines.get_registry", return_value=_Registry()),
+        ):
+            responses = OctomilResponses(planner_enabled=True)
+            response = await responses.create(ResponseRequest(model="alias:production", input=[text_input("Hello")]))
+
+        assert isinstance(response.output[0], TextOutput)
+        assert response.output[0].text == "resolved alias response"
+        assert created_for == ["phi-4-mini"]
+        assert response.route is not None
+        assert response.route.model.resolved is not None
+        assert response.route.model.resolved.id == "phi-4-mini"
+        assert response.route.model.resolved.variant_id == "variant-b"
 
     @pytest.mark.asyncio
     async def test_create_rejects_ollama_candidate_and_uses_cloud_fallback(self) -> None:
