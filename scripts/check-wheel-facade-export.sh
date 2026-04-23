@@ -36,11 +36,14 @@ from octomil.facade import Octomil as FacadeOctomil
 assert metadata.version("octomil") == octomil.__version__
 assert Octomil is FacadeOctomil
 assert hasattr(Octomil, "from_env")
+assert hasattr(Octomil, "hosted_from_env")
 assert inspect.getsourcefile(Octomil) == inspect.getsourcefile(FacadeOctomil)
 assert hasattr(LegacyEdgeOctomil, "from_env")
+assert hasattr(LegacyEdgeOctomil, "hosted_from_env")
 
 print("octomil_file=", octomil.__file__)
 print("Octomil_file=", inspect.getsourcefile(Octomil))
 print("from_env=", hasattr(Octomil, "from_env"))
+print("hosted_from_env=", hasattr(Octomil, "hosted_from_env"))
 print("version=", metadata.version("octomil"))
 PY
