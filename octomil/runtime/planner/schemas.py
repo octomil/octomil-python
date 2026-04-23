@@ -60,6 +60,10 @@ class CandidateGate:
     threshold_string: str | None = None
     window_seconds: int | None = None
     source: Literal["server", "sdk", "runtime"] = "server"
+    gate_class: str | None = None  # "readiness" | "performance" | "output_quality"
+    evaluation_phase: str | None = None  # "pre_inference" | "during_inference" | "post_inference"
+    fallback_eligible: bool | None = None
+    blocking_default: bool | None = None
 
 
 @dataclass
