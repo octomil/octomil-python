@@ -48,6 +48,22 @@ class OctomilTests(unittest.TestCase):
 
         self.assertIsInstance(client, FacadeOctomil)
 
+    def test_hosted_from_env_delegates_to_unified_facade(self):
+        from octomil.facade import Octomil as FacadeOctomil
+
+        with patch.dict(
+            os.environ,
+            {
+                "OCTOMIL_SERVER_KEY": "oct_sk_test_123",
+                "OCTOMIL_ORG_ID": "org_1",
+            },
+            clear=True,
+        ):
+            client = Octomil.hosted_from_env()
+
+        self.assertIsInstance(client, FacadeOctomil)
+        self.assertFalse(client.planner_enabled)
+
 
 if __name__ == "__main__":
     unittest.main()

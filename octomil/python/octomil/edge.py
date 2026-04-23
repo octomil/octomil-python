@@ -38,6 +38,13 @@ class Octomil:
         return FacadeOctomil.from_env(**kwargs)
 
     @classmethod
+    def hosted_from_env(cls, **kwargs):
+        """Compatibility bridge to the unified facade hosted constructor."""
+        from octomil.facade import Octomil as FacadeOctomil
+
+        return FacadeOctomil.hosted_from_env(**kwargs)
+
+    @classmethod
     def local(cls, **kwargs):
         """Compatibility bridge to the unified facade local constructor."""
         from octomil.facade import Octomil as FacadeOctomil
