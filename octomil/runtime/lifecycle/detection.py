@@ -43,7 +43,6 @@ def detect_installed_runtimes() -> list[InstalledRuntime]:
     - llama.cpp via llama-cpp-python (Python bindings)
     - llama.cpp CLI binary on PATH
     - onnxruntime (Python package)
-    - ollama CLI on PATH
 
     Returns a list of InstalledRuntime entries. Empty list means no engines found.
     """
@@ -69,11 +68,6 @@ def detect_installed_runtimes() -> list[InstalledRuntime]:
     ort_result = _detect_onnxruntime()
     if ort_result:
         results.append(ort_result)
-
-    # --- ollama CLI ---
-    ollama_result = _detect_ollama()
-    if ollama_result:
-        results.append(ollama_result)
 
     return results
 
@@ -118,14 +112,6 @@ def _detect_onnxruntime() -> InstalledRuntime | None:
         return None
     version = _get_package_version("onnxruntime")
     return InstalledRuntime(engine_id="onnxruntime", version=version)
-
-
-def _detect_ollama() -> InstalledRuntime | None:
-    """Check for ollama CLI on PATH."""
-    path = shutil.which("ollama")
-    if path is None:
-        return None
-    return InstalledRuntime(engine_id="ollama", path=path)
 
 
 def _get_package_version(module_name: str) -> str | None:

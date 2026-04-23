@@ -6,7 +6,7 @@ Python SDK, CLI, local runtime, serve layer, and runner. Owns:
 
 - **SDK client** — Hosted API client for chat, completions, embeddings, responses, model catalog
 - **CLI** — `octomil` command-line tool (chat, run, serve, deploy, configure, scan, bench)
-- **Local runtime** — On-device inference via pluggable engines (llama.cpp, MLX, MNN, ONNX RT, whisper.cpp, Ollama, etc.)
+- **Local runtime** — On-device inference via pluggable engines (llama.cpp, MLX, MNN, ONNX RT, whisper.cpp, etc.)
 - **Serve** — OpenAI-compatible HTTP server wrapping local inference (`octomil serve`)
 - **Local runner** — Background process managing model lifecycle and inference sessions
 - **Device agent** — Device-side control plane agent for fleet management

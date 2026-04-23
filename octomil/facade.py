@@ -282,10 +282,11 @@ class Octomil:
         if not isinstance(self._auth, OrgApiKeyAuth):
             raise ValueError("Octomil.hosted_from_env() requires server-side API key authentication.")
 
-        base_url = _openai_base_url(CloudProfile(name="hosted", base_url=self._auth.api_base))
+        auth = self._auth
+        base_url = _openai_base_url(CloudProfile(name="hosted", base_url=auth.api_base))
 
         def _resolve_cloud_runtime(model_id: str) -> CloudModelRuntime:
-            return CloudModelRuntime(base_url=base_url, api_key=self._auth.api_key, model=model_id)
+            return CloudModelRuntime(base_url=base_url, api_key=auth.api_key, model=model_id)
 
         return OctomilResponses(
             runtime_resolver=_resolve_cloud_runtime,

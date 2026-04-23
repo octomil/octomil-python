@@ -70,7 +70,6 @@ class TestPyInstallerSpec:
             "octomil.runtime.engines.llamacpp.engine",
             "octomil.runtime.engines.ort.engine",
             "octomil.runtime.engines.whisper.engine",
-            "octomil.runtime.engines.ollama.engine",
             "octomil.runtime.engines.echo.engine",
             "octomil.runtime.engines.experimental.mnn.engine",
             "octomil.runtime.engines.experimental.executorch.engine",
@@ -317,7 +316,7 @@ class TestConsistency:
         for engine_dir in engines_dir.iterdir():
             if not engine_dir.is_dir() or engine_dir.name.startswith("_"):
                 continue
-            if engine_dir.name == "experimental":
+            if engine_dir.name in {"experimental", "ollama"}:
                 continue
             engine_file = engine_dir / "engine.py"
             if engine_file.exists():

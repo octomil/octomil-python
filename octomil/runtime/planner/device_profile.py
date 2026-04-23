@@ -76,7 +76,7 @@ def _detect_installed_runtimes(*, exclude_echo: bool = True) -> list[InstalledRu
         registry = get_registry()
         detections = registry.detect_all()
         for det in detections:
-            if exclude_echo and det.engine.name == "echo":
+            if exclude_echo and det.engine.name in {"echo", "ollama"}:
                 continue
             if not det.available:
                 continue

@@ -20,8 +20,6 @@ class RuntimeExecutor(str, Enum):
     """Hugging Face Transformers.js (WASM + WebGPU)"""
     CLOUD = "cloud"
     """Server-side cloud inference (not on-device)"""
-    OLLAMA = "ollama"
-    """Ollama local inference server"""
     WHISPER = "whisper"
     """Whisper.cpp audio transcription engine"""
     MLC = "mlc"

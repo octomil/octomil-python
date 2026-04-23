@@ -35,7 +35,6 @@ octomil scan               # Security scanning
 | llama.cpp    | `LlamaCppEngine`   | Mac/Linux/Windows | Production    |
 | ONNX Runtime | `ORTEngine`        | All               | Production    |
 | Whisper.cpp  | `WhisperEngine`    | All               | Production    |
-| Ollama       | `OllamaEngine`     | Mac/Linux         | Production    |
 | Echo         | `EchoEngine`       | All               | Test fallback |
 | MLC-LLM      | `MLCEngine`        | Mac/Linux/Android | Experimental  |
 | MNN          | `MNNEngine`        | All               | Experimental  |
@@ -92,7 +91,7 @@ octomil scan               # Security scanning
 ### Model Catalog (`octomil/models/`)
 
 - 60+ models with alias resolution
-- Sources: HuggingFace, Kaggle, Ollama
+- Sources: HuggingFace, Kaggle, Ollama import
 - Quantization variants
 
 ### Telemetry (`octomil/telemetry.py`)

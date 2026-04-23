@@ -484,8 +484,8 @@ class TestServeCommand:
         cmd = opt.serve_command("phi-mini", config)
         assert cmd == "octomil serve phi-mini"
 
-    def test_auto_detects_ollama(self):
-        """Auto-detect picks ollama when octomil not on PATH."""
+    def test_auto_detect_ignores_ollama(self):
+        """Auto-detect does not pick Ollama as an Octomil runtime."""
         from unittest.mock import patch
 
         def _which(name: str) -> str | None:
@@ -505,7 +505,7 @@ class TestServeCommand:
             total_gb=5.0,
         )
         cmd = opt.serve_command("phi-mini", config)
-        assert cmd == "ollama run phi-mini"
+        assert cmd == "octomil serve phi-mini"
 
     def test_auto_detects_llamacpp(self):
         """Auto-detect picks llama.cpp when only llama-server on PATH."""

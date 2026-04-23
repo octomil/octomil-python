@@ -253,7 +253,6 @@ octomil serve --models smollm-360m,phi-mini,llama-3b
 | [MNN](https://github.com/alibaba/MNN)                   | All platforms       | auto-detected                    |
 | [ExecuTorch](https://pytorch.org/executorch/)           | Mobile              | auto-detected                    |
 | [Whisper.cpp](https://github.com/ggerganov/whisper.cpp) | All platforms       | `pip install 'octomil[whisper]'` |
-| [Ollama](https://ollama.com/)                           | Mac, Linux          | auto-detected if running         |
 
 No engine installed? `octomil serve` tells you exactly what to install.
 
@@ -302,7 +301,7 @@ curl -fsSL https://get.octomil.com | sh
 octomil serve gemma-1b
     │
     ├── 1. Resolve model name → catalog lookup (aliases, quant variants)
-    ├── 2. Detect engines     → MLX? llama.cpp? ONNX? Ollama running?
+    ├── 2. Detect engines     → MLX? llama.cpp? ONNX?
     ├── 3. Benchmark engines  → Run each, measure tok/s, pick fastest
     ├── 4. Download model     → HuggingFace Hub (cached after first pull)
     └── 5. Start server       → FastAPI on :8080, OpenAI-compatible API
@@ -460,13 +459,13 @@ For a full guide including model name mapping, error code mapping, and a compari
 
 ## SDKs
 
-| SDK                                                   | Package                  | Status               | Inference Engine                                            |
-| ----------------------------------------------------- | ------------------------ | -------------------- | ----------------------------------------------------------- |
-| [Python](https://github.com/octomil/octomil-python)   | `octomil` (PyPI)         | Production (v2.10.1) | MLX, llama.cpp, ONNX, MLC, ExecuTorch, Whisper, MNN, Ollama |
-| [Browser](https://github.com/octomil/octomil-browser) | `@octomil/browser` (npm) | Production (v1.0.0)  | ONNX Runtime Web (WebGPU + WASM)                            |
-| [iOS](https://github.com/octomil/octomil-ios)         | Swift Package Manager    | Production (v1.1.0)  | CoreML + MLX                                                |
-| [Android](https://github.com/octomil/octomil-android) | Maven (GitHub Packages)  | Production (v1.2.0)  | TFLite + vendor NPU                                         |
-| [Node](https://github.com/octomil/octomil-node)       | `@octomil/sdk` (source)  | v0.1.0 (not on npm)  | ONNX Runtime Node                                           |
+| SDK                                                   | Package                  | Status               | Inference Engine                                    |
+| ----------------------------------------------------- | ------------------------ | -------------------- | --------------------------------------------------- |
+| [Python](https://github.com/octomil/octomil-python)   | `octomil` (PyPI)         | Production (v2.10.1) | MLX, llama.cpp, ONNX, MLC, ExecuTorch, Whisper, MNN |
+| [Browser](https://github.com/octomil/octomil-browser) | `@octomil/browser` (npm) | Production (v1.0.0)  | ONNX Runtime Web (WebGPU + WASM)                    |
+| [iOS](https://github.com/octomil/octomil-ios)         | Swift Package Manager    | Production (v1.1.0)  | CoreML + MLX                                        |
+| [Android](https://github.com/octomil/octomil-android) | Maven (GitHub Packages)  | Production (v1.2.0)  | TFLite + vendor NPU                                 |
+| [Node](https://github.com/octomil/octomil-node)       | `@octomil/sdk` (source)  | v0.1.0 (not on npm)  | ONNX Runtime Node                                   |
 
 ### Python SDK
 

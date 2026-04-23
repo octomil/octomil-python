@@ -24,7 +24,6 @@ _INSTALL_INSTRUCTIONS: dict[str, str] = {
     "mlx-lm": "pip install mlx-lm  # Apple Silicon only",
     "llama.cpp": "pip install llama-cpp-python  # Cross-platform CPU/GPU",
     "onnxruntime": "pip install onnxruntime  # Cross-platform",
-    "ollama": "Install from https://ollama.com  # Zero-config runtime",
 }
 
 
