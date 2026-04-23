@@ -4,7 +4,7 @@ Evaluates candidates in priority order through staged gates.
 Produces RouteAttempt records for structured route metadata.
 
 Contract schemas:
-- candidate_gate.schema.json — 12 gate codes
+- candidate_gate.schema.json — 18 gate codes (12 existing + 6 output_quality)
 - route_attempt.schema.json — attempt record with index, locality, mode, engine, artifact, status, stage, gate_results[], reason
 - route_metadata.schema.json — extended route metadata with attempts array and fallback trigger
 """
@@ -32,6 +32,7 @@ class AttemptStage(str, Enum):
     BENCHMARK = "benchmark"
     GATE = "gate"
     INFERENCE = "inference"
+    OUTPUT_QUALITY = "output_quality"
 
 
 class AttemptStatus(str, Enum):
@@ -65,6 +66,10 @@ class GateResult:
     observed_number: float | None = None
     threshold_number: float | None = None
     reason_code: str | None = None
+    gate_class: str | None = None
+    evaluation_phase: str | None = None
+    observed_string: str | None = None
+    safe_metadata: dict[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         d: dict[str, Any] = {"code": self.code, "status": self.status.value}
@@ -74,6 +79,14 @@ class GateResult:
             d["threshold_number"] = self.threshold_number
         if self.reason_code is not None:
             d["reason_code"] = self.reason_code
+        if self.gate_class is not None:
+            d["gate_class"] = self.gate_class
+        if self.evaluation_phase is not None:
+            d["evaluation_phase"] = self.evaluation_phase
+        if self.observed_string is not None:
+            d["observed_string"] = self.observed_string
+        if self.safe_metadata is not None:
+            d["safe_metadata"] = self.safe_metadata
         return d
 
 
@@ -131,9 +144,25 @@ class FallbackTrigger:
     code: str
     stage: str
     message: str
+    gate_code: str | None = None
+    gate_class: str | None = None
+    evaluation_phase: str | None = None
+    candidate_index: int | None = None
+    output_visible_before_failure: bool = False
 
     def to_dict(self) -> dict[str, Any]:
-        return {"code": self.code, "stage": self.stage, "message": self.message}
+        d: dict[str, Any] = {"code": self.code, "stage": self.stage, "message": self.message}
+        if self.gate_code is not None:
+            d["gate_code"] = self.gate_code
+        if self.gate_class is not None:
+            d["gate_class"] = self.gate_class
+        if self.evaluation_phase is not None:
+            d["evaluation_phase"] = self.evaluation_phase
+        if self.candidate_index is not None:
+            d["candidate_index"] = self.candidate_index
+        if self.output_visible_before_failure:
+            d["output_visible_before_failure"] = True
+        return d
 
 
 @dataclass
@@ -195,6 +224,57 @@ class GateEvaluator:
         raise NotImplementedError
 
 
+class OutputQualityGateEvaluator:
+    """Protocol for post-inference output quality evaluation."""
+
+    def evaluate(self, gate: dict[str, Any], response: Any) -> GateResult:
+        raise NotImplementedError
+
+
+# ---------------------------------------------------------------------------
+# Gate classification
+# ---------------------------------------------------------------------------
+
+# code -> (gate_class, evaluation_phase, blocking_default)
+GATE_CLASSIFICATION: dict[str, tuple[str, str, bool]] = {
+    "artifact_verified": ("readiness", "pre_inference", True),
+    "runtime_available": ("readiness", "pre_inference", True),
+    "model_loads": ("readiness", "pre_inference", True),
+    "context_fits": ("readiness", "pre_inference", True),
+    "modality_supported": ("readiness", "pre_inference", True),
+    "tool_support": ("readiness", "pre_inference", True),
+    "min_tokens_per_second": ("performance", "pre_inference", False),
+    "max_ttft_ms": ("performance", "during_inference", False),
+    "max_error_rate": ("performance", "pre_inference", False),
+    "min_free_memory_bytes": ("performance", "pre_inference", True),
+    "min_free_storage_bytes": ("performance", "pre_inference", True),
+    "benchmark_fresh": ("performance", "pre_inference", False),
+    # Device-environment gates
+    "min_battery_pct": ("performance", "pre_inference", False),
+    "max_thermal_state": ("performance", "pre_inference", False),
+    "require_charging": ("performance", "pre_inference", False),
+    "require_wifi": ("readiness", "pre_inference", True),
+    "schema_valid": ("output_quality", "post_inference", True),
+    "tool_call_valid": ("output_quality", "post_inference", True),
+    "safety_passed": ("output_quality", "post_inference", True),
+    "evaluator_score_min": ("output_quality", "post_inference", False),
+    "json_parseable": ("output_quality", "post_inference", True),
+    "max_refusal_rate": ("output_quality", "post_inference", False),
+}
+
+_DEVICE_ENVIRONMENT_GATE_CODES = {
+    "min_battery_pct",
+    "max_thermal_state",
+    "require_charging",
+    "require_wifi",
+}
+
+
+def classify_gate(code: str) -> tuple[str, str, bool]:
+    """Returns (gate_class, evaluation_phase, blocking_default) for a gate code."""
+    return GATE_CLASSIFICATION.get(code, ("readiness", "pre_inference", True))
+
+
 class _NoOpRuntimeChecker(RuntimeChecker):
     def check(self, *, engine: str | None, locality: str) -> tuple[bool, str | None]:
         return True, None
@@ -206,8 +286,106 @@ class _NoOpArtifactChecker(ArtifactChecker):
 
 
 class _NoOpGateEvaluator(GateEvaluator):
+    """Default gate evaluator.
+
+    Non-device gates preserve the historical permissive default so callers can
+    inject specialized benchmark/memory evaluators independently. Device
+    environment gates are different: if the server marks one required, the SDK
+    must prove the device condition before running local inference.
+    """
+
     def evaluate(self, gate: dict[str, Any], *, engine: str | None, locality: str) -> GateResult:
-        return GateResult(code=gate.get("code", "unknown"), status=GateStatus.PASSED)
+        code = gate.get("code", "unknown")
+        if code not in _DEVICE_ENVIRONMENT_GATE_CODES:
+            return GateResult(code=code, status=GateStatus.PASSED)
+
+        gate_class, phase, _ = classify_gate(code)
+        required = bool(gate.get("required", True))
+        threshold = gate.get("threshold_number")
+
+        def unavailable(reason_code: str = "device_metric_unavailable") -> GateResult:
+            return GateResult(
+                code=code,
+                status=GateStatus.FAILED if required else GateStatus.UNKNOWN,
+                threshold_number=threshold if isinstance(threshold, (int, float)) else None,
+                reason_code=reason_code if required else None,
+                gate_class=gate_class,
+                evaluation_phase=phase,
+            )
+
+        if locality != "local":
+            return GateResult(
+                code=code,
+                status=GateStatus.NOT_REQUIRED,
+                gate_class=gate_class,
+                evaluation_phase=phase,
+            )
+
+        if code == "min_battery_pct":
+            if not isinstance(threshold, (int, float)):
+                return unavailable("threshold_missing")
+            try:
+                from octomil.device_info import get_battery_level
+
+                observed = get_battery_level()
+            except Exception:
+                observed = None
+            if observed is None:
+                return unavailable()
+            passed = float(observed) >= float(threshold)
+            return GateResult(
+                code=code,
+                status=GateStatus.PASSED if passed else GateStatus.FAILED,
+                observed_number=float(observed),
+                threshold_number=float(threshold),
+                reason_code=None if passed else "battery_below_threshold",
+                gate_class=gate_class,
+                evaluation_phase=phase,
+            )
+
+        if code == "require_charging":
+            try:
+                from octomil.device_info import get_battery_level, is_charging
+
+                battery_present = get_battery_level() is not None
+                charging = is_charging()
+            except Exception:
+                battery_present = False
+                charging = False
+            if not battery_present:
+                return unavailable()
+            return GateResult(
+                code=code,
+                status=GateStatus.PASSED if charging else GateStatus.FAILED,
+                observed_string="charging" if charging else "not_charging",
+                reason_code=None if charging else "device_not_charging",
+                gate_class=gate_class,
+                evaluation_phase=phase,
+            )
+
+        if code == "require_wifi":
+            try:
+                from octomil.device_info import get_network_type
+
+                network_type = get_network_type()
+            except Exception:
+                network_type = "unknown"
+            if network_type == "unknown":
+                return unavailable("network_state_unavailable")
+            passed = network_type == "wifi"
+            return GateResult(
+                code=code,
+                status=GateStatus.PASSED if passed else GateStatus.FAILED,
+                observed_string=network_type,
+                reason_code=None if passed else "wifi_required",
+                gate_class=gate_class,
+                evaluation_phase=phase,
+            )
+
+        if code == "max_thermal_state":
+            return unavailable()
+
+        return GateResult(code=code, status=GateStatus.PASSED)
 
 
 # ---------------------------------------------------------------------------
@@ -236,9 +414,11 @@ class CandidateAttemptRunner:
         *,
         fallback_allowed: bool = True,
         streaming: bool = False,
+        output_quality_evaluator: OutputQualityGateEvaluator | None = None,
     ) -> None:
         self._fallback_allowed = fallback_allowed
         self._streaming = streaming
+        self._output_quality_evaluator = output_quality_evaluator
         self._attempts: list[RouteAttempt] = []
 
     @property
@@ -302,11 +482,14 @@ class CandidateAttemptRunner:
             gate_results: list[GateResult] = []
 
             if not runtime_ok:
+                rt_cls, rt_phase, _ = classify_gate("runtime_available")
                 gate_results.append(
                     GateResult(
                         code="runtime_available",
                         status=GateStatus.FAILED,
                         reason_code=runtime_reason,
+                        gate_class=rt_cls,
+                        evaluation_phase=rt_phase,
                     )
                 )
                 attempt = RouteAttempt(
@@ -327,12 +510,24 @@ class CandidateAttemptRunner:
                             code="runtime_unavailable",
                             stage="prepare",
                             message=attempt.reason_message,
+                            gate_code="runtime_available",
+                            gate_class=rt_cls,
+                            evaluation_phase=rt_phase,
+                            candidate_index=idx,
                         )
                         from_attempt = idx
                     continue
                 break
 
-            gate_results.append(GateResult(code="runtime_available", status=GateStatus.PASSED))
+            rt_cls, rt_phase, _ = classify_gate("runtime_available")
+            gate_results.append(
+                GateResult(
+                    code="runtime_available",
+                    status=GateStatus.PASSED,
+                    gate_class=rt_cls,
+                    evaluation_phase=rt_phase,
+                )
+            )
 
             # ------------------------------------------------------------------
             # Stage: verify artifact (if local with artifact)
@@ -347,14 +542,24 @@ class CandidateAttemptRunner:
                     cache_status=art_status,
                     managed_by="octomil",
                 )
+                art_cls, art_phase, _ = classify_gate("artifact_verified")
                 if art_ok:
-                    gate_results.append(GateResult(code="artifact_verified", status=GateStatus.PASSED))
+                    gate_results.append(
+                        GateResult(
+                            code="artifact_verified",
+                            status=GateStatus.PASSED,
+                            gate_class=art_cls,
+                            evaluation_phase=art_phase,
+                        )
+                    )
                 else:
                     gate_results.append(
                         GateResult(
                             code="artifact_verified",
                             status=GateStatus.FAILED,
                             reason_code=art_reason,
+                            gate_class=art_cls,
+                            evaluation_phase=art_phase,
                         )
                     )
                     attempt = RouteAttempt(
@@ -376,13 +581,17 @@ class CandidateAttemptRunner:
                                 code="artifact_verification_failed",
                                 stage="verify",
                                 message=attempt.reason_message,
+                                gate_code="artifact_verified",
+                                gate_class=art_cls,
+                                evaluation_phase=art_phase,
+                                candidate_index=idx,
                             )
                             from_attempt = idx
                         continue
                     break
 
             # ------------------------------------------------------------------
-            # Stage: gate — evaluate per-request gates
+            # Stage: gate — evaluate per-request gates (skip output_quality; those run post-inference)
             # ------------------------------------------------------------------
             gates = candidate.get("gates", [])
             gate_failed = False
@@ -390,8 +599,13 @@ class CandidateAttemptRunner:
                 code = gate.get("code", "")
                 if code in ("runtime_available", "artifact_verified"):
                     continue  # already evaluated above
+                g_cls, g_phase, _ = classify_gate(code)
+                if g_cls == "output_quality":
+                    continue  # deferred to post-inference
                 required = gate.get("required", True)
                 result = _gates.evaluate(gate, engine=engine, locality=locality)
+                result.gate_class = g_cls
+                result.evaluation_phase = g_phase
                 gate_results.append(result)
                 if result.status == GateStatus.FAILED and required:
                     gate_failed = True
@@ -414,6 +628,10 @@ class CandidateAttemptRunner:
                                 code="gate_failed",
                                 stage="gate",
                                 message=f"{code} gate failed",
+                                gate_code=code,
+                                gate_class=g_cls,
+                                evaluation_phase=g_phase,
+                                candidate_index=idx,
                             )
                             from_attempt = idx
                         continue
@@ -461,6 +679,108 @@ class CandidateAttemptRunner:
         if locality == "cloud":
             return "hosted_gateway"
         return "sdk_runtime"
+
+    def _evaluate_output_quality_gates(
+        self,
+        candidate: dict[str, Any],
+        response: Any,
+        ready_attempt: RouteAttempt,
+        idx: int,
+        *,
+        first_token_emitted: bool = False,
+    ) -> RouteAttempt | None:
+        """Evaluate post-inference output_quality gates for a candidate.
+
+        Returns a failed RouteAttempt if a required gate fails and fallback
+        is possible (output not yet visible). Returns None if all gates pass
+        or failures are advisory/non-blocking.
+        """
+        gates = candidate.get("gates", [])
+        oq_gates = [g for g in gates if classify_gate(g.get("code", ""))[0] == "output_quality"]
+        if not oq_gates:
+            return None
+
+        evaluator = self._output_quality_evaluator
+        advisory_failures: list[GateResult] = []
+
+        for gate in oq_gates:
+            code = gate.get("code", "")
+            required = gate.get("required", True)
+            g_cls, g_phase, blocking_default = classify_gate(code)
+
+            if evaluator is None:
+                # No evaluator: unknown gate handling
+                if required:
+                    # Unknown required gate → fail closed
+                    result = GateResult(
+                        code=code,
+                        status=GateStatus.FAILED,
+                        reason_code="no_evaluator",
+                        gate_class=g_cls,
+                        evaluation_phase=g_phase,
+                    )
+                    ready_attempt.gate_results.append(result)
+
+                    if first_token_emitted:
+                        # Output already visible — record failure, no fallback
+                        advisory_failures.append(result)
+                        continue
+
+                    return RouteAttempt(
+                        index=idx,
+                        locality=ready_attempt.locality,
+                        mode=ready_attempt.mode,
+                        engine=ready_attempt.engine,
+                        artifact=ready_attempt.artifact,
+                        status=AttemptStatus.FAILED,
+                        stage=AttemptStage.OUTPUT_QUALITY,
+                        gate_results=ready_attempt.gate_results,
+                        reason_code=f"quality_gate_{code}",
+                        reason_message=f"output quality gate {code} failed (no evaluator)",
+                    )
+                else:
+                    # Unknown advisory gate → record "unknown", continue
+                    result = GateResult(
+                        code=code,
+                        status=GateStatus.UNKNOWN,
+                        reason_code="no_evaluator",
+                        gate_class=g_cls,
+                        evaluation_phase=g_phase,
+                    )
+                    ready_attempt.gate_results.append(result)
+                    continue
+
+            result = evaluator.evaluate(gate, response)
+            result.gate_class = g_cls
+            result.evaluation_phase = g_phase
+            ready_attempt.gate_results.append(result)
+
+            if result.status == GateStatus.FAILED:
+                if not required:
+                    # Advisory failure → record, continue
+                    advisory_failures.append(result)
+                    continue
+
+                if first_token_emitted:
+                    # Output already visible — record failure, no fallback
+                    advisory_failures.append(result)
+                    continue
+
+                # Required failure before output visible → trigger fallback
+                return RouteAttempt(
+                    index=idx,
+                    locality=ready_attempt.locality,
+                    mode=ready_attempt.mode,
+                    engine=ready_attempt.engine,
+                    artifact=ready_attempt.artifact,
+                    status=AttemptStatus.FAILED,
+                    stage=AttemptStage.OUTPUT_QUALITY,
+                    gate_results=ready_attempt.gate_results,
+                    reason_code=f"quality_gate_{code}",
+                    reason_message=f"output quality gate {code} failed",
+                )
+
+        return None
 
     async def run_with_inference(
         self,
@@ -556,6 +876,7 @@ class CandidateAttemptRunner:
                             code=reason_code,
                             stage=AttemptStage.INFERENCE.value,
                             message=failed_attempt.reason_message,
+                            candidate_index=idx,
                         )
                         from_attempt = idx
                     continue
@@ -564,6 +885,38 @@ class CandidateAttemptRunner:
                     selected_attempt=None,
                     attempts=self._attempts,
                     error=exc,
+                )
+
+            # ------------------------------------------------------------------
+            # Post-inference: evaluate output_quality gates
+            # ------------------------------------------------------------------
+            quality_failure = self._evaluate_output_quality_gates(
+                candidate,
+                value,
+                ready_attempt,
+                idx,
+                first_token_emitted=False,  # non-streaming: output not visible yet
+            )
+            if quality_failure is not None:
+                # Required output_quality gate failed before output visible → fallback
+                self._attempts.append(quality_failure)
+                if self._fallback_allowed and idx < len(candidates) - 1:
+                    if fallback_trigger is None:
+                        fallback_trigger = FallbackTrigger(
+                            code=quality_failure.reason_code,
+                            stage=AttemptStage.OUTPUT_QUALITY.value,
+                            message=quality_failure.reason_message,
+                            gate_code=quality_failure.reason_code.replace("quality_gate_", ""),
+                            gate_class="output_quality",
+                            evaluation_phase="post_inference",
+                            candidate_index=idx,
+                        )
+                        from_attempt = idx
+                    continue
+                return AttemptLoopResult(
+                    selected_attempt=None,
+                    attempts=self._attempts,
+                    error=None,
                 )
 
             self._attempts.append(ready_attempt)

@@ -144,6 +144,12 @@ class RouteEvent:
     total_tokens: Optional[int] = None
     duration_ms: Optional[float] = None
 
+    # Output quality evaluation
+    quality_evaluator_name: Optional[str] = None
+    quality_score: Optional[float] = None
+    quality_reason_code: Optional[str] = None
+    advisory_failures: Optional[list[dict[str, Any]]] = None
+
     def to_dict(self) -> dict[str, Any]:
         """Serialize to a dict suitable for telemetry upload.
 
@@ -193,6 +199,10 @@ def build_route_event(
     tokens_per_second: Optional[float] = None,
     total_tokens: Optional[int] = None,
     duration_ms: Optional[float] = None,
+    quality_evaluator_name: Optional[str] = None,
+    quality_score: Optional[float] = None,
+    quality_reason_code: Optional[str] = None,
+    advisory_failures: Optional[list[dict[str, Any]]] = None,
 ) -> RouteEvent:
     """Construct a RouteEvent with a fresh route_id."""
     from octomil.runtime.planner.schemas import normalize_planner_source
@@ -231,6 +241,10 @@ def build_route_event(
         tokens_per_second=tokens_per_second,
         total_tokens=total_tokens,
         duration_ms=duration_ms,
+        quality_evaluator_name=quality_evaluator_name,
+        quality_score=quality_score,
+        quality_reason_code=quality_reason_code,
+        advisory_failures=advisory_failures,
     )
 
 

@@ -49,6 +49,10 @@ from octomil.runtime.routing.attempt_runner import (
     RouteAttempt,
     RuntimeChecker,
 )
+from octomil.runtime.routing.evaluators import (
+    EvaluatorRegistry,
+    RegistryBackedEvaluator,
+)
 
 from .types import (
     AssistantInput,
@@ -217,6 +221,22 @@ def _is_synthetic_cloud_fallback(selection: Any) -> bool:
     return _is_synthetic_cloud_fallback_impl(selection)
 
 
+def _output_quality_evaluator_for_request(
+    runtime_request: RuntimeRequest,
+) -> RegistryBackedEvaluator:
+    """Build the default SDK-local output quality evaluator for a request."""
+    json_schema: dict[str, Any] | None = None
+    if runtime_request.json_schema and runtime_request.json_schema != "{}":
+        try:
+            parsed = json.loads(runtime_request.json_schema)
+            if isinstance(parsed, dict):
+                json_schema = parsed
+        except ValueError:
+            json_schema = None
+
+    return RegistryBackedEvaluator(EvaluatorRegistry.with_defaults(json_schema=json_schema))
+
+
 class _PlannerRuntimeAvailabilityChecker(RuntimeChecker):
     """Reject planner local candidates whose concrete engine is unavailable."""
 
@@ -336,6 +356,7 @@ class OctomilResponses:
         runner = CandidateAttemptRunner(
             fallback_allowed=fallback_allowed,
             streaming=streaming,
+            output_quality_evaluator=_output_quality_evaluator_for_request(runtime_request),
         )
         runtime_model_id = _runtime_model_for_selection(selection, model_id)
 
@@ -465,6 +486,7 @@ class OctomilResponses:
                     runner = CandidateAttemptRunner(
                         fallback_allowed=fallback_allowed,
                         streaming=True,
+                        output_quality_evaluator=_output_quality_evaluator_for_request(runtime_request),
                     )
                     async for event in self._stream_with_attempt_runner(
                         request, model_id, runtime_request, candidates, runner, selection
@@ -654,6 +676,37 @@ class OctomilResponses:
                         )
                     if chunk.usage is not None:
                         last_usage = chunk.usage
+
+                assert ready_attempt is not None
+                quality_failure = runner._evaluate_output_quality_gates(
+                    candidate,
+                    "".join(text_parts),
+                    ready_attempt,
+                    idx,
+                    first_token_emitted=first_token_emitted,
+                )
+                if quality_failure is not None and not first_token_emitted:
+                    stream_attempts.append(quality_failure)
+                    if (
+                        runner.should_fallback_after_inference_error(first_token_emitted=False)
+                        and idx < len(candidates) - 1
+                    ):
+                        if fallback_trigger is None:
+                            fallback_trigger = FallbackTrigger(
+                                code=quality_failure.reason_code,
+                                stage=AttemptStage.OUTPUT_QUALITY.value,
+                                message=quality_failure.reason_message,
+                                gate_code=quality_failure.reason_code.replace("quality_gate_", ""),
+                                gate_class="output_quality",
+                                evaluation_phase="post_inference",
+                                candidate_index=idx,
+                            )
+                            from_attempt = idx
+                        text_parts.clear()
+                        tool_call_buffers.clear()
+                        last_usage = None
+                        continue
+                    raise RuntimeError(quality_failure.reason_message)
 
                 selected_locality = _locality_for_candidate(candidate)
                 is_fallback = idx > 0
