@@ -258,6 +258,32 @@ class TestArtifactVerificationFailure:
         assert result.attempts[0].stage == AttemptStage.VERIFY
 
 
+class TestDeviceEnvironmentGateFailure:
+    def test_required_wifi_gate_fails_closed_and_falls_back(self, monkeypatch) -> None:
+        monkeypatch.setattr(
+            "octomil.device_info.get_network_type",
+            lambda: "unknown",
+        )
+        gates = [
+            {"code": "require_wifi", "required": True, "source": "server"},
+        ]
+        runner = CandidateAttemptRunner(fallback_allowed=True)
+        result = runner.run(
+            [_local_candidate(gates=gates), _cloud_candidate()],
+            runtime_checker=_AlwaysAvailableRuntime(),
+            artifact_checker=_AlwaysOkArtifact(),
+        )
+
+        assert result.succeeded
+        assert result.attempts[0].status == AttemptStatus.FAILED
+        assert result.attempts[0].stage == AttemptStage.GATE
+        failed_gate = next(g for g in result.attempts[0].gate_results if g.code == "require_wifi")
+        assert failed_gate.status == GateStatus.FAILED
+        assert failed_gate.reason_code == "network_state_unavailable"
+        assert result.selected_attempt is not None
+        assert result.selected_attempt.locality == "cloud"
+
+
 class TestStreamingFlagPreserved:
     def test_streaming_flag_stored(self) -> None:
         runner = CandidateAttemptRunner(streaming=True)
