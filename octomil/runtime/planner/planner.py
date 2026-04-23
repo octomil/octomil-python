@@ -11,8 +11,10 @@ from .app_ref import is_app_ref, parse_app_ref
 from .client import RuntimePlannerClient
 from .device_profile import collect_device_runtime_profile
 from .schemas import (
+    AppResolution,
     CandidateGate,
     DeviceRuntimeProfile,
+    ModelResolution,
     RuntimeArtifactPlan,
     RuntimeCandidatePlan,
     RuntimePlanResponse,
@@ -127,13 +129,14 @@ class RuntimePlanner:
             if server_plan is not None:
                 logger.debug("Received server plan for %s/%s", effective_model, capability)
 
-                # If the server returned an app_resolution, use the resolved
-                # model as the effective model for local engine selection and
-                # honour the app-level routing policy.
+                resolved_model = _resolved_model_from_plan(server_plan)
+                if resolved_model:
+                    effective_model = resolved_model
+
+                # Honour the app-level routing policy when the server resolved
+                # through an app reference.
                 if server_plan.app_resolution is not None:
                     ar = server_plan.app_resolution
-                    if ar.selected_model:
-                        effective_model = ar.selected_model
                     if ar.routing_policy:
                         routing_policy = ar.routing_policy
                         is_private = routing_policy == "private"
@@ -154,8 +157,8 @@ class RuntimePlanner:
         if server_plan is not None:
             selection = self._resolve_from_server_plan(server_plan, device=device, is_private=is_private)
             if selection is not None:
-                # Attach app_resolution to selection so callers can inspect it
                 selection.app_resolution = server_plan.app_resolution
+                selection.resolution = server_plan.resolution
                 return selection
 
         # Step 5-8: Fall back to local engine selection
@@ -168,6 +171,8 @@ class RuntimePlanner:
         )
         if server_plan is not None and server_plan.app_resolution is not None:
             selection.app_resolution = server_plan.app_resolution
+        if server_plan is not None and server_plan.resolution is not None:
+            selection.resolution = server_plan.resolution
         return selection
 
     def _resolve_from_server_plan(
@@ -196,6 +201,8 @@ class RuntimePlanner:
                     fallback_candidates=plan.fallback_candidates,
                     fallback_allowed=plan.fallback_allowed,
                     reason=candidate.reason,
+                    app_resolution=plan.app_resolution,
+                    resolution=plan.resolution,
                 )
             elif candidate.locality == "cloud":
                 return RuntimeSelection(
@@ -208,6 +215,8 @@ class RuntimePlanner:
                     fallback_candidates=plan.fallback_candidates,
                     fallback_allowed=plan.fallback_allowed,
                     reason=candidate.reason,
+                    app_resolution=plan.app_resolution,
+                    resolution=plan.resolution,
                 )
 
         # Try fallback candidates
@@ -224,6 +233,8 @@ class RuntimePlanner:
                     fallback_candidates=[],
                     fallback_allowed=plan.fallback_allowed,
                     reason=f"fallback: {candidate.reason}",
+                    app_resolution=plan.app_resolution,
+                    resolution=plan.resolution,
                 )
 
         return None
@@ -348,6 +359,8 @@ class RuntimePlanner:
         """Convert a cached plan dict back into a RuntimeSelection."""
         candidates = plan_dict.get("candidates", [])
         installed_engines = {_canonical_engine_id(r.engine) for r in device.installed_runtimes}
+        app_resolution = plan_dict_to_app_resolution(plan_dict.get("app_resolution"))
+        resolution = plan_dict_to_model_resolution(plan_dict.get("resolution"))
 
         for c in candidates:
             if c.get("locality") == "local":
@@ -362,6 +375,8 @@ class RuntimePlanner:
                     fallback_allowed=plan_dict.get("fallback_allowed", True),
                     source=source,
                     reason=c.get("reason", ""),
+                    app_resolution=app_resolution,
+                    resolution=resolution,
                 )
             elif c.get("locality") == "cloud":
                 return RuntimeSelection(
@@ -372,6 +387,8 @@ class RuntimePlanner:
                     fallback_allowed=plan_dict.get("fallback_allowed", True),
                     source=source,
                     reason=c.get("reason", ""),
+                    app_resolution=app_resolution,
+                    resolution=resolution,
                 )
 
         # Nothing matched from cache — return generic fallback
@@ -399,6 +416,71 @@ def _canonical_engine_id(engine: str | None) -> str:
         return ""
     cleaned = engine.strip()
     return _ENGINE_ALIASES.get(cleaned.lower(), cleaned)
+
+
+def _resolved_model_from_plan(plan: RuntimePlanResponse) -> str | None:
+    """Return the concrete model resolved by the server plan, if any."""
+    if plan.app_resolution is not None and plan.app_resolution.selected_model:
+        return plan.app_resolution.selected_model
+    if plan.resolution is not None and plan.resolution.resolved_model:
+        return plan.resolution.resolved_model
+    return None
+
+
+def plan_dict_to_app_resolution(data: dict | None) -> AppResolution | None:
+    """Rehydrate a cached app_resolution dict."""
+    if not isinstance(data, dict):
+        return None
+
+    artifact_candidates: list[RuntimeArtifactPlan] = []
+    for artifact_data in data.get("artifact_candidates", []):
+        if isinstance(artifact_data, dict):
+            artifact_candidates.append(
+                RuntimeArtifactPlan(
+                    model_id=artifact_data.get("model_id", ""),
+                    artifact_id=artifact_data.get("artifact_id"),
+                    model_version=artifact_data.get("model_version"),
+                    format=artifact_data.get("format"),
+                    quantization=artifact_data.get("quantization"),
+                    uri=artifact_data.get("uri"),
+                    digest=artifact_data.get("digest"),
+                    size_bytes=artifact_data.get("size_bytes"),
+                    min_ram_bytes=artifact_data.get("min_ram_bytes"),
+                )
+            )
+
+    return AppResolution(
+        app_id=data.get("app_id", ""),
+        capability=data.get("capability", ""),
+        routing_policy=data.get("routing_policy", ""),
+        selected_model=data.get("selected_model", ""),
+        app_slug=data.get("app_slug"),
+        selected_model_variant_id=data.get("selected_model_variant_id"),
+        selected_model_version=data.get("selected_model_version"),
+        artifact_candidates=artifact_candidates,
+        preferred_engines=data.get("preferred_engines", []),
+        fallback_policy=data.get("fallback_policy"),
+        plan_ttl_seconds=data.get("plan_ttl_seconds", 604800),
+    )
+
+
+def plan_dict_to_model_resolution(data: dict | None) -> ModelResolution | None:
+    """Rehydrate a cached generic model-resolution block."""
+    if not isinstance(data, dict):
+        return None
+
+    return ModelResolution(
+        ref_kind=data.get("ref_kind", ""),
+        original_ref=data.get("original_ref", ""),
+        resolved_model=data.get("resolved_model", ""),
+        deployment_id=data.get("deployment_id"),
+        deployment_key=data.get("deployment_key"),
+        experiment_id=data.get("experiment_id"),
+        variant_id=data.get("variant_id"),
+        variant_name=data.get("variant_name"),
+        capability=data.get("capability"),
+        routing_policy=data.get("routing_policy"),
+    )
 
 
 def plan_dict_to_candidates(candidates: list[dict]) -> list[RuntimeCandidatePlan]:

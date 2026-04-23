@@ -16,6 +16,9 @@ from octomil._generated.message_role import MessageRole
 from octomil.execution.planner_resolution import (
     _is_synthetic_cloud_fallback as _is_synthetic_cloud_fallback_impl,
 )
+from octomil.execution.planner_resolution import (
+    _runtime_model_for_selection,
+)
 from octomil.execution.route_metadata_mapper import (
     RouteMetadata,
     _route_metadata_from_selection,
@@ -202,15 +205,6 @@ def _locality_for_candidate(candidate: dict[str, Any]) -> str:
     if candidate.get("locality") == "cloud":
         return LOCALITY_CLOUD
     return LOCALITY_ON_DEVICE
-
-
-def _runtime_model_for_selection(selection: Any, requested_model: str) -> str:
-    """Return the concrete model a planner selection resolved to."""
-    app_resolution = getattr(selection, "app_resolution", None)
-    selected_model = getattr(app_resolution, "selected_model", None)
-    if selected_model:
-        return str(selected_model)
-    return requested_model
 
 
 def _is_synthetic_cloud_fallback(selection: Any) -> bool:

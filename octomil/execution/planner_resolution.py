@@ -77,6 +77,30 @@ def _is_synthetic_cloud_fallback(selection: Any) -> bool:
     )
 
 
+def _runtime_model_for_selection(selection: Any, requested_model: str) -> str:
+    """Return the concrete model a planner selection resolved to.
+
+    Prefer app-specific resolution when present, then fall back to the generic
+    model-resolution block used for aliases, defaults, deployments, and
+    experiments. Only fall back to the original caller-provided ref when the
+    planner did not resolve a concrete model.
+    """
+    if selection is None:
+        return requested_model
+
+    app_resolution = getattr(selection, "app_resolution", None)
+    selected_model = getattr(app_resolution, "selected_model", None)
+    if selected_model:
+        return str(selected_model)
+
+    resolution = getattr(selection, "resolution", None)
+    resolved_model = getattr(resolution, "resolved_model", None)
+    if resolved_model:
+        return str(resolved_model)
+
+    return requested_model
+
+
 def _selection_candidate_dicts(selection: Optional[Any], routing_policy: RoutingPolicy) -> list[dict[str, Any]]:
     """Return the ordered candidate list the SDK should attempt for this request."""
     if selection is not None and _is_synthetic_cloud_fallback(selection):
@@ -154,6 +178,7 @@ def _candidate_to_selection(selection: Optional[Any], candidate: dict[str, Any])
         fallback_allowed=getattr(selection, "fallback_allowed", True) if selection is not None else True,
         reason=candidate.get("reason", getattr(selection, "reason", "") if selection is not None else ""),
         app_resolution=getattr(selection, "app_resolution", None) if selection is not None else None,
+        resolution=getattr(selection, "resolution", None) if selection is not None else None,
     )
 
 

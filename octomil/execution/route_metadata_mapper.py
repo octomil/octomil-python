@@ -188,7 +188,7 @@ def _route_metadata_from_selection(
             reason=RouteReason(code="planner_unavailable", message="planner not available"),
         )
 
-    # Build resolved model info from app_resolution when available
+    # Build resolved model info from planner resolution when available.
     resolved: Optional[RouteModelResolved] = None
     app_resolution = getattr(selection, "app_resolution", None)
     if app_resolution is not None:
@@ -197,6 +197,14 @@ def _route_metadata_from_selection(
             variant_id=app_resolution.selected_model_variant_id,
             version_id=app_resolution.selected_model_version,
         )
+    else:
+        resolution = getattr(selection, "resolution", None)
+        resolved_model = getattr(resolution, "resolved_model", None)
+        if resolved_model:
+            resolved = RouteModelResolved(
+                id=str(resolved_model),
+                variant_id=getattr(resolution, "variant_id", None),
+            )
 
     selected_attempt = getattr(attempt_loop, "selected_attempt", None) if attempt_loop is not None else None
 
