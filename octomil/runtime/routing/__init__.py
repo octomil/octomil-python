@@ -1,6 +1,7 @@
 """Routing layer: candidate attempt runner and route event telemetry."""
 
 from octomil.runtime.routing.attempt_runner import (
+    GATE_CLASSIFICATION,
     ArtifactChecker,
     AttemptArtifact,
     AttemptLoopResult,
@@ -11,8 +12,10 @@ from octomil.runtime.routing.attempt_runner import (
     GateEvaluator,
     GateResult,
     GateStatus,
+    OutputQualityGateEvaluator,
     RouteAttempt,
     RuntimeChecker,
+    classify_gate,
 )
 from octomil.runtime.routing.model_ref import (
     CANONICAL_MODEL_REF_KINDS,
@@ -37,16 +40,19 @@ __all__ = [
     "CandidateAttemptRunner",
     "FallbackTrigger",
     "FORBIDDEN_TELEMETRY_KEYS",
+    "GATE_CLASSIFICATION",
     "CANONICAL_MODEL_REF_KINDS",
     "GateEvaluator",
     "GateResult",
     "GateStatus",
+    "OutputQualityGateEvaluator",
     "CandidateAttemptSummary",
     "RouteAttempt",
     "RouteEvent",
     "RuntimeChecker",
     "ParsedModelRef",
     "build_route_event",
+    "classify_gate",
     "emit_route_event",
     "parse_model_ref",
     "strip_forbidden_keys",
