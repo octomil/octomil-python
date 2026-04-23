@@ -140,4 +140,5 @@ def collect_device_runtime_profile(
         gpu_core_count=None,
         accelerators=_detect_accelerators(),
         installed_runtimes=_detect_installed_runtimes(exclude_echo=exclude_echo),
+        supported_gate_codes=[],
     )

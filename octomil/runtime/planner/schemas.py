@@ -33,6 +33,7 @@ class DeviceRuntimeProfile:
     gpu_core_count: int | None = None
     accelerators: list[str] = field(default_factory=list)
     installed_runtimes: list[InstalledRuntime] = field(default_factory=list)
+    supported_gate_codes: list[str] | None = None
 
 
 @dataclass
