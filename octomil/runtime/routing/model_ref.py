@@ -15,6 +15,7 @@ class ParsedModelRef:
 
     raw: str
     kind: str
+    model_slug: str | None = None
     app_slug: str | None = None
     capability: str | None = None
     deployment_id: str | None = None
@@ -48,6 +49,8 @@ def parse_model_ref(model: str | None) -> ParsedModelRef:
 
     if raw.startswith("deploy_") and len(raw) > len("deploy_"):
         return ParsedModelRef(raw=raw, kind="deployment", deployment_id=raw)
+    if raw == "deploy_":
+        return ParsedModelRef(raw=raw, kind="unknown")
 
     if raw.startswith("exp_") and "/" in raw:
         experiment_id, variant_id = raw.split("/", 1)
@@ -62,8 +65,10 @@ def parse_model_ref(model: str | None) -> ParsedModelRef:
 
     if raw.startswith("alias:") and raw.removeprefix("alias:"):
         return ParsedModelRef(raw=raw, kind="alias")
+    if raw == "alias:":
+        return ParsedModelRef(raw=raw, kind="unknown")
 
     if raw.startswith("@") or "://" in raw:
         return ParsedModelRef(raw=raw, kind="unknown")
 
-    return ParsedModelRef(raw=raw, kind="model")
+    return ParsedModelRef(raw=raw, kind="model", model_slug=raw)
