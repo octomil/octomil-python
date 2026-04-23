@@ -99,6 +99,7 @@ class Octomil:
         org_id: str | None = None,
         auth: AuthConfig | None = None,
         planner_routing: bool | None = None,
+        _force_hosted: bool = False,
         **kwargs: Any,
     ) -> None:
         """Initialize the Octomil facade.
@@ -125,6 +126,7 @@ class Octomil:
         self._client: Any = None
         self._responses_wrapper: FacadeResponses | None = None
         self._embeddings_wrapper: FacadeEmbeddings | None = None
+        self._force_hosted = _force_hosted
 
         if auth is not None:
             self._auth: AuthConfig = auth
@@ -143,6 +145,12 @@ class Octomil:
             self._auth = OrgApiKeyAuth(api_key=api_key, org_id=org_id)
         else:
             raise ValueError("One of publishable_key=, api_key= + org_id=, or auth= must be provided.")
+
+        if self._force_hosted:
+            from .auth import OrgApiKeyAuth
+
+            if not isinstance(self._auth, OrgApiKeyAuth):
+                raise ValueError("Octomil.hosted_from_env() requires server-side API key authentication.")
 
         from .planner_defaults import resolve_planner_enabled
 
@@ -167,28 +175,78 @@ class Octomil:
         older ``OCTOMIL_API_KEY`` name is still accepted as a compatibility
         fallback so existing deployments keep working.
         """
+        return cls(
+            auth=cls._org_auth_from_env(
+                server_key_var=server_key_var,
+                legacy_api_key_var=legacy_api_key_var,
+                org_id_var=org_id_var,
+                api_base_var=api_base_var,
+                caller="Octomil.from_env()",
+            ),
+            **kwargs,
+        )
+
+    @classmethod
+    def hosted_from_env(
+        cls,
+        *,
+        server_key_var: str = "OCTOMIL_SERVER_KEY",
+        legacy_api_key_var: str = "OCTOMIL_API_KEY",
+        org_id_var: str = "OCTOMIL_ORG_ID",
+        api_base_var: str = "OCTOMIL_API_BASE",
+        **kwargs: Any,
+    ) -> "Octomil":
+        """Construct an explicit hosted/cloud-only client from environment config.
+
+        This is the server-side escape hatch for hosted REST behavior. It
+        bypasses local planner/runtime selection for Responses and dispatches
+        through the hosted OpenAI-compatible gateway instead.
+        """
+        # False/None are accepted for shared kwargs call sites; True would
+        # contradict this constructor's explicit cloud-only contract.
+        planner_routing = kwargs.pop("planner_routing", None)
+        if planner_routing is True:
+            raise ValueError("Octomil.hosted_from_env() is always cloud-only; do not pass planner_routing=True.")
+
+        return cls(
+            auth=cls._org_auth_from_env(
+                server_key_var=server_key_var,
+                legacy_api_key_var=legacy_api_key_var,
+                org_id_var=org_id_var,
+                api_base_var=api_base_var,
+                caller="Octomil.hosted_from_env()",
+            ),
+            planner_routing=False,
+            _force_hosted=True,
+            **kwargs,
+        )
+
+    @staticmethod
+    def _org_auth_from_env(
+        *,
+        server_key_var: str,
+        legacy_api_key_var: str,
+        org_id_var: str,
+        api_base_var: str,
+        caller: str,
+    ) -> AuthConfig:
         api_key = os.environ.get(server_key_var) or os.environ.get(legacy_api_key_var)
         if not api_key:
             raise ValueError(
-                f"Set {server_key_var} before calling Octomil.from_env() "
+                f"Set {server_key_var} before calling {caller} "
                 f"(or set {legacy_api_key_var} for legacy compatibility)."
             )
 
         org_id = os.environ.get(org_id_var)
         if not org_id:
-            raise ValueError(f"Set {org_id_var} before calling Octomil.from_env().")
+            raise ValueError(f"Set {org_id_var} before calling {caller}.")
 
         from .auth import OrgApiKeyAuth
 
         api_base = os.environ.get(api_base_var)
         if api_base:
-            return cls(auth=OrgApiKeyAuth(api_key=api_key, org_id=org_id, api_base=api_base), **kwargs)
-        return cls(auth=OrgApiKeyAuth(api_key=api_key, org_id=org_id), **kwargs)
-
-    # TODO: Add hosted_from_env() once cloud dispatch is wired through
-    # ExecutionKernel. The facade delegates to OctomilResponses which resolves
-    # runtimes via ModelRuntimeRegistry (local only). Re-add once the facade
-    # uses ExecutionKernel or OctomilResponses gains a cloud dispatch path.
+            return OrgApiKeyAuth(api_key=api_key, org_id=org_id, api_base=api_base)
+        return OrgApiKeyAuth(api_key=api_key, org_id=org_id)
 
     @property
     def planner_enabled(self) -> bool:
@@ -207,9 +265,34 @@ class Octomil:
             planner_enabled=self._planner_enabled,
             **self._kwargs,
         )
-        self._responses_wrapper = FacadeResponses(self._client.responses)
+        responses = self._build_hosted_responses() if self._force_hosted else self._client.responses
+        self._responses_wrapper = FacadeResponses(responses)
         self._embeddings_wrapper = FacadeEmbeddings(self._client)
         self._initialized = True
+
+    def _build_hosted_responses(self) -> OctomilResponses:
+        """Build a Responses namespace that always dispatches through hosted cloud."""
+        from .auth import OrgApiKeyAuth
+        from .config.local import CloudProfile
+        from .execution.cloud_dispatch import _openai_base_url
+        from .responses import OctomilResponses
+        from .runtime.core.cloud_runtime import CloudModelRuntime
+        from .runtime.core.policy import RoutingPolicy
+
+        if not isinstance(self._auth, OrgApiKeyAuth):
+            raise ValueError("Octomil.hosted_from_env() requires server-side API key authentication.")
+
+        base_url = _openai_base_url(CloudProfile(name="hosted", base_url=self._auth.api_base))
+
+        def _resolve_cloud_runtime(model_id: str) -> CloudModelRuntime:
+            return CloudModelRuntime(base_url=base_url, api_key=self._auth.api_key, model=model_id)
+
+        return OctomilResponses(
+            runtime_resolver=_resolve_cloud_runtime,
+            telemetry_reporter=getattr(self._client, "_reporter", None),
+            default_routing_policy=RoutingPolicy.cloud_only(),
+            planner_enabled=False,
+        )
 
     @property
     def responses(self) -> FacadeResponses:
