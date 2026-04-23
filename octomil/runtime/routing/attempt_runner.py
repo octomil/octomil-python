@@ -249,6 +249,11 @@ GATE_CLASSIFICATION: dict[str, tuple[str, str, bool]] = {
     "min_free_memory_bytes": ("performance", "pre_inference", True),
     "min_free_storage_bytes": ("performance", "pre_inference", True),
     "benchmark_fresh": ("performance", "pre_inference", False),
+    # Device-environment gates
+    "min_battery_pct": ("performance", "pre_inference", False),
+    "max_thermal_state": ("performance", "pre_inference", False),
+    "require_charging": ("performance", "pre_inference", False),
+    "require_wifi": ("readiness", "pre_inference", True),
     "schema_valid": ("output_quality", "post_inference", True),
     "tool_call_valid": ("output_quality", "post_inference", True),
     "safety_passed": ("output_quality", "post_inference", True),
