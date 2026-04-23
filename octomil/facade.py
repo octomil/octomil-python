@@ -146,6 +146,12 @@ class Octomil:
         else:
             raise ValueError("One of publishable_key=, api_key= + org_id=, or auth= must be provided.")
 
+        if self._force_hosted:
+            from .auth import OrgApiKeyAuth
+
+            if not isinstance(self._auth, OrgApiKeyAuth):
+                raise ValueError("Octomil.hosted_from_env() requires server-side API key authentication.")
+
         from .planner_defaults import resolve_planner_enabled
 
         self._planner_enabled = resolve_planner_enabled(
@@ -196,6 +202,8 @@ class Octomil:
         bypasses local planner/runtime selection for Responses and dispatches
         through the hosted OpenAI-compatible gateway instead.
         """
+        # False/None are accepted for shared kwargs call sites; True would
+        # contradict this constructor's explicit cloud-only contract.
         planner_routing = kwargs.pop("planner_routing", None)
         if planner_routing is True:
             raise ValueError("Octomil.hosted_from_env() is always cloud-only; do not pass planner_routing=True.")

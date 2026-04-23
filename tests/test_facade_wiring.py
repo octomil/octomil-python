@@ -151,6 +151,16 @@ class TestOctomilFacadeHostedFromEnv:
         else:
             raise AssertionError("Expected hosted_from_env() to reject planner_routing=True")
 
+    def test_force_hosted_requires_server_auth(self):
+        from octomil import Octomil
+
+        try:
+            Octomil(publishable_key="oct_pub_test_abc", _force_hosted=True)
+        except ValueError as exc:
+            assert "server-side API key" in str(exc)
+        else:
+            raise AssertionError("Expected _force_hosted to require server-side auth")
+
     def test_responses_dispatch_through_cloud_runtime(self, monkeypatch):
         from octomil import Octomil
         from octomil.runtime.core.cloud_runtime import CloudModelRuntime
@@ -183,6 +193,49 @@ class TestOctomilFacadeHostedFromEnv:
         assert response.route.execution.locality == "cloud"
         assert response.route.execution.mode == "hosted_gateway"
         assert seen == {"model": "gpt-test", "base_url": "https://api.octomil.com/v1"}
+
+    def test_stream_dispatches_through_cloud_runtime(self, monkeypatch):
+        from octomil import Octomil
+        from octomil.responses.types import DoneEvent, TextDeltaEvent
+        from octomil.runtime.core.cloud_runtime import CloudModelRuntime
+        from octomil.runtime.core.types import RuntimeChunk
+
+        monkeypatch.setenv("OCTOMIL_SERVER_KEY", "srv_key")
+        monkeypatch.setenv("OCTOMIL_ORG_ID", "org_public_id")
+        monkeypatch.setenv("OCTOMIL_API_BASE", "https://api.octomil.com/api/v1")
+
+        seen: dict[str, str | None] = {}
+
+        async def _fake_stream(self, request):
+            seen["model"] = request.model
+            seen["base_url"] = self._client._base_url
+            yield RuntimeChunk(text="hosted ")
+            yield RuntimeChunk(text="stream")
+
+        monkeypatch.setattr(CloudModelRuntime, "stream", _fake_stream)
+
+        async def _run():
+            client = Octomil.hosted_from_env()
+            await client.initialize()
+            events = []
+            async for event in client.responses.stream(model="gpt-stream", input="hello"):
+                events.append(event)
+            return events
+
+        events = asyncio.run(_run())
+
+        assert isinstance(events[0], TextDeltaEvent)
+        assert events[0].delta == "hosted "
+        assert isinstance(events[1], TextDeltaEvent)
+        assert events[1].delta == "stream"
+        assert isinstance(events[2], DoneEvent)
+        assert events[2].response.output_text == "hosted stream"
+        assert events[2].response.locality == "cloud"
+        assert events[2].response.route is not None
+        assert events[2].response.route.execution is not None
+        assert events[2].response.route.execution.locality == "cloud"
+        assert events[2].response.route.execution.mode == "hosted_gateway"
+        assert seen == {"model": "gpt-stream", "base_url": "https://api.octomil.com/v1"}
 
 
 # ===========================================================================
