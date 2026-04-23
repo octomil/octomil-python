@@ -249,12 +249,24 @@ GATE_CLASSIFICATION: dict[str, tuple[str, str, bool]] = {
     "min_free_memory_bytes": ("performance", "pre_inference", True),
     "min_free_storage_bytes": ("performance", "pre_inference", True),
     "benchmark_fresh": ("performance", "pre_inference", False),
+    # Device-environment gates
+    "min_battery_pct": ("performance", "pre_inference", False),
+    "max_thermal_state": ("performance", "pre_inference", False),
+    "require_charging": ("performance", "pre_inference", False),
+    "require_wifi": ("readiness", "pre_inference", True),
     "schema_valid": ("output_quality", "post_inference", True),
     "tool_call_valid": ("output_quality", "post_inference", True),
     "safety_passed": ("output_quality", "post_inference", True),
     "evaluator_score_min": ("output_quality", "post_inference", False),
     "json_parseable": ("output_quality", "post_inference", True),
     "max_refusal_rate": ("output_quality", "post_inference", False),
+}
+
+_DEVICE_ENVIRONMENT_GATE_CODES = {
+    "min_battery_pct",
+    "max_thermal_state",
+    "require_charging",
+    "require_wifi",
 }
 
 
@@ -274,8 +286,106 @@ class _NoOpArtifactChecker(ArtifactChecker):
 
 
 class _NoOpGateEvaluator(GateEvaluator):
+    """Default gate evaluator.
+
+    Non-device gates preserve the historical permissive default so callers can
+    inject specialized benchmark/memory evaluators independently. Device
+    environment gates are different: if the server marks one required, the SDK
+    must prove the device condition before running local inference.
+    """
+
     def evaluate(self, gate: dict[str, Any], *, engine: str | None, locality: str) -> GateResult:
-        return GateResult(code=gate.get("code", "unknown"), status=GateStatus.PASSED)
+        code = gate.get("code", "unknown")
+        if code not in _DEVICE_ENVIRONMENT_GATE_CODES:
+            return GateResult(code=code, status=GateStatus.PASSED)
+
+        gate_class, phase, _ = classify_gate(code)
+        required = bool(gate.get("required", True))
+        threshold = gate.get("threshold_number")
+
+        def unavailable(reason_code: str = "device_metric_unavailable") -> GateResult:
+            return GateResult(
+                code=code,
+                status=GateStatus.FAILED if required else GateStatus.UNKNOWN,
+                threshold_number=threshold if isinstance(threshold, (int, float)) else None,
+                reason_code=reason_code if required else None,
+                gate_class=gate_class,
+                evaluation_phase=phase,
+            )
+
+        if locality != "local":
+            return GateResult(
+                code=code,
+                status=GateStatus.NOT_REQUIRED,
+                gate_class=gate_class,
+                evaluation_phase=phase,
+            )
+
+        if code == "min_battery_pct":
+            if not isinstance(threshold, (int, float)):
+                return unavailable("threshold_missing")
+            try:
+                from octomil.device_info import get_battery_level
+
+                observed = get_battery_level()
+            except Exception:
+                observed = None
+            if observed is None:
+                return unavailable()
+            passed = float(observed) >= float(threshold)
+            return GateResult(
+                code=code,
+                status=GateStatus.PASSED if passed else GateStatus.FAILED,
+                observed_number=float(observed),
+                threshold_number=float(threshold),
+                reason_code=None if passed else "battery_below_threshold",
+                gate_class=gate_class,
+                evaluation_phase=phase,
+            )
+
+        if code == "require_charging":
+            try:
+                from octomil.device_info import get_battery_level, is_charging
+
+                battery_present = get_battery_level() is not None
+                charging = is_charging()
+            except Exception:
+                battery_present = False
+                charging = False
+            if not battery_present:
+                return unavailable()
+            return GateResult(
+                code=code,
+                status=GateStatus.PASSED if charging else GateStatus.FAILED,
+                observed_string="charging" if charging else "not_charging",
+                reason_code=None if charging else "device_not_charging",
+                gate_class=gate_class,
+                evaluation_phase=phase,
+            )
+
+        if code == "require_wifi":
+            try:
+                from octomil.device_info import get_network_type
+
+                network_type = get_network_type()
+            except Exception:
+                network_type = "unknown"
+            if network_type == "unknown":
+                return unavailable("network_state_unavailable")
+            passed = network_type == "wifi"
+            return GateResult(
+                code=code,
+                status=GateStatus.PASSED if passed else GateStatus.FAILED,
+                observed_string=network_type,
+                reason_code=None if passed else "wifi_required",
+                gate_class=gate_class,
+                evaluation_phase=phase,
+            )
+
+        if code == "max_thermal_state":
+            return unavailable()
+
+        return GateResult(code=code, status=GateStatus.PASSED)
 
 
 # ---------------------------------------------------------------------------
