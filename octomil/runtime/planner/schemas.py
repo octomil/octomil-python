@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
+from octomil._generated.planner_source import PlannerSource
+
 
 @dataclass
 class InstalledRuntime:
@@ -134,15 +136,15 @@ class RuntimePlanResponse:
 # Planner source normalization
 # ---------------------------------------------------------------------------
 
-CANONICAL_PLANNER_SOURCES: frozenset[str] = frozenset({"server", "cache", "offline"})
+CANONICAL_PLANNER_SOURCES: frozenset[str] = frozenset(source.value for source in PlannerSource)
 
 _PLANNER_SOURCE_ALIASES: dict[str, str] = {
-    "local_default": "offline",
-    "server_plan": "server",
-    "cached": "cache",
-    "fallback": "offline",
-    "none": "offline",
-    "local_benchmark": "offline",
+    "local_default": PlannerSource.OFFLINE.value,
+    "server_plan": PlannerSource.SERVER.value,
+    "cached": PlannerSource.CACHE.value,
+    "fallback": PlannerSource.OFFLINE.value,
+    "none": PlannerSource.OFFLINE.value,
+    "local_benchmark": PlannerSource.OFFLINE.value,
 }
 
 
@@ -156,7 +158,7 @@ def normalize_planner_source(source: str) -> str:
     """
     if source in CANONICAL_PLANNER_SOURCES:
         return source
-    return _PLANNER_SOURCE_ALIASES.get(source, "offline")
+    return _PLANNER_SOURCE_ALIASES.get(source, PlannerSource.OFFLINE.value)
 
 
 @dataclass
