@@ -47,6 +47,7 @@ from octomil.runtime.routing.attempt_runner import (
     CandidateAttemptRunner,
     FallbackTrigger,
     RouteAttempt,
+    RuntimeChecker,
 )
 
 from .types import (
@@ -216,6 +217,33 @@ def _is_synthetic_cloud_fallback(selection: Any) -> bool:
     return _is_synthetic_cloud_fallback_impl(selection)
 
 
+class _PlannerRuntimeAvailabilityChecker(RuntimeChecker):
+    """Reject planner local candidates whose concrete engine is unavailable."""
+
+    _unsupported_engines = frozenset({"ollama", "echo"})
+
+    def check(self, *, engine: str | None, locality: str) -> tuple[bool, str | None]:
+        if locality != "local" or not engine:
+            return True, None
+
+        try:
+            from octomil.runtime.engines import get_registry as get_engine_registry
+            from octomil.runtime.planner.planner import _canonical_engine_id
+
+            canonical_engine = _canonical_engine_id(str(engine)) or str(engine)
+            if canonical_engine in self._unsupported_engines:
+                return False, "engine_not_supported"
+            runtime_engine = get_engine_registry().get_engine(canonical_engine)
+            if runtime_engine is None or runtime_engine.name in self._unsupported_engines:
+                return False, "engine_not_registered"
+            if not runtime_engine.detect():
+                return False, "engine_not_available"
+            return True, None
+        except Exception:
+            logger.debug("Planner runtime availability check failed", exc_info=True)
+            return False, "engine_detection_failed"
+
+
 # ---------------------------------------------------------------------------
 # OctomilResponses
 # ---------------------------------------------------------------------------
@@ -326,12 +354,15 @@ class OctomilResponses:
         attempt_loop = await runner.run_with_inference(
             candidates,
             execute_candidate=_execute_candidate,
+            runtime_checker=_PlannerRuntimeAvailabilityChecker(),
         )
 
         if not attempt_loop.succeeded:
             if attempt_loop.error is not None:
                 raise attempt_loop.error
-            return None
+            last_attempt = attempt_loop.attempts[-1] if attempt_loop.attempts else None
+            reason = last_attempt.reason_message if last_attempt is not None else "No planner candidate was runnable"
+            raise RuntimeError(reason)
 
         response = attempt_loop.value
         if not isinstance(response, _RuntimeResponse):
@@ -569,7 +600,7 @@ class OctomilResponses:
             readiness = CandidateAttemptRunner(
                 fallback_allowed=False,
                 streaming=True,
-            ).run([candidate])
+            ).run([candidate], runtime_checker=_PlannerRuntimeAvailabilityChecker())
             ready_attempt = readiness.attempts[0] if readiness.attempts else None
             if ready_attempt is not None:
                 ready_attempt.index = idx
@@ -786,9 +817,15 @@ class OctomilResponses:
             from octomil.runtime.planner.planner import _canonical_engine_id
 
             canonical_engine = _canonical_engine_id(str(engine_id)) or str(engine_id)
+            if canonical_engine in _PlannerRuntimeAvailabilityChecker._unsupported_engines:
+                raise RuntimeError(f"Planner-selected engine '{canonical_engine}' is not supported")
             engine_registry = get_engine_registry()
             engine = engine_registry.get_engine(canonical_engine)
-            if engine is None or not engine.detect() or engine.name == "echo":
+            if (
+                engine is None
+                or not engine.detect()
+                or engine.name in _PlannerRuntimeAvailabilityChecker._unsupported_engines
+            ):
                 raise RuntimeError(f"Planner-selected engine '{canonical_engine}' is not available")
 
             backend = engine.create_backend(model_id)

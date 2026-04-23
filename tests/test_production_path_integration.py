@@ -216,6 +216,75 @@ class TestCreateUsesAttemptRunnerWhenPlanAvailable:
         assert response.route.execution is not None
         assert response.route.execution.engine == "fake-engine"
 
+    @pytest.mark.asyncio
+    async def test_create_rejects_ollama_candidate_and_uses_cloud_fallback(self) -> None:
+        """Ollama must never be selected as an Octomil runtime engine."""
+        cloud_rt = MockRuntime("cloud fallback response")
+        ModelRuntimeRegistry.shared().default_factory = lambda model_id: cloud_rt
+
+        selection = _make_selection(
+            fallback_allowed=True,
+            candidates=[
+                {
+                    "locality": "local",
+                    "engine": "ollama",
+                    "priority": 0,
+                    "confidence": 1.0,
+                    "reason": "legacy planner candidate",
+                },
+                {
+                    "locality": "cloud",
+                    "engine": "cloud",
+                    "priority": 1,
+                    "confidence": 0.5,
+                    "reason": "policy-gated cloud fallback",
+                },
+            ],
+        )
+
+        with patch(
+            "octomil.responses.responses._try_resolve_planner_selection",
+            return_value=selection,
+        ):
+            responses = OctomilResponses(planner_enabled=True)
+            response = await responses.create(ResponseRequest(model="test-model", input=[text_input("Hello")]))
+
+        assert isinstance(response.output[0], TextOutput)
+        assert response.output[0].text == "cloud fallback response"
+        assert response.route is not None
+        assert response.route.execution is not None
+        assert response.route.execution.locality == "cloud"
+        assert response.route.fallback.used is True
+        assert response.route.attempts[0]["engine"] == "ollama"
+        assert response.route.attempts[0]["status"] == "failed"
+        assert response.route.attempts[0]["gate_results"][0]["reason_code"] == "engine_not_supported"
+
+    @pytest.mark.asyncio
+    async def test_create_fails_closed_when_ollama_is_only_candidate(self) -> None:
+        """A non-fallback local-only Ollama plan should fail clearly, not drift to another route."""
+        ModelRuntimeRegistry.shared().default_factory = lambda model_id: MockRuntime("should not run")
+
+        selection = _make_selection(
+            fallback_allowed=False,
+            candidates=[
+                {
+                    "locality": "local",
+                    "engine": "ollama",
+                    "priority": 0,
+                    "confidence": 1.0,
+                    "reason": "legacy planner candidate",
+                }
+            ],
+        )
+
+        with patch(
+            "octomil.responses.responses._try_resolve_planner_selection",
+            return_value=selection,
+        ):
+            responses = OctomilResponses(planner_enabled=True)
+            with pytest.raises(RuntimeError, match="ollama not available: engine_not_supported"):
+                await responses.create(ResponseRequest(model="test-model", input=[text_input("Hello")]))
+
 
 class TestCreateBypassesRunnerWhenNoPlan:
     @pytest.mark.asyncio

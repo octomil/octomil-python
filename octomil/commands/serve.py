@@ -50,7 +50,7 @@ def register(cli: click.Group) -> None:
     "--engine",
     "-e",
     default=None,
-    help="Force a specific engine (mlx-lm, llama.cpp, mnn, onnxruntime, ollama). "
+    help="Force a specific engine (mlx-lm, llama.cpp, mnn, onnxruntime). "
     "Default: auto-benchmark all available engines and pick fastest.",
 )
 @click.option(
@@ -545,15 +545,14 @@ def _prompt_engine_install() -> bool:
     """Prompt user to install an inference engine. Recommends max performance first.
 
     Platform-specific recommendations:
-    - macOS Apple Silicon: MLX (fastest) → llama.cpp → Ollama fallback
-    - macOS Intel: llama.cpp → ONNX Runtime → Ollama fallback
-    - Linux: llama.cpp → ONNX Runtime → Ollama fallback
-    - Windows: llama.cpp → Ollama fallback
+    - macOS Apple Silicon: MLX (fastest) → llama.cpp
+    - macOS Intel: llama.cpp → ONNX Runtime
+    - Linux: llama.cpp → ONNX Runtime
+    - Windows: llama.cpp
 
     Returns True if an engine was installed and is ready.
     """
     import platform as _platform
-    import shutil
     import subprocess
 
     system = _platform.system()
@@ -566,9 +565,6 @@ def _prompt_engine_install() -> bool:
             fg="yellow",
         )
     )
-
-    # Check if Ollama binary is on PATH but not running
-    ollama_installed = shutil.which("ollama") is not None
 
     # Build platform-specific recommendation list (best performance first)
     recommendations: list[tuple[str, str]] = []  # (label, install_cmd)
@@ -584,50 +580,12 @@ def _prompt_engine_install() -> bool:
     else:
         recommendations.append(("llama.cpp", "pip install llama-cpp-python"))
 
-    # Ollama always last — zero-pip fallback
-    if system == "Darwin":
-        recommendations.append(("Ollama — no pip needed", "brew install ollama"))
-    elif system == "Linux":
-        recommendations.append(("Ollama — no pip needed", "curl -fsSL https://ollama.com/install.sh | sh"))
-    else:
-        recommendations.append(("Ollama — no pip needed", "Visit https://ollama.com/download"))
-
     if not sys.stdin.isatty():
         # Non-interactive: print all options
-        if ollama_installed:
-            click.echo("  Ollama is installed but not running.\n")
-            click.echo("    ollama serve\n")
         click.echo("  Install an inference engine:\n")
         for label, cmd in recommendations:
             click.echo(f"    {cmd:<45s} # {label}")
         click.echo()
-        return False
-
-    # Interactive: if Ollama is installed but not running, offer to start it
-    if ollama_installed:
-        click.echo("  Ollama is installed but not running.\n")
-        if click.confirm("  Start Ollama now?", default=True):
-            try:
-                subprocess.Popen(
-                    ["ollama", "serve"],
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                )
-                import time
-
-                time.sleep(2)  # Give Ollama a moment to start
-                from octomil.ollama import is_ollama_running
-
-                if is_ollama_running():
-                    click.echo(click.style("  Ollama started.\n", fg="green"))
-                    return True
-            except Exception:
-                pass
-            click.echo(
-                click.style("  Could not start Ollama.", fg="red"),
-                err=True,
-            )
-            click.echo("  Start manually: ollama serve\n")
         return False
 
     # Interactive: show recommendations (best performance first)
@@ -679,12 +637,10 @@ def _print_engine_detection(model: str, engine_override: str | None) -> None:
 
     registry = get_registry()
     detections = registry.detect_all(model)
-    available = [d for d in detections if d.available and d.engine.name != "echo"]
-
-    native = [d for d in available if d.engine.name != "ollama"]
+    available = [d for d in detections if d.available and d.engine.name not in {"echo", "ollama"}]
 
     # Frozen binary with no native engines: try managed venv (mlx-lm) first
-    if not native and getattr(sys, "frozen", False):
+    if not available and getattr(sys, "frozen", False):
         from octomil.venv_reexec import try_venv_reexec
 
         reexeced = try_venv_reexec()
@@ -695,7 +651,7 @@ def _print_engine_detection(model: str, engine_override: str | None) -> None:
         installed = _prompt_engine_install()
         if installed:
             detections = registry.detect_all(model)
-            available = [d for d in detections if d.available and d.engine.name != "echo"]
+            available = [d for d in detections if d.available and d.engine.name not in {"echo", "ollama"}]
 
     if available:
         # _detect_backend will benchmark and pick the fastest

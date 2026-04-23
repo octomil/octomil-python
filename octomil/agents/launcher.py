@@ -583,7 +583,7 @@ def _build_serve_cmd(model: str, port: int) -> list[str]:
         venv_py = get_venv_python()
         if venv_py and is_engine_ready():
             return [venv_py, "-m", "octomil", "serve", model, "--port", str(port)]
-        # Fallback: frozen binary (Ollama engine)
+        # Fallback: frozen binary using Octomil's normal serve path.
         return [sys.executable, "serve", model, "--port", str(port)]
     return [sys.executable, "-m", "octomil", "serve", model, "--port", str(port)]
 

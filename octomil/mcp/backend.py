@@ -150,7 +150,9 @@ class OctomilMCPBackend:
 
             registry = get_registry()
             detections = registry.detect_all()
-            available_engines = [d.engine.name for d in detections if d.available and d.engine.name != "echo"]
+            available_engines = [
+                d.engine.name for d in detections if d.available and d.engine.name not in {"echo", "ollama"}
+            ]
         except Exception:
             pass
 
@@ -159,7 +161,7 @@ class OctomilMCPBackend:
             suggestions.append(f"Available engines: {', '.join(available_engines)}")
             suggestions.append("Try a model compatible with these engines, e.g. 'octomil mcp serve --model gemma2:2b'")
         else:
-            suggestions.append("No inference engines detected. Install one: pip install mlx-lm, or start Ollama.")
+            suggestions.append("No inference engines detected. Install one: pip install mlx-lm, or llama.cpp.")
 
         suggestions.append("Run 'octomil list-models' to see available models.")
         suggestions.append("Set OCTOMIL_API_KEY for cloud fallback when local inference is unavailable.")

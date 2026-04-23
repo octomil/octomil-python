@@ -56,8 +56,11 @@ class TestRuntimeExecutorGenerated:
         assert RuntimeExecutor.MLX.value == "mlx"
         assert RuntimeExecutor.ONNXRUNTIME.value == "onnxruntime"
         assert RuntimeExecutor.CLOUD.value == "cloud"
-        assert RuntimeExecutor.OLLAMA.value == "ollama"
         assert RuntimeExecutor.WHISPER.value == "whisper"
+
+    def test_ollama_is_not_a_runtime_executor(self) -> None:
+        """Ollama can be an import source, but not a first-party executor."""
+        assert "ollama" not in {executor.value for executor in RuntimeExecutor}
 
     def test_experimental_engines(self) -> None:
         """Experimental engines are present."""

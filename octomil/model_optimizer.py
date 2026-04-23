@@ -184,12 +184,10 @@ def estimate_memory_mb(
 def _detect_engine() -> str:
     """Auto-detect the best available inference engine on PATH.
 
-    Priority: octomil > ollama > llama-server. Falls back to "octomil".
+    Priority: octomil > llama-server. Falls back to "octomil".
     """
     if shutil.which("octomil"):
         return "octomil"
-    if shutil.which("ollama"):
-        return "ollama"
     if shutil.which("llama-server"):
         return "llama.cpp"
     return "octomil"
