@@ -4,9 +4,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-CANONICAL_MODEL_REF_KINDS = frozenset(
-    {"model", "app", "capability", "deployment", "experiment", "alias", "default", "unknown"}
-)
+from octomil._generated.model_ref_kind import ModelRefKind
+
+CANONICAL_MODEL_REF_KINDS = frozenset(kind.value for kind in ModelRefKind)
 
 
 @dataclass(frozen=True)
@@ -33,42 +33,59 @@ def parse_model_ref(model: str | None) -> ParsedModelRef:
 
     raw = (model or "").strip()
     if not raw:
-        return ParsedModelRef(raw=raw, kind="default")
+        return ParsedModelRef(raw=raw, kind=ModelRefKind.DEFAULT.value)
 
     if raw.startswith("@app/"):
         parts = raw.removeprefix("@app/").split("/", 1)
         if len(parts) == 2 and parts[0] and parts[1]:
-            return ParsedModelRef(raw=raw, kind="app", app_slug=parts[0], capability=parts[1])
-        return ParsedModelRef(raw=raw, kind="unknown")
+            return ParsedModelRef(
+                raw=raw,
+                kind=ModelRefKind.APP.value,
+                app_slug=parts[0],
+                capability=parts[1],
+            )
+        return ParsedModelRef(raw=raw, kind=ModelRefKind.UNKNOWN.value)
 
     if raw.startswith("@capability/"):
         capability = raw.removeprefix("@capability/")
         if capability:
-            return ParsedModelRef(raw=raw, kind="capability", capability=capability)
-        return ParsedModelRef(raw=raw, kind="unknown")
+            return ParsedModelRef(
+                raw=raw,
+                kind=ModelRefKind.CAPABILITY.value,
+                capability=capability,
+            )
+        return ParsedModelRef(raw=raw, kind=ModelRefKind.UNKNOWN.value)
 
     if raw.startswith("deploy_") and len(raw) > len("deploy_"):
-        return ParsedModelRef(raw=raw, kind="deployment", deployment_id=raw)
+        return ParsedModelRef(
+            raw=raw,
+            kind=ModelRefKind.DEPLOYMENT.value,
+            deployment_id=raw,
+        )
     if raw == "deploy_":
-        return ParsedModelRef(raw=raw, kind="unknown")
+        return ParsedModelRef(raw=raw, kind=ModelRefKind.UNKNOWN.value)
 
     if raw.startswith("exp_") and "/" in raw:
         experiment_id, variant_id = raw.split("/", 1)
         if experiment_id and variant_id:
             return ParsedModelRef(
                 raw=raw,
-                kind="experiment",
+                kind=ModelRefKind.EXPERIMENT.value,
                 experiment_id=experiment_id,
                 variant_id=variant_id,
             )
-        return ParsedModelRef(raw=raw, kind="unknown")
+        return ParsedModelRef(raw=raw, kind=ModelRefKind.UNKNOWN.value)
 
     if raw.startswith("alias:") and raw.removeprefix("alias:"):
-        return ParsedModelRef(raw=raw, kind="alias")
+        return ParsedModelRef(raw=raw, kind=ModelRefKind.ALIAS.value)
     if raw == "alias:":
-        return ParsedModelRef(raw=raw, kind="unknown")
+        return ParsedModelRef(raw=raw, kind=ModelRefKind.UNKNOWN.value)
 
     if raw.startswith("@") or "://" in raw:
-        return ParsedModelRef(raw=raw, kind="unknown")
+        return ParsedModelRef(raw=raw, kind=ModelRefKind.UNKNOWN.value)
 
-    return ParsedModelRef(raw=raw, kind="model", model_slug=raw)
+    return ParsedModelRef(
+        raw=raw,
+        kind=ModelRefKind.MODEL.value,
+        model_slug=raw,
+    )

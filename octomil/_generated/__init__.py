@@ -14,12 +14,17 @@ from . import (
     span_status_mapping,
     telemetry_events,
 )
+from .artifact_cache_status import ArtifactCacheStatus
 from .artifact_resource_kind import ArtifactResourceKind
+from .cache_status import CacheStatus
 from .compatibility_level import CompatibilityLevel
 from .device_class import DeviceClass
 from .error_code import ErrorCode
+from .execution_mode import ExecutionMode
+from .fallback_trigger_stage import FallbackTriggerStage
 from .finish_reason import FinishReason
 from .modality import Modality
+from .model_ref_kind import ModelRefKind
 from .model_status import ModelStatus
 from .otlp_resource_attributes import (
     OCTOMIL_ACCELERATORS,
@@ -37,15 +42,26 @@ from .otlp_resource_attributes import (
     TELEMETRY_SDK_NAME,
     TELEMETRY_SDK_VERSION,
 )
+from .planner_source import PlannerSource
+from .route_locality import RouteLocality
+from .route_mode import RouteMode
 
 __all__ = [
     "ArtifactResourceKind",
+    "ArtifactCacheStatus",
+    "CacheStatus",
     "CompatibilityLevel",
     "DeviceClass",
     "ErrorCode",
+    "ExecutionMode",
+    "FallbackTriggerStage",
     "FinishReason",
     "Modality",
+    "ModelRefKind",
     "ModelStatus",
+    "PlannerSource",
+    "RouteLocality",
+    "RouteMode",
     # OTLP resource attributes
     "SERVICE_NAME",
     "SERVICE_VERSION",

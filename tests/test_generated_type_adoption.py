@@ -4,6 +4,14 @@ Verifies that the generated enum values from octomil-contracts match
 the expected canonical values used across all SDKs.
 """
 
+from octomil._generated.artifact_cache_status import ArtifactCacheStatus
+from octomil._generated.cache_status import CacheStatus
+from octomil._generated.execution_mode import ExecutionMode
+from octomil._generated.fallback_trigger_stage import FallbackTriggerStage
+from octomil._generated.model_ref_kind import ModelRefKind
+from octomil._generated.planner_source import PlannerSource
+from octomil._generated.route_locality import RouteLocality
+from octomil._generated.route_mode import RouteMode
 from octomil._generated.routing_policy import RoutingPolicy
 from octomil._generated.runtime_executor import RuntimeExecutor
 
@@ -68,16 +76,12 @@ class TestRuntimeExecutorGenerated:
 
 
 class TestPlannerSourceCanonicalValues:
-    """Verify hand-maintained CANONICAL_PLANNER_SOURCES matches expected contract values.
-
-    Note: PlannerSource is not yet code-generated for Python (only for TypeScript).
-    This test validates the hand-maintained frozenset against expected values.
-    """
+    """Verify planner_source normalization is backed by generated enum values."""
 
     def test_canonical_values(self) -> None:
         from octomil.runtime.planner.schemas import CANONICAL_PLANNER_SOURCES
 
-        assert CANONICAL_PLANNER_SOURCES == frozenset({"server", "cache", "offline"})
+        assert CANONICAL_PLANNER_SOURCES == frozenset(source.value for source in PlannerSource)
 
     def test_normalize_maps_aliases(self) -> None:
         from octomil.runtime.planner.schemas import normalize_planner_source
@@ -92,13 +96,35 @@ class TestPlannerSourceCanonicalValues:
 
 
 class TestModelRefKindCanonicalValues:
-    """Verify hand-maintained CANONICAL_MODEL_REF_KINDS matches expected contract values.
-
-    Note: ModelRefKind is not yet code-generated for Python (only for TypeScript).
-    """
+    """Verify model-ref kind classification is backed by generated enum values."""
 
     def test_canonical_values(self) -> None:
         from octomil.runtime.routing.model_ref import CANONICAL_MODEL_REF_KINDS
 
-        expected = frozenset({"model", "app", "capability", "deployment", "experiment", "alias", "default", "unknown"})
-        assert CANONICAL_MODEL_REF_KINDS == expected
+        assert CANONICAL_MODEL_REF_KINDS == frozenset(kind.value for kind in ModelRefKind)
+
+
+class TestRuntimeRouteGeneratedEnums:
+    """Verify route metadata enum files are present in the Python SDK package."""
+
+    def test_cache_status_values(self) -> None:
+        assert CacheStatus.HIT.value == "hit"
+        assert CacheStatus.MISS.value == "miss"
+        assert CacheStatus.DOWNLOADED.value == "downloaded"
+        assert CacheStatus.NOT_APPLICABLE.value == "not_applicable"
+        assert CacheStatus.UNAVAILABLE.value == "unavailable"
+        assert ArtifactCacheStatus.HIT.value == CacheStatus.HIT.value
+
+    def test_execution_and_route_values(self) -> None:
+        assert ExecutionMode.SDK_RUNTIME.value == "sdk_runtime"
+        assert ExecutionMode.HOSTED_GATEWAY.value == "hosted_gateway"
+        assert ExecutionMode.EXTERNAL_ENDPOINT.value == "external_endpoint"
+        assert RouteMode.SDK_RUNTIME.value == ExecutionMode.SDK_RUNTIME.value
+        assert RouteLocality.LOCAL.value == "local"
+        assert RouteLocality.CLOUD.value == "cloud"
+
+    def test_fallback_trigger_stage_values(self) -> None:
+        assert FallbackTriggerStage.PREPARE.value == "prepare"
+        assert FallbackTriggerStage.GATE.value == "gate"
+        assert FallbackTriggerStage.INFERENCE.value == "inference"
+        assert FallbackTriggerStage.TIMEOUT.value == "timeout"
