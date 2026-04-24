@@ -59,6 +59,8 @@ def test_emit_route_event_uses_route_decision_and_json_attempt_details() -> None
     assert len(reporter.calls) == 1
     name, attributes = reporter.calls[0]
     assert name == "route.decision"
+    assert "route.id" in attributes
+    assert "route.route_id" not in attributes
     assert attributes["route.final_locality"] == "local"
     assert attributes["route.candidate_attempts"] == 1
     assert "route.attempt_details" in attributes

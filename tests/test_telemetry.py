@@ -1107,6 +1107,18 @@ async def test_serve_telemetry_does_not_break_without_key(echo_app_without_telem
 
 
 class TestTelemetryClose:
+    def test_registers_atexit_close(self):
+        """Reporter should register an exit hook so short-lived scripts flush telemetry."""
+        with patch("atexit.register") as mock_register:
+            reporter = TelemetryReporter(
+                api_key="key",
+                api_base="https://api.test.com/api/v1",
+                org_id="org-1",
+                device_id="dev-1",
+            )
+        mock_register.assert_called_once_with(reporter.close)
+        reporter.close()
+
     def test_close_drains_pending_events(self):
         """close() should process remaining queued events."""
         sent = []

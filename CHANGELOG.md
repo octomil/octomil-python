@@ -6,6 +6,14 @@
 - Added optional `auth` extra with `keyring` secure storage dependency.
 - Fixed the published wheel surface so `from octomil import Octomil` resolves to the unified facade with `Octomil.from_env()`.
 
+## 4.7.6 (2026-04-24)
+
+### Fixes
+
+- emit canonical `route.decision` telemetry for successful Responses API requests, including local app-ref executions
+- prefer live server planner resolutions for non-private `@app/...` refs so routing policy updates do not wait on a week-long client cache
+- automatically drain queued telemetry events on process exit so short-lived scripts still publish route telemetry
+
 ## 4.6.0 (2026-03-25)
 
 ### Features

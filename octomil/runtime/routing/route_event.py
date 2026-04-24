@@ -301,6 +301,8 @@ def _flatten_for_telemetry(payload: dict[str, Any]) -> dict[str, Any]:
     for key, value in payload.items():
         if key == "attempt_details" and isinstance(value, list):
             flat["route.attempt_details"] = json.dumps(value)
+        elif key == "route_id":
+            flat["route.id"] = value
         elif value is None:
             continue
         elif isinstance(value, (str, int, float, bool)):

@@ -12,6 +12,7 @@ so they do not block inference requests.
 
 from __future__ import annotations
 
+import atexit
 import hashlib
 import logging
 import platform
@@ -182,8 +183,11 @@ class TelemetryReporter:
         self.device_id = device_id or _generate_device_id()
 
         self._queue: queue.Queue[Optional[dict[str, Any]]] = queue.Queue(maxsize=1024)
+        self._closed = False
+        self._close_lock = threading.Lock()
         self._worker = threading.Thread(target=self._dispatch_loop, daemon=True)
         self._worker.start()
+        atexit.register(self.close)
 
     # ------------------------------------------------------------------
     # Resource envelope (OTLP format)
@@ -540,6 +544,11 @@ class TelemetryReporter:
 
     def close(self) -> None:
         """Signal dispatch thread to drain remaining events and exit."""
+        with self._close_lock:
+            if self._closed:
+                return
+            self._closed = True
+
         self._queue.put(None)  # sentinel
         self._worker.join(timeout=5.0)
 

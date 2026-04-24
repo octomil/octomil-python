@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from typing import AsyncIterator
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -19,6 +19,11 @@ from octomil.runtime.core import (
 from octomil.runtime.core.adapter import InferenceBackendAdapter
 from octomil.runtime.core.cloud_runtime import CloudModelRuntime
 from octomil.runtime.core.router import LOCALITY_CLOUD, LOCALITY_ON_DEVICE, RouterModelRuntime
+from octomil.runtime.planner.schemas import (
+    AppResolution,
+    RuntimeCandidatePlan,
+    RuntimeSelection,
+)
 
 
 class _StubRuntime(ModelRuntime):
@@ -257,3 +262,74 @@ def test_report_inference_completed_includes_locality():
     )
     reporter.close()
     assert captured[0]["attributes"]["locality"] == "cloud"
+
+
+@pytest.mark.asyncio
+async def test_create_emits_route_decision_telemetry():
+    runtime = _StubRuntime("local")
+    mock_telemetry = MagicMock()
+    responses = OctomilResponses(
+        runtime_resolver=lambda _: runtime,
+        telemetry_reporter=mock_telemetry,
+        planner_enabled=False,
+    )
+
+    response = await responses.create(
+        ResponseRequest(model="mymodel", input=[text_input("hi")]),
+    )
+
+    mock_telemetry._enqueue.assert_called_once()
+    kwargs = mock_telemetry._enqueue.call_args.kwargs
+    assert kwargs["name"] == "route.decision"
+    assert "route.id" in kwargs["attributes"]
+    assert kwargs["attributes"]["route.request_id"] == response.id
+    assert kwargs["attributes"]["route.model_ref"] == "mymodel"
+    assert kwargs["attributes"]["route.final_locality"] == "local"
+    assert kwargs["attributes"]["route.final_mode"] == "sdk_runtime"
+
+
+@pytest.mark.asyncio
+async def test_app_ref_route_telemetry_includes_app_context():
+    runtime = _StubRuntime("local")
+    mock_telemetry = MagicMock()
+    responses = OctomilResponses(
+        runtime_resolver=lambda _: runtime,
+        telemetry_reporter=mock_telemetry,
+    )
+    selection = RuntimeSelection(
+        locality="local",
+        engine="mlx-lm",
+        source="server_plan",
+        candidates=[
+            RuntimeCandidatePlan(
+                locality="local",
+                priority=1,
+                confidence=0.9,
+                reason="local available",
+                engine=None,
+            )
+        ],
+        app_resolution=AppResolution(
+            app_id="app-123",
+            app_slug="test-limits",
+            capability="chat",
+            routing_policy="private",
+            selected_model="gemma3-1b",
+        ),
+    )
+
+    with patch(
+        "octomil.responses.responses._try_resolve_planner_selection",
+        return_value=selection,
+    ):
+        await responses.create(
+            ResponseRequest(model="@app/test-limits/chat", input=[text_input("hi")]),
+        )
+
+    kwargs = mock_telemetry._enqueue.call_args.kwargs
+    assert kwargs["name"] == "route.decision"
+    assert "route.id" in kwargs["attributes"]
+    assert kwargs["attributes"]["route.app_id"] == "app-123"
+    assert kwargs["attributes"]["route.app_slug"] == "test-limits"
+    assert kwargs["attributes"]["route.policy"] == "private"
+    assert kwargs["attributes"]["route.model_ref_kind"] == "app"

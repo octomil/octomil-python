@@ -56,6 +56,15 @@ from octomil.runtime.routing.evaluators import (
     EvaluatorRegistry,
     RegistryBackedEvaluator,
 )
+from octomil.runtime.routing.route_event import (
+    CandidateAttemptSummary,
+)
+from octomil.runtime.routing.route_event import (
+    build_route_event as _build_route_decision_event,
+)
+from octomil.runtime.routing.route_event import (
+    emit_route_event as _emit_route_decision_event,
+)
 
 from .types import (
     AssistantInput,
@@ -105,6 +114,112 @@ class _AttemptRunnerResult:
     is_fallback: bool
     attempt_loop: AttemptLoopResult
     route: RouteMetadata
+    selection: Any | None = None
+
+
+def _policy_name_for_telemetry(
+    selection: Any | None,
+    routing_policy: Optional[RoutingPolicy],
+) -> str | None:
+    """Resolve the policy string recorded on route telemetry."""
+    if selection is not None:
+        app_resolution = getattr(selection, "app_resolution", None)
+        if app_resolution is not None and getattr(app_resolution, "routing_policy", None):
+            return app_resolution.routing_policy
+        resolution = getattr(selection, "resolution", None)
+        if resolution is not None and getattr(resolution, "routing_policy", None):
+            return resolution.routing_policy
+    if routing_policy is not None:
+        return routing_policy.mode.value
+    return None
+
+
+def _attempt_summaries_for_telemetry(
+    route: RouteMetadata | None,
+    attempt_loop: AttemptLoopResult | None,
+) -> list[CandidateAttemptSummary]:
+    """Convert attempt-runner state into canonical route telemetry summaries."""
+    if attempt_loop is not None and attempt_loop.attempts:
+        summaries: list[CandidateAttemptSummary] = []
+        for attempt in attempt_loop.attempts:
+            summaries.append(
+                CandidateAttemptSummary(
+                    locality=attempt.locality,
+                    engine=attempt.engine or "",
+                    success=attempt.status == AttemptStatus.SELECTED,
+                    failure_reason="" if attempt.status == AttemptStatus.SELECTED else attempt.reason_code,
+                )
+            )
+        return summaries
+
+    execution = route.execution if route is not None else None
+    if execution is None:
+        return []
+    return [
+        CandidateAttemptSummary(
+            locality=execution.locality,
+            engine=execution.engine or "",
+            success=True,
+        )
+    ]
+
+
+def _emit_route_decision_if_needed(
+    telemetry: Optional[object],
+    *,
+    response: Response,
+    model_id: str,
+    route: RouteMetadata | None,
+    selection: Any | None = None,
+    attempt_loop: AttemptLoopResult | None = None,
+    routing_policy: Optional[RoutingPolicy] = None,
+) -> None:
+    """Emit canonical route telemetry for a completed response, best-effort."""
+    if telemetry is None or route is None or route.execution is None:
+        return
+
+    app_resolution = getattr(selection, "app_resolution", None) if selection is not None else None
+    resolution = getattr(selection, "resolution", None) if selection is not None else None
+    raw_fallback_trigger: Any = attempt_loop.fallback_trigger if attempt_loop is not None else None
+    if raw_fallback_trigger is None and route.fallback.trigger:
+        raw_fallback_trigger = route.fallback.trigger
+
+    if isinstance(raw_fallback_trigger, dict):
+        fallback_trigger_code = raw_fallback_trigger.get("code")
+        fallback_trigger_stage = raw_fallback_trigger.get("stage")
+    else:
+        fallback_trigger_code = getattr(raw_fallback_trigger, "code", None)
+        fallback_trigger_stage = getattr(raw_fallback_trigger, "stage", None)
+
+    try:
+        event = _build_route_decision_event(
+            request_id=response.id,
+            app_id=getattr(app_resolution, "app_id", None),
+            app_slug=getattr(app_resolution, "app_slug", None),
+            deployment_id=getattr(resolution, "deployment_id", None),
+            experiment_id=getattr(resolution, "experiment_id", None),
+            variant_id=(
+                getattr(app_resolution, "selected_model_variant_id", None) or getattr(resolution, "variant_id", None)
+            ),
+            capability=route.model.requested.capability,
+            policy=_policy_name_for_telemetry(selection, routing_policy),
+            planner_source=route.planner.source,
+            model_ref=model_id,
+            model_ref_kind=route.model.requested.kind,
+            selected_locality=route.execution.locality,
+            final_mode=route.execution.mode,
+            fallback_used=route.fallback.used,
+            fallback_trigger_code=fallback_trigger_code,
+            fallback_trigger_stage=fallback_trigger_stage,
+            candidate_attempts=_attempt_summaries_for_telemetry(route, attempt_loop),
+            engine=route.execution.engine,
+            artifact_id=route.artifact.id if route.artifact is not None else None,
+            cache_status=route.artifact.cache.status if route.artifact is not None else None,
+            total_tokens=response.usage.total_tokens if response.usage is not None else None,
+        )
+        _emit_route_decision_event(event, telemetry)
+    except Exception:
+        logger.debug("Failed to emit route decision telemetry", exc_info=True)
 
 
 # ---------------------------------------------------------------------------
@@ -403,6 +518,7 @@ class OctomilResponses:
             is_fallback=attempt_loop.fallback_used,
             attempt_loop=attempt_loop,
             route=route,
+            selection=selection,
         )
 
     # ------------------------------------------------------------------
@@ -431,6 +547,14 @@ class OctomilResponses:
                 runner_result.response,
                 locality=runner_result.locality,
                 route=runner_result.route,
+            )
+            _emit_route_decision_if_needed(
+                self._telemetry,
+                response=response,
+                model_id=model_id,
+                route=runner_result.route,
+                selection=runner_result.selection,
+                attempt_loop=runner_result.attempt_loop,
             )
             self._response_cache[response.id] = response
             return response
@@ -462,6 +586,13 @@ class OctomilResponses:
         else:
             runtime_response = await runtime.run(runtime_request)
         response = self._build_response(request.model, runtime_response, locality=locality, route=route)
+        _emit_route_decision_if_needed(
+            self._telemetry,
+            response=response,
+            model_id=model_id,
+            route=route,
+            routing_policy=routing_policy,
+        )
         self._response_cache[response.id] = response
         return response
 
@@ -568,17 +699,23 @@ class OctomilResponses:
             else None
         )
 
-        yield DoneEvent(
-            response=Response(
-                id=response_id,
-                model=request.model,
-                output=output,
-                finish_reason=finish_reason,
-                usage=usage,
-                locality=locality,
-                route=route,
-            )
+        response = Response(
+            id=response_id,
+            model=request.model,
+            output=output,
+            finish_reason=finish_reason,
+            usage=usage,
+            locality=locality,
+            route=route,
         )
+        _emit_route_decision_if_needed(
+            self._telemetry,
+            response=response,
+            model_id=model_id,
+            route=route,
+            routing_policy=routing_policy,
+        )
+        yield DoneEvent(response=response)
 
     # ------------------------------------------------------------------
     # Streaming with attempt runner (first-token fallback)
@@ -749,20 +886,22 @@ class OctomilResponses:
                 raise last_error
             raise RuntimeError("No runtime available")
 
+        attempt_loop_result = AttemptLoopResult(
+            selected_attempt=selected_attempt,
+            attempts=stream_attempts,
+            fallback_used=is_fallback,
+            fallback_trigger=fallback_trigger if is_fallback else None,
+            from_attempt=from_attempt if is_fallback else None,
+            to_attempt=selected_attempt.index if is_fallback and selected_attempt is not None else None,
+        )
+
         route = _route_metadata_from_selection(
             selection,
             selected_locality,
             is_fallback,
             model_name=model_id,
             capability="chat",
-            attempt_loop=AttemptLoopResult(
-                selected_attempt=selected_attempt,
-                attempts=stream_attempts,
-                fallback_used=is_fallback,
-                fallback_trigger=fallback_trigger if is_fallback else None,
-                from_attempt=from_attempt if is_fallback else None,
-                to_attempt=selected_attempt.index if is_fallback and selected_attempt is not None else None,
-            ),
+            attempt_loop=attempt_loop_result,
         )
 
         if is_fallback and self._telemetry is not None:
@@ -801,17 +940,24 @@ class OctomilResponses:
             else None
         )
 
-        yield DoneEvent(
-            response=Response(
-                id=response_id,
-                model=request.model,
-                output=output,
-                finish_reason=finish_reason,
-                usage=usage,
-                locality=selected_locality,
-                route=route,
-            )
+        response = Response(
+            id=response_id,
+            model=request.model,
+            output=output,
+            finish_reason=finish_reason,
+            usage=usage,
+            locality=selected_locality,
+            route=route,
         )
+        _emit_route_decision_if_needed(
+            self._telemetry,
+            response=response,
+            model_id=model_id,
+            route=route,
+            selection=selection,
+            attempt_loop=attempt_loop_result,
+        )
+        yield DoneEvent(response=response)
 
     # ------------------------------------------------------------------
     # Internal resolution and building
