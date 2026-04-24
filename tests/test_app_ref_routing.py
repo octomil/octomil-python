@@ -310,8 +310,82 @@ class TestAppRefResolvesThroughPlanner:
         assert result.app_resolution.selected_model == "gemma3-1b"
         assert result.source == "server_plan"
 
-    def test_cached_plan_preserves_app_resolution(self, tmp_path: Path):
-        """Cached plans must preserve app_resolution so local runtime init stays concrete."""
+    def test_app_ref_refreshes_server_plan_when_network_available(self, tmp_path: Path):
+        """App refs should re-fetch the live plan so policy flips apply immediately."""
+        mock_client = MagicMock(spec=RuntimePlannerClient)
+        mock_client.fetch_plan.side_effect = [
+            RuntimePlanResponse(
+                model="@app/my-app/chat",
+                capability="chat",
+                policy="local_first",
+                candidates=[
+                    RuntimeCandidatePlan(
+                        locality="local",
+                        priority=1,
+                        confidence=0.9,
+                        reason="local engine",
+                        engine="mlx-lm",
+                    )
+                ],
+                app_resolution=AppResolution(
+                    app_id="app-123",
+                    capability="chat",
+                    routing_policy="local_first",
+                    selected_model="gemma3-1b",
+                ),
+            ),
+            RuntimePlanResponse(
+                model="@app/my-app/chat",
+                capability="chat",
+                policy="local_first",
+                candidates=[
+                    RuntimeCandidatePlan(
+                        locality="local",
+                        priority=1,
+                        confidence=0.9,
+                        reason="local engine",
+                        engine="mlx-lm",
+                    )
+                ],
+                app_resolution=AppResolution(
+                    app_id="app-123",
+                    capability="chat",
+                    routing_policy="private",
+                    selected_model="gemma3-1b",
+                ),
+            ),
+        ]
+
+        planner = _make_planner(tmp_path, client=mock_client)
+
+        with patch("octomil.runtime.planner.planner.collect_device_runtime_profile") as mock_profile:
+            mock_profile.return_value = DeviceRuntimeProfile(
+                sdk="python",
+                sdk_version="4.6.0",
+                platform="Darwin",
+                arch="arm64",
+                installed_runtimes=[InstalledRuntime(engine="mlx-lm")],
+            )
+            first = planner.resolve(
+                model="@app/my-app/chat",
+                capability="responses",
+                routing_policy="local_first",
+            )
+            second = planner.resolve(
+                model="@app/my-app/chat",
+                capability="responses",
+                routing_policy="local_first",
+            )
+
+        assert first.app_resolution is not None
+        assert first.app_resolution.selected_model == "gemma3-1b"
+        assert second.app_resolution is not None
+        assert second.app_resolution.routing_policy == "private"
+        assert second.source == "server_plan"
+        assert mock_client.fetch_plan.call_count == 2
+
+    def test_app_ref_uses_cached_plan_when_offline(self, tmp_path: Path):
+        """A cached app plan still works as an offline fallback."""
         mock_client = MagicMock(spec=RuntimePlannerClient)
         mock_client.fetch_plan.return_value = RuntimePlanResponse(
             model="@app/my-app/chat",
@@ -344,23 +418,33 @@ class TestAppRefResolvesThroughPlanner:
                 arch="arm64",
                 installed_runtimes=[InstalledRuntime(engine="mlx-lm")],
             )
-            first = planner.resolve(
-                model="@app/my-app/chat",
-                capability="responses",
-                routing_policy="local_first",
-            )
-            mock_client.fetch_plan.side_effect = AssertionError("planner should use cache on second resolve")
-            second = planner.resolve(
+            planner.resolve(
                 model="@app/my-app/chat",
                 capability="responses",
                 routing_policy="local_first",
             )
 
-        assert first.app_resolution is not None
-        assert first.app_resolution.selected_model == "gemma3-1b"
-        assert second.app_resolution is not None
-        assert second.app_resolution.selected_model == "gemma3-1b"
-        assert second.source == "cache"
+        mock_client.fetch_plan.reset_mock()
+
+        with patch("octomil.runtime.planner.planner.collect_device_runtime_profile") as mock_profile:
+            mock_profile.return_value = DeviceRuntimeProfile(
+                sdk="python",
+                sdk_version="4.6.0",
+                platform="Darwin",
+                arch="arm64",
+                installed_runtimes=[InstalledRuntime(engine="mlx-lm")],
+            )
+            result = planner.resolve(
+                model="@app/my-app/chat",
+                capability="responses",
+                routing_policy="local_first",
+                allow_network=False,
+            )
+
+        mock_client.fetch_plan.assert_not_called()
+        assert result.app_resolution is not None
+        assert result.app_resolution.selected_model == "gemma3-1b"
+        assert result.source == "cache"
 
     def test_cached_plan_preserves_generic_resolution(self, tmp_path: Path):
         """Cached plans must preserve generic resolution for alias/deployment refs."""

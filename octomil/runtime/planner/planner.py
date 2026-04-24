@@ -109,13 +109,22 @@ class RuntimePlanner:
         )
 
         cached_plan = self._store.get_plan(cache_key)
-        if cached_plan is not None:
+        is_private = routing_policy == "private"
+        prefer_live_app_plan = is_app_ref(model) and allow_network and self._client is not None and not is_private
+
+        if cached_plan is not None and not prefer_live_app_plan:
             logger.debug("Using cached plan for %s/%s", effective_model, capability)
             return self._selection_from_plan_dict(cached_plan, device=device, source="cache")
 
         # Step 3: Fetch server plan if network is allowed
         server_plan: RuntimePlanResponse | None = None
-        is_private = routing_policy == "private"
+
+        if cached_plan is not None and prefer_live_app_plan:
+            logger.debug(
+                "Bypassing cached app plan for %s/%s to honor live app policy",
+                effective_model,
+                capability,
+            )
 
         if allow_network and self._client is not None and not is_private:
             server_plan = self._client.fetch_plan(
@@ -151,6 +160,17 @@ class RuntimePlanner:
                     plan_json=json.dumps(plan_dict),
                     source="server_plan",
                     ttl_seconds=server_plan.plan_ttl_seconds,
+                )
+            elif cached_plan is not None:
+                logger.debug(
+                    "Server plan unavailable for %s/%s, falling back to cached app plan",
+                    effective_model,
+                    capability,
+                )
+                return self._selection_from_plan_dict(
+                    cached_plan,
+                    device=device,
+                    source="cache",
                 )
 
         # Step 4: Validate server plan against installed runtimes
