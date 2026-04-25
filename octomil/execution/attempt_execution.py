@@ -32,8 +32,10 @@ def _resolve_routing_policy(defaults: ResolvedExecutionDefaults) -> RoutingPolic
 
     if preset is None or preset == "local_first":
         return RoutingPolicy.local_first()
-    if preset == "private":
+    if preset in {"private", "local_only"}:
         return RoutingPolicy.local_only()
+    if preset == "auto":
+        return RoutingPolicy.auto()
     if preset == "cloud_only":
         return RoutingPolicy.cloud_only()
     if preset == "cloud_first":

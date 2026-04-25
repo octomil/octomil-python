@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import importlib.metadata
 import inspect
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -23,7 +25,7 @@ class TestTopLevelFacadeExport:
         assert hasattr(TopLevelOctomil, "from_env")
         assert hasattr(TopLevelOctomil, "hosted_from_env")
         assert inspect.getsourcefile(TopLevelOctomil) == inspect.getsourcefile(Octomil)
-        assert octomil.__version__ == "4.7.4"
+        assert octomil.__version__ == importlib.metadata.version("octomil")
 
 
 # ---------------------------------------------------------------------------
@@ -132,7 +134,7 @@ class TestAudioFacadeShape:
         client = Octomil(publishable_key="oct_pub_test_abc")
         with patch("octomil.client.OctomilClient") as mock_client_cls:
             mock_client_cls.return_value = MagicMock()
-            asyncio.get_event_loop().run_until_complete(client.initialize())
+            asyncio.run(client.initialize())
 
         assert isinstance(client.audio, FacadeAudio)
         assert isinstance(client.audio.speech, FacadeSpeech)
@@ -168,6 +170,7 @@ class TestSynthesizeSpeechRouting:
         )
         with (
             patch.object(kernel, "_resolve", return_value=defaults),
+            patch("octomil.execution.kernel._resolve_planner_selection", return_value=None),
             patch("octomil.execution.kernel._resolve_routing_policy") as routing,
             patch.object(kernel, "_has_local_tts_backend", return_value=False),
             patch(
@@ -212,6 +215,7 @@ class TestSynthesizeSpeechRouting:
         cloud_spy = MagicMock()
         with (
             patch.object(kernel, "_resolve", return_value=defaults),
+            patch("octomil.execution.kernel._resolve_planner_selection", return_value=None),
             patch("octomil.execution.kernel._resolve_routing_policy"),
             patch.object(kernel, "_has_local_tts_backend", return_value=True),
             patch(
@@ -254,6 +258,7 @@ class TestSynthesizeSpeechRouting:
         )
         with (
             patch.object(kernel, "_resolve", return_value=defaults),
+            patch("octomil.execution.kernel._resolve_planner_selection", return_value=None),
             patch("octomil.execution.kernel._resolve_routing_policy"),
             patch.object(kernel, "_has_local_tts_backend", return_value=True),
             patch(
@@ -269,6 +274,131 @@ class TestSynthesizeSpeechRouting:
                 )
             assert ei.value.code == OctomilErrorCode.INVALID_INPUT
             assert "voice_not_supported_for_locality" in str(ei.value)
+
+    @pytest.mark.asyncio
+    async def test_app_ref_uses_planner_model_for_local_availability(self):
+        from octomil.config.local import ResolvedExecutionDefaults
+        from octomil.execution.kernel import ExecutionKernel
+
+        kernel = ExecutionKernel.__new__(ExecutionKernel)
+        kernel._config_set = MagicMock()
+
+        fake_backend = MagicMock()
+        fake_backend.synthesize.return_value = {
+            "audio_bytes": b"RIFF\x00",
+            "content_type": "audio/wav",
+            "format": "wav",
+            "sample_rate": 24000,
+            "duration_ms": 500,
+        }
+        defaults = ResolvedExecutionDefaults(
+            model="@app/tts-tester/tts",
+            policy_preset="local_first",
+            inline_policy=None,
+            cloud_profile=None,
+        )
+        selection = SimpleNamespace(
+            app_resolution=SimpleNamespace(
+                selected_model="kokoro-82m",
+                routing_policy="private",
+            ),
+            resolution=None,
+        )
+        cloud_spy = AsyncMock()
+
+        with (
+            patch.object(kernel, "_resolve", return_value=defaults),
+            patch("octomil.execution.kernel._resolve_planner_selection", return_value=selection),
+            patch.object(kernel, "_has_local_tts_backend", return_value=True) as has_local,
+            patch.object(kernel, "_resolve_local_tts_backend", return_value=fake_backend),
+            patch.object(kernel, "_cloud_synthesize_speech", new=cloud_spy),
+        ):
+            response = await kernel.synthesize_speech(
+                model="@app/tts-tester/tts",
+                input="hello",
+            )
+
+        has_local.assert_called_once_with("kokoro-82m")
+        assert response.model == "kokoro-82m"
+        assert response.route.locality == "on_device"
+        cloud_spy.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_app_ref_cloud_dispatch_keeps_app_ref_for_policy(self):
+        from octomil.config.local import CloudProfile, ResolvedExecutionDefaults
+        from octomil.execution.kernel import ExecutionKernel
+
+        kernel = ExecutionKernel.__new__(ExecutionKernel)
+        kernel._config_set = MagicMock()
+
+        cloud_profile = CloudProfile(api_key_env="OCTOMIL_SERVER_KEY")
+        defaults = ResolvedExecutionDefaults(
+            model="@app/tts-tester/tts",
+            policy_preset="cloud_first",
+            inline_policy=None,
+            cloud_profile=cloud_profile,
+        )
+        selection = SimpleNamespace(
+            app_resolution=SimpleNamespace(
+                selected_model="tts-1",
+                routing_policy="cloud_first",
+            ),
+            resolution=None,
+        )
+        cloud_synthesize = AsyncMock(
+            return_value={
+                "audio_bytes": b"mp3",
+                "content_type": "audio/mpeg",
+                "format": "mp3",
+                "model": "tts-1",
+                "provider": "openai",
+            }
+        )
+
+        with (
+            patch.object(kernel, "_resolve", return_value=defaults),
+            patch("octomil.execution.kernel._resolve_planner_selection", return_value=selection),
+            patch("octomil.execution.kernel._cloud_available", return_value=True),
+            patch.object(kernel, "_has_local_tts_backend", return_value=False),
+            patch.object(kernel, "_cloud_synthesize_speech", new=cloud_synthesize),
+        ):
+            response = await kernel.synthesize_speech(
+                model="@app/tts-tester/tts",
+                input="hello",
+                voice="alloy",
+                response_format="mp3",
+            )
+
+        assert cloud_synthesize.await_args.args[0] == "@app/tts-tester/tts"
+        assert response.model == "tts-1"
+        assert response.provider == "openai"
+        assert response.route.locality == "cloud"
+
+    @pytest.mark.asyncio
+    async def test_local_policy_runtime_unavailable_is_octomil_error(self):
+        from octomil.config.local import ResolvedExecutionDefaults
+        from octomil.errors import OctomilError, OctomilErrorCode
+        from octomil.execution.kernel import ExecutionKernel
+
+        kernel = ExecutionKernel.__new__(ExecutionKernel)
+        kernel._config_set = MagicMock()
+
+        defaults = ResolvedExecutionDefaults(
+            model="kokoro-82m",
+            policy_preset="local_only",
+            inline_policy=None,
+            cloud_profile=None,
+        )
+        with (
+            patch.object(kernel, "_resolve", return_value=defaults),
+            patch("octomil.execution.kernel._resolve_planner_selection", return_value=None),
+            patch.object(kernel, "_has_local_tts_backend", return_value=False),
+        ):
+            with pytest.raises(OctomilError) as ei:
+                await kernel.synthesize_speech(model="kokoro-82m", input="hello")
+
+        assert ei.value.code == OctomilErrorCode.RUNTIME_UNAVAILABLE
+        assert "local_tts_runtime_unavailable" in str(ei.value)
 
     @pytest.mark.asyncio
     async def test_empty_input_raises(self):
