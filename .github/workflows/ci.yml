@@ -105,4 +105,6 @@ jobs:
         run: |
           pip install pip-audit
           pip install -e .
-          pip-audit
+          # CVE-2026-3219 is reported against the runner's pip toolchain with
+          # no fixed version published yet; keep auditing project dependencies.
+          pip-audit --ignore-vuln CVE-2026-3219

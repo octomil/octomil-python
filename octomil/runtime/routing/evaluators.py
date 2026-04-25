@@ -31,7 +31,7 @@ from octomil.runtime.routing.attempt_runner import (
 # ---------------------------------------------------------------------------
 
 
-@dataclass(slots=True)
+@dataclass
 class EvaluatorResult:
     """Privacy-safe result from an output quality evaluator.
 
