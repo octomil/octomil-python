@@ -29,13 +29,22 @@ logger = logging.getLogger(__name__)
 
 FORBIDDEN_TELEMETRY_KEYS: frozenset[str] = frozenset(
     {
+        # Content (prompts, completions, raw media)
         "prompt",
+        "prompts",
         "input",
+        "inputs",
         "output",
+        "outputs",
         "completion",
+        "completions",
+        "response_text",
         "audio",
         "audio_bytes",
+        "audio_data",
+        "file",
         "file_path",
+        "filename",
         "text",
         "content",
         "messages",
@@ -43,8 +52,30 @@ FORBIDDEN_TELEMETRY_KEYS: frozenset[str] = frozenset(
         "documents",
         "image",
         "image_url",
+        "image_bytes",
+        "image_data",
         "embedding",
         "embeddings",
+        "request_body",
+        "raw_body",
+        "body",
+        # Secrets / auth — match the v1 telemetry contract so route
+        # events emitted via emit_route_event() can never carry an
+        # Authorization header value, API key, or token. The earlier
+        # set was content-only and matched case-sensitively, which let
+        # 'Authorization' (capital A) leak through.
+        "secret",
+        "secrets",
+        "api_key",
+        "api_keys",
+        "authorization",
+        "auth_header",
+        "credential",
+        "credentials",
+        "password",
+        "token",
+        "access_token",
+        "refresh_token",
     }
 )
 
@@ -52,15 +83,20 @@ FORBIDDEN_TELEMETRY_KEYS: frozenset[str] = frozenset(
 def strip_forbidden_keys(data: dict[str, Any]) -> tuple[dict[str, Any], set[str]]:
     """Recursively strip forbidden keys from a dictionary.
 
-    Returns a tuple of (cleaned_data, set_of_stripped_key_names).
+    Match is case-insensitive: ``Authorization`` is dropped just like
+    ``authorization``. Returns ``(cleaned_data, set_of_stripped_key_names)``;
+    the stripped-keys set carries the original-case names for logging.
     """
     stripped: set[str] = set()
+
+    def _is_forbidden(key: Any) -> bool:
+        return isinstance(key, str) and key.lower() in FORBIDDEN_TELEMETRY_KEYS
 
     def _scrub(node: Any) -> Any:
         if isinstance(node, dict):
             clean: dict[str, Any] = {}
             for key, value in node.items():
-                if key in FORBIDDEN_TELEMETRY_KEYS:
+                if _is_forbidden(key):
                     stripped.add(key)
                     continue
                 clean[key] = _scrub(value)
