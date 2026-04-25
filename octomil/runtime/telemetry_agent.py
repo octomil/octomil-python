@@ -192,17 +192,68 @@ class TelemetryAgent:
                     self._queue.append(ev)
 
     def flush_sync(self) -> None:
-        """Synchronous flush — runs the coroutine in a fresh loop if needed."""
+        """Synchronous flush — safe to call from sync OR async contexts.
+
+        Three branches:
+
+        1. Loop already running on THIS thread (e.g. caller is inside an
+           async function and reached for the sync helper). Blocking on
+           ``result()`` would deadlock the loop, so we schedule the flush
+           as a task on the running loop and return immediately. Callers
+           who actually need to wait should ``await agent.flush()`` from
+           an async context.
+        2. Loop running on a DIFFERENT thread (the agent's background
+           loop, set via ``start(loop)`` from another thread). Use
+           ``run_coroutine_threadsafe`` and bound the wait so a
+           misbehaving sender never wedges the caller.
+        3. No loop running anywhere we can see. Spin a fresh loop and
+           ``run_until_complete``.
+
+        Telemetry must never raise into the caller, so any exception
+        bubbling up from the threadsafe path is swallowed.
+        """
         if not self._config.enabled:
             return
+
+        # Detect a loop running on the current thread first — this is
+        # the deadlock case. asyncio.get_running_loop() raises
+        # RuntimeError if no loop is running on THIS thread, regardless
+        # of what other threads are doing.
+        try:
+            current_loop = asyncio.get_running_loop()
+        except RuntimeError:
+            current_loop = None
+
+        if current_loop is not None:
+            # Schedule and return; the caller's loop will drive flush.
+            try:
+                current_loop.create_task(self.flush())
+            except Exception:
+                logger.debug("flush_sync could not schedule on running loop", exc_info=True)
+            return
+
+        # No loop on this thread. Look for one elsewhere (e.g. the
+        # background flush loop if start() was called on another
+        # thread). asyncio.get_event_loop() raises in 3.12+ if there's
+        # no current-thread policy loop, so guard it.
         try:
             loop = asyncio.get_event_loop()
         except RuntimeError:
-            loop = asyncio.new_event_loop()
-        if loop.is_running():
-            asyncio.run_coroutine_threadsafe(self.flush(), loop).result(timeout=10.0)
-        else:
-            loop.run_until_complete(self.flush())
+            loop = None
+
+        try:
+            if loop is not None and loop.is_running():
+                asyncio.run_coroutine_threadsafe(self.flush(), loop).result(timeout=10.0)
+            else:
+                fresh = loop if loop is not None else asyncio.new_event_loop()
+                try:
+                    fresh.run_until_complete(self.flush())
+                finally:
+                    if fresh is not loop:
+                        fresh.close()
+        except Exception:
+            # Telemetry never raises into the caller.
+            logger.debug("flush_sync swallowed exception", exc_info=True)
 
 
 # --- helpers ----------------------------------------------------------------

@@ -189,3 +189,61 @@ async def test_secrets_stripped_at_arbitrary_depth():
     assert "Authorization" not in inner
     assert "authorization" not in inner
     assert inner["engine"] == "llamacpp"
+
+
+@pytest.mark.asyncio
+async def test_flush_sync_inside_running_loop_does_not_deadlock():
+    """flush_sync must NOT block on the current-thread loop. The earlier
+    impl called asyncio.run_coroutine_threadsafe(...).result(timeout=10)
+    which deadlocks when invoked from inside the same loop. New impl
+    schedules a task and returns immediately."""
+    sender = _RecordingSender()
+    agent = TelemetryAgent(sender)
+    agent.record({"event": "runtime.route.completed", "request_id": "r"})
+
+    # Calling flush_sync from inside an async test = same-thread running
+    # loop. Must return promptly (no deadlock, no TimeoutError).
+    started = asyncio.get_event_loop().time()
+    agent.flush_sync()
+    elapsed = asyncio.get_event_loop().time() - started
+    assert elapsed < 1.0, f"flush_sync blocked for {elapsed}s — would deadlock"
+
+    # The flush task was scheduled; let the loop drain it.
+    for _ in range(10):
+        await asyncio.sleep(0)
+        if sender.batches:
+            break
+    assert sender.batches, "scheduled flush did not run"
+
+
+def test_flush_sync_with_no_running_loop():
+    """Plain sync caller (no loop running anywhere on this thread)
+    should run the flush to completion via a fresh loop."""
+    sender = _RecordingSender()
+    agent = TelemetryAgent(sender)
+    agent.record({"event": "runtime.route.completed", "request_id": "r2"})
+
+    agent.flush_sync()
+
+    assert len(sender.batches) == 1
+    assert sender.batches[0][0]["event"] == "runtime.route.completed"
+
+
+@pytest.mark.asyncio
+async def test_flush_sync_swallows_exceptions():
+    """Telemetry must never raise into the caller, even when flush blows
+    up. Schedule-and-return path swallows scheduling errors at DEBUG."""
+    sender = _RecordingSender()
+    sender.fail_next = 1
+    agent = TelemetryAgent(sender)
+    agent.record({"event": "runtime.route.completed", "request_id": "r3"})
+
+    # Should not raise even though the underlying sender will fail
+    # on the scheduled flush.
+    agent.flush_sync()
+    # Drain the scheduled task; the failed batch is re-queued by flush().
+    for _ in range(20):
+        await asyncio.sleep(0)
+        if agent.queue_size > 0:
+            break
+    assert agent.queue_size == 1
