@@ -127,3 +127,65 @@ async def test_no_prompts_in_payload():
     body = sender.batches[0][0]
     # Forbidden nested key was scrubbed.
     assert "messages" not in body.get("metadata", {})
+
+
+@pytest.mark.asyncio
+async def test_secret_keys_stripped_case_insensitively():
+    """Authorization headers, API keys, tokens, passwords MUST never leave
+    the device. Match must be case-insensitive — earlier impl let
+    'Authorization' (capital A) slip through."""
+    sender = _RecordingSender()
+    agent = TelemetryAgent(sender)
+    agent.record(
+        {
+            "event": "runtime.route.completed",
+            "Authorization": "Bearer sk-secret",
+            "API_KEY": "sk-secret",
+            "metadata": {
+                "Token": "abc",
+                "password": "hunter2",
+                "engine": "llamacpp",
+            },
+        }
+    )
+    await agent.flush()
+
+    assert sender.batches
+    body = sender.batches[0][0]
+    for forbidden in [
+        "Authorization",
+        "authorization",
+        "API_KEY",
+        "api_key",
+        "Token",
+        "token",
+        "password",
+    ]:
+        assert forbidden not in body
+        assert forbidden not in body.get("metadata", {})
+    assert body["metadata"]["engine"] == "llamacpp"
+
+
+@pytest.mark.asyncio
+async def test_secrets_stripped_at_arbitrary_depth():
+    sender = _RecordingSender()
+    agent = TelemetryAgent(sender)
+    agent.record(
+        {
+            "event": "runtime.route.completed",
+            "metadata": {
+                "outer": {
+                    "inner": {
+                        "Authorization": "Bearer sk-secret",
+                        "engine": "llamacpp",
+                    }
+                }
+            },
+        }
+    )
+    await agent.flush()
+    body = sender.batches[0][0]
+    inner = body["metadata"]["outer"]["inner"]
+    assert "Authorization" not in inner
+    assert "authorization" not in inner
+    assert inner["engine"] == "llamacpp"

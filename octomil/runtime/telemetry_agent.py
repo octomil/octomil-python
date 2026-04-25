@@ -208,13 +208,23 @@ class TelemetryAgent:
 # --- helpers ----------------------------------------------------------------
 
 
+def _is_forbidden_key(key: Any) -> bool:
+    """Case-insensitive forbidden-key check.
+
+    Critical: matches what the server's telemetry_contract enforces, so
+    the SDK never even SENDS an 'Authorization' header value that the
+    server would reject. Privacy guarantee starts on the device.
+    """
+    return isinstance(key, str) and key.lower() in FORBIDDEN_TELEMETRY_KEYS
+
+
 def _sanitize(event: dict[str, Any]) -> dict[str, Any]:
-    """Drop forbidden top-level keys before validation kicks in."""
+    """Drop forbidden keys at every depth before validation kicks in."""
     out: dict[str, Any] = {}
     for k, v in event.items():
         if not isinstance(k, str):
             continue
-        if k in FORBIDDEN_TELEMETRY_KEYS:
+        if _is_forbidden_key(k):
             continue
         out[k] = _sanitize_value(v)
     out.setdefault("emitted_at", time.time())
@@ -223,9 +233,7 @@ def _sanitize(event: dict[str, Any]) -> dict[str, Any]:
 
 def _sanitize_value(value: Any) -> Any:
     if isinstance(value, dict):
-        return {
-            k: _sanitize_value(v) for k, v in value.items() if isinstance(k, str) and k not in FORBIDDEN_TELEMETRY_KEYS
-        }
+        return {k: _sanitize_value(v) for k, v in value.items() if isinstance(k, str) and not _is_forbidden_key(k)}
     if isinstance(value, (list, tuple)):
         return [_sanitize_value(v) for v in value]
     return value
