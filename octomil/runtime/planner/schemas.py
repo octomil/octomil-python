@@ -37,6 +37,20 @@ class DeviceRuntimeProfile:
 
 
 @dataclass
+class ArtifactDownloadEndpoint:
+    """One download endpoint for a planner artifact.
+
+    Multi-URL support gives the SDK CDN/origin failover and parallel chunk
+    fetches. ``headers`` carries server-issued auth (e.g. signed-URL params)
+    when needed; the server never embeds long-lived bearers here.
+    """
+
+    url: str
+    expires_at: str | None = None
+    headers: dict[str, str] | None = None
+
+
+@dataclass
 class RuntimeArtifactPlan:
     """Artifact recommendation from the server planner."""
 
@@ -49,6 +63,9 @@ class RuntimeArtifactPlan:
     digest: str | None = None
     size_bytes: int | None = None
     min_ram_bytes: int | None = None
+    required_files: list[str] = field(default_factory=list)
+    download_urls: list[ArtifactDownloadEndpoint] = field(default_factory=list)
+    manifest_uri: str | None = None
 
 
 @dataclass
@@ -80,6 +97,9 @@ class RuntimeCandidatePlan:
     artifact: RuntimeArtifactPlan | None = None
     benchmark_required: bool = False
     gates: list[CandidateGate] = field(default_factory=list)
+    delivery_mode: Literal["hosted_gateway", "sdk_runtime", "external_endpoint"] | None = None
+    prepare_required: bool = False
+    prepare_policy: Literal["lazy", "explicit_only", "disabled"] = "lazy"
 
 
 @dataclass
@@ -97,6 +117,7 @@ class AppResolution:
     preferred_engines: list[str] = field(default_factory=list)
     fallback_policy: str | None = None
     plan_ttl_seconds: int = 604800
+    public_client_allowed: bool = False
 
 
 @dataclass
@@ -131,6 +152,7 @@ class RuntimePlanResponse:
     candidates: list[RuntimeCandidatePlan]
     fallback_candidates: list[RuntimeCandidatePlan] = field(default_factory=list)
     fallback_allowed: bool = True
+    public_client_allowed: bool = False
     plan_ttl_seconds: int = 604800
     server_generated_at: str = ""
     app_resolution: AppResolution | None = None
