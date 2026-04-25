@@ -32,6 +32,9 @@ _ENGINE_ALIASES = {
     "whisper": "whisper.cpp",
     "whispercpp": "whisper.cpp",
     "whisper_cpp": "whisper.cpp",
+    "sherpa": "sherpa-onnx",
+    "sherpa_onnx": "sherpa-onnx",
+    "sherpaonnx": "sherpa-onnx",
 }
 
 
