@@ -260,12 +260,14 @@ def _auto_register(registry: EngineRegistry) -> None:
     from octomil.runtime.engines.llamacpp.engine import LlamaCppEngine
     from octomil.runtime.engines.mlx.engine import MLXEngine
     from octomil.runtime.engines.ort.engine import ONNXRuntimeEngine
+    from octomil.runtime.engines.sherpa.engine import SherpaTtsEngine
     from octomil.runtime.engines.whisper.engine import WhisperCppEngine
 
     registry.register(MLXEngine())
     registry.register(LlamaCppEngine())
     registry.register(ONNXRuntimeEngine())
     registry.register(WhisperCppEngine())
+    registry.register(SherpaTtsEngine())
     registry.register(EchoEngine())
 
 

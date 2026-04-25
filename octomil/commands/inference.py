@@ -1142,12 +1142,90 @@ def _transcribe_result_to_dict(result) -> dict:
 # ---------------------------------------------------------------------------
 
 
+@click.command("tts")
+@click.argument("text", required=False, default=None)
+@click.option("--model", "-m", default=None, help="TTS model. Defaults to kokoro-82m.")
+@click.option("--voice", default=None, help="Voice id (model-specific).")
+@click.option("--speed", type=float, default=1.0, help="Playback speed multiplier (default 1.0).")
+@click.option("--out", "-o", "out_path", default=None, type=click.Path(), help="Output file (.wav). Default: stdout.")
+def tts_cmd(
+    text: Optional[str],
+    model: Optional[str],
+    voice: Optional[str],
+    speed: float,
+    out_path: Optional[str],
+) -> None:
+    """Synthesize speech from text using a local TTS model.
+
+    \b
+    Examples:
+        octomil tts "Hello world." -o hello.wav
+        echo "from stdin" | octomil tts -o piped.wav
+        octomil tts "Bonjour" --voice af_bella --speed 1.1 -o bonjour.wav
+
+    Note: this v1 path goes directly to the local sherpa-onnx engine and
+    bypasses the kernel/planner. Cloud-routed TTS lands with the hosted
+    speech client (octomil-server feat/server-hosted-tts).
+    """
+    if text is None:
+        if not sys.stdin.isatty():
+            text = sys.stdin.read()
+        else:
+            raise click.UsageError("Missing text input. Pass an argument or pipe text on stdin.")
+
+    text = (text or "").strip()
+    if not text:
+        raise click.UsageError("Empty text input.")
+
+    model_name = model or "kokoro-82m"
+
+    from ..runtime.engines.sherpa import SherpaTtsEngine, is_sherpa_tts_model
+
+    if not is_sherpa_tts_model(model_name):
+        raise click.UsageError(f"Unknown TTS model '{model_name}'. Try kokoro-82m or a configured Piper model.")
+
+    engine = SherpaTtsEngine()
+    if not engine.detect():
+        raise click.ClickException(
+            "sherpa-onnx is not installed. Install it with:\n"
+            "  pip install sherpa-onnx\n"
+            "And drop the model files at ~/.octomil/models/sherpa/<model_name>/."
+        )
+
+    backend = engine.create_backend(model_name)
+    try:
+        backend.load_model(model_name)
+    except Exception as exc:
+        _raise_click_exception(exc)
+        return  # unreachable
+
+    try:
+        result = backend.synthesize(text, voice=voice, speed=speed)
+    except Exception as exc:
+        _raise_click_exception(exc)
+        return  # unreachable
+
+    audio_bytes = result["audio_bytes"]
+    if out_path:
+        from pathlib import Path
+
+        Path(out_path).write_bytes(audio_bytes)
+        click.echo(
+            f"wrote {len(audio_bytes)} bytes ({result['duration_ms']} ms, "
+            f"{result['sample_rate']} Hz) to {out_path}",
+            err=True,
+        )
+    else:
+        sys.stdout.buffer.write(audio_bytes)
+
+
 def register(cli: click.Group) -> None:
     """Register all inference commands onto the main CLI group."""
     # Primary task verbs
     cli.add_command(run_cmd)
     cli.add_command(embed_cmd)
     cli.add_command(transcribe_cmd)
+    cli.add_command(tts_cmd)
 
     # API-exact advanced groups
     cli.add_command(responses_group)

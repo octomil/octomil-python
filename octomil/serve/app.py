@@ -25,6 +25,17 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def _is_sherpa_tts_model(model_name: str) -> bool:
+    """Lazy wrapper around the sherpa engine's TTS-model check.
+
+    Imported as a free function so the dispatch site stays a one-liner and
+    we avoid hauling sherpa-onnx into the import path of non-TTS servers.
+    """
+    from ..runtime.engines.sherpa import is_sherpa_tts_model
+
+    return is_sherpa_tts_model(model_name)
+
+
 def _create_cloud_backend_from_profile(profile: Any, model: str) -> Any:
     """Build a CloudInferenceBackend from a config CloudProfile.
 
@@ -349,6 +360,18 @@ def create_app(
                 raise
             state.whisper_backend = whisper_backend
             state.engine_name = "whisper.cpp"
+        elif _is_sherpa_tts_model(model_name):
+            from ..runtime.engines.sherpa import SherpaTtsEngine
+
+            sherpa_engine = SherpaTtsEngine()
+            sherpa_backend = sherpa_engine.create_backend(model_name)
+            try:
+                sherpa_backend.load_model(model_name)
+            except Exception as exc:
+                _log_startup_error(model_name, exc)
+                raise
+            state.sherpa_tts_backend = sherpa_backend
+            state.engine_name = "sherpa-onnx"
         elif state.kernel is not None:
             # --- Config-driven startup: use kernel routing to decide backends ---
             await _kernel_driven_startup(state, model_name)
@@ -1100,6 +1123,66 @@ def create_app(
         finally:
             if os.path.exists(tmp_path):
                 os.unlink(tmp_path)
+
+    @app.post("/v1/audio/speech")
+    async def synthesize_speech(body: dict[str, Any]) -> Any:
+        """OpenAI ``audio.speech.create``-compatible synthesis endpoint.
+
+        Body shape (subset of OpenAI):
+            {
+              "model": "kokoro-82m",
+              "input": "text to synthesize",
+              "voice": "af_bella",
+              "response_format": "wav",   # only wav today
+              "speed": 1.0
+            }
+
+        Returns raw audio bytes with the correct ``Content-Type``.
+        """
+        from fastapi.responses import Response
+
+        if state.sherpa_tts_backend is None:
+            raise OctomilError(
+                code=OctomilErrorCode.MODEL_LOAD_FAILED,
+                message="No TTS model loaded. Start server with a sherpa-onnx TTS model: octomil serve kokoro-82m",
+            )
+
+        text = (body.get("input") or "").strip()
+        if not text:
+            raise OctomilError(
+                code=OctomilErrorCode.INVALID_INPUT,
+                message="`input` must be a non-empty string.",
+            )
+
+        voice = body.get("voice")
+        speed_raw = body.get("speed", 1.0)
+        try:
+            speed = float(speed_raw)
+        except (TypeError, ValueError) as exc:
+            raise OctomilError(
+                code=OctomilErrorCode.INVALID_INPUT,
+                message=f"`speed` must be a number, got {speed_raw!r}",
+            ) from exc
+
+        response_format = (body.get("response_format") or "wav").lower()
+        if response_format != "wav":
+            raise OctomilError(
+                code=OctomilErrorCode.INVALID_INPUT,
+                message=f"Unsupported response_format '{response_format}'. Only 'wav' is supported by the local sherpa-onnx engine.",
+            )
+
+        state.request_count += 1
+        result: dict[str, Any] = state.sherpa_tts_backend.synthesize(text, voice=voice, speed=speed)
+        return Response(
+            content=result["audio_bytes"],
+            media_type=result["content_type"],
+            headers={
+                "X-Octomil-Sample-Rate": str(result["sample_rate"]),
+                "X-Octomil-Duration-Ms": str(result["duration_ms"]),
+                "X-Octomil-Voice": str(result.get("voice") or ""),
+                "X-Octomil-Model": str(result.get("model") or ""),
+            },
+        )
 
     # Anthropic Messages API translation layer
     from ..serve_anthropic import register_anthropic_routes
