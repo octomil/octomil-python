@@ -1155,17 +1155,23 @@ def tts_cmd(
     speed: float,
     out_path: Optional[str],
 ) -> None:
-    """Synthesize speech from text using a local TTS model.
+    """Synthesize speech from text via the unified facade.
 
     \b
     Examples:
         octomil tts "Hello world." -o hello.wav
         echo "from stdin" | octomil tts -o piped.wav
         octomil tts "Bonjour" --voice af_bella --speed 1.1 -o bonjour.wav
+        octomil tts "App-routed" --model @app/my-app/tts -o app.wav
 
-    Note: this v1 path goes directly to the local sherpa-onnx engine and
-    bypasses the kernel/planner. Cloud-routed TTS lands with the hosted
-    speech client (octomil-server feat/server-hosted-tts).
+    Routes through ``Octomil.from_env().audio.speech.create(...)`` so the
+    CLI inherits the same routing behavior as the SDK: app refs respect
+    Private/Cloud/Auto policy, missing local runtimes fail closed with
+    ``local_tts_runtime_unavailable``, and the cloud branch reuses the
+    internal hosted speech transport.
+
+    --voice, --speed, and --out map directly to the facade kwargs and
+    output behavior.
     """
     if text is None:
         if not sys.stdin.isatty():
@@ -1179,42 +1185,37 @@ def tts_cmd(
 
     model_name = model or "kokoro-82m"
 
-    from ..runtime.engines.sherpa import SherpaTtsEngine, is_sherpa_tts_model
+    from ..facade import Octomil
 
-    if not is_sherpa_tts_model(model_name):
-        raise click.UsageError(f"Unknown TTS model '{model_name}'. Try kokoro-82m or a configured Piper model.")
-
-    engine = SherpaTtsEngine()
-    if not engine.detect():
-        raise click.ClickException(
-            "sherpa-onnx is not installed. Install it with:\n"
-            "  pip install sherpa-onnx\n"
-            "And drop the model files at ~/.octomil/models/sherpa/<model_name>/."
+    async def _run():
+        client = Octomil.from_env()
+        await client.initialize()
+        return await client.audio.speech.create(
+            model=model_name,
+            input=text,
+            voice=voice,
+            response_format="wav",
+            speed=speed,
         )
 
-    backend = engine.create_backend(model_name)
     try:
-        backend.load_model(model_name)
+        result = _run_async(_run())
     except Exception as exc:
         _raise_click_exception(exc)
         return  # unreachable
 
-    try:
-        result = backend.synthesize(text, voice=voice, speed=speed)
-    except Exception as exc:
-        _raise_click_exception(exc)
-        return  # unreachable
-
-    audio_bytes = result["audio_bytes"]
+    audio_bytes = result.audio_bytes
     if out_path:
         from pathlib import Path
 
         Path(out_path).write_bytes(audio_bytes)
-        click.echo(
-            f"wrote {len(audio_bytes)} bytes ({result['duration_ms']} ms, "
-            f"{result['sample_rate']} Hz) to {out_path}",
-            err=True,
-        )
+        meta_parts = [f"{len(audio_bytes)} bytes"]
+        if result.duration_ms is not None:
+            meta_parts.append(f"{result.duration_ms} ms")
+        if result.sample_rate is not None:
+            meta_parts.append(f"{result.sample_rate} Hz")
+        meta_parts.append(f"locality={result.route.locality}")
+        click.echo(f"wrote {' '.join(meta_parts)} to {out_path}", err=True)
     else:
         sys.stdout.buffer.write(audio_bytes)
 
