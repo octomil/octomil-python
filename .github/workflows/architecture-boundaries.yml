@@ -13,12 +13,21 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Generate contracts read token
+        id: contracts-token
+        uses: actions/create-github-app-token@v3
+        with:
+          app-id: ${{ secrets.VERSION_BOT_APP_ID }}
+          private-key: ${{ secrets.VERSION_BOT_PRIVATE_KEY }}
+          owner: octomil
+          repositories: octomil-contracts
+
       - uses: actions/checkout@v4
         with:
           repository: octomil/octomil-contracts
           ref: v1.18.0
           path: .contract
-          token: ${{ secrets.CROSS_REPO_READ_TOKEN || github.token }}
+          token: ${{ steps.contracts-token.outputs.token }}
 
       - uses: actions/setup-python@v5
         with:
