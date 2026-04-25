@@ -16,6 +16,7 @@ from octomil.config.local import (
     CAPABILITY_CHAT,
     CAPABILITY_EMBEDDING,
     CAPABILITY_TRANSCRIPTION,
+    CAPABILITY_TTS,
 )
 from octomil.runtime.core.policy import RoutingPolicy
 
@@ -26,6 +27,7 @@ _PLANNER_CAPABILITY_MAP = {
     CAPABILITY_CHAT: "responses",
     CAPABILITY_EMBEDDING: "embeddings",
     CAPABILITY_TRANSCRIPTION: "transcription",
+    CAPABILITY_TTS: "tts",
 }
 
 

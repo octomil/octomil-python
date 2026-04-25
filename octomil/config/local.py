@@ -18,6 +18,7 @@ from typing import Any, Optional
 CAPABILITY_CHAT = "chat"
 CAPABILITY_EMBEDDING = "embedding"
 CAPABILITY_TRANSCRIPTION = "transcription"
+CAPABILITY_TTS = "tts"
 
 # Supported serving-policy preset short names.
 VALID_PRESETS = frozenset({"private", "local_first", "performance_first", "cloud_first", "cloud_only"})
@@ -257,6 +258,7 @@ _BUILTIN_DEFAULTS: dict[str, str] = {
     CAPABILITY_CHAT: "gemma3-1b",
     CAPABILITY_EMBEDDING: "nomic-embed-text-v1.5",
     CAPABILITY_TRANSCRIPTION: "whisper-small",
+    CAPABILITY_TTS: "kokoro-82m",
 }
 
 
