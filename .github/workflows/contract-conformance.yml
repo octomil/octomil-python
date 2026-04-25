@@ -10,7 +10,7 @@ permissions:
 
 jobs:
   conformance:
-    uses: octomil/octomil-contracts/.github/workflows/sdk-conformance.yml@v1.18.0
+    uses: octomil/octomil-contracts/.github/workflows/sdk-conformance.yml@v1.22.0
     with:
       sdk: python
       contract-version: "1.18.0"
