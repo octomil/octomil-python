@@ -63,6 +63,12 @@ class HostedClient:
             )
         self._api_key = resolved_key
 
+        # Fail fast on legacy hosted base env vars. Silent fallback to the
+        # production default would mask migration misses (an upgraded env
+        # with OCTOMIL_API_BASE still set would hit prod against an
+        # unintended endpoint).
+        _reject_legacy_hosted_env_vars()
+
         raw_base = base_url or os.environ.get("OCTOMIL_HOSTED_BASE_URL") or DEFAULT_HOSTED_BASE_URL
         self._base_url = _validate_hosted_base_url(raw_base)
 
@@ -78,6 +84,30 @@ class HostedClient:
                 timeout=self._timeout,
             )
         return self._audio
+
+
+_LEGACY_HOSTED_ENV_VARS: tuple[str, ...] = ("OCTOMIL_API_BASE", "OCTOMIL_API_URL")
+
+
+def _reject_legacy_hosted_env_vars() -> None:
+    """Raise ValueError if any legacy hosted-base env var is set.
+
+    OCTOMIL_API_BASE / OCTOMIL_API_URL are the legacy control-plane
+    base URLs and point at .../api/v1. Silently ignoring them lets an
+    upgraded environment hit the production default while the operator
+    thinks they're still pointed at staging or a custom host. The
+    cutover policy is fail-fast: tell the operator to migrate to
+    OCTOMIL_HOSTED_BASE_URL or unset the legacy var.
+    """
+    set_vars = [name for name in _LEGACY_HOSTED_ENV_VARS if os.environ.get(name)]
+    if set_vars:
+        joined = ", ".join(set_vars)
+        raise ValueError(
+            f"Legacy hosted env var(s) set: {joined}. These are not used by "
+            "hosted clients in v0.10.0+. Set OCTOMIL_HOSTED_BASE_URL to the "
+            "canonical hosted base (e.g. https://api.octomil.com/v1) and "
+            f"unset {joined} to acknowledge the migration."
+        )
 
 
 def _validate_hosted_base_url(raw: str) -> str:
