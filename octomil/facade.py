@@ -126,6 +126,7 @@ class Octomil:
         self._client: Any = None
         self._responses_wrapper: FacadeResponses | None = None
         self._embeddings_wrapper: FacadeEmbeddings | None = None
+        self._audio_wrapper: Any = None  # FacadeAudio
         self._force_hosted = _force_hosted
 
         if auth is not None:
@@ -233,8 +234,7 @@ class Octomil:
         api_key = os.environ.get(server_key_var) or os.environ.get(legacy_api_key_var)
         if not api_key:
             raise ValueError(
-                f"Set {server_key_var} before calling {caller} "
-                f"(or set {legacy_api_key_var} for legacy compatibility)."
+                f"Set {server_key_var} before calling {caller} (or set {legacy_api_key_var} for legacy compatibility)."
             )
 
         org_id = os.environ.get(org_id_var)
@@ -268,7 +268,22 @@ class Octomil:
         responses = self._build_hosted_responses() if self._force_hosted else self._client.responses
         self._responses_wrapper = FacadeResponses(responses)
         self._embeddings_wrapper = FacadeEmbeddings(self._client)
+        self._audio_wrapper = self._build_audio_wrapper()
         self._initialized = True
+
+    def _build_audio_wrapper(self) -> Any:
+        """Construct the unified audio namespace (.speech) backed by the kernel.
+
+        Per strategy/agents/unified-tts-speech-routing-implementation-plan.md
+        PR 2, audio.speech.create resolves @app/<slug>/tts refs through the
+        ExecutionKernel so a single code path enforces routing policy.
+        """
+        from .audio import FacadeAudio
+        from .config.local import load_standalone_config
+        from .execution.kernel import ExecutionKernel
+
+        kernel = ExecutionKernel(config_set=load_standalone_config())
+        return FacadeAudio(kernel)
 
     def _build_hosted_responses(self) -> OctomilResponses:
         """Build a Responses namespace that always dispatches through hosted cloud."""
@@ -302,6 +317,19 @@ class Octomil:
             raise OctomilNotInitializedError()
         assert self._responses_wrapper is not None
         return self._responses_wrapper
+
+    @property
+    def audio(self) -> Any:
+        """Access the audio API (transcriptions + speech).
+
+        Returns a :class:`octomil.audio.FacadeAudio`. Requires
+        :meth:`initialize` to have been called; raises
+        :class:`OctomilNotInitializedError` otherwise.
+        """
+        if not self._initialized:
+            raise OctomilNotInitializedError()
+        assert self._audio_wrapper is not None
+        return self._audio_wrapper
 
     @property
     def embeddings(self) -> FacadeEmbeddings:

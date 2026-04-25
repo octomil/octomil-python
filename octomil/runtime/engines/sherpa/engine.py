@@ -103,8 +103,58 @@ def _get_sherpa_version() -> str:
 
 
 def is_sherpa_tts_model(model_name: str) -> bool:
-    """Check if a model name refers to a sherpa-onnx TTS model."""
+    """Check if a model name refers to a sherpa-onnx TTS model.
+
+    Means "known model id," not "installed and runnable." For runnable
+    detection (sherpa_onnx + on-disk model files), use
+    :func:`is_sherpa_tts_model_staged` instead.
+    """
     return model_name.lower() in _SHERPA_TTS_MODELS
+
+
+def _resolve_sherpa_model_dir(model_name: str) -> str:
+    """Mirror ``_SherpaTtsBackend._resolve_model_dir`` for pre-flight checks."""
+    override = os.environ.get("OCTOMIL_SHERPA_MODELS_DIR")
+    if override:
+        return os.path.join(override, model_name)
+    return os.path.expanduser(f"~/.octomil/models/sherpa/{model_name}")
+
+
+def is_sherpa_tts_model_staged(model_name: str) -> bool:
+    """Return True if every prerequisite for a local sherpa TTS run is present.
+
+    Required, in conjunction:
+      * ``sherpa_onnx`` is importable.
+      * ``model_name`` is a supported sherpa TTS model id.
+      * The model directory exists (under ``OCTOMIL_SHERPA_MODELS_DIR`` if set,
+        else ``~/.octomil/models/sherpa/<model_name>/``) with the family-correct
+        files. For Kokoro: ``model.onnx`` + ``voices.bin`` + ``tokens.txt`` +
+        ``espeak-ng-data/``. For VITS/Piper: ``model.onnx`` + ``tokens.txt`` +
+        ``espeak-ng-data/``.
+
+    Callers should raise ``local_tts_runtime_unavailable`` when this returns
+    False under a ``local_only`` policy, instead of letting the backend fail
+    deep in ``load_model``.
+    """
+    if not _has_sherpa_onnx():
+        return False
+    if not is_sherpa_tts_model(model_name):
+        return False
+    family = _model_family(model_name)
+    model_dir = _resolve_sherpa_model_dir(model_name)
+    if not os.path.isdir(model_dir):
+        return False
+    required = ["model.onnx", "tokens.txt"]
+    if family == "kokoro":
+        required.append("voices.bin")
+    # espeak-ng-data is a directory bundle; check existence.
+    espeak_dir = os.path.join(model_dir, "espeak-ng-data")
+    if not os.path.isdir(espeak_dir):
+        return False
+    for entry in required:
+        if not os.path.isfile(os.path.join(model_dir, entry)):
+            return False
+    return True
 
 
 class SherpaTtsEngine(EnginePlugin):

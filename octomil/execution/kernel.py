@@ -38,6 +38,7 @@ from octomil.config.local import (
     CAPABILITY_CHAT,
     CAPABILITY_EMBEDDING,
     CAPABILITY_TRANSCRIPTION,
+    CAPABILITY_TTS,
     CloudProfile,
     InlinePolicy,
     LoadedConfigSet,
@@ -46,6 +47,7 @@ from octomil.config.local import (
     load_standalone_config,
     resolve_capability_defaults,
 )
+from octomil.errors import OctomilError, OctomilErrorCode
 
 # --- Re-exports from extracted modules (backward compatibility) ---
 from octomil.execution.attempt_execution import (  # noqa: F401
@@ -839,6 +841,227 @@ class ExecutionKernel:
             segments=segments,
             raw=result if isinstance(result, dict) else None,
         )
+
+    # ------------------------------------------------------------------
+    # Audio Speech (TTS)
+    # ------------------------------------------------------------------
+
+    async def synthesize_speech(
+        self,
+        *,
+        model: str,
+        input: str,
+        voice: Optional[str] = None,
+        response_format: str = "wav",
+        speed: float = 1.0,
+        app: Optional[str] = None,
+        policy: Optional[str] = None,
+    ) -> Any:
+        """Routed TTS synthesis. Returns a ``SpeechResponse``.
+
+        Resolves the model ref through the same planner pipeline as the
+        other capabilities. Local execution dispatches to ``SherpaTtsEngine``;
+        cloud execution wraps the existing
+        ``octomil.hosted.HostedSpeech.create`` so the kernel does not
+        duplicate hosted request shaping or error handling.
+        """
+        from octomil.audio.speech import SpeechResponse, SpeechRoute
+
+        if not input or not input.strip():
+            raise OctomilError(
+                code=OctomilErrorCode.INVALID_INPUT,
+                message="`input` must be a non-empty string.",
+            )
+
+        defaults = self._resolve(CAPABILITY_TTS, model=model, policy=policy, app=app)
+        effective_model = defaults.model or model
+        if not effective_model:
+            raise _no_model_error(CAPABILITY_TTS)
+
+        policy_preset = defaults.policy_preset or "local_first"
+        routing_policy = _resolve_routing_policy(defaults)
+        local_available = self._has_local_tts_backend(effective_model)
+        cloud_available = _cloud_available(defaults)
+
+        # Policy gating mirrors transcription. local_only never falls back.
+        locality, is_fallback = _select_locality_for_capability(
+            routing_policy,
+            local_available=local_available,
+            cloud_available=cloud_available,
+            capability=CAPABILITY_TTS,
+        )
+
+        if locality == LOCALITY_ON_DEVICE and not local_available:
+            # Don't try to load — fail closed with the canonical error.
+            raise OctomilError(
+                code=OctomilErrorCode.RUNTIME_UNAVAILABLE,
+                message=(
+                    "local_tts_runtime_unavailable: sherpa-onnx is not installed "
+                    "or the requested model is not staged. Install sherpa-onnx "
+                    f"and stage '{effective_model}' under "
+                    "$OCTOMIL_SHERPA_MODELS_DIR or ~/.octomil/models/sherpa/."
+                ),
+            )
+
+        speech_route = SpeechRoute(
+            locality="on_device" if locality == LOCALITY_ON_DEVICE else "cloud",
+            engine="sherpa-onnx" if locality == LOCALITY_ON_DEVICE else None,
+            policy=policy_preset,
+            fallback_used=is_fallback,
+        )
+
+        if locality == LOCALITY_CLOUD:
+            assert defaults.cloud_profile is not None, "cloud locality requires cloud profile"
+            t0 = time.monotonic()
+            cloud_result = await self._cloud_synthesize_speech(
+                effective_model,
+                input,
+                voice,
+                response_format,
+                speed,
+                defaults.cloud_profile,
+            )
+            return SpeechResponse(
+                audio_bytes=cloud_result["audio_bytes"],
+                content_type=cloud_result["content_type"],
+                format=cloud_result.get("format") or response_format,
+                model=effective_model,
+                provider=cloud_result.get("provider"),
+                voice=voice,
+                sample_rate=cloud_result.get("sample_rate"),
+                duration_ms=cloud_result.get("duration_ms"),
+                latency_ms=(time.monotonic() - t0) * 1000.0,
+                route=speech_route,
+                billed_units=cloud_result.get("billed_units"),
+                unit_kind=cloud_result.get("unit_kind"),
+            )
+
+        # Local branch — sherpa-onnx.
+        if response_format.lower() != "wav":
+            raise OctomilError(
+                code=OctomilErrorCode.INVALID_INPUT,
+                message=(
+                    f"format_not_supported_for_local_tts: local sherpa-onnx "
+                    f"returns WAV. Got response_format='{response_format}'. "
+                    "Cloud-routed apps can request other formats; local apps "
+                    "should request 'wav' until local transcoding ships."
+                ),
+            )
+
+        self._validate_local_voice(effective_model, voice)
+        backend = self._resolve_local_tts_backend(effective_model)
+        if backend is None:
+            raise OctomilError(
+                code=OctomilErrorCode.RUNTIME_UNAVAILABLE,
+                message=(
+                    f"local_tts_runtime_unavailable: could not load sherpa backend for model '{effective_model}'."
+                ),
+            )
+
+        t0 = time.monotonic()
+        local_result = await asyncio.to_thread(backend.synthesize, input, voice, speed)
+        latency_ms = (time.monotonic() - t0) * 1000.0
+
+        # Local execution: never write cloud_usage_logs / increment cloud quotas.
+        # Route telemetry only.
+        return SpeechResponse(
+            audio_bytes=local_result["audio_bytes"],
+            content_type=local_result.get("content_type", "audio/wav"),
+            format=local_result.get("format", "wav"),
+            model=effective_model,
+            provider=None,
+            voice=voice or local_result.get("voice"),
+            sample_rate=local_result.get("sample_rate"),
+            duration_ms=local_result.get("duration_ms"),
+            latency_ms=latency_ms,
+            route=speech_route,
+            billed_units=None,
+            unit_kind=None,
+        )
+
+    async def _cloud_synthesize_speech(
+        self,
+        model: str,
+        text: str,
+        voice: Optional[str],
+        response_format: str,
+        speed: float,
+        profile: CloudProfile,
+    ) -> dict[str, Any]:
+        """Wrap ``octomil.hosted.HostedSpeech.create`` for the cloud branch.
+
+        Internal-only use of ``HostedClient``; never expose this in
+        quickstarts. The kernel reuses the hosted speech transport so we
+        don't duplicate request shaping or error handling.
+        """
+        from octomil.hosted.client import HostedClient
+
+        api_key = os.environ.get(profile.api_key_env, "")
+        if not api_key:
+            raise RuntimeError(f"Cloud TTS requires {profile.api_key_env} to be set.")
+        base_url = _openai_base_url(profile)
+        client = HostedClient(api_key=api_key, base_url=base_url)
+        # HostedSpeech.create is sync today; thread it.
+        resp = await asyncio.to_thread(
+            client.audio.speech.create,
+            model=model,
+            input=text,
+            voice=voice,
+            response_format=response_format,
+            speed=speed,
+        )
+        return {
+            "audio_bytes": resp.audio_bytes,
+            "content_type": resp.content_type,
+            "format": response_format,
+            "provider": resp.provider,
+            "billed_units": resp.billed_units,
+            "unit_kind": resp.unit_kind,
+        }
+
+    def _has_local_tts_backend(self, model: str) -> bool:
+        try:
+            from octomil.runtime.engines.sherpa import is_sherpa_tts_model_staged
+
+            return is_sherpa_tts_model_staged(model)
+        except Exception:
+            return False
+
+    def _resolve_local_tts_backend(self, model: str) -> Optional[Any]:
+        try:
+            from octomil.runtime.engines.sherpa import SherpaTtsEngine
+
+            engine = SherpaTtsEngine()
+            backend = engine.create_backend(model)
+            backend.load_model(model)
+            return backend
+        except Exception:
+            return None
+
+    def _validate_local_voice(self, model: str, voice: Optional[str]) -> None:
+        """Pre-flight voice check for local TTS.
+
+        Raises ``OctomilError`` with ``voice_not_supported_for_locality`` when
+        the caller passed a voice that isn't in the local model's catalog.
+        For cloud, voice mismatches surface post-dispatch via provider 4xx.
+        """
+        if not voice:
+            return
+        from octomil.runtime.engines.sherpa import _KOKORO_VOICES, is_sherpa_tts_model
+
+        if not is_sherpa_tts_model(model):
+            return
+        # Kokoro carries a known catalog. For Piper/VITS the catalog is per-bundle;
+        # defer detection to backend until we ship a per-model voices.txt scan.
+        if model.lower().startswith("kokoro-") and voice.lower() not in _KOKORO_VOICES:
+            raise OctomilError(
+                code=OctomilErrorCode.INVALID_INPUT,
+                message=(
+                    f"voice_not_supported_for_locality: '{voice}' is not in "
+                    f"the Kokoro voice catalog. Cloud voices like 'alloy' "
+                    f"or 'onyx' are not valid for local Kokoro execution."
+                ),
+            )
 
     # ------------------------------------------------------------------
     # Internal helpers
