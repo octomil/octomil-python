@@ -2,9 +2,27 @@
 
 ## Unreleased
 
-- Added `DeviceAuthClient` runtime auth helper for device token bootstrap, refresh, and revoke flows.
-- Added optional `auth` extra with `keyring` secure storage dependency.
-- Fixed the published wheel surface so `from octomil import Octomil` resolves to the unified facade with `Octomil.from_env()`.
+## 4.9.0 (2026-04-25)
+
+### Features
+
+- Unified TTS routing: `client.audio.speech.create(model="@app/<slug>/tts", input=..., voice=..., response_format="wav", speed=...)` on `Octomil.from_env()` routes through the execution kernel. Local apps run on-device via sherpa-onnx; cloud apps wrap the existing `HostedClient` transport. Application code keeps `@app/<slug>/tts` regardless of policy.
+- `octomil tts` CLI now routes through the same facade. `--voice`, `--speed`, and `--out` map 1:1 to the SDK kwargs.
+- New `is_sherpa_tts_model_staged()` helper for pre-flight detection of an installed and runnable Kokoro/Piper model. Callers get `local_tts_runtime_unavailable` before a late backend load failure.
+- Pre-flight voice validation against the Kokoro voice catalog: cloud voices like `alloy`/`onyx` against a local Kokoro model raise `voice_not_supported_for_locality`.
+- `client.audio` raises `OctomilNotInitializedError` before `await client.initialize()`, symmetric with `responses` and `embeddings`.
+
+### Notes
+
+- Local TTS execution emits route telemetry but does not write `cloud_usage_logs` and does not increment `cloud_inference_monthly`.
+- `response_format="wav"` is the only locally-supported format until local transcoding ships.
+
+## 4.8.0 (2026-04-25)
+
+### Features
+
+- Hosted text-to-speech via `octomil.hosted.HostedClient.audio.speech.create(...)` against `api.octomil.com/v1/audio/speech`.
+- Local sherpa-onnx TTS engine and `octomil tts` CLI for on-device synthesis with the Kokoro/Piper voice catalog.
 
 ## 4.7.6 (2026-04-24)
 
