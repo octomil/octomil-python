@@ -73,6 +73,7 @@ from octomil.execution.planner_resolution import (  # noqa: F401
     _is_synthetic_cloud_fallback,
     _resolve_planner_selection,
     _routing_policy_for_candidate,
+    _runtime_model_for_selection,
     _selection_candidate_dicts,
 )
 from octomil.execution.route_metadata_mapper import (  # noqa: F401
@@ -873,35 +874,45 @@ class ExecutionKernel:
                 message="`input` must be a non-empty string.",
             )
 
-        defaults = self._resolve(CAPABILITY_TTS, model=model, policy=policy, app=app)
-        effective_model = defaults.model or model
+        requested_model = model
+        defaults = self._resolve(CAPABILITY_TTS, model=requested_model, policy=policy, app=app)
+        effective_model = defaults.model or requested_model
         if not effective_model:
             raise _no_model_error(CAPABILITY_TTS)
 
         policy_preset = defaults.policy_preset or "local_first"
+        selection = _resolve_planner_selection(effective_model, CAPABILITY_TTS, policy_preset)
+        runtime_model = _runtime_model_for_selection(selection, effective_model)
+
+        planner_policy = _tts_policy_from_selection(selection)
+        if planner_policy:
+            policy_preset = planner_policy
+            defaults.policy_preset = planner_policy
+            defaults.inline_policy = None
+
         routing_policy = _resolve_routing_policy(defaults)
-        local_available = self._has_local_tts_backend(effective_model)
+        local_available = self._has_local_tts_backend(runtime_model)
         cloud_available = _cloud_available(defaults)
 
         # Policy gating mirrors transcription. local_only never falls back.
-        locality, is_fallback = _select_locality_for_capability(
-            routing_policy,
-            local_available=local_available,
-            cloud_available=cloud_available,
-            capability=CAPABILITY_TTS,
-        )
+        try:
+            locality, is_fallback = _select_locality_for_capability(
+                routing_policy,
+                local_available=local_available,
+                cloud_available=cloud_available,
+                capability=CAPABILITY_TTS,
+            )
+        except RuntimeError as exc:
+            if "local" in str(exc).lower():
+                raise _local_tts_runtime_unavailable(runtime_model) from exc
+            raise OctomilError(
+                code=OctomilErrorCode.RUNTIME_UNAVAILABLE,
+                message=str(exc),
+            ) from exc
 
         if locality == LOCALITY_ON_DEVICE and not local_available:
             # Don't try to load — fail closed with the canonical error.
-            raise OctomilError(
-                code=OctomilErrorCode.RUNTIME_UNAVAILABLE,
-                message=(
-                    "local_tts_runtime_unavailable: sherpa-onnx is not installed "
-                    "or the requested model is not staged. Install sherpa-onnx "
-                    f"and stage '{effective_model}' under "
-                    "$OCTOMIL_SHERPA_MODELS_DIR or ~/.octomil/models/sherpa/."
-                ),
-            )
+            raise _local_tts_runtime_unavailable(runtime_model)
 
         speech_route = SpeechRoute(
             locality="on_device" if locality == LOCALITY_ON_DEVICE else "cloud",
@@ -912,9 +923,10 @@ class ExecutionKernel:
 
         if locality == LOCALITY_CLOUD:
             assert defaults.cloud_profile is not None, "cloud locality requires cloud profile"
+            cloud_model = requested_model if requested_model.startswith("@app/") else runtime_model
             t0 = time.monotonic()
             cloud_result = await self._cloud_synthesize_speech(
-                effective_model,
+                cloud_model,
                 input,
                 voice,
                 response_format,
@@ -925,7 +937,7 @@ class ExecutionKernel:
                 audio_bytes=cloud_result["audio_bytes"],
                 content_type=cloud_result["content_type"],
                 format=cloud_result.get("format") or response_format,
-                model=effective_model,
+                model=cloud_result.get("model") or runtime_model,
                 provider=cloud_result.get("provider"),
                 voice=voice,
                 sample_rate=cloud_result.get("sample_rate"),
@@ -948,14 +960,12 @@ class ExecutionKernel:
                 ),
             )
 
-        self._validate_local_voice(effective_model, voice)
-        backend = self._resolve_local_tts_backend(effective_model)
+        self._validate_local_voice(runtime_model, voice)
+        backend = self._resolve_local_tts_backend(runtime_model)
         if backend is None:
             raise OctomilError(
                 code=OctomilErrorCode.RUNTIME_UNAVAILABLE,
-                message=(
-                    f"local_tts_runtime_unavailable: could not load sherpa backend for model '{effective_model}'."
-                ),
+                message=(f"local_tts_runtime_unavailable: could not load sherpa backend for model '{runtime_model}'."),
             )
 
         t0 = time.monotonic()
@@ -968,7 +978,7 @@ class ExecutionKernel:
             audio_bytes=local_result["audio_bytes"],
             content_type=local_result.get("content_type", "audio/wav"),
             format=local_result.get("format", "wav"),
-            model=effective_model,
+            model=runtime_model,
             provider=None,
             voice=voice or local_result.get("voice"),
             sample_rate=local_result.get("sample_rate"),
@@ -1014,6 +1024,7 @@ class ExecutionKernel:
             "audio_bytes": resp.audio_bytes,
             "content_type": resp.content_type,
             "format": response_format,
+            "model": getattr(resp, "model", None),
             "provider": resp.provider,
             "billed_units": resp.billed_units,
             "unit_kind": resp.unit_kind,
@@ -1208,6 +1219,42 @@ class ExecutionKernel:
 # ---------------------------------------------------------------------------
 # Error helpers
 # ---------------------------------------------------------------------------
+
+
+def _tts_policy_from_selection(selection: Any) -> Optional[str]:
+    if selection is None:
+        return None
+
+    for attr in ("app_resolution", "resolution"):
+        resolved = getattr(selection, attr, None)
+        raw = getattr(resolved, "routing_policy", None)
+        if raw:
+            policy = getattr(raw, "value", raw)
+            policy = str(policy).strip().lower()
+            if policy in {
+                "private",
+                "local_only",
+                "local_first",
+                "cloud_first",
+                "cloud_only",
+                "performance_first",
+            }:
+                return policy
+            if policy == "auto":
+                return "auto"
+    return None
+
+
+def _local_tts_runtime_unavailable(model: str) -> OctomilError:
+    return OctomilError(
+        code=OctomilErrorCode.RUNTIME_UNAVAILABLE,
+        message=(
+            "local_tts_runtime_unavailable: sherpa-onnx is not installed "
+            "or the requested model is not staged. Install sherpa-onnx "
+            f"and stage '{model}' under "
+            "$OCTOMIL_SHERPA_MODELS_DIR or ~/.octomil/models/sherpa/."
+        ),
+    )
 
 
 def _no_model_error(capability: str) -> RuntimeError:
