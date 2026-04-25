@@ -23,14 +23,63 @@ from octomil.runtime.core.base import BenchmarkResult, EnginePlugin
 
 logger = logging.getLogger(__name__)
 
-# Supported TTS models -- name -> default voice.
-# Voice catalogs are model-specific; the values here are the default voice
-# the backend uses when the request does not specify one.
-_SHERPA_TTS_MODELS: dict[str, str] = {
-    "kokoro-82m": "af_bella",
-    "piper-en-amy": "amy",
-    "piper-en-ryan": "ryan",
+# Supported TTS models -- name -> (family, default voice).
+# family selects the sherpa-onnx config path:
+#   "kokoro" -> OfflineTtsKokoroModelConfig (model + voices.bin + tokens + data_dir)
+#   "vits"   -> OfflineTtsVitsModelConfig   (Piper-style: model.onnx + tokens + data_dir)
+# Voice catalogs are model-specific; the second tuple element is the default
+# voice the backend uses when the request does not specify one.
+_SHERPA_TTS_MODELS: dict[str, tuple[str, str]] = {
+    "kokoro-82m": ("kokoro", "af_bella"),
+    "piper-en-amy": ("vits", "amy"),
+    "piper-en-ryan": ("vits", "ryan"),
 }
+
+
+def _model_family(model_name: str) -> str:
+    """Return the sherpa-onnx config family ('kokoro' or 'vits') for a model."""
+    entry = _SHERPA_TTS_MODELS.get(model_name.lower())
+    return entry[0] if entry else ""
+
+
+def _default_voice(model_name: str) -> str:
+    entry = _SHERPA_TTS_MODELS.get(model_name.lower())
+    return entry[1] if entry else ""
+
+
+# Kokoro v0.19+ voice catalog. Index == speaker id in the bundled voices.bin.
+# Source: sherpa-onnx scripts/kokoro voice manifest. Operators can override
+# this by dropping a voices.txt sidecar in the model directory.
+_KOKORO_VOICES: tuple[str, ...] = (
+    "af_alloy",
+    "af_aoede",
+    "af_bella",
+    "af_heart",
+    "af_jessica",
+    "af_kore",
+    "af_nicole",
+    "af_nova",
+    "af_river",
+    "af_sarah",
+    "af_sky",
+    "am_adam",
+    "am_echo",
+    "am_eric",
+    "am_fenrir",
+    "am_liam",
+    "am_michael",
+    "am_onyx",
+    "am_puck",
+    "am_santa",
+    "bf_alice",
+    "bf_emma",
+    "bf_isabella",
+    "bf_lily",
+    "bm_daniel",
+    "bm_fable",
+    "bm_george",
+    "bm_lewis",
+)
 
 
 def _has_sherpa_onnx() -> bool:
@@ -149,10 +198,17 @@ class _SherpaTtsBackend:
         self._kwargs = kwargs
         self._tts: Any = None
         self._sample_rate: int = 24000
-        self._default_voice: str = _SHERPA_TTS_MODELS.get(model_name.lower(), "")
+        self._family: str = _model_family(model_name)
+        self._default_voice: str = _default_voice(model_name)
 
     def load_model(self, model_name: str) -> None:
-        """Load a sherpa-onnx TTS model from the configured model directory."""
+        """Load a sherpa-onnx TTS model from the configured model directory.
+
+        Branches on model family because Kokoro and VITS/Piper expect
+        different OfflineTtsModelConfig shapes:
+          - kokoro: OfflineTtsKokoroModelConfig(model, voices, tokens, data_dir)
+          - vits:   OfflineTtsVitsModelConfig(model, tokens, data_dir)
+        """
         self._model_name = model_name
         if not is_sherpa_tts_model(model_name):
             raise ValueError(
@@ -162,22 +218,46 @@ class _SherpaTtsBackend:
         import sherpa_onnx  # type: ignore[import-untyped]
 
         model_dir = self._resolve_model_dir(model_name)
-        config = sherpa_onnx.OfflineTtsConfig(
-            model=sherpa_onnx.OfflineTtsModelConfig(
+        family = _model_family(model_name)
+        num_threads = int(self._kwargs.get("num_threads", 2))
+        provider = self._kwargs.get("provider", "cpu")
+
+        if family == "kokoro":
+            inner_model_config = sherpa_onnx.OfflineTtsModelConfig(
+                kokoro=sherpa_onnx.OfflineTtsKokoroModelConfig(
+                    model=os.path.join(model_dir, "model.onnx"),
+                    voices=os.path.join(model_dir, "voices.bin"),
+                    tokens=os.path.join(model_dir, "tokens.txt"),
+                    data_dir=os.path.join(model_dir, "espeak-ng-data"),
+                ),
+                num_threads=num_threads,
+                provider=provider,
+            )
+        elif family == "vits":
+            inner_model_config = sherpa_onnx.OfflineTtsModelConfig(
                 vits=sherpa_onnx.OfflineTtsVitsModelConfig(
                     model=os.path.join(model_dir, "model.onnx"),
                     tokens=os.path.join(model_dir, "tokens.txt"),
                     data_dir=os.path.join(model_dir, "espeak-ng-data"),
                 ),
-                num_threads=int(self._kwargs.get("num_threads", 2)),
-                provider=self._kwargs.get("provider", "cpu"),
-            ),
-        )
-        logger.info("Loading sherpa-onnx TTS: %s from %s", model_name, model_dir)
+                num_threads=num_threads,
+                provider=provider,
+            )
+        else:
+            raise ValueError(f"Unsupported sherpa-onnx TTS family '{family}' for model '{model_name}'.")
+
+        config = sherpa_onnx.OfflineTtsConfig(model=inner_model_config)
+        logger.info("Loading sherpa-onnx %s TTS: %s from %s", family, model_name, model_dir)
         self._tts = sherpa_onnx.OfflineTts(config)
         self._sample_rate = self._tts.sample_rate
-        self._default_voice = _SHERPA_TTS_MODELS[model_name.lower()]
-        logger.info("sherpa-onnx TTS loaded: %s (sample_rate=%d)", model_name, self._sample_rate)
+        self._family = family
+        self._default_voice = _default_voice(model_name)
+        logger.info(
+            "sherpa-onnx TTS loaded: %s (family=%s, sample_rate=%d)",
+            model_name,
+            family,
+            self._sample_rate,
+        )
 
     @staticmethod
     def _resolve_model_dir(model_name: str) -> str:
@@ -247,19 +327,27 @@ class _SherpaTtsBackend:
     def _voice_to_sid(self, voice: str) -> int:
         """Map a voice name to a sherpa-onnx speaker id.
 
-        Models that ship multi-speaker (Kokoro, multi-voice Piper) load a
-        ``voices.txt`` next to the model. When absent, fall back to sid 0
-        which selects the model's first/default speaker.
+        Resolution order:
+        1. ``voices.txt`` sidecar (one voice id per line, position == sid).
+           Lets the operator override the default catalog if the model bundle
+           ships its own voice list.
+        2. Built-in Kokoro catalog (``_KOKORO_VOICES``) for kokoro-* models.
+        3. sid 0 — the model's first/default speaker.
         """
         if not voice:
             return 0
-        voices_file = os.path.join(self._resolve_model_dir(self._model_name), "voices.txt")
-        if not os.path.exists(voices_file):
+        sidecar = os.path.join(self._resolve_model_dir(self._model_name), "voices.txt")
+        if os.path.exists(sidecar):
+            with open(sidecar, encoding="utf-8") as f:
+                for idx, line in enumerate(f):
+                    if line.strip().lower() == voice.lower():
+                        return idx
             return 0
-        with open(voices_file, encoding="utf-8") as f:
-            for idx, line in enumerate(f):
-                if line.strip().lower() == voice.lower():
-                    return idx
+        if self._family == "kokoro":
+            try:
+                return _KOKORO_VOICES.index(voice.lower())
+            except ValueError:
+                return 0
         return 0
 
     def list_models(self) -> list[str]:
