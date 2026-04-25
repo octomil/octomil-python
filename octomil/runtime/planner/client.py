@@ -9,6 +9,7 @@ from typing import Any
 
 from .schemas import (
     AppResolution,
+    ArtifactDownloadEndpoint,
     CandidateGate,
     DeviceRuntimeProfile,
     ModelResolution,
@@ -24,22 +25,44 @@ _DEFAULT_BENCHMARK_PATH = "/api/v2/runtime/benchmarks"
 _DEFAULT_DEFAULTS_PATH = "/api/v2/runtime/defaults"
 
 
+def _parse_artifact(artifact_data: dict[str, Any]) -> RuntimeArtifactPlan:
+    """Parse an artifact dict from the server into a RuntimeArtifactPlan.
+
+    Carries the prepare-lifecycle fields added in PR 1: required_files,
+    download_urls (multi-URL with optional headers/expiry), and manifest_uri.
+    """
+    download_urls = []
+    for ep in artifact_data.get("download_urls", []) or []:
+        if isinstance(ep, dict) and ep.get("url"):
+            download_urls.append(
+                ArtifactDownloadEndpoint(
+                    url=ep["url"],
+                    expires_at=ep.get("expires_at"),
+                    headers=ep.get("headers"),
+                )
+            )
+    return RuntimeArtifactPlan(
+        model_id=artifact_data.get("model_id", ""),
+        artifact_id=artifact_data.get("artifact_id"),
+        model_version=artifact_data.get("model_version"),
+        format=artifact_data.get("format"),
+        quantization=artifact_data.get("quantization"),
+        uri=artifact_data.get("uri"),
+        digest=artifact_data.get("digest"),
+        size_bytes=artifact_data.get("size_bytes"),
+        min_ram_bytes=artifact_data.get("min_ram_bytes"),
+        required_files=list(artifact_data.get("required_files", []) or []),
+        download_urls=download_urls,
+        manifest_uri=artifact_data.get("manifest_uri"),
+    )
+
+
 def _parse_candidate(data: dict[str, Any]) -> RuntimeCandidatePlan:
     """Parse a candidate dict from the server into a RuntimeCandidatePlan."""
     artifact_data = data.get("artifact")
     artifact = None
     if artifact_data and isinstance(artifact_data, dict):
-        artifact = RuntimeArtifactPlan(
-            model_id=artifact_data.get("model_id", ""),
-            artifact_id=artifact_data.get("artifact_id"),
-            model_version=artifact_data.get("model_version"),
-            format=artifact_data.get("format"),
-            quantization=artifact_data.get("quantization"),
-            uri=artifact_data.get("uri"),
-            digest=artifact_data.get("digest"),
-            size_bytes=artifact_data.get("size_bytes"),
-            min_ram_bytes=artifact_data.get("min_ram_bytes"),
-        )
+        artifact = _parse_artifact(artifact_data)
     gates = []
     for gate_data in data.get("gates", []):
         if isinstance(gate_data, dict):
@@ -64,6 +87,9 @@ def _parse_candidate(data: dict[str, Any]) -> RuntimeCandidatePlan:
         artifact=artifact,
         benchmark_required=data.get("benchmark_required", False),
         gates=gates,
+        delivery_mode=data.get("delivery_mode"),
+        prepare_required=data.get("prepare_required", False),
+        prepare_policy=data.get("prepare_policy", "lazy"),
     )
 
 
@@ -72,19 +98,7 @@ def _parse_app_resolution(data: dict[str, Any]) -> AppResolution:
     artifact_candidates = []
     for ac in data.get("artifact_candidates", []):
         if isinstance(ac, dict):
-            artifact_candidates.append(
-                RuntimeArtifactPlan(
-                    model_id=ac.get("model_id", ""),
-                    artifact_id=ac.get("artifact_id"),
-                    model_version=ac.get("model_version"),
-                    format=ac.get("format"),
-                    quantization=ac.get("quantization"),
-                    uri=ac.get("uri"),
-                    digest=ac.get("digest"),
-                    size_bytes=ac.get("size_bytes"),
-                    min_ram_bytes=ac.get("min_ram_bytes"),
-                )
-            )
+            artifact_candidates.append(_parse_artifact(ac))
     return AppResolution(
         app_id=data.get("app_id", ""),
         capability=data.get("capability", ""),
@@ -97,6 +111,7 @@ def _parse_app_resolution(data: dict[str, Any]) -> AppResolution:
         preferred_engines=data.get("preferred_engines", []),
         fallback_policy=data.get("fallback_policy"),
         plan_ttl_seconds=data.get("plan_ttl_seconds", 604800),
+        public_client_allowed=data.get("public_client_allowed", False),
     )
 
 
@@ -138,6 +153,7 @@ def _parse_plan_response(data: dict[str, Any]) -> RuntimePlanResponse:
         candidates=candidates,
         fallback_candidates=fallback,
         fallback_allowed=data.get("fallback_allowed", True),
+        public_client_allowed=data.get("public_client_allowed", False),
         plan_ttl_seconds=data.get("plan_ttl_seconds", 604800),
         server_generated_at=data.get("server_generated_at", ""),
         app_resolution=app_resolution,
