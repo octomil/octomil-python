@@ -23,9 +23,13 @@ import click
 @click.option(
     "--capability",
     default="tts",
-    type=click.Choice(["tts"]),
+    type=click.Choice(["tts", "transcription", "embedding", "chat"]),
     show_default=True,
-    help="Which capability's planner candidate to prepare. Only 'tts' is wired today.",
+    help=(
+        "Which capability's planner candidate to prepare. The TTS adapter consumes the prepared "
+        "dir directly; for transcription/embedding/chat, prepare materializes bytes into the cache "
+        "and the next inference call picks them up via the engine's existing model lookup."
+    ),
 )
 @click.option(
     "--policy",
