@@ -5,6 +5,7 @@ from octomil.runtime.engines.sherpa.engine import (
     SherpaTtsEngine,
     is_sherpa_tts_model,
     is_sherpa_tts_model_staged,
+    is_sherpa_tts_runtime_available,
 )
 
 TIER = "supported"
@@ -14,5 +15,6 @@ __all__ = [
     "TIER",
     "is_sherpa_tts_model",
     "is_sherpa_tts_model_staged",
+    "is_sherpa_tts_runtime_available",
     "_KOKORO_VOICES",
 ]

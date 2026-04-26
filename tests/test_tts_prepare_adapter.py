@@ -125,10 +125,23 @@ class _FakeSherpaEngine:
         return _FakeBackend(model_name, **kwargs)
 
 
-def _patch_sherpa_helpers(stack):
-    # Pretend the local TTS runtime is fully staged so kernel takes the local branch.
-    stack.enter_context(patch("octomil.runtime.engines.sherpa.is_sherpa_tts_model_staged", return_value=True))
+def _patch_sherpa_helpers(stack, *, staged: bool = True, runtime_available: bool = True):
+    """Patch sherpa-onnx engine helpers for kernel TTS tests.
+
+    ``staged`` controls whether files are already on disk (the existing
+    happy path). ``runtime_available`` controls whether sherpa-onnx is
+    importable and the model id is recognized — this is what gates the
+    clean-device prepare path. Tests that exercise first-run lazy
+    prepare set ``staged=False, runtime_available=True``.
+    """
+    stack.enter_context(patch("octomil.runtime.engines.sherpa.is_sherpa_tts_model_staged", return_value=staged))
     stack.enter_context(patch("octomil.runtime.engines.sherpa.is_sherpa_tts_model", return_value=True))
+    stack.enter_context(
+        patch(
+            "octomil.runtime.engines.sherpa.is_sherpa_tts_runtime_available",
+            return_value=runtime_available,
+        )
+    )
     stack.enter_context(patch("octomil.runtime.engines.sherpa.SherpaTtsEngine", _FakeSherpaEngine))
 
 
@@ -287,3 +300,81 @@ async def test_local_tts_prepare_manager_errors_propagate(tmp_path):
 
     assert excinfo.value.code == ErrorCode.DOWNLOAD_FAILED
     assert "cdn down" in str(excinfo.value)
+
+
+# --- Clean-device first-run regression -------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_clean_device_lazy_prepare_admits_local_routing(tmp_path):
+    """Reviewer's reproducer: Private @app/foo/tts, sherpa-onnx installed,
+    model id recognized, but artifact NOT staged on disk yet. The planner
+    emits an sdk_runtime candidate with prepare_required=True. Without
+    splitting runtime-available from artifact-staged, this routed to a
+    local_tts_runtime_unavailable error before prepare ever ran. The fix
+    makes the kernel admit the route and call PrepareManager."""
+    candidate = _local_candidate()  # prepare_required=True, sdk_runtime, lazy
+    selection = _Selection(candidates=[candidate])
+    artifact_dir = tmp_path / "kokoro"
+    artifact_dir.mkdir()
+    fake_pm = _FakePrepareManager(artifact_dir)
+
+    from contextlib import ExitStack
+
+    with ExitStack() as stack:
+        # Clean device: bytes NOT staged, but sherpa-onnx package IS importable.
+        _patch_sherpa_helpers(stack, staged=False, runtime_available=True)
+        stack.enter_context(patch("octomil.execution.kernel._resolve_planner_selection", return_value=selection))
+        kernel = _kernel_with(selection, fake_pm)
+        resp = await kernel.synthesize_speech(model="@app/eternum/tts", input="hello")
+
+    # Routed locally, prepare was called, artifact_dir threaded to backend.
+    assert resp.route.locality == "on_device"
+    assert resp.route.engine == "sherpa-onnx"
+    assert len(fake_pm.calls) == 1, "prepare must run on a clean device"
+    assert _FakeBackend.last_model_dir == str(artifact_dir)
+
+
+@pytest.mark.asyncio
+async def test_clean_device_no_planner_candidate_still_fails_closed(tmp_path):
+    # The other side of the contract: if sherpa-onnx is installed and the
+    # model id is recognized but the planner did NOT emit a preparable
+    # candidate (e.g. offline planner, or candidate has prepare_required=False
+    # with no staged files), local routing must still fail closed rather
+    # than silently route to broken bytes.
+    candidate = _local_candidate(prepare_required=False)  # not preparable
+    selection = _Selection(candidates=[candidate])
+    fake_pm = _FakePrepareManager(tmp_path / "never-used")
+
+    from contextlib import ExitStack
+
+    with ExitStack() as stack:
+        _patch_sherpa_helpers(stack, staged=False, runtime_available=True)
+        stack.enter_context(patch("octomil.execution.kernel._resolve_planner_selection", return_value=selection))
+        kernel = _kernel_with(selection, fake_pm)
+        with pytest.raises(OctomilError) as excinfo:
+            await kernel.synthesize_speech(model="@app/eternum/tts", input="hi")
+
+    assert excinfo.value.code in (ErrorCode.RUNTIME_UNAVAILABLE,)
+    assert fake_pm.calls == [], "prepare must not run when prepare_required=False"
+
+
+@pytest.mark.asyncio
+async def test_clean_device_without_sherpa_package_fails_closed(tmp_path):
+    # If sherpa-onnx is not even importable, even a preparable candidate
+    # cannot be made local. Fail closed before downloading bytes that
+    # have no engine to load them.
+    candidate = _local_candidate()
+    selection = _Selection(candidates=[candidate])
+    fake_pm = _FakePrepareManager(tmp_path / "never-used")
+
+    from contextlib import ExitStack
+
+    with ExitStack() as stack:
+        _patch_sherpa_helpers(stack, staged=False, runtime_available=False)
+        stack.enter_context(patch("octomil.execution.kernel._resolve_planner_selection", return_value=selection))
+        kernel = _kernel_with(selection, fake_pm)
+        with pytest.raises(OctomilError):
+            await kernel.synthesize_speech(model="@app/eternum/tts", input="hi")
+
+    assert fake_pm.calls == [], "prepare must not run when the engine cannot load the result"
