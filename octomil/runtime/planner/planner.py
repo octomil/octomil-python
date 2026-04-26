@@ -20,7 +20,11 @@ from .schemas import (
     RuntimePlanResponse,
     RuntimeSelection,
 )
-from .store import RuntimePlannerStore
+from .store import (
+    RuntimePlannerStoreProtocol,
+    _make_cache_key,
+    build_runtime_planner_store,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -56,10 +60,10 @@ class RuntimePlanner:
     def __init__(
         self,
         *,
-        store: RuntimePlannerStore | None = None,
+        store: RuntimePlannerStoreProtocol | None = None,
         client: RuntimePlannerClient | None = None,
     ) -> None:
-        self._store = store or RuntimePlannerStore()
+        self._store: RuntimePlannerStoreProtocol = store or build_runtime_planner_store()
         self._client = client if client is not None else _client_from_env()
 
     def resolve(
@@ -102,7 +106,7 @@ class RuntimePlanner:
         # Step 2: Check local plan cache
         from octomil import __version__
 
-        cache_key = self._store._make_cache_key(
+        cache_key = _make_cache_key(
             model=effective_model,
             capability=capability,
             policy=routing_policy,
@@ -583,7 +587,7 @@ def _benchmark_cache_key(
     policy: str,
     device: DeviceRuntimeProfile,
 ) -> str:
-    return RuntimePlannerStore._make_cache_key(
+    return _make_cache_key(
         model=model,
         capability=capability,
         policy=policy,
