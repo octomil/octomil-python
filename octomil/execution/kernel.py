@@ -110,21 +110,30 @@ logger = logging.getLogger(__name__)
 #   - tts             (PR 4 + 6 + 7)  — SherpaTtsEngine.create_backend(model_dir)
 #   - transcription   (PR 10a)        — _WhisperBackend honors injected model_dir
 #                                       and skips pywhispercpp's HF download path.
-#   - chat/responses  (PR 10c)        — MLXBackend and LlamaCppBackend accept
-#                                       ``model_dir`` and load from the prepared
-#                                       directory (mlx_lm.load reads a path
-#                                       like a repo id; llama_cpp.Llama opens
-#                                       PrepareManager's ``<dir>/artifact``
-#                                       sentinel by magic bytes regardless of
-#                                       extension).
-# Wiring backlog:
-#   - embedding:      thread model_dir into the local embeddings backend
-#
-# Note: "responses" is the OpenAI-Responses-shaped surface that routes
-# through the same chat dispatch internally (no separate CAPABILITY_*
-# constant). Both names are accepted by ``prepare`` so callers can refer
-# to whichever capability they actually invoke at request time.
-_PREPAREABLE_CAPABILITIES = frozenset({CAPABILITY_TTS, CAPABILITY_TRANSCRIPTION, CAPABILITY_CHAT, "responses"})
+# Wiring backlog (intentionally NOT in the supported set):
+#   - chat (kernel)   — MLXBackend and LlamaCppBackend accept ``model_dir``
+#                       (PR 10c backend threading), but the capability is
+#                       still gated because:
+#                         (a) the public ``client.responses.create`` facade
+#                             goes through ``OctomilResponses``, which does
+#                             not thread ``model_dir`` into its engine
+#                             ``create_backend`` calls — flipping ``chat``
+#                             on the kernel would mean ``client.prepare``
+#                             succeeds but the next ``client.responses.
+#                             create`` cold-loads anyway;
+#                         (b) PrepareManager materializes only single-file
+#                             artifacts (``<dir>/artifact`` sentinel) and
+#                             has no snapshot/manifest support, so MLX
+#                             loads from a prepared dir don't work for
+#                             real model shapes that mlx_lm requires
+#                             (config.json + tokenizer + safetensors).
+#                       ``chat`` and ``responses`` flip to wired once
+#                       OctomilResponses goes through the kernel (or
+#                       threads model_dir itself) AND PrepareManager grows
+#                       snapshot materialization proven by an MLX e2e test.
+#   - responses        — same gate as chat (dispatches through chat).
+#   - embedding        — thread model_dir into the local embeddings backend.
+_PREPAREABLE_CAPABILITIES = frozenset({CAPABILITY_TTS, CAPABILITY_TRANSCRIPTION})
 
 
 # ---------------------------------------------------------------------------
@@ -299,18 +308,14 @@ class ExecutionKernel:
         # Planner-driven routing
         selection = _resolve_planner_selection(effective_model, CAPABILITY_CHAT, policy_preset)
 
-        # PR 10c: when the planner's primary local candidate is a
-        # preparable sdk_runtime artifact, materialize the bytes once
-        # before the candidate loop so every local-attempt _build_router
-        # call passes the same prepared model_dir to the engine.
-        # ``_prepare_local_chat_artifact`` returns ``None`` (skip
-        # prepare) when the candidate is unpreparable; the runner's
-        # existing fallback then promotes cloud after the local attempt
-        # fails instead of crashing the whole call here.
-        prepared_model_dir = self._prepare_local_chat_artifact(selection)
-
         routing_policy = _resolve_routing_policy(defaults)
         candidates = _selection_candidate_dicts(selection, routing_policy)
+        # PR 10c: when the planner emits an unpreparable local
+        # sdk_runtime candidate (synthetic plan: missing digest/url,
+        # traversal, etc.), filter it out so the runner doesn't burn an
+        # attempt cold-loading through the engine's own download path.
+        # Mirrors the TTS / transcription hard veto.
+        candidates = _filter_unpreparable_local_candidates(self, selection, candidates)
         fallback_allowed = _candidate_fallback_allowed(selection, routing_policy)
 
         gen_config = GenerationConfig(
@@ -331,12 +336,17 @@ class ExecutionKernel:
 
         runner = CandidateAttemptRunner(fallback_allowed=fallback_allowed, streaming=False)
 
+        # Cache prepared dirs by artifact_id within this call so a
+        # local-then-local retry (rare but possible under fallback)
+        # doesn't re-download. Prepare runs INSIDE the local attempt:
+        # cloud-first plans never touch local prepare.
+        prepared_dirs: dict[str, Optional[str]] = {}
+
         async def _execute_candidate(candidate: dict[str, Any]) -> RuntimeResponse:
             candidate_selection = _candidate_to_selection(selection, candidate)
-            # Only thread prepared_model_dir into LOCAL attempts. Cloud
-            # attempts ignore it but we leave the kwarg None to keep
-            # cloud_factory's path explicit.
-            local_dir = prepared_model_dir if candidate.get("locality") == "local" else None
+            local_dir: Optional[str] = None
+            if candidate.get("locality") == "local":
+                local_dir = self._prepare_local_chat_artifact_cached(selection, prepared_dirs)
             router = await self._build_router(
                 effective_model,
                 CAPABILITY_CHAT,
@@ -414,14 +424,9 @@ class ExecutionKernel:
         policy_preset = defaults.policy_preset or "local_first"
         selection = _resolve_planner_selection(effective_model, CAPABILITY_CHAT, policy_preset)
 
-        # PR 10c: same prepare-once-before-runner pattern as
-        # ``create_response``. The mlx-lm and llama.cpp backends consume
-        # ``model_dir`` to load the prepared bytes instead of triggering
-        # their own snapshot_download / from_pretrained path.
-        prepared_model_dir = self._prepare_local_chat_artifact(selection)
-
         routing_policy = _resolve_routing_policy(defaults)
         candidates = _selection_candidate_dicts(selection, routing_policy)
+        candidates = _filter_unpreparable_local_candidates(self, selection, candidates)
         fallback_allowed = _candidate_fallback_allowed(selection, routing_policy)
 
         gen_config = GenerationConfig(
@@ -442,6 +447,10 @@ class ExecutionKernel:
 
         runner = CandidateAttemptRunner(fallback_allowed=fallback_allowed, streaming=True)
 
+        # Per-call prepared-dir cache; prepare fires lazily inside the
+        # local branch only.
+        prepared_dirs: dict[str, Optional[str]] = {}
+
         t0 = time.monotonic()
         collected_text = ""
         selected_locality = LOCALITY_ON_DEVICE
@@ -452,7 +461,9 @@ class ExecutionKernel:
             first_token_emitted = False
             try:
                 candidate_selection = _candidate_to_selection(selection, candidate)
-                local_dir = prepared_model_dir if candidate.get("locality") == "local" else None
+                local_dir: Optional[str] = None
+                if candidate.get("locality") == "local":
+                    local_dir = self._prepare_local_chat_artifact_cached(selection, prepared_dirs)
                 router = await self._build_router(
                     effective_model,
                     CAPABILITY_CHAT,
@@ -534,12 +545,9 @@ class ExecutionKernel:
         policy_preset = defaults.policy_preset or "local_first"
         selection = _resolve_planner_selection(effective_model, CAPABILITY_CHAT, policy_preset)
 
-        # PR 10c: prepare once before the runner so every local attempt
-        # passes the same prepared dir into ``_build_router``.
-        prepared_model_dir = self._prepare_local_chat_artifact(selection)
-
         routing_policy = _resolve_routing_policy(defaults)
         candidates = _selection_candidate_dicts(selection, routing_policy)
+        candidates = _filter_unpreparable_local_candidates(self, selection, candidates)
         fallback_allowed = _candidate_fallback_allowed(selection, routing_policy)
 
         gen_config = GenerationConfig(
@@ -555,6 +563,8 @@ class ExecutionKernel:
 
         runner = CandidateAttemptRunner(fallback_allowed=fallback_allowed, streaming=True)
 
+        prepared_dirs: dict[str, Optional[str]] = {}
+
         t0 = time.monotonic()
         collected_text = ""
         selected_locality = LOCALITY_ON_DEVICE
@@ -565,7 +575,9 @@ class ExecutionKernel:
             first_token_emitted = False
             try:
                 candidate_selection = _candidate_to_selection(selection, candidate)
-                local_dir = prepared_model_dir if candidate.get("locality") == "local" else None
+                local_dir: Optional[str] = None
+                if candidate.get("locality") == "local":
+                    local_dir = self._prepare_local_chat_artifact_cached(selection, prepared_dirs)
                 router = await self._build_router(
                     effective_model,
                     CAPABILITY_CHAT,
@@ -1265,29 +1277,28 @@ class ExecutionKernel:
         candidates whose ``prepare_policy='explicit_only'`` succeed when
         invoked through this method.
 
-        Supported capabilities: ``"tts"``, ``"transcription"``, ``"chat"``,
-        and ``"responses"`` today. Each has a dispatch path that threads
-        the prepared ``artifact_dir`` into its backend:
+        Supported capabilities: ``"tts"`` and ``"transcription"`` today.
+        Both have dispatch paths that thread the prepared ``artifact_dir``
+        into their backend:
 
         - ``tts`` -> ``SherpaTtsEngine.create_backend(model_dir=...)``.
         - ``transcription`` -> ``_WhisperBackend`` honors injected
           ``model_dir`` and prefers PrepareManager's ``<dir>/artifact``
           sentinel before falling back to ``.bin`` / ``.gguf`` / ``.ggml``.
-        - ``chat`` / ``responses`` -> ``MLXBackend`` loads the prepared
-          dir via ``mlx_lm.load`` (which accepts a filesystem path the
-          same way it accepts an HF repo id), and ``LlamaCppBackend``
-          opens PrepareManager's ``<dir>/artifact`` sentinel directly
-          via ``llama_cpp.Llama(model_path=...)`` (the GGUF magic-bytes
-          check accepts files with any extension). Both ``"chat"`` and
-          ``"responses"`` resolve through the chat capability internally.
 
-        Embedding will be added once its local backend learns to accept
-        a ``model_dir`` kwarg — exposing ``prepare`` for it now would
-        be a false success: the bytes would land on disk and the next
+        Embedding and chat (and responses, which routes through chat)
+        will be added one at a time as their adapters learn to accept a
+        ``model_dir`` kwarg — exposing ``prepare`` for them now would be
+        a false success: the bytes would land on disk and the next
         inference call would still cold-start through the engine's own
-        lookup. The current set is the source of truth; the lifecycle
-        support fixture in octomil-contracts cites the e2e test that
-        proves each cell's claim.
+        lookup. PR 10c added the kernel-side threading for chat into
+        ``MLXBackend`` and ``LlamaCppBackend``, but the capability
+        remains gated until (a) the public ``client.responses.create``
+        facade goes through the kernel (or threads ``model_dir``
+        itself), and (b) PrepareManager grows snapshot/manifest support
+        for multi-file MLX artifacts. The current set is the source of
+        truth; the lifecycle support fixture in octomil-contracts cites
+        the e2e test that proves each cell's claim.
 
         Returns a :class:`PrepareOutcome`. Raises :class:`OctomilError` if
         the capability is not yet wired, the planner emits no preparable
@@ -1305,17 +1316,13 @@ class ExecutionKernel:
                 ),
             )
 
-        # ``responses`` is shaped like the OpenAI Responses API but
-        # dispatches through the chat path internally; the local config
-        # only knows the canonical capability constants.
-        resolution_capability = CAPABILITY_CHAT if capability == "responses" else capability
-        defaults = self._resolve(resolution_capability, model=model, policy=policy, app=app)
+        defaults = self._resolve(capability, model=model, policy=policy, app=app)
         effective_model = defaults.model or model
         if not effective_model:
             raise _no_model_error(capability)
 
         policy_preset = defaults.policy_preset or "local_first"
-        selection = _resolve_planner_selection(effective_model, resolution_capability, policy_preset)
+        selection = _resolve_planner_selection(effective_model, capability, policy_preset)
         candidate = _local_sdk_runtime_candidate(selection)
         if candidate is None:
             raise OctomilError(
@@ -1352,39 +1359,51 @@ class ExecutionKernel:
         outcome = manager.prepare(candidate)
         return str(outcome.artifact_dir)
 
-    def _prepare_local_chat_artifact(self, selection: Optional[Any]) -> Optional[str]:
-        """Run PrepareManager for the local chat/responses candidate, if any.
+    def _prepare_local_chat_artifact_cached(
+        self,
+        selection: Optional[Any],
+        cache: dict[str, Optional[str]],
+    ) -> Optional[str]:
+        """Lazy, per-call prepare for the local chat candidate.
 
-        Symmetric with ``_prepare_local_transcription_artifact``. Returns
-        the prepared ``artifact_dir`` as a string when the planner emits
-        a local sdk_runtime candidate with ``prepare_required=True`` AND
-        ``can_prepare`` accepts the metadata; returns ``None`` otherwise
-        so the existing mlx-lm / llama.cpp resolution path (HF
-        snapshot_download or catalog lookup) runs unchanged.
+        Called from inside the local branch of the candidate runner so
+        cloud-first plans (and plans whose primary cloud candidate
+        succeeds) never trigger prepare. Caches the prepared dir by
+        artifact_id within the call so a local-then-local retry under
+        fallback doesn't re-prepare.
 
-        The unpreparable check is internal here (rather than gated at
-        the call site like ``transcribe_audio`` does) because the chat
-        path uses the candidate runner pattern: there is no single
-        locality decision to short-circuit, so the safe behaviour for a
-        synthetic local plan is to skip prepare and let the runner's
-        existing fallback machinery move on to cloud after the local
-        attempt fails. Without this guard, a synthetic candidate would
-        crash the entire ``create_response`` in ``manager.prepare``
-        before any candidate ran.
+        ``selection`` is the original planner selection (with its full
+        ``candidates`` list); the helper picks the first local
+        sdk_runtime candidate. Returns ``None`` (cold-load through the
+        engine's own resolution path) when:
+          - no local sdk_runtime candidate exists,
+          - ``prepare_required`` is False (engine manages its own bytes,
+            e.g. ollama), or
+          - the candidate has no artifact id (synthetic policy-driven
+            candidate built without planner metadata).
+        ``manager.prepare`` exceptions are surfaced unchanged so the
+        runner records the failure and falls back to cloud on the next
+        attempt — same contract as the TTS / transcription paths.
         """
         candidate = _local_sdk_runtime_candidate(selection)
         if candidate is None:
             return None
         if not getattr(candidate, "prepare_required", False):
             return None
-        if self._local_candidate_is_unpreparable(selection):
+        artifact = getattr(candidate, "artifact", None)
+        artifact_id = getattr(artifact, "artifact_id", None) or getattr(artifact, "model_id", None)
+        if not artifact_id:
             return None
+        if artifact_id in cache:
+            return cache[artifact_id]
 
         from octomil.runtime.lifecycle.prepare_manager import PrepareManager
 
         manager = self._prepare_manager or PrepareManager()
         outcome = manager.prepare(candidate)
-        return str(outcome.artifact_dir)
+        prepared = str(outcome.artifact_dir)
+        cache[artifact_id] = prepared
+        return prepared
 
     def _prepare_local_tts_artifact(self, selection: Optional[Any]) -> Optional[str]:
         """Run :class:`PrepareManager` for the local TTS candidate, if any.
@@ -1633,6 +1652,36 @@ class ExecutionKernel:
 # ---------------------------------------------------------------------------
 # Error helpers
 # ---------------------------------------------------------------------------
+
+
+def _filter_unpreparable_local_candidates(
+    kernel: "ExecutionKernel",
+    selection: Optional[Any],
+    candidates: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Drop local candidates the SDK can't prepare from the runner list.
+
+    When the planner emits a ``prepare_required=True`` local sdk_runtime
+    candidate but ``PrepareManager.can_prepare`` rejects the metadata
+    (synthetic plan: missing digest/url, traversal, etc.), the candidate
+    is unpreparable. Without this filter, the runner would try local,
+    ``_build_router`` would call ``engine.create_backend`` with no
+    ``model_dir``, and the engine would silently fall back to its own
+    HuggingFace ``snapshot_download`` / ``from_pretrained`` path —
+    letting a malformed planner plan still win local routing instead of
+    being treated as unavailable. The TTS and transcription paths apply
+    the same hard veto via ``_local_candidate_is_unpreparable``; this
+    helper does the equivalent for the candidate-runner-driven chat
+    dispatch.
+
+    A safety floor: if the filter would empty the list, leave at least
+    one cloud candidate behind. If only the unpreparable local
+    candidate exists, return ``[]`` and let the runner surface the
+    actionable error.
+    """
+    if not kernel._local_candidate_is_unpreparable(selection):
+        return candidates
+    return [c for c in candidates if c.get("locality") != "local"]
 
 
 def _local_sdk_runtime_candidate(selection: Optional[Any]) -> Optional[Any]:

@@ -12,21 +12,20 @@ actually consume the prepared ``model_dir``:
 - ``transcription`` — ``_WhisperBackend`` loads the prepared
   ``<dir>/artifact`` sentinel (or the matching ``.bin`` / ``.gguf`` /
   ``.ggml``) instead of triggering pywhispercpp's HuggingFace download.
-- ``chat`` / ``responses`` — ``MLXBackend`` and ``LlamaCppBackend``
-  accept ``model_dir`` and load from the prepared directory
-  (mlx_lm.load reads the path like an HF repo id; llama_cpp.Llama
-  opens the ``<dir>/artifact`` sentinel by GGUF magic bytes).
 
-Embedding will be added once its local backend learns to consume the
-prepared directory; until then, calling prepare for it would download
-bytes the next inference ignores. The CLI mirrors the kernel's
+Embedding and chat (plus responses, which routes through chat) will be
+added one at a time as their backends learn to consume the prepared
+directory; until then, calling prepare for them would download bytes
+the next inference ignores. PR 10c added the kernel-side threading for
+chat into MLX/llama.cpp, but the CLI flag stays gated until the public
+``responses.create`` facade goes through the kernel and PrepareManager
+grows multi-file snapshot support. The CLI mirrors the kernel's
 ``_PREPAREABLE_CAPABILITIES`` set via the ``--capability`` choice list.
 
 Usage::
 
     octomil prepare @app/eternum/tts
     octomil prepare @app/notes/transcription --capability transcription
-    octomil prepare gemma3-1b --capability chat --policy local_first
     octomil prepare kokoro-en-v0_19 --capability tts --policy local_first
 """
 
@@ -42,14 +41,13 @@ import click
 @click.option(
     "--capability",
     default="tts",
-    type=click.Choice(["tts", "transcription", "chat", "responses"]),
+    type=click.Choice(["tts", "transcription"]),
     show_default=True,
     help=(
-        "Which capability's planner candidate to prepare. Today: 'tts' "
-        "(SherpaTtsEngine), 'transcription' (whisper.cpp loads the prepared file "
-        "instead of triggering its own download), and 'chat' / 'responses' "
-        "(mlx-lm / llama.cpp load the prepared directory). Embedding is added "
-        "once its backend consumes the prepared dir."
+        "Which capability's planner candidate to prepare. Today: 'tts' (SherpaTtsEngine "
+        "consumes the prepared dir) and 'transcription' (whisper.cpp loads the prepared "
+        ".bin/.gguf/.ggml file instead of triggering its own download). Chat / responses "
+        "and embedding are added once their backends consume the prepared dir."
     ),
 )
 @click.option(

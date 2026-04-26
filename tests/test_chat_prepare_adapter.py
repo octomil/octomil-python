@@ -1,15 +1,22 @@
-"""End-to-end test for PR 10c: chat/responses prepare wiring.
+"""End-to-end tests for PR 10c: chat dispatch threading.
 
-Asserts the contract for the lifecycle support matrix: when
-``client.prepare(capability="chat")`` succeeds, the very next
-``create_response()`` / ``stream_response()`` call MUST construct the
-local chat backend (mlx-lm or llama.cpp) with ``model_dir=<prepared_dir>``
-so the engine loads the prepared bytes rather than triggering its own
-HuggingFace ``snapshot_download`` / ``from_pretrained`` path.
+PR 10c wires ``model_dir`` from PrepareManager through the chat
+dispatch path into ``MLXBackend`` and ``LlamaCppBackend``. The
+*capability* (``chat`` / ``responses``) remains intentionally gated in
+``_PREPAREABLE_CAPABILITIES`` because:
 
-This is the evidence test the lifecycle_support fixture for the next
-release cites for ``chat:inference_consumes_prepared`` and
-``responses:inference_consumes_prepared``.
+  - the public ``client.responses.create`` facade goes through
+    ``OctomilResponses``, which does NOT thread ``model_dir``;
+  - PrepareManager has no snapshot/manifest support, so MLX (which
+    needs a directory with ``config.json`` + tokenizer + weights)
+    cannot consume a prepared dir today even though
+    ``mlx_lm.load(<dir>)`` is wired.
+
+These tests therefore assert the *threading* contract for the kernel
+path (the part this PR ships), the prepare-ordering invariants the
+reviewer asked for, and that the public ``prepare(capability='chat')`` /
+``prepare(capability='responses')`` surface still rejects with an
+actionable error so we don't false-success the unfinished pipeline.
 """
 
 from __future__ import annotations
@@ -22,6 +29,7 @@ from unittest.mock import patch
 
 import pytest
 
+from octomil.errors import OctomilError, OctomilErrorCode
 from octomil.execution.kernel import ExecutionKernel
 from octomil.runtime.lifecycle.prepare_manager import PrepareOutcome
 from octomil.runtime.planner.schemas import (
@@ -64,14 +72,28 @@ def _local_chat_candidate(engine: str = "mlx-lm") -> RuntimeCandidatePlan:
     )
 
 
-class _FakePM:
+def _cloud_candidate() -> RuntimeCandidatePlan:
+    return RuntimeCandidatePlan(
+        locality="cloud",
+        priority=0,
+        confidence=0.9,
+        reason="cloud-first",
+    )
+
+
+class _RecordingPM:
+    """Records every ``prepare()`` call so tests can prove cloud-first
+    plans don't trigger local prepare."""
+
     def __init__(self, artifact_dir: Path):
         self._dir = artifact_dir
+        self.prepare_calls: list[str] = []
 
     def can_prepare(self, candidate) -> bool:
         return True
 
     def prepare(self, candidate, *, mode=None):
+        self.prepare_calls.append(candidate.artifact.artifact_id)
         return PrepareOutcome(
             artifact_id=candidate.artifact.artifact_id,
             artifact_dir=self._dir,
@@ -84,8 +106,6 @@ class _FakePM:
 
 
 class _FakeBackend:
-    """Stand-in InferenceBackend; records the ``model_dir`` it was built with."""
-
     def __init__(self, model_name: str, **kwargs: Any) -> None:
         self.model_name = model_name
         self.kwargs = kwargs
@@ -103,17 +123,13 @@ class _FakeBackend:
 
 
 class _FakeEngine:
-    """Stand-in for MLXEngine / LlamaCppEngine.
-
-    ``_build_router``'s planner-engine branch calls
-    ``engine.create_backend(model, **backend_kwargs)``; we record the
-    ``model_dir`` passed in so the test can assert PR 10c's contract.
-    """
+    """Stand-in for MLXEngine / LlamaCppEngine. Records ``model_dir``."""
 
     name = "mlx-lm"
     last_kwargs: dict[str, Any] | None = None
     last_model_dir: str | None = None
     last_model: str | None = None
+    create_calls: int = 0
 
     def detect(self) -> bool:
         return True
@@ -122,6 +138,7 @@ class _FakeEngine:
         _FakeEngine.last_kwargs = kwargs
         _FakeEngine.last_model_dir = kwargs.get("model_dir")
         _FakeEngine.last_model = model
+        _FakeEngine.create_calls += 1
         return _FakeBackend(model, **kwargs)
 
 
@@ -137,6 +154,7 @@ def _reset_fakes():
     _FakeEngine.last_kwargs = None
     _FakeEngine.last_model_dir = None
     _FakeEngine.last_model = None
+    _FakeEngine.create_calls = 0
     yield
 
 
@@ -153,132 +171,91 @@ def _make_defaults():
     )()
 
 
-@pytest.mark.asyncio
-async def test_chat_prepare_threads_artifact_dir_into_local_chat_backend(tmp_path):
-    """The contract: prepare succeeds → next create_response constructs
-    the local chat engine's backend with ``model_dir=<prepared_dir>``.
+# ---------------------------------------------------------------------------
+# Threading: when a local sdk_runtime candidate runs, it gets the prepared dir
+# ---------------------------------------------------------------------------
 
-    If this assertion ever fails, chat/responses has fallen off the
-    ``inference_consumes_prepared`` rung and the lifecycle_support
-    fixture must be ratcheted DOWN to ``plan_only`` /
-    ``warmup_supported`` until the wiring is restored.
-    """
+
+@pytest.mark.asyncio
+async def test_local_chat_attempt_threads_artifact_dir_into_backend(tmp_path):
+    """Direction-of-travel test: when the kernel selects a local
+    sdk_runtime candidate, ``engine.create_backend`` is called with
+    ``model_dir=<prepared_dir>``. The capability remains gated in
+    ``_PREPAREABLE_CAPABILITIES`` until the public responses facade and
+    MLX snapshot materialization are in, but the threading itself is
+    pinned by this test so it doesn't regress before that flip lands."""
     candidate = _local_chat_candidate(engine="mlx-lm")
     selection = _Selection(candidates=[candidate])
     artifact_dir = tmp_path / "gemma3-1b"
     artifact_dir.mkdir()
     (artifact_dir / "artifact").write_bytes(b"fake mlx weights")
-    pm = _FakePM(artifact_dir)
+    pm = _RecordingPM(artifact_dir)
     kernel = ExecutionKernel(prepare_manager=pm)
     kernel._resolve = lambda capability, **kw: _make_defaults()
 
     with ExitStack() as stack:
         stack.enter_context(patch("octomil.execution.kernel._resolve_planner_selection", return_value=selection))
         stack.enter_context(patch("octomil.runtime.engines.get_registry", return_value=_FakeEngineRegistry()))
-        result = await kernel.create_response(
-            "Hello",
-            model="gemma3-1b",
-        )
+        result = await kernel.create_response("Hello", model="gemma3-1b")
 
-    assert _FakeEngine.last_model_dir == str(artifact_dir), (
-        "Local chat backend was NOT constructed with the prepared model_dir; "
-        f"last kwargs were {_FakeEngine.last_kwargs!r}. The chat prepare "
-        "lifecycle has regressed."
-    )
+    assert _FakeEngine.last_model_dir == str(artifact_dir)
     assert _FakeEngine.last_model == "gemma3-1b"
     assert result.output_text == "from prepared dir"
     assert result.locality == "on_device"
+    # Lazy prepare: invoked exactly once for the single local attempt.
+    assert pm.prepare_calls == ["gemma3-1b"]
+
+
+# ---------------------------------------------------------------------------
+# Reviewer P1 #1: cloud-first plans must NOT call prepare
+# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_stream_response_threads_artifact_dir_into_local_chat_backend(tmp_path):
-    """``stream_response`` must apply the same prepared-dir threading
-    as ``create_response``. Without this, switching from non-streaming
-    to streaming would silently drop back to the engine's own download
-    path on the same model that was just prepared."""
-    candidate = _local_chat_candidate(engine="mlx-lm")
-    selection = _Selection(candidates=[candidate])
+async def test_cloud_first_plan_does_not_prepare_local_fallback(tmp_path):
+    """Reviewer P1: with a cloud primary plus a preparable local
+    fallback, the kernel must dispatch the cloud attempt without
+    calling ``PrepareManager.prepare`` at all. The prior implementation
+    materialized the local artifact before the cloud branch ran;
+    prepare now lives inside the local candidate attempt."""
+    cloud = _cloud_candidate()
+    local_fallback = _local_chat_candidate(engine="mlx-lm")
+    selection = _Selection(candidates=[cloud, local_fallback])
     artifact_dir = tmp_path / "gemma3-1b"
     artifact_dir.mkdir()
-    (artifact_dir / "artifact").write_bytes(b"fake mlx weights")
-    pm = _FakePM(artifact_dir)
+    pm = _RecordingPM(artifact_dir)
     kernel = ExecutionKernel(prepare_manager=pm)
     kernel._resolve = lambda capability, **kw: _make_defaults()
 
-    captured: dict[str, Any] = {}
-    original_build_router = kernel._build_router
-
-    async def capturing_build_router(*args, **kwargs):
-        captured.setdefault("calls", []).append(kwargs)
-        # Return a stub router whose stream() yields one chunk.
-        return _StubRouter()
+    async def fake_build_router(model, capability, defaults, *, planner_selection=None, prepared_model_dir=None):
+        return _StubRouter(prepared_model_dir=prepared_model_dir)
 
     with ExitStack() as stack:
         stack.enter_context(patch("octomil.execution.kernel._resolve_planner_selection", return_value=selection))
-        stack.enter_context(patch.object(kernel, "_build_router", side_effect=capturing_build_router))
-        chunks = []
-        async for chunk in kernel.stream_response("Hello", model="gemma3-1b"):
-            chunks.append(chunk)
+        stack.enter_context(patch.object(kernel, "_build_router", side_effect=fake_build_router))
+        result = await kernel.create_response("Hello", model="gemma3-1b")
 
-    assert any(
-        call.get("prepared_model_dir") == str(artifact_dir) for call in captured["calls"]
-    ), f"stream_response did not pass prepared_model_dir into _build_router; calls were {captured['calls']!r}"
-    # Sanity: at least one delta and a terminal done chunk
-    assert chunks
-    assert chunks[-1].done
-    # The non-streaming path used the original method; restore reference.
-    assert original_build_router is not None
+    assert pm.prepare_calls == [], (
+        f"Cloud-first plan triggered local prepare: {pm.prepare_calls!r}. "
+        "Prepare must run inside the local candidate branch only."
+    )
+    assert result.output_text == "from cloud"
+
+
+# ---------------------------------------------------------------------------
+# Reviewer P1 #2: synthetic local candidates must be filtered (hard veto)
+# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_stream_chat_messages_threads_artifact_dir_into_local_chat_backend(tmp_path):
-    """``stream_chat_messages`` is the multi-turn streaming entrypoint;
-    it must thread the prepared dir for the same reason."""
-    candidate = _local_chat_candidate(engine="mlx-lm")
-    selection = _Selection(candidates=[candidate])
-    artifact_dir = tmp_path / "gemma3-1b"
-    artifact_dir.mkdir()
-    (artifact_dir / "artifact").write_bytes(b"fake mlx weights")
-    pm = _FakePM(artifact_dir)
-    kernel = ExecutionKernel(prepare_manager=pm)
-    kernel._resolve = lambda capability, **kw: _make_defaults()
-
-    captured: dict[str, Any] = {}
-
-    async def capturing_build_router(*args, **kwargs):
-        captured.setdefault("calls", []).append(kwargs)
-        return _StubRouter()
-
-    with ExitStack() as stack:
-        stack.enter_context(patch("octomil.execution.kernel._resolve_planner_selection", return_value=selection))
-        stack.enter_context(patch.object(kernel, "_build_router", side_effect=capturing_build_router))
-        chunks = []
-        async for chunk in kernel.stream_chat_messages(
-            [{"role": "user", "content": "Hello"}],
-            model="gemma3-1b",
-        ):
-            chunks.append(chunk)
-
-    assert any(call.get("prepared_model_dir") == str(artifact_dir) for call in captured["calls"])
-
-
-def test_prepare_accepts_chat_capability(tmp_path):
-    """``client.prepare(capability="chat")`` must succeed (or at least
-    not be rejected on the capability gate). PR 10c widens the
-    ``_PREPAREABLE_CAPABILITIES`` set."""
-    from octomil.execution.kernel import _PREPAREABLE_CAPABILITIES
-
-    assert "chat" in _PREPAREABLE_CAPABILITIES
-    assert "responses" in _PREPAREABLE_CAPABILITIES
-    assert "tts" in _PREPAREABLE_CAPABILITIES
-    assert "transcription" in _PREPAREABLE_CAPABILITIES
-
-
-def test_prepare_local_chat_artifact_skips_unpreparable_synthetic(tmp_path):
-    """A synthetic local candidate (prepare_required=True with no
-    digest/url) MUST NOT crash ``create_response`` in prepare. The
-    helper returns ``None`` so the runner's existing fallback handles
-    promotion to cloud after the local attempt fails."""
+async def test_synthetic_local_candidate_is_filtered_before_runner(tmp_path):
+    """Reviewer P1: a synthetic prepare_required local candidate
+    (missing digest/url) must NOT reach the runner. Previously the
+    helper returned ``None`` and the runner still called
+    ``_build_router`` with no model_dir, letting the engine fall back
+    to its own HF download path — synthetic plans could win local
+    routing. The kernel now filters the unpreparable local candidate
+    so cloud-fallback is the actual selected branch."""
     from octomil.runtime.lifecycle.prepare_manager import PrepareManager
 
     synthetic = RuntimeCandidatePlan(
@@ -292,50 +269,88 @@ def test_prepare_local_chat_artifact_skips_unpreparable_synthetic(tmp_path):
         prepare_required=True,
         prepare_policy="lazy",
     )
-    selection = _Selection(candidates=[synthetic])
+    cloud = _cloud_candidate()
+    selection = _Selection(candidates=[synthetic, cloud])
     real_pm = PrepareManager(cache_dir=tmp_path)
     kernel = ExecutionKernel(prepare_manager=real_pm)
+    kernel._resolve = lambda capability, **kw: _make_defaults()
 
-    assert kernel._prepare_local_chat_artifact(selection) is None
+    captured: list[dict[str, Any]] = []
+
+    async def capturing_build_router(*args, **kwargs):
+        captured.append({"args": args, "kwargs": kwargs})
+        return _StubRouter()
+
+    with ExitStack() as stack:
+        stack.enter_context(patch("octomil.execution.kernel._resolve_planner_selection", return_value=selection))
+        stack.enter_context(patch.object(kernel, "_build_router", side_effect=capturing_build_router))
+        await kernel.create_response("Hello", model="gemma3-1b")
+
+    # Unpreparable local candidate is filtered; only cloud reaches the runner.
+    assert len(captured) == 1
+    only_call = captured[0]
+    selected_candidate = only_call["kwargs"].get("planner_selection")
+    assert selected_candidate is not None
+    assert getattr(selected_candidate, "locality", None) == "cloud"
+    assert only_call["kwargs"].get("prepared_model_dir") is None
 
 
-def test_prepare_local_chat_artifact_returns_none_for_no_local_candidate(tmp_path):
-    """Cloud-only or no-candidate selections must return ``None``."""
-    from octomil.runtime.lifecycle.prepare_manager import PrepareManager
-
-    cloud_only = RuntimeCandidatePlan(
-        locality="cloud",
-        priority=0,
-        confidence=0.9,
-        reason="cloud-only",
-    )
-    selection = _Selection(candidates=[cloud_only])
-    real_pm = PrepareManager(cache_dir=tmp_path)
-    kernel = ExecutionKernel(prepare_manager=real_pm)
-    assert kernel._prepare_local_chat_artifact(selection) is None
-    assert kernel._prepare_local_chat_artifact(None) is None
+# ---------------------------------------------------------------------------
+# Capability gate: prepare(capability='chat'/'responses') stays rejected
+# ---------------------------------------------------------------------------
 
 
-def test_prepare_local_chat_artifact_returns_none_for_engine_managed(tmp_path):
-    """``prepare_required=False`` candidates are engine-managed (e.g.
-    ollama) — the helper must skip them."""
-    from octomil.runtime.lifecycle.prepare_manager import PrepareManager
+@pytest.mark.parametrize("capability", ["chat", "responses"])
+def test_prepare_rejects_chat_and_responses_until_facade_and_mlx_ready(capability, tmp_path):
+    """Until the public ``client.responses.create`` facade routes
+    through the kernel (or threads ``model_dir`` through OctomilResponses)
+    AND PrepareManager grows snapshot/manifest materialization for
+    multi-file MLX artifacts, ``client.prepare(capability='chat')`` /
+    ``prepare(capability='responses')`` must reject with INVALID_INPUT.
+    This regression-pins the gate so the next attempt to widen
+    ``_PREPAREABLE_CAPABILITIES`` cannot ship without removing this
+    test (and adding the e2e proofs for both blockers)."""
+    kernel = ExecutionKernel()
+    with pytest.raises(OctomilError) as excinfo:
+        kernel.prepare(model="m", capability=capability)
+    assert excinfo.value.code == OctomilErrorCode.INVALID_INPUT
+    msg = str(excinfo.value)
+    assert capability in msg
 
-    engine_managed = RuntimeCandidatePlan(
-        locality="local",
-        priority=0,
-        confidence=0.9,
-        reason="engine-managed",
-        engine="ollama",
-        artifact=RuntimeArtifactPlan(model_id="qwen2.5-7b"),
-        delivery_mode="sdk_runtime",
-        prepare_required=False,
-        prepare_policy="lazy",
-    )
-    selection = _Selection(candidates=[engine_managed])
-    real_pm = PrepareManager(cache_dir=tmp_path)
-    kernel = ExecutionKernel(prepare_manager=real_pm)
-    assert kernel._prepare_local_chat_artifact(selection) is None
+
+def test_preparable_capabilities_excludes_chat_and_responses():
+    """Direct invariant on the kernel's allowlist."""
+    from octomil.execution.kernel import _PREPAREABLE_CAPABILITIES
+
+    assert "chat" not in _PREPAREABLE_CAPABILITIES
+    assert "responses" not in _PREPAREABLE_CAPABILITIES
+    assert "tts" in _PREPAREABLE_CAPABILITIES
+    assert "transcription" in _PREPAREABLE_CAPABILITIES
+
+
+# ---------------------------------------------------------------------------
+# Lazy-prepare cache: repeated local attempts don't re-prepare
+# ---------------------------------------------------------------------------
+
+
+def test_local_prepare_cache_skips_redundant_calls_within_one_request(tmp_path):
+    """If two local attempts point at the same artifact_id, the cached
+    helper must call ``PrepareManager.prepare`` only once per
+    ``create_response`` call. Future fallback retries (or planner
+    selections that emit the same local candidate twice) shouldn't
+    re-download."""
+    candidate = _local_chat_candidate(engine="mlx-lm")
+    artifact_dir = tmp_path / "gemma3-1b"
+    artifact_dir.mkdir()
+    pm = _RecordingPM(artifact_dir)
+    kernel = ExecutionKernel(prepare_manager=pm)
+
+    cache: dict[str, Any] = {}
+    candidate_selection = _Selection(candidates=[candidate], locality="local", engine="mlx-lm")
+    first = kernel._prepare_local_chat_artifact_cached(candidate_selection, cache)
+    second = kernel._prepare_local_chat_artifact_cached(candidate_selection, cache)
+    assert first == second == str(artifact_dir)
+    assert pm.prepare_calls == ["gemma3-1b"]
 
 
 # ---------------------------------------------------------------------------
@@ -344,13 +359,21 @@ def test_prepare_local_chat_artifact_returns_none_for_engine_managed(tmp_path):
 
 
 class _StubRouter:
-    """Minimal RouterModelRuntime stub for streaming tests."""
+    """Minimal RouterModelRuntime stub for kernel-path tests."""
+
+    def __init__(self, prepared_model_dir: str | None = None) -> None:
+        self.prepared_model_dir = prepared_model_dir
 
     async def run(self, request: Any, *, policy: Any = None) -> Any:
         from octomil.runtime.core.types import RuntimeResponse, RuntimeUsage
 
+        text = "stub"
+        if policy is not None:
+            mode = getattr(policy, "mode", None)
+            if mode is not None and "cloud" in str(mode).lower():
+                text = "from cloud"
         return RuntimeResponse(
-            text="from prepared dir",
+            text=text,
             usage=RuntimeUsage(prompt_tokens=2, completion_tokens=8, total_tokens=10),
             finish_reason="stop",
         )
@@ -358,5 +381,5 @@ class _StubRouter:
     async def stream(self, request: Any, *, policy: Any = None):
         from octomil.runtime.core.types import RuntimeChunk
 
-        yield RuntimeChunk(text="from prepared dir", finish_reason=None)
+        yield RuntimeChunk(text="stub", finish_reason=None)
         yield RuntimeChunk(text="", finish_reason="stop")
