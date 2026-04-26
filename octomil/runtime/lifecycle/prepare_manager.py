@@ -44,6 +44,13 @@ logger = logging.getLogger(__name__)
 # a digest of the original id so distinct planner ids cannot collide.
 _SAFE_ID_CHARS = re.compile(r"[^A-Za-z0-9._-]")
 
+# Cap the visible portion of the on-disk artifact key. NAME_MAX on most
+# filesystems (ext4, APFS, NTFS) is 255 bytes for a single component; the
+# trailing "-<12-char hash>" needs 13 of those, so 96 leaves comfortable
+# headroom and is short enough that long planner ids cannot trigger raw
+# OSError(File name too long) before we can convert it to OctomilError.
+_MAX_VISIBLE_KEY_CHARS = 96
+
 
 class PrepareMode(str, Enum):
     """Why ``prepare`` was called.
@@ -290,6 +297,14 @@ class PrepareManager:
         sanitized = _SAFE_ID_CHARS.sub("_", artifact_id).strip("_.")
         if sanitized in ("", ".", ".."):
             sanitized = "artifact"
+        # Cap the visible component before appending the hash. The hash is
+        # taken over the *original* artifact_id so two long ids that share
+        # the first ``_MAX_VISIBLE_KEY_CHARS`` characters still produce
+        # distinct keys.
+        if len(sanitized) > _MAX_VISIBLE_KEY_CHARS:
+            sanitized = sanitized[:_MAX_VISIBLE_KEY_CHARS].rstrip("_.")
+            if not sanitized:
+                sanitized = "artifact"
         digest_prefix = hashlib.sha256(artifact_id.encode("utf-8")).hexdigest()[:12]
         key = f"{sanitized}-{digest_prefix}"
 
