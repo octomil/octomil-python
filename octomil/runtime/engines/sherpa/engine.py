@@ -112,6 +112,19 @@ def is_sherpa_tts_model(model_name: str) -> bool:
     return model_name.lower() in _SHERPA_TTS_MODELS
 
 
+def is_sherpa_tts_runtime_available(model_name: str) -> bool:
+    """Return True when the *engine* is loadable for ``model_name``, even if
+    the artifact has not been downloaded yet.
+
+    Distinguishing this from :func:`is_sherpa_tts_model_staged` lets the
+    kernel admit clean-device routing: a planner ``sdk_runtime`` candidate
+    with ``prepare_required=True`` is a valid local route as long as the
+    sherpa-onnx package is importable and the model id is recognized;
+    PrepareManager materializes the bytes before backend load.
+    """
+    return _has_sherpa_onnx() and is_sherpa_tts_model(model_name)
+
+
 def _resolve_sherpa_model_dir(model_name: str) -> str:
     """Mirror ``_SherpaTtsBackend._resolve_model_dir`` for pre-flight checks."""
     override = os.environ.get("OCTOMIL_SHERPA_MODELS_DIR")

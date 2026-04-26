@@ -897,7 +897,14 @@ class ExecutionKernel:
             defaults.inline_policy = None
 
         routing_policy = _resolve_routing_policy(defaults)
-        local_available = self._has_local_tts_backend(runtime_model)
+        # Local routing is satisfied if the artifact is already staged OR if
+        # the planner emitted a preparable sdk_runtime candidate the kernel
+        # can materialize via PrepareManager. Without this OR, a clean-device
+        # first run on a Private @app/<slug>/tts model would raise
+        # local_tts_runtime_unavailable before prepare ever ran.
+        local_available = self._has_local_tts_backend(runtime_model) or self._can_prepare_local_tts(
+            runtime_model, selection
+        )
         cloud_available = _cloud_available(defaults)
 
         # Policy gating mirrors transcription. local_only never falls back.
@@ -1041,10 +1048,39 @@ class ExecutionKernel:
         }
 
     def _has_local_tts_backend(self, model: str) -> bool:
+        """Return True iff the local TTS engine + artifact are both ready now.
+
+        Used for the *no-prepare* branch (engine manages its own bytes,
+        planner emitted no candidate, or ``prepare_required=False``). The
+        clean-device first-run case is admitted separately by
+        :meth:`_can_prepare_local_tts` so that path does not require
+        pre-staged files.
+        """
         try:
             from octomil.runtime.engines.sherpa import is_sherpa_tts_model_staged
 
             return is_sherpa_tts_model_staged(model)
+        except Exception:
+            return False
+
+    def _can_prepare_local_tts(self, model: str, selection: Optional[Any]) -> bool:
+        """Return True iff sherpa-onnx is importable, the model id is known,
+        and the planner emitted an ``sdk_runtime`` candidate with
+        ``prepare_required=True``.
+
+        This is what makes the first-run case routable: the bytes are not
+        on disk yet, but the planner says they can be staged, and
+        PrepareManager will materialize them before backend load. Without
+        this split, ``local_only`` routing would raise
+        ``local_tts_runtime_unavailable`` before prepare ever ran.
+        """
+        candidate = _local_sdk_runtime_candidate(selection)
+        if candidate is None or not getattr(candidate, "prepare_required", False):
+            return False
+        try:
+            from octomil.runtime.engines.sherpa import is_sherpa_tts_runtime_available
+
+            return is_sherpa_tts_runtime_available(model)
         except Exception:
             return False
 
