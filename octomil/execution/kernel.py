@@ -101,17 +101,19 @@ from octomil.runtime.core.types import (
 logger = logging.getLogger(__name__)
 
 # Capabilities whose adapters actually consume the prepared ``artifact_dir``
-# today. We deliberately keep this narrow: a capability only enters this set
-# once its dispatch path threads the ``model_dir`` from PrepareOutcome into
-# the backend. Otherwise ``client.prepare(...)`` would download bytes the
-# next inference call ignores, then cold-start through the engine's own
-# lookup — that's the false-success the reviewer flagged after PR 6.
+# today. A capability only enters this set once its dispatch path threads
+# the ``model_dir`` from PrepareOutcome into the backend. Anything below
+# is a false-success risk: prepare downloads bytes the next inference call
+# ignores, then cold-starts through the engine's own lookup.
 #
-# Wiring backlog (each becomes its own PR before being added here):
-#   - transcription: thread model_dir into whisper.cpp / sherpa-onnx ASR
-#   - embedding:     thread model_dir into the local embedding backend
-#   - chat:          thread model_dir into mlx-lm / llama.cpp adapters
-_PREPAREABLE_CAPABILITIES = frozenset({CAPABILITY_TTS})
+# Wiring history:
+#   - tts             (PR 4 + 6 + 7)  — SherpaTtsEngine.create_backend(model_dir)
+#   - transcription   (PR 10a)        — _WhisperBackend honors injected model_dir
+#                                       and skips pywhispercpp's HF download path.
+# Wiring backlog:
+#   - embedding:      thread model_dir into the local embeddings backend
+#   - chat/responses: thread model_dir into mlx-lm / llama.cpp adapters
+_PREPAREABLE_CAPABILITIES = frozenset({CAPABILITY_TTS, CAPABILITY_TRANSCRIPTION})
 
 
 # ---------------------------------------------------------------------------
@@ -767,8 +769,17 @@ class ExecutionKernel:
             result.route = route
             return result
 
+        # PR 10: prepare transcription artifact (whisper.cpp model file)
+        # before backend load, mirroring the TTS path. The downstream
+        # _resolve_local_transcription_backend threads model_dir into
+        # engine.create_backend so whisper.cpp loads the prepared file
+        # instead of triggering pywhispercpp's own download path.
+        prepared_dir = self._prepare_local_transcription_artifact(selection)
+
         t0 = time.monotonic()
-        result = await self._local_transcribe(audio_data, effective_model, language, is_fallback)
+        result = await self._local_transcribe(
+            audio_data, effective_model, language, is_fallback, prepared_model_dir=prepared_dir
+        )
         latency_ms = (time.monotonic() - t0) * 1000
         result.route = route
 
@@ -830,9 +841,17 @@ class ExecutionKernel:
         model: str,
         language: Optional[str],
         fallback_used: bool = False,
+        *,
+        prepared_model_dir: Optional[str] = None,
     ) -> ExecutionResult:
-        """Dispatch audio transcription to a local Whisper-compatible backend."""
-        backend = self._resolve_local_transcription_backend(model)
+        """Dispatch audio transcription to a local Whisper-compatible backend.
+
+        ``prepared_model_dir`` is the directory PrepareManager materialized
+        the artifact under. When set, the resolver passes it as
+        ``model_dir`` to the engine so whisper.cpp loads the prepared file
+        instead of going through pywhispercpp's own download path.
+        """
+        backend = self._resolve_local_transcription_backend(model, prepared_model_dir=prepared_model_dir)
         if backend is None:
             raise RuntimeError(f"No local transcription runtime found for model '{model}'.")
 
@@ -1168,6 +1187,27 @@ class ExecutionKernel:
         manager = self._prepare_manager or PrepareManager()
         return manager.prepare(candidate, mode=PrepareMode.EXPLICIT)
 
+    def _prepare_local_transcription_artifact(self, selection: Optional[Any]) -> Optional[str]:
+        """Run PrepareManager for the local transcription candidate, if any.
+
+        Symmetric with ``_prepare_local_tts_artifact``: returns the
+        prepared ``artifact_dir`` as a string when the planner emits a
+        local sdk_runtime candidate with prepare_required=True; returns
+        None otherwise so the existing whisper.cpp / sherpa-ASR fallback
+        path runs unchanged.
+        """
+        candidate = _local_sdk_runtime_candidate(selection)
+        if candidate is None:
+            return None
+        if not getattr(candidate, "prepare_required", False):
+            return None
+
+        from octomil.runtime.lifecycle.prepare_manager import PrepareManager
+
+        manager = self._prepare_manager or PrepareManager()
+        outcome = manager.prepare(candidate)
+        return str(outcome.artifact_dir)
+
     def _prepare_local_tts_artifact(self, selection: Optional[Any]) -> Optional[str]:
         """Run :class:`PrepareManager` for the local TTS candidate, if any.
 
@@ -1278,15 +1318,32 @@ class ExecutionKernel:
     def _has_local_transcription_backend(self, model: str) -> bool:
         return self._resolve_local_transcription_backend(model) is not None
 
-    def _resolve_local_transcription_backend(self, model: str) -> Optional[Any]:
+    def _resolve_local_transcription_backend(
+        self,
+        model: str,
+        *,
+        prepared_model_dir: Optional[str] = None,
+    ) -> Optional[Any]:
+        """Return a transcription backend for ``model``.
+
+        ``prepared_model_dir`` is threaded into ``engine.create_backend``
+        as ``model_dir=...`` so the backend loads from the directory
+        PrepareManager just materialized. The whisper.cpp backend honors
+        this and skips its own pywhispercpp download path; engines that
+        don't recognize the kwarg ignore it (the registry's create_backend
+        accepts ``**kwargs``).
+        """
         try:
             from octomil.runtime.engines import get_registry
 
             registry = get_registry()
+            backend_kwargs: dict[str, Any] = {}
+            if prepared_model_dir:
+                backend_kwargs["model_dir"] = prepared_model_dir
             for detection in registry.detect_all(model):
                 if not detection.available:
                     continue
-                backend = detection.engine.create_backend(model)
+                backend = detection.engine.create_backend(model, **backend_kwargs)
                 if hasattr(backend, "transcribe"):
                     return backend
         except Exception:
