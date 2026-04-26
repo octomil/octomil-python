@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+## 4.10.1 (2026-04-26)
+
+### Features
+
+- **Transcription joins the prepare lifecycle.** `await client.prepare(model="@app/<slug>/transcription", capability="transcription")` and `octomil prepare <model> --capability transcription` are now supported. `_WhisperBackend` honors the prepared `model_dir`: it loads from PrepareManager's `<dir>/artifact` sentinel (or matching `.bin`/`.gguf`/`.ggml`) instead of triggering pywhispercpp's HuggingFace download path. PRs #447, #448. Lifecycle support fixture in `octomil-contracts` cites `tests/test_transcription_prepare_adapter.py::test_transcription_prepare_threads_artifact_dir_into_whisper_backend` as the evidence test.
+
+### Reliability
+
+- **Hard veto on unpreparable planner candidates.** A synthetic `prepare_required=True` candidate (no digest/url, traversal in `required_files`, NUL bytes, etc.) no longer wins local routing even when a backend is staged on disk. New shared `ExecutionKernel._local_candidate_is_unpreparable(selection)` returns true iff `PrepareManager.can_prepare` rejects the metadata; both `synthesize_speech` and `transcribe_audio` apply it as a hard veto BEFORE the staging/runtime check, so `local_first` falls back to cloud instead of crashing in `prepare()`. PR #449.
+- **Whisper resolver prefers PrepareManager's sentinel file.** When `required_files` is empty, PrepareManager writes the artifact to `<dir>/artifact` (no extension). The earlier resolver only matched `.bin`/`.gguf`/`.ggml` and silently fell back to pywhispercpp's download even when prepared bytes were on disk. Fixed in PR #448.
+- **Transcription routing pre-flight.** Mirror of the earlier TTS clean-device fix: `_can_prepare_local_transcription` gates on `PrepareManager.can_prepare` so synthetic candidates are treated as local-unavailable before the locality decision rather than failing in prepare.
+
+### Documentation
+
+- `ExecutionKernel.prepare()` and `octomil prepare` module docs now describe both wired capabilities (TTS via SherpaTtsEngine, transcription via `_WhisperBackend`) and point at `_PREPAREABLE_CAPABILITIES` as the single source of truth.
+
 ## 4.10.0 (2026-04-26)
 
 ### Features
