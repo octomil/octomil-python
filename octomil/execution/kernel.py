@@ -308,7 +308,19 @@ class ExecutionKernel:
         # Planner-driven routing
         selection = _resolve_planner_selection(effective_model, CAPABILITY_CHAT, policy_preset)
 
+        # PR B: app-ref refusal — see _enforce_app_ref_routing_policy.
+        _enforce_app_ref_routing_policy(
+            requested_model=model or effective_model,
+            selection=selection,
+            explicit_policy=policy,
+        )
+
         routing_policy = _resolve_routing_policy(defaults)
+        # PR B: explicit local-only / private policy forces a
+        # cloud_only-rejected candidate list so a planner outage can't
+        # leak the request to cloud even if cloud creds are present.
+        if _is_local_only_policy(policy):
+            routing_policy = routing_policy.with_cloud_disabled()
         candidates = _selection_candidate_dicts(selection, routing_policy)
         fallback_allowed = _candidate_fallback_allowed(selection, routing_policy)
         # PR 10c: drop *individually* unpreparable local sdk_runtime
@@ -320,6 +332,24 @@ class ExecutionKernel:
         candidates = _filter_unpreparable_local_candidates(
             self, selection, candidates, fallback_allowed=fallback_allowed
         )
+        if _is_local_only_policy(policy):
+            # Drop any cloud candidate the planner emitted. The
+            # explicit local_only / private policy forbids cloud
+            # locality regardless of what the plan recommends.
+            candidates = [c for c in candidates if c.get("locality") != "cloud"]
+        # PR B: when local-only forcing emptied the candidate list
+        # (planner gave only cloud, no local) and the caller insisted
+        # on local, surface an actionable error rather than a generic
+        # "no runtime available".
+        if _is_local_only_policy(policy) and not candidates:
+            raise OctomilError(
+                code=OctomilErrorCode.RUNTIME_UNAVAILABLE,
+                message=(
+                    f"local_runtime_unavailable: caller passed policy={policy!r} but "
+                    f"no local candidate is available for {effective_model!r}. "
+                    "Install the relevant local engine extras or relax the policy."
+                ),
+            )
 
         gen_config = GenerationConfig(
             max_tokens=max_output_tokens or 2048,
@@ -428,13 +458,34 @@ class ExecutionKernel:
         policy_preset = defaults.policy_preset or "local_first"
         selection = _resolve_planner_selection(effective_model, CAPABILITY_CHAT, policy_preset)
 
+        # PR B: app-ref refusal — see _enforce_app_ref_routing_policy.
+        _enforce_app_ref_routing_policy(
+            requested_model=model or effective_model,
+            selection=selection,
+            explicit_policy=policy,
+        )
         routing_policy = _resolve_routing_policy(defaults)
+        if _is_local_only_policy(policy):
+            routing_policy = routing_policy.with_cloud_disabled()
         candidates = _selection_candidate_dicts(selection, routing_policy)
         fallback_allowed = _candidate_fallback_allowed(selection, routing_policy)
         runner_to_original = _runner_dict_to_planner_candidate(selection, candidates)
         candidates = _filter_unpreparable_local_candidates(
             self, selection, candidates, fallback_allowed=fallback_allowed
         )
+        if _is_local_only_policy(policy):
+            # Drop any cloud candidate the planner emitted. The
+            # explicit local_only / private policy forbids cloud
+            # locality regardless of what the plan recommends.
+            candidates = [c for c in candidates if c.get("locality") != "cloud"]
+            if not candidates:
+                raise OctomilError(
+                    code=OctomilErrorCode.RUNTIME_UNAVAILABLE,
+                    message=(
+                        f"local_runtime_unavailable: caller passed policy={policy!r} but "
+                        f"no local candidate is available for {effective_model!r}."
+                    ),
+                )
 
         gen_config = GenerationConfig(
             max_tokens=max_output_tokens or 2048,
@@ -551,13 +602,35 @@ class ExecutionKernel:
         policy_preset = defaults.policy_preset or "local_first"
         selection = _resolve_planner_selection(effective_model, CAPABILITY_CHAT, policy_preset)
 
+        # PR B: app-ref refusal — see _enforce_app_ref_routing_policy.
+        _enforce_app_ref_routing_policy(
+            requested_model=model or effective_model,
+            selection=selection,
+            explicit_policy=policy,
+        )
+
         routing_policy = _resolve_routing_policy(defaults)
+        if _is_local_only_policy(policy):
+            routing_policy = routing_policy.with_cloud_disabled()
         candidates = _selection_candidate_dicts(selection, routing_policy)
         fallback_allowed = _candidate_fallback_allowed(selection, routing_policy)
         runner_to_original = _runner_dict_to_planner_candidate(selection, candidates)
         candidates = _filter_unpreparable_local_candidates(
             self, selection, candidates, fallback_allowed=fallback_allowed
         )
+        if _is_local_only_policy(policy):
+            # Drop any cloud candidate the planner emitted. The
+            # explicit local_only / private policy forbids cloud
+            # locality regardless of what the plan recommends.
+            candidates = [c for c in candidates if c.get("locality") != "cloud"]
+            if not candidates:
+                raise OctomilError(
+                    code=OctomilErrorCode.RUNTIME_UNAVAILABLE,
+                    message=(
+                        f"local_runtime_unavailable: caller passed policy={policy!r} but "
+                        f"no local candidate is available for {effective_model!r}."
+                    ),
+                )
 
         gen_config = GenerationConfig(
             max_tokens=max_output_tokens or 2048,
@@ -809,6 +882,13 @@ class ExecutionKernel:
         policy_preset = defaults.policy_preset or "local_first"
         selection = _resolve_planner_selection(effective_model, CAPABILITY_TRANSCRIPTION, policy_preset)
 
+        # PR B: same app-ref refusal + local-only forcing as TTS.
+        _enforce_app_ref_routing_policy(
+            requested_model=model or effective_model,
+            selection=selection,
+            explicit_policy=policy,
+        )
+
         routing_policy = _resolve_routing_policy(defaults)
         # Routing is satisfied if a backend is already staged OR if the
         # planner emitted a preparable sdk_runtime candidate the kernel
@@ -825,6 +905,8 @@ class ExecutionKernel:
                 self._can_prepare_local_transcription(effective_model, selection)
             )
         cloud_available = _cloud_available(defaults)
+        if _is_local_only_policy(policy):
+            cloud_available = False
         locality, is_fallback = _select_locality_for_capability(
             routing_policy,
             local_available=local_available,
@@ -1003,6 +1085,23 @@ class ExecutionKernel:
             defaults.policy_preset = planner_policy
             defaults.inline_policy = None
 
+        # PR B: refuse to silently route an @app/... ref to cloud when
+        # planner resolution failed AND the caller didn't pass an
+        # explicit policy. Without this, an outage of the planner +
+        # an app whose intended policy is "private" lets the SDK
+        # cold-route to cloud, surfacing a confusing 403 telling the
+        # caller to use a local SDK that they're already using.
+        # When the caller explicitly passed ``policy='local_only'``
+        # or ``policy='private'``, they've expressed their intent
+        # directly — honour it by forcing cloud_available=False
+        # below so a planner outage cannot leak a local-only request
+        # to the network.
+        _enforce_app_ref_routing_policy(
+            requested_model=requested_model,
+            selection=selection,
+            explicit_policy=policy,
+        )
+
         routing_policy = _resolve_routing_policy(defaults)
         # Local routing is satisfied if the artifact is already staged OR
         # the planner emitted a preparable sdk_runtime candidate the
@@ -1020,6 +1119,12 @@ class ExecutionKernel:
                 runtime_model, selection
             )
         cloud_available = _cloud_available(defaults)
+        # PR B: explicit private / local_only policies force
+        # cloud_available=False so a planner outage cannot leak the
+        # request to a hosted backend even if cloud creds happen to
+        # be present in the environment.
+        if _is_local_only_policy(policy):
+            cloud_available = False
 
         # Policy gating mirrors transcription. local_only never falls back.
         try:
@@ -1851,6 +1956,84 @@ def _tts_policy_from_selection(selection: Any) -> Optional[str]:
             if policy == "auto":
                 return "auto"
     return None
+
+
+_LOCAL_ONLY_POLICY_NAMES = frozenset({"private", "local_only"})
+
+
+def _is_local_only_policy(policy: Optional[str]) -> bool:
+    """Return True iff ``policy`` is an explicit local-only preset.
+
+    Used by the chat / TTS / transcription dispatchers to force
+    ``cloud_available=False`` when the caller has expressed a hard
+    requirement that the request must not leave the device. Both
+    ``"private"`` and ``"local_only"`` qualify; the SDK treats
+    "private" as the privacy-strict superset of "local_only" (no
+    benchmark uploads either).
+    """
+    if not policy:
+        return False
+    return policy.strip().lower() in _LOCAL_ONLY_POLICY_NAMES
+
+
+def _enforce_app_ref_routing_policy(
+    *,
+    requested_model: str,
+    selection: Optional[Any],
+    explicit_policy: Optional[str],
+) -> None:
+    """Refuse to silently cloud-route an ``@app/...`` ref on planner outage.
+
+    Reviewer P1: when the caller asks for an app ref like
+    ``@app/eternum/tts`` and the planner is unreachable (auth
+    misconfig, network partition, Ren'Py / sandboxed embed without
+    an HTTP transport), the SDK previously fell through to the
+    routing-policy default (typically ``local_first``), which can
+    silently land the request on a hosted provider. That's the worst
+    DX shape: a developer who deliberately chose a private app gets
+    a 403 from cloud telling them to use a local SDK that they're
+    already using.
+
+    This helper preserves caller intent:
+
+      - When ``explicit_policy`` is ``"private"`` / ``"local_only"``
+        — caller has expressed a hard local requirement. We let the
+        request proceed; ``cloud_available`` is forced False
+        downstream by :func:`_is_local_only_policy` so the planner
+        outage cannot leak it to cloud.
+      - When ``explicit_policy`` is some other value (``cloud_first``,
+        ``performance_first``, etc.) — caller has accepted that cloud
+        is allowed. We let the request proceed unchanged.
+      - When ``explicit_policy`` is ``None`` AND the request is an
+        app ref AND the planner returned no selection — the SDK
+        cannot know the app's intended routing policy. Raising here
+        is better than guessing: caller should either fix the
+        planner / auth or pass an explicit ``policy=`` so we know
+        what they want.
+
+    Non-app refs (concrete model ids like ``kokoro-en-v0_19``) skip
+    this check entirely; the caller has already named the artifact
+    they want and there's no app-side policy to consult.
+    """
+    if explicit_policy is not None:
+        return
+    if not isinstance(requested_model, str) or not requested_model.startswith("@app/"):
+        return
+    if selection is not None:
+        # Planner answered. Even if it returned a synthetic cloud
+        # fallback, the request has a planner-blessed path.
+        return
+    raise OctomilError(
+        code=OctomilErrorCode.RUNTIME_UNAVAILABLE,
+        message=(
+            f"Could not resolve app routing policy for {requested_model!r}; "
+            "the runtime planner is unavailable (network, auth, or planner-import "
+            "failure). The SDK refuses to silently fall back to cloud for "
+            "@app/... refs because that surfaces a confusing 403 to local-first "
+            "callers. Pass policy='local_only' to force local, policy='cloud_first' "
+            "to allow cloud, or fix planner connectivity / OCTOMIL_SERVER_KEY auth."
+        ),
+    )
 
 
 def _local_tts_runtime_unavailable(model: str) -> OctomilError:

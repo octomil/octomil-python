@@ -82,6 +82,8 @@ class FacadeSpeech:
         voice: Optional[str] = None,
         response_format: str = "wav",
         speed: float = 1.0,
+        policy: Optional[str] = None,
+        app: Optional[str] = None,
     ) -> SpeechResponse:
         """Synthesize speech from text.
 
@@ -94,6 +96,19 @@ class FacadeSpeech:
         :param response_format: Output audio format. ``"wav"`` is supported on
             every locality; other formats may require cloud routing.
         :param speed: Playback speed multiplier in ``[0.25, 4.0]``.
+        :param policy: Routing policy preset override. Accepted values:
+            ``"private"``, ``"local_only"``, ``"local_first"``,
+            ``"cloud_first"``, ``"cloud_only"``, ``"performance_first"``.
+            ``"private"`` and ``"local_only"`` force ``cloud_available=False``
+            so a planner outage cannot leak the request to a hosted
+            backend. PR B added this kwarg so embedded callers
+            (Ren'Py games, kiosk apps) can express their privacy
+            requirement directly instead of relying on the planner
+            to honour an app-side policy that the SDK might not yet
+            know about.
+        :param app: Optional explicit app slug for ``@app/<slug>/<cap>``
+            resolution. When set, the kernel uses this slug instead of
+            parsing one from ``model``.
         """
         return await self._kernel.synthesize_speech(
             model=model,
@@ -101,6 +116,8 @@ class FacadeSpeech:
             voice=voice,
             response_format=response_format,
             speed=speed,
+            policy=policy,
+            app=app,
         )
 
 
