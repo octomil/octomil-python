@@ -53,7 +53,7 @@ class PrepareMode(str, Enum):
     EXPLICIT = "explicit"
 
 
-@dataclass(slots=True)
+@dataclass
 class PrepareOutcome:
     """Result of a successful prepare.
 
@@ -62,6 +62,11 @@ class PrepareOutcome:
     single-file artifacts (empty ``relative_path``), ``files[""]`` is the
     same as ``artifact_dir / "artifact"``. ``cached`` is true when the
     files were already present and verified, so the manager did no I/O.
+
+    Plain ``@dataclass`` (no ``slots=True``). The slots= kwarg was added
+    in Python 3.10, but ``octomil`` still declares
+    ``requires-python=">=3.9"`` — using it would silently break 3.9
+    users on a minor release.
     """
 
     artifact_id: str
