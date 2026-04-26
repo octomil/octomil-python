@@ -342,11 +342,105 @@ def test_local_prepare_cache_skips_redundant_calls_within_one_request(tmp_path):
     pm = _RecordingPM(artifact_dir)
     kernel = ExecutionKernel(prepare_manager=pm)
 
-    cache: dict[str, Any] = {}
+    cache: dict[tuple, Any] = {}
     first = kernel._prepare_local_chat_artifact_cached(candidate, cache)
     second = kernel._prepare_local_chat_artifact_cached(candidate, cache)
     assert first == second == str(artifact_dir)
     assert pm.prepare_calls == ["gemma3-1b"]
+
+
+def test_local_prepare_cache_does_not_alias_distinct_artifacts_with_same_id(tmp_path):
+    """Reviewer P1: when two local candidates share an ``artifact_id``
+    (or fall back to the same ``model_id`` because ``artifact_id`` is
+    omitted) but carry *different* digests, formats, or quantizations
+    — for example an MLX safetensors snapshot vs a GGUF candidate that
+    both quote ``model_id='gemma3-1b'`` — the cache must NOT reuse the
+    first candidate's prepared dir for the second. Each distinct
+    artifact shape gets its own ``PrepareManager.prepare`` call.
+
+    Without this, the second candidate would receive a ``model_dir``
+    full of bytes belonging to the wrong format, and the engine would
+    either crash or silently load incompatible weights."""
+
+    class _PerArtifactPM:
+        def __init__(self) -> None:
+            self.prepare_calls: list[tuple[str, str | None]] = []
+
+        def can_prepare(self, candidate) -> bool:
+            return True
+
+        def prepare(self, candidate, *, mode=None):
+            artifact = candidate.artifact
+            self.prepare_calls.append((artifact.artifact_id or artifact.model_id, artifact.digest))
+            target = tmp_path / f"{artifact.artifact_id or artifact.model_id}-{artifact.digest or 'nodigest'}"
+            target.mkdir(exist_ok=True)
+            return PrepareOutcome(
+                artifact_id=artifact.artifact_id or artifact.model_id,
+                artifact_dir=target,
+                files={"": target / "artifact"},
+                engine=candidate.engine,
+                delivery_mode="sdk_runtime",
+                prepare_policy="lazy",
+                cached=False,
+            )
+
+    pm = _PerArtifactPM()
+    kernel = ExecutionKernel(prepare_manager=pm)
+
+    # Both candidates omit artifact_id, falling back to the shared model_id
+    # — but their digest/format differ, representing two different
+    # engine artifacts (MLX safetensors vs GGUF).
+    mlx_snapshot = RuntimeCandidatePlan(
+        locality="local",
+        priority=0,
+        confidence=0.9,
+        reason="mlx",
+        engine="mlx-lm",
+        artifact=RuntimeArtifactPlan(
+            model_id="gemma3-1b",
+            digest="sha256:" + "a" * 64,
+            format="safetensors",
+            quantization="q4",
+            download_urls=[ArtifactDownloadEndpoint(url="https://cdn.example.com/mlx/")],
+        ),
+        delivery_mode="sdk_runtime",
+        prepare_required=True,
+        prepare_policy="lazy",
+    )
+    gguf = RuntimeCandidatePlan(
+        locality="local",
+        priority=1,
+        confidence=0.9,
+        reason="gguf",
+        engine="llama.cpp",
+        artifact=RuntimeArtifactPlan(
+            model_id="gemma3-1b",
+            digest="sha256:" + "b" * 64,
+            format="gguf",
+            quantization="q4_k_m",
+            download_urls=[ArtifactDownloadEndpoint(url="https://cdn.example.com/gguf/")],
+        ),
+        delivery_mode="sdk_runtime",
+        prepare_required=True,
+        prepare_policy="lazy",
+    )
+
+    cache: dict[tuple, Any] = {}
+    mlx_dir = kernel._prepare_local_chat_artifact_cached(mlx_snapshot, cache)
+    gguf_dir = kernel._prepare_local_chat_artifact_cached(gguf, cache)
+
+    assert mlx_dir != gguf_dir, (
+        "Cache aliased two distinct artifacts (different digests/formats) "
+        "to the same prepared dir. Cache key must include digest + format."
+    )
+    assert pm.prepare_calls == [
+        ("gemma3-1b", "sha256:" + "a" * 64),
+        ("gemma3-1b", "sha256:" + "b" * 64),
+    ]
+    # And the same shape is still de-duped.
+    same_again = kernel._prepare_local_chat_artifact_cached(mlx_snapshot, cache)
+    assert same_again == mlx_dir
+    assert len(pm.prepare_calls) == 2  # No third call.
 
 
 # ---------------------------------------------------------------------------
@@ -449,11 +543,12 @@ async def test_filter_only_drops_individually_unpreparable_local_candidate(tmp_p
 
 
 @pytest.mark.asyncio
-async def test_filter_returns_empty_when_primary_unpreparable_and_fallback_disallowed(tmp_path):
-    """Reviewer P1: when ``fallback_allowed=False`` and the primary
-    candidate is unpreparable, the helper must not silently promote
-    cloud (or any other remaining candidate). Returns an empty list so
-    the runner raises its actionable "no runnable candidate" error."""
+async def test_filter_raises_actionable_error_when_primary_unpreparable_and_fallback_disallowed(tmp_path):
+    """Reviewer P1 (P2 follow-up): when ``fallback_allowed=False`` and
+    the primary candidate is unpreparable, the kernel must surface an
+    actionable error that names the rejected primary (engine + artifact
+    id), not a generic "No runtime available", and must not silently
+    promote cloud."""
     from octomil.runtime.lifecycle.prepare_manager import PrepareManager
 
     bad_local = _local_chat_candidate_with("mlx-lm", "gemma3-1b", synthetic=True)
@@ -472,13 +567,18 @@ async def test_filter_returns_empty_when_primary_unpreparable_and_fallback_disal
     with ExitStack() as stack:
         stack.enter_context(patch("octomil.execution.kernel._resolve_planner_selection", return_value=selection))
         stack.enter_context(patch.object(kernel, "_build_router", side_effect=capturing_build_router))
-        with pytest.raises(Exception):
+        with pytest.raises(OctomilError) as excinfo:
             await kernel.create_response("Hello", model="gemma3-1b")
 
-    assert captured == [], (
-        "fallback_allowed=False with unpreparable primary must surface the "
-        f"runner's no-candidate error, not promote cloud. Got attempts: {captured!r}"
-    )
+    assert (
+        captured == []
+    ), f"fallback_allowed=False with unpreparable primary must not reach the runner. Got attempts: {captured!r}"
+    assert excinfo.value.code == OctomilErrorCode.RUNTIME_UNAVAILABLE
+    msg = str(excinfo.value)
+    assert "local_runtime_unavailable" in msg
+    assert "mlx-lm" in msg
+    assert "gemma3-1b" in msg
+    assert "fallback_allowed=False" in msg
 
 
 @pytest.mark.asyncio

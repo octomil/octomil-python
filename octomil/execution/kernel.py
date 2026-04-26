@@ -343,7 +343,7 @@ class ExecutionKernel:
         # local-then-local retry (rare but possible under fallback)
         # doesn't re-download. Prepare runs INSIDE the local attempt:
         # cloud-first plans never touch local prepare.
-        prepared_dirs: dict[str, Optional[str]] = {}
+        prepared_dirs: dict[tuple, Optional[str]] = {}
 
         async def _execute_candidate(candidate: dict[str, Any]) -> RuntimeResponse:
             candidate_selection = _candidate_to_selection(selection, candidate)
@@ -454,7 +454,7 @@ class ExecutionKernel:
 
         runner = CandidateAttemptRunner(fallback_allowed=fallback_allowed, streaming=True)
 
-        prepared_dirs: dict[str, Optional[str]] = {}
+        prepared_dirs: dict[tuple, Optional[str]] = {}
 
         t0 = time.monotonic()
         collected_text = ""
@@ -572,7 +572,7 @@ class ExecutionKernel:
 
         runner = CandidateAttemptRunner(fallback_allowed=fallback_allowed, streaming=True)
 
-        prepared_dirs: dict[str, Optional[str]] = {}
+        prepared_dirs: dict[tuple, Optional[str]] = {}
 
         t0 = time.monotonic()
         collected_text = ""
@@ -1372,24 +1372,30 @@ class ExecutionKernel:
     def _prepare_local_chat_artifact_cached(
         self,
         candidate: Optional[Any],
-        cache: dict[str, Optional[str]],
+        cache: dict[tuple, Optional[str]],
     ) -> Optional[str]:
         """Lazy, per-call prepare for *this specific* local candidate.
 
         Called from inside the local branch of the candidate runner
         with the planner candidate that's about to be attempted, so
         cloud-first plans (and plans whose primary cloud candidate
-        succeeds) never trigger prepare. Caches by artifact_id within
-        the call so a local-then-local retry under fallback doesn't
-        re-prepare.
+        succeeds) never trigger prepare. The cache de-dupes redundant
+        prepares for the same artifact shape within a single
+        ``create_response`` call.
 
-        Multi-local plans like ``[local mlx, local llama, cloud]`` get
-        per-candidate behaviour: the mlx attempt prepares the mlx
-        artifact, the llama attempt prepares the llama artifact. The
-        prior helper grabbed the first local sdk_runtime candidate of
-        the *whole selection*, which meant every local attempt prepared
-        the same first artifact regardless of which one the runner was
-        currently dispatching to.
+        Cache key
+        ~~~~~~~~~
+        ``(artifact_id, digest, format, quantization)``. Earlier shapes
+        keyed only on ``artifact_id`` / ``model_id``, which let two
+        local candidates that shared the logical id but carried
+        different digests or formats reuse the first candidate's
+        prepared directory — for example, an MLX snapshot candidate
+        and a GGUF candidate that both quote ``model_id="gemma3-1b"``
+        because ``artifact_id`` was omitted. The second candidate would
+        receive a ``model_dir`` containing the wrong bytes. Including
+        digest / format / quantization in the key ensures the cache
+        only short-circuits when the planner is truly asking for the
+        same verified artifact.
 
         Returns ``None`` (cold-load through the engine's own resolution
         path) when:
@@ -1414,15 +1420,21 @@ class ExecutionKernel:
         artifact_id = getattr(artifact, "artifact_id", None) or getattr(artifact, "model_id", None)
         if not artifact_id:
             return None
-        if artifact_id in cache:
-            return cache[artifact_id]
+        cache_key = (
+            artifact_id,
+            getattr(artifact, "digest", None),
+            getattr(artifact, "format", None),
+            getattr(artifact, "quantization", None),
+        )
+        if cache_key in cache:
+            return cache[cache_key]
 
         from octomil.runtime.lifecycle.prepare_manager import PrepareManager
 
         manager = self._prepare_manager or PrepareManager()
         outcome = manager.prepare(candidate)
         prepared = str(outcome.artifact_dir)
-        cache[artifact_id] = prepared
+        cache[cache_key] = prepared
         return prepared
 
     def _prepare_local_tts_artifact(self, selection: Optional[Any]) -> Optional[str]:
@@ -1770,11 +1782,29 @@ def _filter_unpreparable_local_candidates(
     filtered = [c for c, original in paired if not _is_unpreparable_local(c, original)]
 
     if primary_unpreparable and not fallback_allowed:
-        # The planner forbids fallback and the primary is unrunnable.
-        # Returning [] lets the runner surface its actionable "no
-        # runnable candidate" error instead of silently promoting the
-        # remaining (fallback-only or cloud) candidates.
-        return []
+        # Planner forbids fallback and the primary is unrunnable.
+        # Raising an actionable OctomilError here is better than
+        # returning ``[]`` and letting the runner emit a generic
+        # "No runtime available": the latter loses the rejected
+        # primary's identity (engine, artifact_id, reason), which
+        # is exactly the diagnostic the caller needs to fix their
+        # plan or relax fallback_allowed.
+        primary_dict, primary_original = paired[0]
+        engine = primary_dict.get("engine") or getattr(primary_original, "engine", None) or "?"
+        artifact = getattr(primary_original, "artifact", None)
+        artifact_id = getattr(artifact, "artifact_id", None) or getattr(artifact, "model_id", None) or "<unknown>"
+        reason = primary_dict.get("reason") or getattr(primary_original, "reason", "") or ""
+        raise OctomilError(
+            code=OctomilErrorCode.RUNTIME_UNAVAILABLE,
+            message=(
+                f"local_runtime_unavailable: planner emitted a local sdk_runtime candidate "
+                f"(engine={engine!r}, artifact={artifact_id!r}) but PrepareManager.can_prepare "
+                f"rejected the metadata (synthetic plan: missing digest/url, traversal, disabled "
+                f"policy, etc.) and fallback_allowed=False blocks promotion to cloud. "
+                f"{('reason=' + reason + '. ') if reason else ''}"
+                f"Fix the planner candidate or relax fallback_allowed to admit cloud."
+            ),
+        )
     return filtered
 
 
