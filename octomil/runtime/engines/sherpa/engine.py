@@ -246,6 +246,12 @@ class _SherpaTtsBackend:
     def __init__(self, model_name: str, **kwargs: Any) -> None:
         self._model_name = model_name
         self._kwargs = kwargs
+        # Optional caller-supplied model directory. When set, this short-
+        # circuits the env/home lookup and is used verbatim, e.g. when the
+        # PrepareManager has materialized the artifact under
+        # ``<cache>/artifacts/<artifact_id>/`` and tells the backend exactly
+        # where to load from.
+        self._injected_model_dir: str | None = kwargs.get("model_dir")
         self._tts: Any = None
         self._sample_rate: int = 24000
         self._family: str = _model_family(model_name)
@@ -309,14 +315,17 @@ class _SherpaTtsBackend:
             self._sample_rate,
         )
 
-    @staticmethod
-    def _resolve_model_dir(model_name: str) -> str:
+    def _resolve_model_dir(self, model_name: str) -> str:
         """Return the on-disk directory for a sherpa-onnx model.
 
         Resolution order:
-        1. ``OCTOMIL_SHERPA_MODELS_DIR`` env var if set.
-        2. ``~/.octomil/models/sherpa/<model_name>/``.
+        1. ``model_dir`` kwarg passed to ``create_backend`` (used by
+           PrepareManager to point at the freshly-materialized artifact).
+        2. ``OCTOMIL_SHERPA_MODELS_DIR`` env var if set.
+        3. ``~/.octomil/models/sherpa/<model_name>/``.
         """
+        if self._injected_model_dir:
+            return self._injected_model_dir
         override = os.environ.get("OCTOMIL_SHERPA_MODELS_DIR")
         if override:
             return os.path.join(override, model_name)
