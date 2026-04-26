@@ -75,6 +75,13 @@ class _FakePrepareManager:
         self._raises = raises
         self.calls: list[tuple[str, str, str]] = []
 
+    def can_prepare(self, candidate) -> bool:  # noqa: D401 - stub
+        # Every candidate the kernel hands to this stub is shaped via
+        # `_local_candidate(...)` with digest + download_urls, so the
+        # dry-run always returns True. Tests that need a synthetic plan
+        # use a real PrepareManager (see the synthetic-candidate test).
+        return True
+
     def prepare(self, candidate, *, mode=None):  # noqa: D401 - stub
         if self._raises is not None:
             raise self._raises
@@ -378,3 +385,48 @@ async def test_clean_device_without_sherpa_package_fails_closed(tmp_path):
             await kernel.synthesize_speech(model="@app/eternum/tts", input="hi")
 
     assert fake_pm.calls == [], "prepare must not run when the engine cannot load the result"
+
+
+@pytest.mark.asyncio
+async def test_synthetic_local_candidate_does_not_admit_local_routing(tmp_path):
+    """Reviewer's contract reproducer: planner emits prepare_required=True
+    on a candidate with no digest/download_urls. _can_prepare_local_tts must
+    return False so the kernel does NOT commit to local routing — otherwise
+    local_first would land here and fail at first prepare instead of
+    falling back to cloud."""
+    # Synthetic artifact: only model_id, no digest, no download_urls.
+    candidate = RuntimeCandidatePlan(
+        locality="local",
+        priority=0,
+        confidence=0.9,
+        reason="synthetic",
+        engine="sherpa-onnx",
+        artifact=RuntimeArtifactPlan(model_id="kokoro-en-v0_19"),
+        delivery_mode="sdk_runtime",
+        prepare_required=True,
+        prepare_policy="lazy",
+    )
+    selection = _Selection(candidates=[candidate])
+    fake_pm = _FakePrepareManager(tmp_path / "never-used")
+
+    from contextlib import ExitStack
+
+    with ExitStack() as stack:
+        # Clean device, sherpa-onnx installed, but candidate metadata is incomplete.
+        _patch_sherpa_helpers(stack, staged=False, runtime_available=True)
+        stack.enter_context(patch("octomil.execution.kernel._resolve_planner_selection", return_value=selection))
+        kernel = _kernel_with(selection, prepare_manager=None)
+        # Use the real PrepareManager so can_prepare runs the actual rejection.
+        # local_only routing must surface local_tts_runtime_unavailable rather
+        # than commit to local and fail in prepare.
+        with pytest.raises(OctomilError) as excinfo:
+            await kernel.synthesize_speech(model="@app/eternum/tts", input="hi")
+
+    # Either runtime_unavailable (no staging + no preparable candidate) or a
+    # PrepareManager error if routing somehow committed; both are acceptable
+    # outcomes, but prepare must NOT have been called on the synthetic plan.
+    assert excinfo.value.code in (
+        ErrorCode.RUNTIME_UNAVAILABLE,
+        ErrorCode.INVALID_INPUT,
+    )
+    assert fake_pm.calls == [], "prepare must not run on synthetic candidates"

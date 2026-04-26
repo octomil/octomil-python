@@ -1065,14 +1065,15 @@ class ExecutionKernel:
 
     def _can_prepare_local_tts(self, model: str, selection: Optional[Any]) -> bool:
         """Return True iff sherpa-onnx is importable, the model id is known,
-        and the planner emitted an ``sdk_runtime`` candidate with
-        ``prepare_required=True``.
+        and ``PrepareManager.can_prepare`` confirms the planner candidate
+        has enough metadata to succeed (digest + download_urls + a
+        non-disabled policy + at most one required file).
 
-        This is what makes the first-run case routable: the bytes are not
-        on disk yet, but the planner says they can be staged, and
-        PrepareManager will materialize them before backend load. Without
-        this split, ``local_only`` routing would raise
-        ``local_tts_runtime_unavailable`` before prepare ever ran.
+        ``prepare_required`` alone is not enough: the server can emit
+        synthetic prepare metadata with no urls/digest, in which case
+        committing to local routing would fail at first prepare instead of
+        falling back to cloud. This dry-run inspection is pure — it never
+        touches disk or network.
         """
         candidate = _local_sdk_runtime_candidate(selection)
         if candidate is None or not getattr(candidate, "prepare_required", False):
@@ -1080,9 +1081,15 @@ class ExecutionKernel:
         try:
             from octomil.runtime.engines.sherpa import is_sherpa_tts_runtime_available
 
-            return is_sherpa_tts_runtime_available(model)
+            if not is_sherpa_tts_runtime_available(model):
+                return False
         except Exception:
             return False
+
+        from octomil.runtime.lifecycle.prepare_manager import PrepareManager
+
+        manager = self._prepare_manager or PrepareManager()
+        return manager.can_prepare(candidate)
 
     def _prepare_local_tts_artifact(self, selection: Optional[Any]) -> Optional[str]:
         """Run :class:`PrepareManager` for the local TTS candidate, if any.
