@@ -127,6 +127,7 @@ class Octomil:
         self._responses_wrapper: FacadeResponses | None = None
         self._embeddings_wrapper: FacadeEmbeddings | None = None
         self._audio_wrapper: Any = None  # FacadeAudio
+        self._kernel: Any = None  # ExecutionKernel — lazy, set in initialize()
         self._force_hosted = _force_hosted
 
         if auth is not None:
@@ -268,6 +269,9 @@ class Octomil:
         responses = self._build_hosted_responses() if self._force_hosted else self._client.responses
         self._responses_wrapper = FacadeResponses(responses)
         self._embeddings_wrapper = FacadeEmbeddings(self._client)
+        # Build the kernel before the audio wrapper so prepare() and
+        # audio.speech.create() share a single planner/PrepareManager pair.
+        self._kernel = self._build_kernel()
         self._audio_wrapper = self._build_audio_wrapper()
         self._initialized = True
 
@@ -279,11 +283,47 @@ class Octomil:
         ExecutionKernel so a single code path enforces routing policy.
         """
         from .audio import FacadeAudio
+
+        return FacadeAudio(self._kernel)
+
+    def _build_kernel(self) -> Any:
         from .config.local import load_standalone_config
         from .execution.kernel import ExecutionKernel
 
-        kernel = ExecutionKernel(config_set=load_standalone_config())
-        return FacadeAudio(kernel)
+        return ExecutionKernel(config_set=load_standalone_config())
+
+    async def prepare(
+        self,
+        *,
+        model: str,
+        capability: str = "tts",
+        policy: str | None = None,
+        app: str | None = None,
+    ) -> Any:
+        """Pre-warm the on-disk artifact for a model that requires preparation.
+
+        Use this before the first ``client.audio.speech.create(...)`` call
+        when the app's planner candidate has ``prepare_policy='explicit_only'``,
+        or when you simply want to download the model up front rather than
+        on first use. Returns a :class:`PrepareOutcome` describing the
+        materialized artifact.
+
+        For ``prepare_policy='lazy'`` candidates, calling ``prepare`` is
+        idempotent — the second call short-circuits to a cached outcome.
+        """
+        if not self._initialized:
+            raise OctomilNotInitializedError()
+        # Run the kernel's sync prepare on a worker thread so the facade
+        # API stays uniformly awaitable.
+        import asyncio as _asyncio
+
+        return await _asyncio.to_thread(
+            self._kernel.prepare,
+            model=model,
+            capability=capability,
+            policy=policy,
+            app=app,
+        )
 
     def _build_hosted_responses(self) -> OctomilResponses:
         """Build a Responses namespace that always dispatches through hosted cloud."""

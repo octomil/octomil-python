@@ -1091,6 +1091,64 @@ class ExecutionKernel:
         manager = self._prepare_manager or PrepareManager()
         return manager.can_prepare(candidate)
 
+    def prepare(
+        self,
+        *,
+        model: str,
+        capability: str = "tts",
+        policy: Optional[str] = None,
+        app: Optional[str] = None,
+    ) -> Any:
+        """Resolve a planner candidate for ``model`` and pre-warm its artifact.
+
+        Public, caller-driven equivalent of the implicit prepare path that
+        :meth:`synthesize_speech` runs lazily. Calls
+        :meth:`PrepareManager.prepare` with ``mode=PrepareMode.EXPLICIT`` so
+        candidates whose ``prepare_policy='explicit_only'`` succeed when
+        invoked through this method but still raise the canonical
+        actionable error if pulled in lazily through the inference path.
+
+        Returns a :class:`PrepareOutcome`. Raises :class:`OctomilError` if
+        the planner emits no preparable local candidate or
+        :class:`PrepareManager.prepare` rejects the metadata.
+
+        ``capability`` defaults to ``"tts"`` because that is the only
+        capability today whose adapter consumes prepare metadata; other
+        capabilities still resolve through their own runtime dispatch and
+        do not need pre-warming. Future PRs that wire prepare into other
+        adapters extend the supported values here.
+        """
+        if capability != CAPABILITY_TTS:
+            raise OctomilError(
+                code=OctomilErrorCode.INVALID_INPUT,
+                message=(
+                    f"client.prepare() supports capability='tts' today; got {capability!r}. "
+                    f"Other capabilities will be added when their adapters consume prepare metadata."
+                ),
+            )
+
+        defaults = self._resolve(capability, model=model, policy=policy, app=app)
+        effective_model = defaults.model or model
+        if not effective_model:
+            raise _no_model_error(capability)
+
+        policy_preset = defaults.policy_preset or "local_first"
+        selection = _resolve_planner_selection(effective_model, capability, policy_preset)
+        candidate = _local_sdk_runtime_candidate(selection)
+        if candidate is None:
+            raise OctomilError(
+                code=OctomilErrorCode.RUNTIME_UNAVAILABLE,
+                message=(
+                    f"prepare: planner returned no local sdk_runtime candidate for model={effective_model!r} "
+                    f"capability={capability!r}. The model is either cloud-only or the planner is offline."
+                ),
+            )
+
+        from octomil.runtime.lifecycle.prepare_manager import PrepareManager, PrepareMode
+
+        manager = self._prepare_manager or PrepareManager()
+        return manager.prepare(candidate, mode=PrepareMode.EXPLICIT)
+
     def _prepare_local_tts_artifact(self, selection: Optional[Any]) -> Optional[str]:
         """Run :class:`PrepareManager` for the local TTS candidate, if any.
 
