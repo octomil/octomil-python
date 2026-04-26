@@ -153,10 +153,20 @@ class _WhisperBackend:
     def __init__(self, model_name: str, **kwargs: Any) -> None:
         self._model_name = model_name
         self._kwargs = kwargs
+        # PrepareManager passes ``model_dir`` when the planner has
+        # materialized the artifact under <cache>/artifacts/<id>/. With
+        # it, ``load_model`` skips pywhispercpp's own download path.
+        self._injected_model_dir: str | None = kwargs.get("model_dir")
         self._model: Any = None
 
     def load_model(self, model_name: str) -> None:
-        """Download (if needed) and load a Whisper model."""
+        """Download (if needed) and load a Whisper model.
+
+        When ``model_dir`` was injected, the backend loads from a
+        whisper.cpp-compatible file inside that directory (.bin / .gguf
+        / .ggml). Otherwise it falls back to the canonical whisper-size
+        string and lets ``pywhispercpp`` resolve the download.
+        """
         self._model_name = model_name
         whisper_size = _WHISPER_MODELS.get(model_name.lower())
         if whisper_size is None:
@@ -164,9 +174,39 @@ class _WhisperBackend:
 
         from pywhispercpp.model import Model  # type: ignore[import-untyped]
 
-        logger.info("Loading whisper model: %s (%s)", model_name, whisper_size)
-        self._model = Model(whisper_size)
+        model_path = self._resolve_local_model_file()
+        if model_path:
+            logger.info(
+                "Loading whisper model from prepared dir: %s (%s)",
+                model_name,
+                model_path,
+            )
+            self._model = Model(model_path)
+        else:
+            logger.info("Loading whisper model: %s (%s)", model_name, whisper_size)
+            self._model = Model(whisper_size)
         logger.info("Whisper model loaded: %s", model_name)
+
+    def _resolve_local_model_file(self) -> str | None:
+        """Return the path to a Whisper model file inside the injected
+        ``model_dir``, or ``None`` if no dir was injected.
+
+        Looks for any file with a known whisper.cpp extension at the top
+        level of the directory. Multi-file Whisper artifacts are not
+        emitted by the planner today; when they are, the manifest entry
+        will carry which file is the model proper and this resolver
+        becomes manifest-aware.
+        """
+        if not self._injected_model_dir:
+            return None
+        model_dir = self._injected_model_dir
+        if not os.path.isdir(model_dir):
+            return None
+        for entry in sorted(os.listdir(model_dir)):
+            lower = entry.lower()
+            if lower.endswith((".bin", ".gguf", ".ggml")):
+                return os.path.join(model_dir, entry)
+        return None
 
     def transcribe(self, audio_path: str) -> dict[str, Any]:
         """Transcribe an audio file and return text + segments.

@@ -30,12 +30,13 @@ import click
 @click.option(
     "--capability",
     default="tts",
-    type=click.Choice(["tts"]),
+    type=click.Choice(["tts", "transcription"]),
     show_default=True,
     help=(
-        "Which capability's planner candidate to prepare. Only 'tts' is wired today — its "
-        "dispatch path threads the prepared model_dir into the backend. Transcription, "
-        "embedding, and chat will be added one at a time as their backends consume it."
+        "Which capability's planner candidate to prepare. Today: 'tts' (SherpaTtsEngine "
+        "consumes the prepared dir) and 'transcription' (whisper.cpp loads the prepared "
+        ".bin/.gguf/.ggml file instead of triggering its own download). Embedding and "
+        "chat are added one at a time as their backends consume the prepared dir."
     ),
 )
 @click.option(
