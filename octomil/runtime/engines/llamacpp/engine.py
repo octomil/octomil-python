@@ -161,9 +161,14 @@ class LlamaCppEngine(EnginePlugin):
                 model_name,
             )
 
+        # ``model_dir`` is the PrepareManager-materialized artifact path.
+        # When set, LlamaCppBackend.load_model picks the prepared GGUF
+        # (sentinel ``artifact`` first, then ``*.gguf``) and avoids
+        # huggingface_hub.snapshot_download.
         backend = LlamaCppBackend(
             cache_size_mb=kwargs.get("cache_size_mb", 2048),
             cache_enabled=kwargs.get("cache_enabled", True),
+            model_dir=kwargs.get("model_dir"),
         )
         backend.load_model(model_name)
         return backend

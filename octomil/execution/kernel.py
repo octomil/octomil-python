@@ -110,10 +110,21 @@ logger = logging.getLogger(__name__)
 #   - tts             (PR 4 + 6 + 7)  — SherpaTtsEngine.create_backend(model_dir)
 #   - transcription   (PR 10a)        — _WhisperBackend honors injected model_dir
 #                                       and skips pywhispercpp's HF download path.
+#   - chat/responses  (PR 10c)        — MLXBackend and LlamaCppBackend accept
+#                                       ``model_dir`` and load from the prepared
+#                                       directory (mlx_lm.load reads a path
+#                                       like a repo id; llama_cpp.Llama opens
+#                                       PrepareManager's ``<dir>/artifact``
+#                                       sentinel by magic bytes regardless of
+#                                       extension).
 # Wiring backlog:
 #   - embedding:      thread model_dir into the local embeddings backend
-#   - chat/responses: thread model_dir into mlx-lm / llama.cpp adapters
-_PREPAREABLE_CAPABILITIES = frozenset({CAPABILITY_TTS, CAPABILITY_TRANSCRIPTION})
+#
+# Note: "responses" is the OpenAI-Responses-shaped surface that routes
+# through the same chat dispatch internally (no separate CAPABILITY_*
+# constant). Both names are accepted by ``prepare`` so callers can refer
+# to whichever capability they actually invoke at request time.
+_PREPAREABLE_CAPABILITIES = frozenset({CAPABILITY_TTS, CAPABILITY_TRANSCRIPTION, CAPABILITY_CHAT, "responses"})
 
 
 # ---------------------------------------------------------------------------
@@ -288,6 +299,16 @@ class ExecutionKernel:
         # Planner-driven routing
         selection = _resolve_planner_selection(effective_model, CAPABILITY_CHAT, policy_preset)
 
+        # PR 10c: when the planner's primary local candidate is a
+        # preparable sdk_runtime artifact, materialize the bytes once
+        # before the candidate loop so every local-attempt _build_router
+        # call passes the same prepared model_dir to the engine.
+        # ``_prepare_local_chat_artifact`` returns ``None`` (skip
+        # prepare) when the candidate is unpreparable; the runner's
+        # existing fallback then promotes cloud after the local attempt
+        # fails instead of crashing the whole call here.
+        prepared_model_dir = self._prepare_local_chat_artifact(selection)
+
         routing_policy = _resolve_routing_policy(defaults)
         candidates = _selection_candidate_dicts(selection, routing_policy)
         fallback_allowed = _candidate_fallback_allowed(selection, routing_policy)
@@ -312,11 +333,16 @@ class ExecutionKernel:
 
         async def _execute_candidate(candidate: dict[str, Any]) -> RuntimeResponse:
             candidate_selection = _candidate_to_selection(selection, candidate)
+            # Only thread prepared_model_dir into LOCAL attempts. Cloud
+            # attempts ignore it but we leave the kwarg None to keep
+            # cloud_factory's path explicit.
+            local_dir = prepared_model_dir if candidate.get("locality") == "local" else None
             router = await self._build_router(
                 effective_model,
                 CAPABILITY_CHAT,
                 defaults,
                 planner_selection=candidate_selection,
+                prepared_model_dir=local_dir,
             )
             return await router.run(request, policy=_routing_policy_for_candidate(candidate))
 
@@ -388,6 +414,12 @@ class ExecutionKernel:
         policy_preset = defaults.policy_preset or "local_first"
         selection = _resolve_planner_selection(effective_model, CAPABILITY_CHAT, policy_preset)
 
+        # PR 10c: same prepare-once-before-runner pattern as
+        # ``create_response``. The mlx-lm and llama.cpp backends consume
+        # ``model_dir`` to load the prepared bytes instead of triggering
+        # their own snapshot_download / from_pretrained path.
+        prepared_model_dir = self._prepare_local_chat_artifact(selection)
+
         routing_policy = _resolve_routing_policy(defaults)
         candidates = _selection_candidate_dicts(selection, routing_policy)
         fallback_allowed = _candidate_fallback_allowed(selection, routing_policy)
@@ -420,11 +452,13 @@ class ExecutionKernel:
             first_token_emitted = False
             try:
                 candidate_selection = _candidate_to_selection(selection, candidate)
+                local_dir = prepared_model_dir if candidate.get("locality") == "local" else None
                 router = await self._build_router(
                     effective_model,
                     CAPABILITY_CHAT,
                     defaults,
                     planner_selection=candidate_selection,
+                    prepared_model_dir=local_dir,
                 )
                 async for chunk in router.stream(request, policy=_routing_policy_for_candidate(candidate)):
                     text = chunk.text or ""
@@ -500,6 +534,10 @@ class ExecutionKernel:
         policy_preset = defaults.policy_preset or "local_first"
         selection = _resolve_planner_selection(effective_model, CAPABILITY_CHAT, policy_preset)
 
+        # PR 10c: prepare once before the runner so every local attempt
+        # passes the same prepared dir into ``_build_router``.
+        prepared_model_dir = self._prepare_local_chat_artifact(selection)
+
         routing_policy = _resolve_routing_policy(defaults)
         candidates = _selection_candidate_dicts(selection, routing_policy)
         fallback_allowed = _candidate_fallback_allowed(selection, routing_policy)
@@ -527,11 +565,13 @@ class ExecutionKernel:
             first_token_emitted = False
             try:
                 candidate_selection = _candidate_to_selection(selection, candidate)
+                local_dir = prepared_model_dir if candidate.get("locality") == "local" else None
                 router = await self._build_router(
                     effective_model,
                     CAPABILITY_CHAT,
                     defaults,
                     planner_selection=candidate_selection,
+                    prepared_model_dir=local_dir,
                 )
                 async for chunk in router.stream(request, policy=_routing_policy_for_candidate(candidate)):
                     text = chunk.text or ""
@@ -1225,19 +1265,25 @@ class ExecutionKernel:
         candidates whose ``prepare_policy='explicit_only'`` succeed when
         invoked through this method.
 
-        Supported capabilities: ``"tts"`` and ``"transcription"`` today.
-        Both have dispatch paths that thread the prepared ``artifact_dir``
-        into their backend:
+        Supported capabilities: ``"tts"``, ``"transcription"``, ``"chat"``,
+        and ``"responses"`` today. Each has a dispatch path that threads
+        the prepared ``artifact_dir`` into its backend:
 
         - ``tts`` -> ``SherpaTtsEngine.create_backend(model_dir=...)``.
         - ``transcription`` -> ``_WhisperBackend`` honors injected
           ``model_dir`` and prefers PrepareManager's ``<dir>/artifact``
           sentinel before falling back to ``.bin`` / ``.gguf`` / ``.ggml``.
+        - ``chat`` / ``responses`` -> ``MLXBackend`` loads the prepared
+          dir via ``mlx_lm.load`` (which accepts a filesystem path the
+          same way it accepts an HF repo id), and ``LlamaCppBackend``
+          opens PrepareManager's ``<dir>/artifact`` sentinel directly
+          via ``llama_cpp.Llama(model_path=...)`` (the GGUF magic-bytes
+          check accepts files with any extension). Both ``"chat"`` and
+          ``"responses"`` resolve through the chat capability internally.
 
-        Embedding and chat (and responses, which routes through chat)
-        will be added one at a time as their adapters learn to accept a
-        ``model_dir`` kwarg — exposing ``prepare`` for them now would be
-        a false success: the bytes would land on disk and the next
+        Embedding will be added once its local backend learns to accept
+        a ``model_dir`` kwarg — exposing ``prepare`` for it now would
+        be a false success: the bytes would land on disk and the next
         inference call would still cold-start through the engine's own
         lookup. The current set is the source of truth; the lifecycle
         support fixture in octomil-contracts cites the e2e test that
@@ -1259,13 +1305,17 @@ class ExecutionKernel:
                 ),
             )
 
-        defaults = self._resolve(capability, model=model, policy=policy, app=app)
+        # ``responses`` is shaped like the OpenAI Responses API but
+        # dispatches through the chat path internally; the local config
+        # only knows the canonical capability constants.
+        resolution_capability = CAPABILITY_CHAT if capability == "responses" else capability
+        defaults = self._resolve(resolution_capability, model=model, policy=policy, app=app)
         effective_model = defaults.model or model
         if not effective_model:
             raise _no_model_error(capability)
 
         policy_preset = defaults.policy_preset or "local_first"
-        selection = _resolve_planner_selection(effective_model, capability, policy_preset)
+        selection = _resolve_planner_selection(effective_model, resolution_capability, policy_preset)
         candidate = _local_sdk_runtime_candidate(selection)
         if candidate is None:
             raise OctomilError(
@@ -1294,6 +1344,40 @@ class ExecutionKernel:
         if candidate is None:
             return None
         if not getattr(candidate, "prepare_required", False):
+            return None
+
+        from octomil.runtime.lifecycle.prepare_manager import PrepareManager
+
+        manager = self._prepare_manager or PrepareManager()
+        outcome = manager.prepare(candidate)
+        return str(outcome.artifact_dir)
+
+    def _prepare_local_chat_artifact(self, selection: Optional[Any]) -> Optional[str]:
+        """Run PrepareManager for the local chat/responses candidate, if any.
+
+        Symmetric with ``_prepare_local_transcription_artifact``. Returns
+        the prepared ``artifact_dir`` as a string when the planner emits
+        a local sdk_runtime candidate with ``prepare_required=True`` AND
+        ``can_prepare`` accepts the metadata; returns ``None`` otherwise
+        so the existing mlx-lm / llama.cpp resolution path (HF
+        snapshot_download or catalog lookup) runs unchanged.
+
+        The unpreparable check is internal here (rather than gated at
+        the call site like ``transcribe_audio`` does) because the chat
+        path uses the candidate runner pattern: there is no single
+        locality decision to short-circuit, so the safe behaviour for a
+        synthetic local plan is to skip prepare and let the runner's
+        existing fallback machinery move on to cloud after the local
+        attempt fails. Without this guard, a synthetic candidate would
+        crash the entire ``create_response`` in ``manager.prepare``
+        before any candidate ran.
+        """
+        candidate = _local_sdk_runtime_candidate(selection)
+        if candidate is None:
+            return None
+        if not getattr(candidate, "prepare_required", False):
+            return None
+        if self._local_candidate_is_unpreparable(selection):
             return None
 
         from octomil.runtime.lifecycle.prepare_manager import PrepareManager
@@ -1451,12 +1535,20 @@ class ExecutionKernel:
         defaults: ResolvedExecutionDefaults,
         *,
         planner_selection: Optional[Any] = None,
+        prepared_model_dir: Optional[str] = None,
     ) -> RouterModelRuntime:
         """Build a RouterModelRuntime for the given model and capability.
 
         When a planner_selection is provided and recommends a specific engine,
         the local factory tries that engine first before falling back to the
         default registry resolution.
+
+        ``prepared_model_dir`` is threaded into ``engine.create_backend``
+        as ``model_dir=...`` for engines that consume prepared bytes
+        (mlx-lm, llama.cpp, sherpa-onnx, whisper). Engines that do not
+        recognize the kwarg ignore it (each ``create_backend`` accepts
+        ``**kwargs``). When ``None`` the engine's own model resolution
+        path runs unchanged.
         """
         from octomil.runtime.core.registry import ModelRuntimeRegistry
 
@@ -1469,6 +1561,9 @@ class ExecutionKernel:
             if planner_selection is not None and planner_selection.locality == "local"
             else None
         )
+        backend_kwargs: dict[str, Any] = {}
+        if prepared_model_dir:
+            backend_kwargs["model_dir"] = prepared_model_dir
 
         def local_factory(hint: str):
             if planner_forces_cloud:
@@ -1486,7 +1581,7 @@ class ExecutionKernel:
                         from octomil.runtime.core.engine_bridge import _infer_tool_call_tier
                         from octomil.runtime.core.types import RuntimeCapabilities
 
-                        backend = engine.create_backend(model)
+                        backend = engine.create_backend(model, **backend_kwargs)
                         return InferenceBackendAdapter(
                             backend=backend,
                             model_name=model,

@@ -136,12 +136,13 @@ def test_kernel_prepare_rejects_unknown_capability(tmp_path):
     assert "vision" in str(excinfo.value)
 
 
-@pytest.mark.parametrize("capability", ["embedding", "chat"])
+@pytest.mark.parametrize("capability", ["embedding"])
 def test_kernel_prepare_rejects_unwired_capabilities(tmp_path, capability):
-    """The remaining unwired capabilities (embedding, chat). Their inference
+    """The remaining unwired capabilities (embedding only — chat and
+    responses joined the supported set in PR 10c). Their inference
     adapters do NOT yet thread the prepared model_dir, so prepare must
     reject them with an actionable INVALID_INPUT message. Transcription
-    was added to the supported set in PR 10a."""
+    was added in PR 10a; chat/responses in PR 10c."""
     kernel = ExecutionKernel()
     with pytest.raises(OctomilError) as excinfo:
         kernel.prepare(model="m", capability=capability)
@@ -167,6 +168,27 @@ def test_kernel_prepare_accepts_transcription_now(tmp_path):
     from octomil.runtime.lifecycle.prepare_manager import PrepareMode
 
     assert outcome.artifact_id == "kokoro-en-v0_19"  # whatever the stub returns
+    assert pm.calls == [("kokoro-en-v0_19", PrepareMode.EXPLICIT)]
+
+
+@pytest.mark.parametrize("capability", ["chat", "responses"])
+def test_kernel_prepare_accepts_chat_and_responses_now(tmp_path, capability):
+    """PR 10c: chat and responses joined the supported set. The kernel
+    must resolve the planner selection and call PrepareManager just
+    like it does for tts and transcription. Responses routes through
+    the chat capability internally for resolution."""
+    candidate = _local_candidate()
+    selection = _Selection(candidates=[candidate])
+    pm = _RecordingPM(tmp_path)
+    kernel = ExecutionKernel(prepare_manager=pm)
+    _stub_resolve(kernel)
+
+    with patch("octomil.execution.kernel._resolve_planner_selection", return_value=selection):
+        outcome = kernel.prepare(model="@app/eternum/chat", capability=capability)
+
+    from octomil.runtime.lifecycle.prepare_manager import PrepareMode
+
+    assert outcome.artifact_id == "kokoro-en-v0_19"
     assert pm.calls == [("kokoro-en-v0_19", PrepareMode.EXPLICIT)]
 
 
@@ -276,11 +298,12 @@ def test_cli_prepare_accepts_tts_capability(tmp_path):
     assert result.exit_code == 0, result.output
 
 
-@pytest.mark.parametrize("cap", ["embedding", "chat"])
+@pytest.mark.parametrize("cap", ["embedding", "vision"])
 def test_cli_prepare_rejects_unwired_capabilities_at_choice_constraint(cap):
-    """CLI surface must match the kernel: tts and transcription are wired,
-    so embedding/chat are rejected at the click choice constraint until
-    their backends consume the prepared dir."""
+    """CLI surface must match the kernel: tts/transcription/chat/responses
+    are wired (PR 10a + 10c), so embedding (and any unknown capability
+    name) is rejected at the click choice constraint until its backend
+    consumes the prepared dir."""
     runner = CliRunner()
     result = runner.invoke(prepare_cmd, ["m", "--capability", cap])
     assert result.exit_code != 0
