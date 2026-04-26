@@ -204,27 +204,136 @@ def test_prepare_rejects_when_no_digest(cache_dir):
         mgr.prepare(_candidate(artifact=artifact))
 
 
-def test_prepare_multi_file_artifact(cache_dir):
-    files_payload = {
-        "tokens.txt": b"a b c",
-        "model.onnx": b"\x00\x01" * 50,
-    }
-    # All files share one digest in this PR's contract; the per-file manifest
-    # is PR 4+. Use a single payload digest matching the larger file so the
-    # downloader's verification logic can be exercised.
-    chosen_digest = _digest(files_payload["model.onnx"])
+def test_prepare_single_required_file_uses_relative_path_under_artifact_dir(cache_dir):
+    payload = b"\x00\x01" * 50
+    digest = _digest(payload)
     artifact = RuntimeArtifactPlan(
         model_id="multi",
         artifact_id="art-multi",
-        digest=chosen_digest,
-        required_files=["model.onnx"],  # single-file required for now; multi covered by downloader tests
+        digest=digest,
+        required_files=["model.onnx"],
         download_urls=[ArtifactDownloadEndpoint(url="https://cdn.example.com/art-multi/")],
     )
 
     def handler(request):
-        return httpx.Response(200, content=files_payload["model.onnx"])
+        return httpx.Response(200, content=payload)
 
     mgr = _manager_with_handler(cache_dir, handler)
     outcome = mgr.prepare(_candidate(artifact=artifact))
-    assert outcome.files["model.onnx"].read_bytes() == files_payload["model.onnx"]
+    assert outcome.files["model.onnx"].read_bytes() == payload
     assert outcome.artifact_dir == cache_dir / "artifacts" / "art-multi"
+    assert outcome.files["model.onnx"] == (cache_dir / "artifacts" / "art-multi" / "model.onnx").resolve()
+
+
+def test_prepare_rejects_multi_file_artifact_until_per_file_manifest_exists(cache_dir):
+    payload = b"a"
+    artifact = RuntimeArtifactPlan(
+        model_id="kokoro",
+        artifact_id="art-multi-real",
+        digest=_digest(payload),
+        required_files=["model.onnx", "voices.bin"],
+        download_urls=[ArtifactDownloadEndpoint(url="https://cdn.example.com/")],
+    )
+    mgr = PrepareManager(cache_dir=cache_dir)
+    with pytest.raises(OctomilError, match="manifest_uri"):
+        mgr.prepare(_candidate(artifact=artifact))
+
+
+def test_prepare_rejects_traversal_in_required_files(cache_dir):
+    payload = b"pwn"
+    artifact = RuntimeArtifactPlan(
+        model_id="evil",
+        artifact_id="art-evil",
+        digest=_digest(payload),
+        required_files=["../escaped.bin"],
+        download_urls=[ArtifactDownloadEndpoint(url="https://cdn.example.com/")],
+    )
+    # Plant the file the planner is trying to claim, so a permissive cached
+    # shortcut would happily return it. The fix must reject before checking.
+    outside = cache_dir / "artifacts" / "escaped.bin"
+    outside.parent.mkdir(parents=True, exist_ok=True)
+    outside.write_bytes(payload)
+
+    mgr = PrepareManager(cache_dir=cache_dir)
+    with pytest.raises(OctomilError) as excinfo:
+        mgr.prepare(_candidate(artifact=artifact))
+    assert excinfo.value.code == ErrorCode.INVALID_INPUT
+
+
+def test_prepare_cached_shortcut_rejects_corrupt_existing_file(cache_dir):
+    payload = b"good bytes" * 50
+    digest = _digest(payload)
+    artifact = RuntimeArtifactPlan(
+        model_id="corrupt-test",
+        artifact_id="art-corrupt",
+        digest=digest,
+        required_files=[],
+        download_urls=[ArtifactDownloadEndpoint(url="https://cdn.example.com/")],
+    )
+    # Pre-place a corrupt file at the destination so a permissive cached
+    # shortcut would treat it as ready. Manager must re-download.
+    artifact_dir = cache_dir / "artifacts" / "art-corrupt"
+    artifact_dir.mkdir(parents=True)
+    (artifact_dir / "artifact").write_bytes(b"WRONG BYTES")
+
+    served: list[str] = []
+
+    def handler(request):
+        served.append(str(request.url))
+        return httpx.Response(200, content=payload)
+
+    mgr = _manager_with_handler(cache_dir, handler)
+    outcome = mgr.prepare(_candidate(artifact=artifact))
+    assert not outcome.cached, "corrupt file must not be returned as cached"
+    assert outcome.files[""].read_bytes() == payload
+    assert served, "downloader must have been called to recover from corrupt cache"
+
+
+def test_prepare_cached_shortcut_rejects_directory_at_target(cache_dir):
+    payload = b"contents"
+    digest = _digest(payload)
+    artifact = RuntimeArtifactPlan(
+        model_id="dir-test",
+        artifact_id="art-dir",
+        digest=digest,
+        required_files=[],
+        download_urls=[ArtifactDownloadEndpoint(url="https://cdn.example.com/")],
+    )
+    # Plant a directory where the artifact file is expected.
+    artifact_dir = cache_dir / "artifacts" / "art-dir"
+    artifact_dir.mkdir(parents=True)
+    (artifact_dir / "artifact").mkdir()
+
+    def handler(request):
+        return httpx.Response(200, content=payload)
+
+    mgr = _manager_with_handler(cache_dir, handler)
+    # The downloader will try to write a file where a directory exists and
+    # raise; but the cached shortcut must NOT return cached=True.
+    with pytest.raises(Exception):
+        mgr.prepare(_candidate(artifact=artifact))
+
+
+def test_prepare_cached_shortcut_returns_cached_only_after_digest_verifies(cache_dir):
+    payload = b"verified bytes" * 30
+    digest = _digest(payload)
+    artifact = RuntimeArtifactPlan(
+        model_id="cache-good",
+        artifact_id="art-cache-good",
+        digest=digest,
+        required_files=[],
+        download_urls=[ArtifactDownloadEndpoint(url="https://cdn.example.com/")],
+    )
+    # Pre-place the correct file. Manager must serve from cache without
+    # touching the network.
+    artifact_dir = cache_dir / "artifacts" / "art-cache-good"
+    artifact_dir.mkdir(parents=True)
+    (artifact_dir / "artifact").write_bytes(payload)
+
+    def handler(request):
+        raise AssertionError("network must not be touched on a digest-verified cache hit")
+
+    mgr = _manager_with_handler(cache_dir, handler)
+    outcome = mgr.prepare(_candidate(artifact=artifact))
+    assert outcome.cached
+    assert outcome.files[""].read_bytes() == payload
