@@ -527,3 +527,128 @@ def test_can_prepare_does_not_touch_disk_or_network(cache_dir):
     assert mgr.can_prepare(_candidate(artifact=_artifact()))
     # Cache dir has only what __init__ created (.locks would be lazy).
     assert not (cache_dir / "artifacts").exists() or not any((cache_dir / "artifacts").iterdir())
+
+
+# --- can_prepare mirrors prepare structural validation --------------------
+
+
+@pytest.mark.parametrize(
+    "bad_relative_path",
+    [
+        "../escaped.bin",
+        ".",
+        "./",
+        "/abs/path",
+        "subdir/../escape",
+        "with\x00null",
+        "back\\slash",
+    ],
+)
+def test_can_prepare_returns_false_for_unsafe_required_files_path(cache_dir, bad_relative_path):
+    """Reviewer's reproducer: can_prepare must reject any required_files
+    entry that prepare() would reject via _validate_relative_path. Without
+    this, local_first commits to local on a malformed planner plan and
+    fails in prepare instead of falling back."""
+    mgr = PrepareManager(cache_dir=cache_dir)
+    artifact = _artifact(required_files=[bad_relative_path])
+    assert not mgr.can_prepare(_candidate(artifact=artifact))
+
+
+def test_can_prepare_returns_false_for_empty_artifact_id_and_model_id(cache_dir):
+    mgr = PrepareManager(cache_dir=cache_dir)
+    artifact = RuntimeArtifactPlan(
+        model_id="",
+        artifact_id="",
+        digest=_digest(b"x"),
+        download_urls=[ArtifactDownloadEndpoint(url="https://x/")],
+    )
+    assert not mgr.can_prepare(_candidate(artifact=artifact))
+
+
+def test_can_prepare_returns_false_for_artifact_id_with_nul_byte(cache_dir):
+    mgr = PrepareManager(cache_dir=cache_dir)
+    artifact = RuntimeArtifactPlan(
+        model_id="m",
+        artifact_id="evil\x00\x00",
+        digest=_digest(b"x"),
+        download_urls=[ArtifactDownloadEndpoint(url="https://x/")],
+    )
+    assert not mgr.can_prepare(_candidate(artifact=artifact))
+
+
+def test_can_prepare_returns_true_when_artifact_id_empty_but_model_id_present(cache_dir):
+    """artifact_id falls back to model_id at the build site, so an empty
+    artifact_id with a non-empty model_id is preparable."""
+    mgr = PrepareManager(cache_dir=cache_dir)
+    artifact = RuntimeArtifactPlan(
+        model_id="kokoro-en-v0_19",
+        artifact_id="",
+        digest=_digest(b"x"),
+        download_urls=[ArtifactDownloadEndpoint(url="https://x/")],
+    )
+    assert mgr.can_prepare(_candidate(artifact=artifact))
+
+
+@pytest.mark.parametrize(
+    "build_artifact,description",
+    [
+        (lambda: RuntimeArtifactPlan(model_id="m"), "no digest, no urls"),
+        (
+            lambda: RuntimeArtifactPlan(
+                model_id="m",
+                artifact_id="ok",
+                digest="sha256:" + "0" * 64,
+                required_files=["../escape.bin"],
+                download_urls=[ArtifactDownloadEndpoint(url="https://x/")],
+            ),
+            "traversal in required_files",
+        ),
+        (
+            lambda: RuntimeArtifactPlan(
+                model_id="m",
+                artifact_id="ok",
+                digest="sha256:" + "0" * 64,
+                required_files=["."],
+                download_urls=[ArtifactDownloadEndpoint(url="https://x/")],
+            ),
+            "dot path",
+        ),
+        (
+            lambda: RuntimeArtifactPlan(
+                model_id="",
+                artifact_id="",
+                digest="sha256:" + "0" * 64,
+                download_urls=[ArtifactDownloadEndpoint(url="https://x/")],
+            ),
+            "empty artifact_id and model_id",
+        ),
+        (
+            lambda: RuntimeArtifactPlan(
+                model_id="m",
+                artifact_id="evil\x00",
+                digest="sha256:" + "0" * 64,
+                download_urls=[ArtifactDownloadEndpoint(url="https://x/")],
+            ),
+            "NUL in artifact_id",
+        ),
+        (
+            lambda: RuntimeArtifactPlan(
+                model_id="m",
+                artifact_id="ok",
+                digest="sha256:" + "0" * 64,
+                required_files=["a.bin", "b.bin"],
+                download_urls=[ArtifactDownloadEndpoint(url="https://x/")],
+            ),
+            "multi-file",
+        ),
+    ],
+)
+def test_can_prepare_and_prepare_agree_on_structurally_invalid_inputs(cache_dir, build_artifact, description):
+    """Property: anything can_prepare rejects, prepare also rejects. This is
+    the contract the routing layer relies on to avoid committing to local
+    and failing in prepare."""
+    mgr = PrepareManager(cache_dir=cache_dir)
+    candidate = _candidate(artifact=build_artifact())
+    assert not mgr.can_prepare(candidate), f"{description}: can_prepare lied"
+    with pytest.raises(OctomilError):
+        mgr.prepare(candidate)
