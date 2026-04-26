@@ -242,3 +242,111 @@ async def test_transcription_local_first_skips_unpreparable_synthetic_candidate(
 
     with patch("octomil.runtime.engines.get_registry", return_value=_FakeRegistry()):
         assert kernel._can_prepare_local_transcription("whisper-tiny", selection) is False
+
+
+# ---------------------------------------------------------------------------
+# Release-blocker P1: unpreparable candidate must veto local routing
+# ---------------------------------------------------------------------------
+
+
+def test_local_candidate_is_unpreparable_returns_true_for_synthetic(tmp_path):
+    """Reviewer's release-blocker P1: when the planner emits a synthetic
+    prepare_required=True candidate (no digest/url), the kernel must
+    treat local as unavailable EVEN IF a backend is staged on disk —
+    otherwise the OR-shortcircuit lets the staged backend win and the
+    next inference call crashes in prepare()."""
+    from octomil.runtime.lifecycle.prepare_manager import PrepareManager
+    from octomil.runtime.planner.schemas import (
+        RuntimeArtifactPlan,
+        RuntimeCandidatePlan,
+    )
+
+    synthetic = RuntimeCandidatePlan(
+        locality="local",
+        priority=0,
+        confidence=0.9,
+        reason="synthetic",
+        engine="whisper.cpp",
+        artifact=RuntimeArtifactPlan(model_id="whisper-tiny"),
+        delivery_mode="sdk_runtime",
+        prepare_required=True,
+        prepare_policy="lazy",
+    )
+    selection = _Selection(candidates=[synthetic])
+    real_pm = PrepareManager(cache_dir=tmp_path)
+    kernel = ExecutionKernel(prepare_manager=real_pm)
+    assert kernel._local_candidate_is_unpreparable(selection) is True
+
+
+def test_local_candidate_is_unpreparable_returns_false_for_real_candidate(tmp_path):
+    from octomil.runtime.lifecycle.prepare_manager import PrepareManager
+
+    selection = _Selection(candidates=[_local_candidate()])
+    real_pm = PrepareManager(cache_dir=tmp_path)
+    kernel = ExecutionKernel(prepare_manager=real_pm)
+    assert kernel._local_candidate_is_unpreparable(selection) is False
+
+
+def test_local_candidate_is_unpreparable_returns_false_when_prepare_required_false(tmp_path):
+    """prepare_required=False candidates are engine-managed; not a veto."""
+    from octomil.runtime.lifecycle.prepare_manager import PrepareManager
+    from octomil.runtime.planner.schemas import (
+        RuntimeArtifactPlan,
+        RuntimeCandidatePlan,
+    )
+
+    cand = RuntimeCandidatePlan(
+        locality="local",
+        priority=0,
+        confidence=0.9,
+        reason="engine-managed",
+        engine="ollama",
+        artifact=RuntimeArtifactPlan(model_id="qwen2.5-7b"),
+        delivery_mode="sdk_runtime",
+        prepare_required=False,
+        prepare_policy="lazy",
+    )
+    selection = _Selection(candidates=[cand])
+    real_pm = PrepareManager(cache_dir=tmp_path)
+    kernel = ExecutionKernel(prepare_manager=real_pm)
+    assert kernel._local_candidate_is_unpreparable(selection) is False
+
+
+@pytest.mark.asyncio
+async def test_transcription_unpreparable_synthetic_falls_back_even_with_staged_backend(tmp_path):
+    """The actual reviewer reproducer: a synthetic planner candidate AND
+    `_has_local_transcription_backend` returning True. Before the veto,
+    `or` short-circuited and local routing won; transcribe_audio() then
+    threw inside _prepare_local_transcription_artifact. With the veto,
+    the kernel marks local unavailable and falls back to cloud."""
+    from octomil.runtime.lifecycle.prepare_manager import PrepareManager
+    from octomil.runtime.planner.schemas import (
+        RuntimeArtifactPlan,
+        RuntimeCandidatePlan,
+    )
+
+    synthetic = RuntimeCandidatePlan(
+        locality="local",
+        priority=0,
+        confidence=0.9,
+        reason="synthetic",
+        engine="whisper.cpp",
+        artifact=RuntimeArtifactPlan(model_id="whisper-tiny"),
+        delivery_mode="sdk_runtime",
+        prepare_required=True,
+        prepare_policy="lazy",
+    )
+    selection = _Selection(candidates=[synthetic])
+    real_pm = PrepareManager(cache_dir=tmp_path)
+    kernel = ExecutionKernel(prepare_manager=real_pm)
+    kernel._resolve = lambda capability, **kw: type(
+        "_D",
+        (),
+        {"model": "whisper-tiny", "policy_preset": "local_first", "inline_policy": None, "cloud_profile": None},
+    )()
+
+    # Even with a staged backend pretending to be importable, the veto
+    # must keep local_available=False.
+    with patch("octomil.execution.kernel._resolve_planner_selection", return_value=selection):
+        with patch.object(kernel, "_has_local_transcription_backend", return_value=True):
+            assert kernel._local_candidate_is_unpreparable(selection) is True

@@ -748,16 +748,20 @@ class ExecutionKernel:
         selection = _resolve_planner_selection(effective_model, CAPABILITY_TRANSCRIPTION, policy_preset)
 
         routing_policy = _resolve_routing_policy(defaults)
-        # Local routing is satisfied if a transcription backend is already
-        # staged OR if the planner emitted a preparable sdk_runtime
-        # candidate the kernel can materialize. Without the OR, local_first
-        # would either fail closed on a clean device or — worse — commit
-        # to local on a synthetic planner candidate (prepare_required=True
-        # with no digest/url) and crash in prepare() instead of falling
-        # back to cloud. Mirrors the TTS clean-device fix.
-        local_available = self._has_local_transcription_backend(effective_model) or (
-            self._can_prepare_local_transcription(effective_model, selection)
-        )
+        # Routing is satisfied if a backend is already staged OR if the
+        # planner emitted a preparable sdk_runtime candidate the kernel
+        # can materialize. BUT if the planner emits an *unpreparable*
+        # prepare_required=True candidate (synthetic plan: no digest/url,
+        # traversal, etc.), the SDK cannot honor the plan even if a
+        # backend happens to be importable on disk — that staged-backend
+        # case used to slip past via the `or` short-circuit and crash in
+        # prepare(). The unpreparable-candidate veto fires first.
+        if self._local_candidate_is_unpreparable(selection):
+            local_available = False
+        else:
+            local_available = self._has_local_transcription_backend(effective_model) or (
+                self._can_prepare_local_transcription(effective_model, selection)
+            )
         cloud_available = _cloud_available(defaults)
         locality, is_fallback = _select_locality_for_capability(
             routing_policy,
@@ -938,14 +942,21 @@ class ExecutionKernel:
             defaults.inline_policy = None
 
         routing_policy = _resolve_routing_policy(defaults)
-        # Local routing is satisfied if the artifact is already staged OR if
-        # the planner emitted a preparable sdk_runtime candidate the kernel
-        # can materialize via PrepareManager. Without this OR, a clean-device
-        # first run on a Private @app/<slug>/tts model would raise
-        # local_tts_runtime_unavailable before prepare ever ran.
-        local_available = self._has_local_tts_backend(runtime_model) or self._can_prepare_local_tts(
-            runtime_model, selection
-        )
+        # Local routing is satisfied if the artifact is already staged OR
+        # the planner emitted a preparable sdk_runtime candidate the
+        # kernel can materialize via PrepareManager. The unpreparable-
+        # candidate veto fires first: when the planner says "prepare this
+        # artifact" but the metadata is structurally rejected by
+        # ``can_prepare`` (synthetic plan), local must be unavailable
+        # regardless of whether a backend happens to be staged on disk.
+        # Otherwise local_first would still pick local and crash in
+        # prepare() instead of falling back to cloud.
+        if self._local_candidate_is_unpreparable(selection):
+            local_available = False
+        else:
+            local_available = self._has_local_tts_backend(runtime_model) or self._can_prepare_local_tts(
+                runtime_model, selection
+            )
         cloud_available = _cloud_available(defaults)
 
         # Policy gating mirrors transcription. local_only never falls back.
@@ -1104,6 +1115,36 @@ class ExecutionKernel:
         except Exception:
             return False
 
+    def _local_candidate_is_unpreparable(self, selection: Optional[Any]) -> bool:
+        """Return True iff the planner's local sdk_runtime candidate is
+        ``prepare_required=True`` AND ``PrepareManager.can_prepare`` rejects
+        it (synthetic plan: missing digest/url, traversal, dot path, etc.).
+
+        This is the *hard veto* the reviewer flagged. ``_has_local_*_backend``
+        only checks whether a runtime is importable / files are staged;
+        when the planner says "prepare this artifact" but the metadata is
+        unpreparable, the SDK cannot honor that plan. Letting an
+        already-staged or runtime-importable model win local routing in
+        that case ignores the planner's intent and crashes at first
+        prepare(). When this veto fires, the kernel must mark local
+        unavailable regardless of staging so local_first falls back to
+        cloud.
+
+        ``prepare_required=False`` candidates are never blocking — those
+        engines manage their own bytes (e.g. ollama). Same when the
+        planner emits no local candidate at all.
+        """
+        candidate = _local_sdk_runtime_candidate(selection)
+        if candidate is None:
+            return False
+        if not getattr(candidate, "prepare_required", False):
+            return False
+
+        from octomil.runtime.lifecycle.prepare_manager import PrepareManager
+
+        manager = self._prepare_manager or PrepareManager()
+        return not manager.can_prepare(candidate)
+
     def _can_prepare_local_transcription(self, model: str, selection: Optional[Any]) -> bool:
         """Mirror of ``_can_prepare_local_tts`` for the transcription path.
 
@@ -1184,16 +1225,23 @@ class ExecutionKernel:
         candidates whose ``prepare_policy='explicit_only'`` succeed when
         invoked through this method.
 
-        Only ``"tts"`` is supported today: it is the one capability whose
-        dispatch path threads the prepared ``artifact_dir`` into the
-        backend (``SherpaTtsEngine.create_backend(model_dir=...)``).
-        Transcription, embedding, and chat will be added one at a time as
-        their adapters learn to accept a ``model_dir`` kwarg — exposing
-        ``prepare`` for them now would be a false success: the bytes would
-        land on disk and the next inference call would still cold-start
-        through the engine's own lookup, possibly re-downloading or
-        failing. PR 6 (#443) over-promised here; this method narrows the
-        contract back to the truth on the ground.
+        Supported capabilities: ``"tts"`` and ``"transcription"`` today.
+        Both have dispatch paths that thread the prepared ``artifact_dir``
+        into their backend:
+
+        - ``tts`` -> ``SherpaTtsEngine.create_backend(model_dir=...)``.
+        - ``transcription`` -> ``_WhisperBackend`` honors injected
+          ``model_dir`` and prefers PrepareManager's ``<dir>/artifact``
+          sentinel before falling back to ``.bin`` / ``.gguf`` / ``.ggml``.
+
+        Embedding and chat (and responses, which routes through chat)
+        will be added one at a time as their adapters learn to accept a
+        ``model_dir`` kwarg — exposing ``prepare`` for them now would be
+        a false success: the bytes would land on disk and the next
+        inference call would still cold-start through the engine's own
+        lookup. The current set is the source of truth; the lifecycle
+        support fixture in octomil-contracts cites the e2e test that
+        proves each cell's claim.
 
         Returns a :class:`PrepareOutcome`. Raises :class:`OctomilError` if
         the capability is not yet wired, the planner emits no preparable
