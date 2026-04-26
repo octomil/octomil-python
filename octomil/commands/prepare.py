@@ -1,9 +1,16 @@
-"""``octomil prepare`` — pre-warm an on-device model artifact.
+"""``octomil prepare`` — pre-warm an on-device TTS artifact.
 
 Wraps :meth:`octomil.execution.kernel.ExecutionKernel.prepare` so users
-can download a TTS (or other prepare-aware capability) artifact once,
-explicitly, instead of paying first-call latency or hitting the
-``prepare_policy='explicit_only'`` actionable error.
+can download a TTS artifact once, explicitly, instead of paying
+first-call latency or hitting the ``prepare_policy='explicit_only'``
+actionable error.
+
+Today this command only supports TTS — it is the one capability whose
+dispatch path threads the prepared ``model_dir`` into the backend.
+Transcription, embedding, and chat will be added one at a time as
+their backends learn to consume the prepared directory; until then,
+calling prepare for them would download bytes the next inference
+ignores. The CLI mirrors that contract via a single-choice ``--capability``.
 
 Usage::
 
