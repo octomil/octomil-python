@@ -361,6 +361,100 @@ def test_empty_endpoints_raises(cache_dir, dest_dir):
     assert excinfo.value.code == ErrorCode.DOWNLOAD_FAILED
 
 
+@pytest.mark.parametrize(
+    "bad_path",
+    [
+        "../escaped.bin",
+        "subdir/../../escaped.bin",
+        "/etc/passwd",
+        "C:\\Windows\\system32",
+        "weights\\model.bin",
+        "weights/../../../../etc/passwd",
+        "//absolute/posix",
+        "with\x00null.bin",
+    ],
+)
+def test_rejects_unsafe_relative_paths(cache_dir, dest_dir, bad_path):
+    def handler(request):
+        raise AssertionError("network must not be touched on path-validation failure")
+
+    downloader = DurableDownloader(cache_dir=cache_dir, client=_client_with(handler))
+    desc = ArtifactDescriptor(
+        artifact_id="art-evil",
+        required_files=[RequiredFile(relative_path=bad_path, digest=_digest(b"x"))],
+        endpoints=[DownloadEndpoint(url="https://x.example.com/")],
+    )
+    with pytest.raises(OctomilError) as excinfo:
+        downloader.download(desc, dest_dir)
+    assert excinfo.value.code == ErrorCode.INVALID_INPUT
+    # No file or .part may have been written outside dest_dir.
+    assert not (dest_dir.parent / "escaped.bin").exists()
+
+
+def test_rejects_relative_path_through_symlink_escape(tmp_path, cache_dir, dest_dir):
+    # Place a symlink inside dest_dir that points outside it. A naive
+    # implementation that joined relative_path under dest_dir without
+    # resolving symlinks could still write through the link.
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    link = dest_dir / "outlink"
+    link.symlink_to(outside, target_is_directory=True)
+
+    def handler(request):
+        raise AssertionError("network must not be touched")
+
+    downloader = DurableDownloader(cache_dir=cache_dir, client=_client_with(handler))
+    desc = ArtifactDescriptor(
+        artifact_id="art-link",
+        required_files=[RequiredFile(relative_path="outlink/escaped.bin", digest=_digest(b"x"))],
+        endpoints=[DownloadEndpoint(url="https://x.example.com/")],
+    )
+    with pytest.raises(OctomilError) as excinfo:
+        downloader.download(desc, dest_dir)
+    assert excinfo.value.code == ErrorCode.INVALID_INPUT
+    assert not (outside / "escaped.bin").exists()
+
+
+def test_416_retries_same_endpoint_from_zero_when_offset_is_stale(cache_dir, dest_dir):
+    payload = b"recovered after 416" * 50
+    digest = _digest(payload)
+    seen: list[tuple[str, str | None]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        rng = request.headers.get("range")
+        seen.append((str(request.url), rng))
+        if rng == "bytes=999999-":
+            return httpx.Response(416)
+        if rng is None:
+            return httpx.Response(200, content=payload)
+        return httpx.Response(
+            206, content=payload, headers={"content-range": f"bytes 0-{len(payload) - 1}/{len(payload)}"}
+        )
+
+    downloader = DurableDownloader(cache_dir=cache_dir, client=_client_with(handler))
+    # Stale journal — claims we wrote 999999 bytes but the file is much smaller.
+    parts = dest_dir / ".parts"
+    parts.mkdir()
+    (parts / "out.bin.part").write_bytes(b"x" * 999999)
+    downloader._journal.record("art-416", "out.bin", 999999, 0)
+
+    desc = ArtifactDescriptor(
+        artifact_id="art-416",
+        required_files=[RequiredFile(relative_path="out.bin", digest=digest)],
+        endpoints=[DownloadEndpoint(url="https://only.example.com/")],
+    )
+
+    result = downloader.download(desc, dest_dir)
+    assert result.files["out.bin"].read_bytes() == payload
+    # The same endpoint URL must have been retried — verifies we didn't just
+    # surface the 416 to the next-endpoint loop.
+    urls = [u for u, _ in seen]
+    assert urls.count(urls[0]) >= 2
+    # First request was the stale-range request; a later one had no Range.
+    assert seen[0][1] == "bytes=999999-"
+    assert any(rng is None for _, rng in seen)
+
+
 def test_empty_required_files_raises(cache_dir, dest_dir):
     downloader = DurableDownloader(cache_dir=cache_dir)
     desc = ArtifactDescriptor(
