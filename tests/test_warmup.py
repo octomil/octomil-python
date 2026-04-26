@@ -515,6 +515,185 @@ def test_warmup_cache_does_not_alias_distinct_artifacts_with_same_runtime_model(
 
 
 # ---------------------------------------------------------------------------
+# Reviewer P1: exact-key miss with a current candidate must not fall through
+# to a stale (capability, runtime_model)-only cache entry
+# ---------------------------------------------------------------------------
+
+
+def test_lookup_does_not_fall_back_when_current_candidate_misses(tmp_path):
+    """Reviewer P1: with v1 already warmed and a v2 request in
+    flight, the resolver must NOT serve the v1 backend. An exact-key
+    miss with a current candidate is a real cache miss; the cold
+    path then loads v2 and warmup writes a v2 entry. Falling through
+    to a model-only scan would shadow the freshly prepared v2
+    ``model_dir`` with stale v1 weights — exactly what artifact-
+    identity keying is supposed to prevent."""
+    kernel = ExecutionKernel()
+
+    v1 = RuntimeCandidatePlan(
+        locality="local",
+        priority=0,
+        confidence=0.9,
+        reason="v1",
+        engine="sherpa-onnx",
+        artifact=RuntimeArtifactPlan(
+            model_id="kokoro-en-v0_19",
+            artifact_id="kokoro-en-v0_19",
+            digest="sha256:" + "a" * 64,
+            format="onnx",
+            quantization="fp32",
+            download_urls=[ArtifactDownloadEndpoint(url="https://cdn.example.com/v1")],
+        ),
+        delivery_mode="sdk_runtime",
+        prepare_required=True,
+        prepare_policy="lazy",
+    )
+    v2 = RuntimeCandidatePlan(
+        locality="local",
+        priority=0,
+        confidence=0.9,
+        reason="v2",
+        engine="sherpa-onnx",
+        artifact=RuntimeArtifactPlan(
+            model_id="kokoro-en-v0_19",
+            artifact_id="kokoro-en-v0_19",
+            digest="sha256:" + "b" * 64,  # different bytes
+            format="onnx",
+            quantization="int8",
+            download_urls=[ArtifactDownloadEndpoint(url="https://cdn.example.com/v2")],
+        ),
+        delivery_mode="sdk_runtime",
+        prepare_required=True,
+        prepare_policy="lazy",
+    )
+
+    backend_v1 = object()
+    kernel._warmed_backends[kernel._warmup_cache_key("tts", "kokoro-en-v0_19", v1)] = backend_v1
+
+    # The current request is for v2; v2 is NOT yet in the cache. The
+    # lookup must return None (cold-path miss), NOT the stale v1
+    # backend. (If it returned v1, the caller would inject v1's
+    # already-loaded weights into a request that prepared v2 bytes.)
+    result = kernel._lookup_warmed_backend("tts", "kokoro-en-v0_19", candidate=v2)
+    assert result is None, (
+        "exact-key miss with a current candidate must be a real miss; "
+        "model-only fallback would shadow the freshly prepared bytes."
+    )
+
+    # Sanity: the v1 entry is still in the cache (lookup didn't
+    # mutate state) and an explicit v1 request still hits.
+    assert kernel._lookup_warmed_backend("tts", "kokoro-en-v0_19", candidate=v1) is backend_v1
+
+
+def test_lookup_falls_back_to_model_only_when_no_candidate_at_all(tmp_path):
+    """The model-only scan is still the right shape when there is
+    NO artifact identity available for this request — offline
+    planner, deliberately minimal test setup, etc. A single warmup
+    against the runtime model continues to serve subsequent calls
+    in those environments."""
+    kernel = ExecutionKernel()
+    # Cache one entry under any artifact identity.
+    sentinel = object()
+    kernel._warmed_backends[("tts", "kokoro-en-v0_19", "sha256:abc", "onnx", "fp32")] = sentinel
+
+    # No current candidate AND planner returns None (offline).
+    with patch("octomil.execution.kernel._resolve_planner_selection", return_value=None):
+        result = kernel._lookup_warmed_backend("tts", "kokoro-en-v0_19")
+    assert result is sentinel
+
+
+@pytest.mark.asyncio
+async def test_post_warmup_v2_request_does_not_serve_v1_backend(tmp_path):
+    """End-to-end version of the regression: warmup v1, then issue a
+    transcription request whose planner emits a v2 candidate. The
+    resolver must not return the v1 backend; it must build a fresh
+    backend from the v2 prepared bytes (via ``engine.create_backend``
+    against the v2 artifact dir)."""
+    artifact_v1 = tmp_path / "v1"
+    artifact_v1.mkdir()
+    artifact_v2 = tmp_path / "v2"
+    artifact_v2.mkdir()
+
+    cand_v1 = RuntimeCandidatePlan(
+        locality="local",
+        priority=0,
+        confidence=0.9,
+        reason="v1",
+        engine="whisper.cpp",
+        artifact=RuntimeArtifactPlan(
+            model_id="whisper-tiny",
+            artifact_id="whisper-tiny",
+            digest="sha256:" + "1" * 64,
+            format="ggml",
+            download_urls=[ArtifactDownloadEndpoint(url="https://cdn.example.com/v1")],
+        ),
+        delivery_mode="sdk_runtime",
+        prepare_required=True,
+        prepare_policy="lazy",
+    )
+    cand_v2 = RuntimeCandidatePlan(
+        locality="local",
+        priority=0,
+        confidence=0.9,
+        reason="v2",
+        engine="whisper.cpp",
+        artifact=RuntimeArtifactPlan(
+            model_id="whisper-tiny",
+            artifact_id="whisper-tiny",
+            digest="sha256:" + "2" * 64,  # different bytes
+            format="ggml",
+            download_urls=[ArtifactDownloadEndpoint(url="https://cdn.example.com/v2")],
+        ),
+        delivery_mode="sdk_runtime",
+        prepare_required=True,
+        prepare_policy="lazy",
+    )
+
+    kernel = ExecutionKernel()
+    backend_v1 = object()
+    kernel._warmed_backends[kernel._warmup_cache_key("transcription", "whisper-tiny", cand_v1)] = backend_v1
+
+    # When the dispatcher resolves the transcription backend with the
+    # v2 candidate threaded through, it MUST NOT return v1.
+    cold_path_engine_calls: list[str] = []
+
+    @dataclass
+    class _Detection:
+        engine: Any
+        available: bool
+
+    class _FakeV2Backend:
+        def __init__(self, model: str, **kwargs: Any) -> None:
+            self.model = model
+            self.kwargs = kwargs
+            cold_path_engine_calls.append(kwargs.get("model_dir", ""))
+
+        def transcribe(self, audio_path: str) -> dict[str, Any]:
+            return {"text": "v2"}
+
+    class _FakeEngine:
+        def create_backend(self, model: str, **kwargs: Any) -> _FakeV2Backend:
+            return _FakeV2Backend(model, **kwargs)
+
+    class _FakeRegistry:
+        def detect_all(self, model: str):
+            return [_Detection(engine=_FakeEngine(), available=True)]
+
+    with patch("octomil.runtime.engines.get_registry", return_value=_FakeRegistry()):
+        backend = kernel._resolve_local_transcription_backend(
+            "whisper-tiny",
+            prepared_model_dir=str(artifact_v2),
+            planner_candidate=cand_v2,
+        )
+
+    assert (
+        backend is not backend_v1
+    ), "stale v1 backend leaked into a v2 request; cache lookup must be strict on artifact identity."
+    # Cold path constructed a fresh backend against the v2 dir.
+    assert cold_path_engine_calls == [str(artifact_v2)]
+
+
+# ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
 

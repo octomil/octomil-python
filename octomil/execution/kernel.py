@@ -910,10 +910,19 @@ class ExecutionKernel:
         # engine.create_backend so whisper.cpp loads the prepared file
         # instead of triggering pywhispercpp's own download path.
         prepared_dir = self._prepare_local_transcription_artifact(selection)
+        # PR 11 follow-up: thread the planner candidate through to the
+        # backend resolver so the warmup-cache lookup uses the current
+        # request's artifact identity, not a re-planned one.
+        local_candidate = _local_sdk_runtime_candidate(selection)
 
         t0 = time.monotonic()
         result = await self._local_transcribe(
-            audio_data, effective_model, language, is_fallback, prepared_model_dir=prepared_dir
+            audio_data,
+            effective_model,
+            language,
+            is_fallback,
+            prepared_model_dir=prepared_dir,
+            planner_candidate=local_candidate,
         )
         latency_ms = (time.monotonic() - t0) * 1000
         result.route = route
@@ -978,6 +987,7 @@ class ExecutionKernel:
         fallback_used: bool = False,
         *,
         prepared_model_dir: Optional[str] = None,
+        planner_candidate: Optional[Any] = None,
     ) -> ExecutionResult:
         """Dispatch audio transcription to a local Whisper-compatible backend.
 
@@ -985,8 +995,16 @@ class ExecutionKernel:
         the artifact under. When set, the resolver passes it as
         ``model_dir`` to the engine so whisper.cpp loads the prepared file
         instead of going through pywhispercpp's own download path.
+
+        ``planner_candidate`` (when known) is threaded through so the
+        warmup-cache lookup uses the *current* request's artifact
+        identity instead of re-planning from ``model``.
         """
-        backend = self._resolve_local_transcription_backend(model, prepared_model_dir=prepared_model_dir)
+        backend = self._resolve_local_transcription_backend(
+            model,
+            prepared_model_dir=prepared_model_dir,
+            planner_candidate=planner_candidate,
+        )
         if backend is None:
             raise RuntimeError(f"No local transcription runtime found for model '{model}'.")
 
@@ -1149,9 +1167,15 @@ class ExecutionKernel:
 
         self._validate_local_voice(runtime_model, voice)
         prepared_model_dir = self._prepare_local_tts_artifact(selection)
+        # PR 11 follow-up: thread the planner candidate through so
+        # the warmup-cache lookup uses the *current* artifact
+        # identity. Without this, a v1 backend cached earlier in the
+        # process could shadow a freshly prepared v2 ``model_dir``.
+        local_candidate = _local_sdk_runtime_candidate(selection)
         backend = self._resolve_local_tts_backend(
             runtime_model,
             prepared_model_dir=prepared_model_dir,
+            planner_candidate=local_candidate,
         )
         if backend is None:
             raise OctomilError(
@@ -1574,39 +1598,70 @@ class ExecutionKernel:
         self,
         capability: str,
         runtime_model: str,
+        *,
+        candidate: Optional[Any] = None,
     ) -> Optional[Any]:
         """Look up a cached warmed backend for the *current* request.
 
         The local resolvers call this at the top of their resolution
         path. The lookup composes the same cache key the warmup
-        writer used: it consults the planner for the current request
-        and pulls digest/format/quantization off the local candidate.
-        That way two warmups for the same runtime model but different
-        artifact identities don't collide and inference always
-        retrieves a backend that was loaded against the *current*
-        artifact shape.
+        writer used: digest/format/quantization off the local
+        candidate so two warmups for the same runtime model but
+        different artifact identities don't collide.
 
-        Falls back to a runtime-model-only lookup when no planner
-        candidate is available (offline planner, synthetic tests). A
-        single warmup against a runtime model still benefits the
-        common case where there's only one artifact identity in play.
+        Reviewer P1 (post PR 11)
+        ~~~~~~~~~~~~~~~~~~~~~~~~
+        The earlier shape of this helper had a tail loop that
+        returned *any* cached backend matching ``(capability,
+        runtime_model)`` when the precise key missed. That defeated
+        the artifact-identity fix: with v1 warmed and the current
+        request resolving v2, the resolver could return the v1
+        backend before the freshly-prepared v2 ``model_dir`` ever
+        loaded. The current rule is:
+
+          - When a current candidate is known (caller threaded one in
+            OR the planner returned one), use the *exact* key only.
+            An exact-key miss is a real cache miss; the cold path
+            then loads the v2 bytes and warmup writes them under the
+            v2 key. The stale v1 entry isn't used.
+          - When NO current candidate is available (offline planner,
+            synthetic policy candidate, deliberately minimal test
+            setup), fall back to the runtime-model-only scan. A
+            single warmup against a runtime model still serves the
+            common case where there's only one artifact identity in
+            play.
+
+        Callers should thread ``candidate`` (the already-resolved
+        planner candidate from the request currently in flight) when
+        they have it — that avoids a second planner round-trip and
+        guarantees the lookup uses the same artifact identity the
+        request will actually run against.
         """
-        # Fast path: precise key, requires a planner round-trip.
-        try:
-            policy_preset = "local_first"
-            selection = _resolve_planner_selection(runtime_model, capability, policy_preset)
-            candidate = _local_sdk_runtime_candidate(selection)
-            if candidate is not None:
-                key = self._warmup_cache_key(capability, runtime_model, candidate)
-                if key in self._warmed_backends:
-                    return self._warmed_backends[key]
-        except Exception:
-            pass
-        # Fallback: any cache entry for this (capability, runtime_model)
-        # regardless of artifact-identity suffix. Covers offline
-        # planner + the historical dict-shape from older callers.
-        for key, backend in self._warmed_backends.items():
-            if len(key) >= 2 and key[0] == capability and key[1] == runtime_model:
+        # Step 1: prefer the caller-supplied candidate (zero extra
+        # planner work; same identity the request will run against).
+        if candidate is None:
+            try:
+                selection = _resolve_planner_selection(runtime_model, capability, "local_first")
+                candidate = _local_sdk_runtime_candidate(selection)
+            except Exception:
+                candidate = None
+
+        # Step 2: when an artifact identity exists for this request,
+        # the cache hit MUST be against that identity. An exact-key
+        # miss is a real miss. (If we fell through to the model-only
+        # scan here, a stale v1 backend would shadow the freshly
+        # prepared v2 bytes — the precise bug the reviewer flagged.)
+        if candidate is not None:
+            key = self._warmup_cache_key(capability, runtime_model, candidate)
+            return self._warmed_backends.get(key)
+
+        # Step 3: no artifact identity available for this request.
+        # The model-only scan is the legitimate fallback shape: it
+        # serves the common case where exactly one warmup happened
+        # against the runtime model and no planner is in play
+        # (offline / Ren'Py / synthetic tests).
+        for stored_key, backend in self._warmed_backends.items():
+            if len(stored_key) >= 2 and stored_key[0] == capability and stored_key[1] == runtime_model:
                 return backend
         return None
 
@@ -1740,19 +1795,24 @@ class ExecutionKernel:
         model: str,
         *,
         prepared_model_dir: Optional[str] = None,
+        planner_candidate: Optional[Any] = None,
     ) -> Optional[Any]:
         # PR 11: prefer the warmup cache. When the caller invoked
         # ``client.warmup(model, capability='tts')`` earlier in this
         # session, the loaded SherpaTts backend is already in
         # ``_warmed_backends`` and the next ``synthesize_speech`` call
         # reuses it without paying ``engine.create_backend`` +
-        # ``backend.load_model`` again. The lookup composes the
-        # artifact-identity cache key (digest/format/quantization)
-        # against the *current* planner selection, so a stale backend
-        # from an earlier artifact version never shadows a later
-        # warmup against new bytes. Cold-call path (no warmup)
-        # remains unchanged.
-        cached = self._lookup_warmed_backend(CAPABILITY_TTS, model)
+        # ``backend.load_model`` again.
+        #
+        # The lookup composes the artifact-identity cache key
+        # (digest/format/quantization) against the *current* request:
+        # callers that already resolved a planner selection thread
+        # ``planner_candidate`` so we don't re-plan and we use the
+        # exact identity the request will run against. An exact-key
+        # miss with a current candidate is a real cache miss — it
+        # never falls back to a stale backend cached under a
+        # different artifact identity.
+        cached = self._lookup_warmed_backend(CAPABILITY_TTS, model, candidate=planner_candidate)
         if cached is not None:
             return cached
         try:
@@ -1837,6 +1897,7 @@ class ExecutionKernel:
         model: str,
         *,
         prepared_model_dir: Optional[str] = None,
+        planner_candidate: Optional[Any] = None,
     ) -> Optional[Any]:
         """Return a transcription backend for ``model``.
 
@@ -1846,12 +1907,19 @@ class ExecutionKernel:
         this and skips its own pywhispercpp download path; engines that
         don't recognize the kwarg ignore it (the registry's create_backend
         accepts ``**kwargs``).
+
+        ``planner_candidate``, when supplied, is the candidate the
+        request will run against. The warmup-cache lookup uses its
+        artifact identity so a stale backend cached under a different
+        digest/format never shadows the freshly-prepared bytes.
         """
         # PR 11: warmup cache hit short-circuits the registry walk.
-        # Looked up against the current planner selection so the cache
-        # key encodes the requested artifact identity, not just the
-        # runtime model alias.
-        cached = self._lookup_warmed_backend(CAPABILITY_TRANSCRIPTION, model)
+        # Reviewer P1: pass the caller's planner candidate so the
+        # cache lookup uses the *current* request's artifact identity
+        # rather than re-planning from ``runtime_model``. An
+        # exact-identity miss is a real miss — no fall-through to a
+        # stale (capability, model)-only entry from a prior version.
+        cached = self._lookup_warmed_backend(CAPABILITY_TRANSCRIPTION, model, candidate=planner_candidate)
         if cached is not None:
             return cached
         try:
