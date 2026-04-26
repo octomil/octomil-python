@@ -100,12 +100,18 @@ from octomil.runtime.core.types import (
 
 logger = logging.getLogger(__name__)
 
-# Capabilities that ``client.prepare()`` accepts. Every value here must be
-# a string the planner returns and that ``_resolve()`` understands. The
-# TTS adapter actually consumes the prepared dir today; other adapters
-# materialize the bytes via ``prepare`` and pick them up on the next call
-# through their existing engine-managed caches.
-_PREPAREABLE_CAPABILITIES = frozenset({CAPABILITY_TTS, CAPABILITY_TRANSCRIPTION, CAPABILITY_EMBEDDING, CAPABILITY_CHAT})
+# Capabilities whose adapters actually consume the prepared ``artifact_dir``
+# today. We deliberately keep this narrow: a capability only enters this set
+# once its dispatch path threads the ``model_dir`` from PrepareOutcome into
+# the backend. Otherwise ``client.prepare(...)`` would download bytes the
+# next inference call ignores, then cold-start through the engine's own
+# lookup — that's the false-success the reviewer flagged after PR 6.
+#
+# Wiring backlog (each becomes its own PR before being added here):
+#   - transcription: thread model_dir into whisper.cpp / sherpa-onnx ASR
+#   - embedding:     thread model_dir into the local embedding backend
+#   - chat:          thread model_dir into mlx-lm / llama.cpp adapters
+_PREPAREABLE_CAPABILITIES = frozenset({CAPABILITY_TTS})
 
 
 # ---------------------------------------------------------------------------
@@ -1113,25 +1119,30 @@ class ExecutionKernel:
         candidates whose ``prepare_policy='explicit_only'`` succeed when
         invoked through this method.
 
-        Accepts every capability the planner may emit: ``"tts"``,
-        ``"transcription"``, ``"embedding"``, ``"chat"``. The TTS adapter
-        consumes the prepared ``artifact_dir`` directly today; other
-        adapters will pick it up when their backends accept a ``model_dir``
-        kwarg (separate, smaller follow-ups). Until then, calling
-        ``prepare`` for those capabilities still materializes the artifact
-        in the cache, so the next inference call hits a warm disk path
-        instead of paying download latency on the request path.
+        Only ``"tts"`` is supported today: it is the one capability whose
+        dispatch path threads the prepared ``artifact_dir`` into the
+        backend (``SherpaTtsEngine.create_backend(model_dir=...)``).
+        Transcription, embedding, and chat will be added one at a time as
+        their adapters learn to accept a ``model_dir`` kwarg — exposing
+        ``prepare`` for them now would be a false success: the bytes would
+        land on disk and the next inference call would still cold-start
+        through the engine's own lookup, possibly re-downloading or
+        failing. PR 6 (#443) over-promised here; this method narrows the
+        contract back to the truth on the ground.
 
         Returns a :class:`PrepareOutcome`. Raises :class:`OctomilError` if
-        the capability is unknown, the planner emits no preparable local
-        candidate, or :class:`PrepareManager.prepare` rejects the metadata.
+        the capability is not yet wired, the planner emits no preparable
+        local candidate, or :class:`PrepareManager.prepare` rejects the
+        metadata.
         """
         if capability not in _PREPAREABLE_CAPABILITIES:
             raise OctomilError(
                 code=OctomilErrorCode.INVALID_INPUT,
                 message=(
-                    f"client.prepare() got unknown capability {capability!r}. "
-                    f"Supported: {sorted(_PREPAREABLE_CAPABILITIES)}."
+                    f"client.prepare() does not yet support capability {capability!r}. "
+                    f"Supported today: {sorted(_PREPAREABLE_CAPABILITIES)}. "
+                    f"Other capabilities will be added once their backends thread the "
+                    f"prepared model_dir into dispatch."
                 ),
             )
 
