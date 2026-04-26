@@ -179,8 +179,14 @@ class ExecutionKernel:
         *,
         config_set: Optional[LoadedConfigSet] = None,
         start_dir: Optional[Path] = None,
+        prepare_manager: Optional[Any] = None,
     ) -> None:
         self._config_set = config_set or load_standalone_config(start_dir)
+        # Optional caller-supplied PrepareManager. Tests and embedded callers
+        # inject one to control where artifacts land and stub the downloader;
+        # production code lazily constructs a default-rooted manager on first
+        # prepare call.
+        self._prepare_manager: Optional[Any] = prepare_manager
 
     @property
     def config_set(self) -> LoadedConfigSet:
@@ -961,7 +967,11 @@ class ExecutionKernel:
             )
 
         self._validate_local_voice(runtime_model, voice)
-        backend = self._resolve_local_tts_backend(runtime_model)
+        prepared_model_dir = self._prepare_local_tts_artifact(selection)
+        backend = self._resolve_local_tts_backend(
+            runtime_model,
+            prepared_model_dir=prepared_model_dir,
+        )
         if backend is None:
             raise OctomilError(
                 code=OctomilErrorCode.RUNTIME_UNAVAILABLE,
@@ -1038,12 +1048,50 @@ class ExecutionKernel:
         except Exception:
             return False
 
-    def _resolve_local_tts_backend(self, model: str) -> Optional[Any]:
+    def _prepare_local_tts_artifact(self, selection: Optional[Any]) -> Optional[str]:
+        """Run :class:`PrepareManager` for the local TTS candidate, if any.
+
+        Returns the prepared ``artifact_dir`` as a string when the planner
+        marks the local candidate as ``delivery_mode='sdk_runtime'`` with
+        ``prepare_required=True``. Returns ``None`` when no preparation is
+        required (engine manages its own artifacts, ``prepare_required=False``,
+        or no planner candidate was emitted) — callers fall back to the
+        existing ``OCTOMIL_SHERPA_MODELS_DIR`` / ``~/.octomil/models``
+        resolution path.
+
+        Errors from PrepareManager (policy violations, contract violations,
+        download failures) are surfaced unchanged so users get the actionable
+        messages the manager constructs.
+        """
+        candidate = _local_sdk_runtime_candidate(selection)
+        if candidate is None:
+            return None
+        if not getattr(candidate, "prepare_required", False):
+            return None
+
+        from octomil.runtime.lifecycle.prepare_manager import PrepareManager
+
+        manager = self._prepare_manager or PrepareManager()
+        outcome = manager.prepare(candidate)
+        return str(outcome.artifact_dir)
+
+    def _resolve_local_tts_backend(
+        self,
+        model: str,
+        *,
+        prepared_model_dir: Optional[str] = None,
+    ) -> Optional[Any]:
         try:
             from octomil.runtime.engines.sherpa import SherpaTtsEngine
 
             engine = SherpaTtsEngine()
-            backend = engine.create_backend(model)
+            backend_kwargs: dict[str, Any] = {}
+            if prepared_model_dir:
+                # PrepareManager materialized the artifact at this path; load
+                # the sherpa-onnx model from there instead of the env/home
+                # fallback, so the freshly-prepared bytes are what we run.
+                backend_kwargs["model_dir"] = prepared_model_dir
+            backend = engine.create_backend(model, **backend_kwargs)
             backend.load_model(model)
             return backend
         except Exception:
@@ -1219,6 +1267,27 @@ class ExecutionKernel:
 # ---------------------------------------------------------------------------
 # Error helpers
 # ---------------------------------------------------------------------------
+
+
+def _local_sdk_runtime_candidate(selection: Optional[Any]) -> Optional[Any]:
+    """Return the first ``locality='local', delivery_mode='sdk_runtime'``
+    candidate in ``selection.candidates``, or ``None``.
+
+    Cloud and external-endpoint candidates are skipped; PrepareManager only
+    handles SDK-runtime artifacts. The caller still has to check
+    ``prepare_required`` before deciding whether to invoke prepare at all.
+    """
+    if selection is None:
+        return None
+    candidates = getattr(selection, "candidates", None) or []
+    for candidate in candidates:
+        if getattr(candidate, "locality", None) != "local":
+            continue
+        delivery_mode = getattr(candidate, "delivery_mode", None) or "sdk_runtime"
+        if delivery_mode != "sdk_runtime":
+            continue
+        return candidate
+    return None
 
 
 def _tts_policy_from_selection(selection: Any) -> Optional[str]:
