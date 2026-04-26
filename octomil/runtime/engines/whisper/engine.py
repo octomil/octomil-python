@@ -191,17 +191,33 @@ class _WhisperBackend:
         """Return the path to a Whisper model file inside the injected
         ``model_dir``, or ``None`` if no dir was injected.
 
-        Looks for any file with a known whisper.cpp extension at the top
-        level of the directory. Multi-file Whisper artifacts are not
-        emitted by the planner today; when they are, the manifest entry
-        will carry which file is the model proper and this resolver
-        becomes manifest-aware.
+        Resolution order:
+
+        1. The PrepareManager sentinel ``<dir>/artifact`` — that is the
+           canonical single-file output when the planner emits an empty
+           ``required_files`` list. The earlier draft of this resolver
+           only accepted files ending in ``.bin`` / ``.gguf`` / ``.ggml``
+           and silently fell through to pywhispercpp's HF download path
+           even when prepared bytes were already on disk.
+        2. Any file at the top level whose extension matches a
+           whisper.cpp-recognized format. Covers the multi-file artifact
+           case and the legacy single-file case where the planner names
+           the file via ``required_files``.
+
+        Multi-file Whisper artifacts are not emitted by the planner
+        today; when they are, the manifest entry will carry which file
+        is the model proper and this resolver becomes manifest-aware.
         """
         if not self._injected_model_dir:
             return None
         model_dir = self._injected_model_dir
         if not os.path.isdir(model_dir):
             return None
+        # 1. PrepareManager single-file sentinel.
+        sentinel = os.path.join(model_dir, "artifact")
+        if os.path.isfile(sentinel):
+            return sentinel
+        # 2. Any whisper.cpp-recognized extension at the top level.
         for entry in sorted(os.listdir(model_dir)):
             lower = entry.lower()
             if lower.endswith((".bin", ".gguf", ".ggml")):

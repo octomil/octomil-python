@@ -748,7 +748,16 @@ class ExecutionKernel:
         selection = _resolve_planner_selection(effective_model, CAPABILITY_TRANSCRIPTION, policy_preset)
 
         routing_policy = _resolve_routing_policy(defaults)
-        local_available = self._has_local_transcription_backend(effective_model)
+        # Local routing is satisfied if a transcription backend is already
+        # staged OR if the planner emitted a preparable sdk_runtime
+        # candidate the kernel can materialize. Without the OR, local_first
+        # would either fail closed on a clean device or — worse — commit
+        # to local on a synthetic planner candidate (prepare_required=True
+        # with no digest/url) and crash in prepare() instead of falling
+        # back to cloud. Mirrors the TTS clean-device fix.
+        local_available = self._has_local_transcription_backend(effective_model) or (
+            self._can_prepare_local_transcription(effective_model, selection)
+        )
         cloud_available = _cloud_available(defaults)
         locality, is_fallback = _select_locality_for_capability(
             routing_policy,
@@ -1094,6 +1103,43 @@ class ExecutionKernel:
             return is_sherpa_tts_model_staged(model)
         except Exception:
             return False
+
+    def _can_prepare_local_transcription(self, model: str, selection: Optional[Any]) -> bool:
+        """Mirror of ``_can_prepare_local_tts`` for the transcription path.
+
+        Returns True only when a transcription backend is importable for
+        ``model`` AND ``PrepareManager.can_prepare`` says the planner
+        candidate has enough metadata to actually succeed. Without this
+        dry-run, ``local_first`` could commit to local on a synthetic
+        candidate (prepare_required=True with no digest/url) and fail in
+        prepare instead of falling back to cloud.
+
+        We don't have a single runtime-availability helper for
+        transcription engines (whisper.cpp, sherpa-ASR, etc. each detect
+        themselves through the engine registry), so the import check is
+        the registry walk inside ``_resolve_local_transcription_backend``
+        — we simply run that resolver against an empty prepared dir and
+        check whether *any* engine claims support. The resolver only
+        returns when the backend exposes ``transcribe``; that's the same
+        runtime check the no-prepare path uses.
+        """
+        candidate = _local_sdk_runtime_candidate(selection)
+        if candidate is None or not getattr(candidate, "prepare_required", False):
+            return False
+
+        # Runtime availability: at least one engine in the registry must
+        # produce a transcription backend for ``model`` (any model_dir).
+        try:
+            backend = self._resolve_local_transcription_backend(model)
+            if backend is None:
+                return False
+        except Exception:
+            return False
+
+        from octomil.runtime.lifecycle.prepare_manager import PrepareManager
+
+        manager = self._prepare_manager or PrepareManager()
+        return manager.can_prepare(candidate)
 
     def _can_prepare_local_tts(self, model: str, selection: Optional[Any]) -> bool:
         """Return True iff sherpa-onnx is importable, the model id is known,

@@ -160,3 +160,85 @@ async def test_transcription_prepare_threads_artifact_dir_into_whisper_backend(t
         "transcription prepare lifecycle has regressed."
     )
     assert result.output_text == "from prepared dir"
+
+
+# ---------------------------------------------------------------------------
+# Reviewer P1 follow-ups
+# ---------------------------------------------------------------------------
+
+
+def test_whisper_resolver_picks_prepare_manager_sentinel_artifact_file(tmp_path):
+    """PrepareManager writes single-file artifacts to ``<dir>/artifact`` (no
+    extension) when the planner emits an empty ``required_files``. The
+    earlier resolver only matched ``.bin``/``.gguf``/``.ggml`` and would
+    silently fall back to pywhispercpp's HF download when prepared bytes
+    were on disk. This test pins the sentinel-file path."""
+    from octomil.runtime.engines.whisper.engine import _WhisperBackend
+
+    artifact_dir = tmp_path / "whisper-tiny"
+    artifact_dir.mkdir()
+    (artifact_dir / "artifact").write_bytes(b"fake whisper bytes")
+    backend = _WhisperBackend("whisper-tiny", model_dir=str(artifact_dir))
+    resolved = backend._resolve_local_model_file()
+    assert resolved == str(artifact_dir / "artifact")
+
+
+def test_whisper_resolver_falls_back_to_extension_match(tmp_path):
+    """When no sentinel ``artifact`` file exists (multi-file artifact, or
+    legacy required_files=['ggml-tiny.bin'] shape), the resolver still
+    returns the extension match."""
+    from octomil.runtime.engines.whisper.engine import _WhisperBackend
+
+    artifact_dir = tmp_path / "whisper-tiny"
+    artifact_dir.mkdir()
+    (artifact_dir / "ggml-tiny.bin").write_bytes(b"fake whisper bytes")
+    backend = _WhisperBackend("whisper-tiny", model_dir=str(artifact_dir))
+    resolved = backend._resolve_local_model_file()
+    assert resolved == str(artifact_dir / "ggml-tiny.bin")
+
+
+def test_whisper_resolver_returns_none_without_injected_dir(tmp_path):
+    """Without a model_dir kwarg, the resolver must not invent one."""
+    from octomil.runtime.engines.whisper.engine import _WhisperBackend
+
+    backend = _WhisperBackend("whisper-tiny")
+    assert backend._resolve_local_model_file() is None
+
+
+@pytest.mark.asyncio
+async def test_transcription_local_first_skips_unpreparable_synthetic_candidate(tmp_path):
+    """Reviewer P1: a synthetic planner candidate (prepare_required=True
+    with no digest/url) MUST NOT make the kernel commit to local routing
+    and crash in prepare. Mirror of the TTS clean-device fix.
+
+    With ``local_first`` policy, a synthetic candidate AND no staged
+    runtime should fall back to cloud rather than throw from
+    PrepareManager. The kernel signals "local unavailable" before
+    locality selection runs.
+    """
+    from octomil.runtime.planner.schemas import (
+        RuntimeArtifactPlan,
+        RuntimeCandidatePlan,
+    )
+
+    synthetic = RuntimeCandidatePlan(
+        locality="local",
+        priority=0,
+        confidence=0.9,
+        reason="synthetic planner candidate",
+        engine="whisper.cpp",
+        artifact=RuntimeArtifactPlan(model_id="whisper-tiny"),  # no digest/url
+        delivery_mode="sdk_runtime",
+        prepare_required=True,
+        prepare_policy="lazy",
+    )
+    selection = _Selection(candidates=[synthetic])
+    # Use the real PrepareManager so `can_prepare` runs the actual
+    # structural validation. It is a pure inspection — no I/O.
+    from octomil.runtime.lifecycle.prepare_manager import PrepareManager
+
+    real_pm = PrepareManager(cache_dir=tmp_path)
+    kernel = ExecutionKernel(prepare_manager=real_pm)
+
+    with patch("octomil.runtime.engines.get_registry", return_value=_FakeRegistry()):
+        assert kernel._can_prepare_local_transcription("whisper-tiny", selection) is False
