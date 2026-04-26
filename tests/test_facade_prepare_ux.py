@@ -136,24 +136,23 @@ def test_kernel_prepare_rejects_unknown_capability(tmp_path):
     assert "vision" in str(excinfo.value)
 
 
-@pytest.mark.parametrize("capability", ["tts", "transcription", "embedding", "chat"])
-def test_kernel_prepare_accepts_all_planner_capabilities(tmp_path, capability):
-    """All four capabilities the planner can emit must round-trip through
-    prepare. The TTS adapter consumes the prepared dir directly; the others
-    rely on engines reusing the materialized cache on the next call."""
-    candidate = _local_candidate()
-    selection = _Selection(candidates=[candidate])
-    pm = _RecordingPM(tmp_path)
-    kernel = ExecutionKernel(prepare_manager=pm)
-    _stub_resolve(kernel, model=f"some-{capability}-model")
-
-    with patch("octomil.execution.kernel._resolve_planner_selection", return_value=selection):
-        outcome = kernel.prepare(model=f"some-{capability}-model", capability=capability)
-
-    from octomil.runtime.lifecycle.prepare_manager import PrepareMode
-
-    assert outcome.artifact_id == "kokoro-en-v0_19"
-    assert pm.calls == [("kokoro-en-v0_19", PrepareMode.EXPLICIT)]
+@pytest.mark.parametrize("capability", ["transcription", "embedding", "chat"])
+def test_kernel_prepare_rejects_unwired_capabilities(tmp_path, capability):
+    """PR 6 over-promised by accepting transcription/embedding/chat. Their
+    inference adapters do NOT thread the prepared model_dir, so calling
+    prepare for them would download bytes the next call ignores. Until
+    each backend learns to consume model_dir, prepare must reject them
+    with the actionable INVALID_INPUT message instead of silently
+    succeeding."""
+    kernel = ExecutionKernel()
+    with pytest.raises(OctomilError) as excinfo:
+        kernel.prepare(model="m", capability=capability)
+    assert excinfo.value.code == ErrorCode.INVALID_INPUT
+    # Error message must point at the wiring backlog so users know this is
+    # temporary, not a permanent rejection.
+    msg = str(excinfo.value)
+    assert capability in msg
+    assert "tts" in msg.lower()
 
 
 def test_kernel_prepare_raises_when_no_local_candidate(tmp_path):
@@ -250,17 +249,27 @@ def test_cli_prepare_rejects_unsupported_capability():
     assert "vision" in result.output
 
 
-def test_cli_prepare_accepts_all_supported_capabilities(tmp_path):
+def test_cli_prepare_accepts_tts_capability(tmp_path):
     candidate = _local_candidate()
     selection = _Selection(candidates=[candidate])
     pm = _RecordingPM(tmp_path / "artifacts")
     fake_kernel = _kernel_with_pm(pm, selection)
     runner = CliRunner()
 
-    for cap in ("tts", "transcription", "embedding", "chat"):
-        with patch("octomil.execution.kernel.ExecutionKernel", lambda **kw: fake_kernel):
-            result = runner.invoke(prepare_cmd, ["m", "--capability", cap])
-        assert result.exit_code == 0, f"{cap}: {result.output}"
+    with patch("octomil.execution.kernel.ExecutionKernel", lambda **kw: fake_kernel):
+        result = runner.invoke(prepare_cmd, ["m", "--capability", "tts"])
+    assert result.exit_code == 0, result.output
+
+
+@pytest.mark.parametrize("cap", ["transcription", "embedding", "chat"])
+def test_cli_prepare_rejects_unwired_capabilities_at_choice_constraint(cap):
+    """CLI surface must match the kernel: only 'tts' is wired today, so
+    transcription/embedding/chat are rejected at the click choice
+    constraint until their backends consume the prepared dir."""
+    runner = CliRunner()
+    result = runner.invoke(prepare_cmd, ["m", "--capability", cap])
+    assert result.exit_code != 0
+    assert cap in result.output
 
 
 def _kernel_with_pm(pm, selection):
