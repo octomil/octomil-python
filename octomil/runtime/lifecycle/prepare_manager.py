@@ -16,15 +16,14 @@ runtime adapters; this PR only adds the manager and its tests.
 
 from __future__ import annotations
 
-import hashlib
 import logging
-import re
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 
 from octomil._generated.error_code import ErrorCode
 from octomil.errors import OctomilError
+from octomil.runtime.lifecycle._fs_key import safe_filesystem_key
 from octomil.runtime.lifecycle.artifact_cache import ArtifactCache
 from octomil.runtime.lifecycle.durable_download import (
     ArtifactDescriptor,
@@ -38,18 +37,6 @@ from octomil.runtime.lifecycle.durable_download import (
 from octomil.runtime.planner.schemas import RuntimeCandidatePlan
 
 logger = logging.getLogger(__name__)
-
-# Filesystem-key sanitizer for planner-supplied artifact_id. Anything not
-# in this allow-list is replaced with '_'; the result is then suffixed with
-# a digest of the original id so distinct planner ids cannot collide.
-_SAFE_ID_CHARS = re.compile(r"[^A-Za-z0-9._-]")
-
-# Cap the visible portion of the on-disk artifact key. NAME_MAX on most
-# filesystems (ext4, APFS, NTFS) is 255 bytes for a single component; the
-# trailing "-<12-char hash>" needs 13 of those, so 96 leaves comfortable
-# headroom and is short enough that long planner ids cannot trigger raw
-# OSError(File name too long) before we can convert it to OctomilError.
-_MAX_VISIBLE_KEY_CHARS = 96
 
 
 class PrepareMode(str, Enum):
@@ -267,46 +254,22 @@ class PrepareManager:
         """Return the on-disk directory for ``artifact_id``, guaranteed to
         live under ``<cache_dir>/artifacts``.
 
-        ``artifact_id`` is planner-supplied and therefore untrusted. We
-        derive a stable filesystem key by:
-
-        1. Sanitizing the visible part — keep ``[A-Za-z0-9._-]``, replace
-           every other character with ``_``. Reject anything that
-           normalizes to empty, ``.``, or ``..``.
-        2. Suffixing with a SHA-256 prefix of the original ``artifact_id``
-           so that two distinct planner ids that sanitize to the same
-           visible name still hash to different directories. This avoids
-           cache poisoning between artifacts whose ids only differ in
-           characters we strip.
-        3. Re-checking that the resolved path stays under
-           ``<cache_dir>/artifacts``. Symlink and ``..`` shenanigans cannot
-           reach this point because step 1 already removed those, but the
-           check stays as defense in depth.
+        Delegates the key shape to :func:`safe_filesystem_key`, which is
+        also used by :class:`FileLock`. Re-checks containment as defense
+        in depth.
         """
         if not artifact_id:
             raise OctomilError(
                 code=ErrorCode.INVALID_INPUT,
                 message="Refusing to prepare artifact with empty artifact_id.",
             )
-        if "\x00" in artifact_id:
+        try:
+            key = safe_filesystem_key(artifact_id)
+        except ValueError as exc:
             raise OctomilError(
                 code=ErrorCode.INVALID_INPUT,
-                message=f"artifact_id contains a NUL byte: {artifact_id!r}",
-            )
-
-        sanitized = _SAFE_ID_CHARS.sub("_", artifact_id).strip("_.")
-        if sanitized in ("", ".", ".."):
-            sanitized = "artifact"
-        # Cap the visible component before appending the hash. The hash is
-        # taken over the *original* artifact_id so two long ids that share
-        # the first ``_MAX_VISIBLE_KEY_CHARS`` characters still produce
-        # distinct keys.
-        if len(sanitized) > _MAX_VISIBLE_KEY_CHARS:
-            sanitized = sanitized[:_MAX_VISIBLE_KEY_CHARS].rstrip("_.")
-            if not sanitized:
-                sanitized = "artifact"
-        digest_prefix = hashlib.sha256(artifact_id.encode("utf-8")).hexdigest()[:12]
-        key = f"{sanitized}-{digest_prefix}"
+                message=f"artifact_id is not a valid filesystem key: {exc}",
+            ) from exc
 
         artifacts_root = (self._cache_dir / "artifacts").resolve()
         artifacts_root.mkdir(parents=True, exist_ok=True)
