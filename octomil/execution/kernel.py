@@ -135,6 +135,19 @@ logger = logging.getLogger(__name__)
 #   - embedding        — thread model_dir into the local embeddings backend.
 _PREPAREABLE_CAPABILITIES = frozenset({CAPABILITY_TTS, CAPABILITY_TRANSCRIPTION})
 
+# Capabilities whose dispatch path can construct + cache a backend
+# ahead of first inference — i.e., where ``client.warmup()`` produces
+# real first-call savings instead of a false-success. A capability
+# enters this set only when both:
+#   (a) it's already in ``_PREPAREABLE_CAPABILITIES`` (prepare bytes
+#       on disk first), AND
+#   (b) the kernel's local resolver consults the warmup cache before
+#       calling ``engine.create_backend`` again.
+# Today: tts + transcription. Chat / responses join once their
+# OctomilResponses bypass and MLX snapshot materialization gates
+# clear (same blockers as prepare).
+_WARMUPABLE_CAPABILITIES = frozenset({CAPABILITY_TTS, CAPABILITY_TRANSCRIPTION})
+
 
 # ---------------------------------------------------------------------------
 # Result types (ExecutionResult, StreamChunk, ChatRoutingDecision stay here)
@@ -170,6 +183,39 @@ class StreamChunk:
     delta: str = ""
     done: bool = False
     result: Optional[ExecutionResult] = None
+
+
+@dataclass
+class WarmupOutcome:
+    """Result of :meth:`ExecutionKernel.warmup`.
+
+    ``client.warmup(model, capability)`` runs prepare (so the artifact
+    bytes are on disk), constructs the local backend with the prepared
+    ``model_dir``, calls ``backend.load_model``, and caches the
+    instance so the next inference call reuses it. The outcome reports
+    everything a caller needs to confirm warmup happened *and* drove
+    real work — first-call latency savings only show up when
+    ``backend_loaded`` is True.
+
+    Fields
+    ~~~~~~
+    - ``capability`` / ``model``: the warmed cell.
+    - ``prepare_outcome``: the underlying :class:`PrepareOutcome`. The
+      same fields the prepare CLI prints (artifact_id, artifact_dir,
+      cached, files map).
+    - ``backend_loaded``: True when ``engine.create_backend`` +
+      ``backend.load_model`` both succeeded; False when warmup ran
+      but a downstream backend constructor refused (engine missing on
+      this host, runtime imports failed, etc.) — prepare bytes are
+      still on disk, just not loaded.
+    - ``latency_ms``: wall time for the full prepare + load loop.
+    """
+
+    capability: str
+    model: str
+    prepare_outcome: Any
+    backend_loaded: bool
+    latency_ms: float
 
 
 @dataclass
@@ -222,6 +268,15 @@ class ExecutionKernel:
         # production code lazily constructs a default-rooted manager on first
         # prepare call.
         self._prepare_manager: Optional[Any] = prepare_manager
+        # PR 11: warmup cache. ``client.warmup(model, capability)`` runs
+        # prepare and then constructs + load_model's the local backend
+        # so the next inference dispatch can reuse it without paying
+        # cold-start latency. Keyed by (capability, runtime_model). The
+        # local resolvers (``_resolve_local_tts_backend`` and
+        # ``_resolve_local_transcription_backend``) consult this map
+        # before falling through to a fresh ``engine.create_backend``
+        # call. Reset by ``release_warmed_backends`` (test helper).
+        self._warmed_backends: dict[tuple[str, str], Any] = {}
 
     @property
     def config_set(self) -> LoadedConfigSet:
@@ -1348,6 +1403,91 @@ class ExecutionKernel:
         manager = self._prepare_manager or PrepareManager()
         return manager.prepare(candidate, mode=PrepareMode.EXPLICIT)
 
+    def warmup(
+        self,
+        *,
+        model: str,
+        capability: str = "tts",
+        policy: Optional[str] = None,
+        app: Optional[str] = None,
+    ) -> WarmupOutcome:
+        """Run ``prepare`` and load the local backend so first-call is hot.
+
+        Strict superset of :meth:`prepare`: bytes on disk *plus* the
+        engine constructed and ``backend.load_model`` complete, with
+        the loaded instance cached on the kernel so the next dispatch
+        call reuses it. Currently supports the same capabilities as
+        ``prepare`` (tts + transcription) — chat / responses inherit
+        the same gates.
+
+        Failure modes
+        ~~~~~~~~~~~~~
+        - Capability not in :data:`_WARMUPABLE_CAPABILITIES` →
+          :class:`OctomilError` ``INVALID_INPUT`` (same actionable
+          message as ``prepare``).
+        - PrepareManager rejects the candidate or download fails →
+          original error propagates unchanged.
+        - Backend construction / load fails → returns
+          ``WarmupOutcome(backend_loaded=False)`` so the prepare half
+          isn't lost. Caller decides whether that's fatal; subsequent
+          inference will fall through the cold path naturally.
+
+        Returns a :class:`WarmupOutcome` with the underlying
+        :class:`PrepareOutcome`, ``backend_loaded`` flag, and
+        ``latency_ms`` wall time.
+        """
+        if capability not in _WARMUPABLE_CAPABILITIES:
+            raise OctomilError(
+                code=OctomilErrorCode.INVALID_INPUT,
+                message=(
+                    f"client.warmup() does not yet support capability {capability!r}. "
+                    f"Supported today: {sorted(_WARMUPABLE_CAPABILITIES)}. "
+                    f"Other capabilities will be added once their backends thread the "
+                    f"prepared model_dir into dispatch and the kernel can cache the "
+                    f"loaded instance."
+                ),
+            )
+
+        t0 = time.monotonic()
+        prepare_outcome = self.prepare(model=model, capability=capability, policy=policy, app=app)
+        artifact_dir = str(prepare_outcome.artifact_dir)
+
+        # Construct + load the backend with the freshly-prepared dir
+        # and stash it. Use the resolved runtime model: ``app/notes/tts``
+        # is the request shape but the backend cares about the
+        # underlying model id (e.g. ``kokoro-en-v0_19``).
+        defaults = self._resolve(capability, model=model, policy=policy, app=app)
+        runtime_model = defaults.model or model
+        backend_loaded = False
+        if capability == CAPABILITY_TTS:
+            backend = self._resolve_local_tts_backend(runtime_model, prepared_model_dir=artifact_dir)
+            if backend is not None:
+                self._warmed_backends[(CAPABILITY_TTS, runtime_model)] = backend
+                backend_loaded = True
+        elif capability == CAPABILITY_TRANSCRIPTION:
+            backend = self._resolve_local_transcription_backend(runtime_model, prepared_model_dir=artifact_dir)
+            if backend is not None:
+                self._warmed_backends[(CAPABILITY_TRANSCRIPTION, runtime_model)] = backend
+                backend_loaded = True
+
+        latency_ms = (time.monotonic() - t0) * 1000.0
+        return WarmupOutcome(
+            capability=capability,
+            model=runtime_model,
+            prepare_outcome=prepare_outcome,
+            backend_loaded=backend_loaded,
+            latency_ms=latency_ms,
+        )
+
+    def release_warmed_backends(self) -> None:
+        """Drop every cached warmed backend.
+
+        Used by tests and long-running embedded callers that want to
+        free GPU memory between phases. The next inference dispatch
+        rebuilds through the normal cold path. Idempotent.
+        """
+        self._warmed_backends.clear()
+
     def _prepare_local_transcription_artifact(self, selection: Optional[Any]) -> Optional[str]:
         """Run PrepareManager for the local transcription candidate, if any.
 
@@ -1470,6 +1610,16 @@ class ExecutionKernel:
         *,
         prepared_model_dir: Optional[str] = None,
     ) -> Optional[Any]:
+        # PR 11: prefer the warmup cache. When the caller invoked
+        # ``client.warmup(model, capability='tts')`` earlier in this
+        # session, the loaded SherpaTts backend is already in
+        # ``_warmed_backends`` and the next ``synthesize_speech`` call
+        # reuses it without paying ``engine.create_backend`` +
+        # ``backend.load_model`` again. Cold-call path (no warmup)
+        # remains unchanged.
+        cached = self._warmed_backends.get((CAPABILITY_TTS, model))
+        if cached is not None:
+            return cached
         try:
             from octomil.runtime.engines.sherpa import SherpaTtsEngine
 
@@ -1562,6 +1712,10 @@ class ExecutionKernel:
         don't recognize the kwarg ignore it (the registry's create_backend
         accepts ``**kwargs``).
         """
+        # PR 11: warmup cache hit short-circuits the registry walk.
+        cached = self._warmed_backends.get((CAPABILITY_TRANSCRIPTION, model))
+        if cached is not None:
+            return cached
         try:
             from octomil.runtime.engines import get_registry
 

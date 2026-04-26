@@ -325,6 +325,43 @@ class Octomil:
             app=app,
         )
 
+    async def warmup(
+        self,
+        *,
+        model: str,
+        capability: str = "tts",
+        policy: str | None = None,
+        app: str | None = None,
+    ) -> Any:
+        """Pre-warm a model: prepare the artifact AND load it into memory.
+
+        Strict superset of :meth:`prepare`. After this returns
+        ``backend_loaded=True``, the very next inference call (e.g.
+        ``client.audio.speech.create(model=...)``) skips the
+        ``engine.create_backend`` + ``backend.load_model`` cold path
+        and dispatches to the cached instance.
+
+        Useful at app boot for first-call latency budgets, on a
+        background thread before the user-visible interaction. The
+        cache lives on the kernel for the lifetime of the
+        :class:`Octomil` client; call ``client._kernel.release_warmed_backends()``
+        to free GPU memory between phases.
+
+        Returns a :class:`WarmupOutcome` (capability, model,
+        prepare_outcome, backend_loaded, latency_ms).
+        """
+        if not self._initialized:
+            raise OctomilNotInitializedError()
+        import asyncio as _asyncio
+
+        return await _asyncio.to_thread(
+            self._kernel.warmup,
+            model=model,
+            capability=capability,
+            policy=policy,
+            app=app,
+        )
+
     def _build_hosted_responses(self) -> OctomilResponses:
         """Build a Responses namespace that always dispatches through hosted cloud."""
         from .auth import OrgApiKeyAuth
