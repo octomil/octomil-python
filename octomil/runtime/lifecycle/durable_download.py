@@ -24,7 +24,7 @@ import time
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Callable, Iterator
 
 import httpx
@@ -79,6 +79,65 @@ class RequiredFile:
     relative_path: str
     digest: str
     size_bytes: int | None = None
+
+
+def _validate_relative_path(relative_path: str) -> str:
+    """Reject planner-supplied paths that could escape the artifact dir.
+
+    Server input is untrusted at this boundary. Anything that resolves
+    outside the destination directory or smuggles platform-specific path
+    separators is rejected before any filesystem or URL operation.
+    """
+    if relative_path == "":
+        return ""
+    if "\x00" in relative_path:
+        raise OctomilError(
+            code=ErrorCode.INVALID_INPUT,
+            message=f"Required file path contains a NUL byte: {relative_path!r}",
+        )
+    if "\\" in relative_path:
+        raise OctomilError(
+            code=ErrorCode.INVALID_INPUT,
+            message=(
+                f"Required file path uses backslashes: {relative_path!r}. "
+                f"Artifacts must be addressed with forward-slash POSIX paths."
+            ),
+        )
+    pure = PurePosixPath(relative_path)
+    if pure.is_absolute() or pure.drive or pure.anchor:
+        raise OctomilError(
+            code=ErrorCode.INVALID_INPUT,
+            message=f"Required file path must be relative, got: {relative_path!r}",
+        )
+    if any(part in ("", "..") for part in pure.parts):
+        raise OctomilError(
+            code=ErrorCode.INVALID_INPUT,
+            message=f"Required file path must not contain '..' or empty segments: {relative_path!r}",
+        )
+    return str(pure)
+
+
+def _safe_join(dest_dir: Path, relative_path: str) -> Path:
+    """Resolve ``relative_path`` under ``dest_dir`` and confirm containment.
+
+    Defends against symlink and ``..`` shenanigans even after structural
+    validation: the resolved final path must live under the resolved
+    destination. We compare resolved absolute paths to neutralize any
+    intermediate symlink that points elsewhere.
+    """
+    safe = _validate_relative_path(relative_path)
+    base_resolved = dest_dir.resolve()
+    if not safe:
+        return base_resolved
+    candidate = (base_resolved / safe).resolve()
+    try:
+        candidate.relative_to(base_resolved)
+    except ValueError as exc:
+        raise OctomilError(
+            code=ErrorCode.INVALID_INPUT,
+            message=(f"Required file path resolves outside the artifact directory: {relative_path!r} -> {candidate}"),
+        ) from exc
+    return candidate
 
 
 @dataclass
@@ -213,6 +272,10 @@ class DurableDownloader:
                 code=ErrorCode.DOWNLOAD_FAILED,
                 message=f"Artifact '{descriptor.artifact_id}' has no required_files.",
             )
+        # Fail fast at the trust boundary: planner-supplied paths are
+        # untrusted input and must not be allowed to escape ``dest_dir``.
+        for required in descriptor.required_files:
+            _validate_relative_path(required.relative_path)
 
         dest_dir.mkdir(parents=True, exist_ok=True)
         parts_dir = dest_dir / ".parts"
@@ -237,7 +300,11 @@ class DurableDownloader:
         dest_dir: Path,
         parts_dir: Path,
     ) -> Path:
-        final_path = dest_dir / required.relative_path if required.relative_path else dest_dir / "artifact"
+        safe_rel = _validate_relative_path(required.relative_path)
+        if safe_rel:
+            final_path = _safe_join(dest_dir, safe_rel)
+        else:
+            final_path = dest_dir.resolve() / "artifact"
         final_path.parent.mkdir(parents=True, exist_ok=True)
 
         if final_path.exists() and _digest_matches(final_path, required.digest):
@@ -246,7 +313,7 @@ class DurableDownloader:
             )
             return final_path
 
-        part_name = (required.relative_path or "artifact").replace("/", "_") + ".part"
+        part_name = (safe_rel or "artifact").replace("/", "_") + ".part"
         part_path = parts_dir / part_name
 
         journal_offset, journal_endpoint = self._journal.get(descriptor.artifact_id, required.relative_path)
@@ -325,7 +392,8 @@ class DurableDownloader:
         artifact_id: str,
         endpoint_index: int,
     ) -> None:
-        url = self._resolve_url(endpoint.url, required.relative_path)
+        safe_rel = _validate_relative_path(required.relative_path)
+        url = self._resolve_url(endpoint.url, safe_rel)
         headers = dict(endpoint.headers or {})
         if offset > 0:
             headers["Range"] = f"bytes={offset}-"
@@ -334,36 +402,73 @@ class DurableDownloader:
         owns_client = self._client is None
         try:
             with client.stream("GET", url, headers=headers) as response:
-                if response.status_code == 416:
-                    # Server says our offset is past the file; treat as fresh.
+                if response.status_code == 416 and offset > 0:
+                    # Stale resume offset (journal/disk says we're past EOF).
+                    # Drop progress and retry the same endpoint once from zero
+                    # before falling through to the next endpoint.
+                    response.close()
                     part_path.unlink(missing_ok=True)
-                    offset = 0
-                    response.raise_for_status()
+                    self._journal.clear(artifact_id, required.relative_path)
+                    fresh_headers = {k: v for k, v in headers.items() if k.lower() != "range"}
+                    with client.stream("GET", url, headers=fresh_headers) as retry:
+                        if retry.status_code != 200:
+                            retry.raise_for_status()
+                        self._stream_to_part(
+                            retry,
+                            part_path,
+                            offset=0,
+                            artifact_id=artifact_id,
+                            relative_path=required.relative_path,
+                            endpoint_index=endpoint_index,
+                        )
+                    return
                 if response.status_code not in (200, 206):
                     response.raise_for_status()
-                mode = "ab" if response.status_code == 206 and offset > 0 else "wb"
-                if mode == "wb":
-                    offset = 0
-                bytes_written = offset
-                last_flush = bytes_written
-                with part_path.open(mode) as fh:
-                    for chunk in response.iter_bytes(chunk_size=_CHUNK_BYTES):
-                        if not chunk:
-                            continue
-                        fh.write(chunk)
-                        bytes_written += len(chunk)
-                        if bytes_written - last_flush >= _PROGRESS_FLUSH_BYTES:
-                            fh.flush()
-                            self._journal.record(artifact_id, required.relative_path, bytes_written, endpoint_index)
-                            last_flush = bytes_written
-                    fh.flush()
-                self._journal.record(artifact_id, required.relative_path, bytes_written, endpoint_index)
+                resume = response.status_code == 206 and offset > 0
+                self._stream_to_part(
+                    response,
+                    part_path,
+                    offset=offset if resume else 0,
+                    artifact_id=artifact_id,
+                    relative_path=required.relative_path,
+                    endpoint_index=endpoint_index,
+                )
         finally:
             if owns_client:
                 client.close()
 
+    def _stream_to_part(
+        self,
+        response: httpx.Response,
+        part_path: Path,
+        *,
+        offset: int,
+        artifact_id: str,
+        relative_path: str,
+        endpoint_index: int,
+    ) -> None:
+        mode = "ab" if offset > 0 else "wb"
+        bytes_written = offset
+        last_flush = bytes_written
+        with part_path.open(mode) as fh:
+            for chunk in response.iter_bytes(chunk_size=_CHUNK_BYTES):
+                if not chunk:
+                    continue
+                fh.write(chunk)
+                bytes_written += len(chunk)
+                if bytes_written - last_flush >= _PROGRESS_FLUSH_BYTES:
+                    fh.flush()
+                    self._journal.record(artifact_id, relative_path, bytes_written, endpoint_index)
+                    last_flush = bytes_written
+            fh.flush()
+        self._journal.record(artifact_id, relative_path, bytes_written, endpoint_index)
+
     @staticmethod
     def _resolve_url(base: str, relative_path: str) -> str:
+        # ``relative_path`` is expected to have already been validated by
+        # ``_validate_relative_path`` upstream; we still strip a leading slash
+        # defensively so a hand-built call site cannot smuggle an absolute
+        # path back into the URL.
         if not relative_path:
             return base
         return f"{base.rstrip('/')}/{relative_path.lstrip('/')}"
