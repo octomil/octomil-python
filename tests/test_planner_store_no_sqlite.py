@@ -362,6 +362,146 @@ def test_cache_key_includes_context_fields():
     assert len(keys) == 4, "every distinguishing field must change the key"
 
 
+# ---------------------------------------------------------------------------
+# Production cache key: RuntimePlanner.resolve must include auth/API context
+# ---------------------------------------------------------------------------
+
+
+def _make_resolver(monkeypatch, *, env=None):
+    """Build a RuntimePlanner with a stubbed in-memory store and no
+    network. Returns (planner, store, captured_keys).
+
+    The captured_keys list collects every cache_key the planner uses
+    for ``get_plan`` so the test can compare across env mutations
+    without spinning up real HTTP."""
+    from octomil.runtime.planner.planner import RuntimePlanner
+    from octomil.runtime.planner.store import MemoryRuntimePlannerStore
+
+    for k in ("OCTOMIL_API_BASE", "OCTOMIL_ORG_ID", "OCTOMIL_SERVER_KEY", "OCTOMIL_API_KEY"):
+        monkeypatch.delenv(k, raising=False)
+    if env:
+        for k, v in env.items():
+            monkeypatch.setenv(k, v)
+
+    store = MemoryRuntimePlannerStore()
+    captured: list[str] = []
+    real_get = store.get_plan
+
+    def capturing_get(cache_key: str):
+        captured.append(cache_key)
+        return real_get(cache_key)
+
+    store.get_plan = capturing_get  # type: ignore[method-assign]
+
+    # No HTTP client — resolve falls back to local benchmarking, but
+    # we only care about which cache key it asks the store for.
+    planner = RuntimePlanner(store=store, client=None)
+    return planner, store, captured
+
+
+def test_resolve_cache_key_includes_org_id(monkeypatch):
+    """Reviewer P1: switching ``OCTOMIL_ORG_ID`` must produce a
+    different cache key against the production resolver path. A plan
+    cached under org A must not serve a request under org B."""
+    p1, _, captured1 = _make_resolver(monkeypatch, env={"OCTOMIL_ORG_ID": "org-a"})
+    try:
+        p1.resolve(model="kokoro-en-v0_19", capability="tts", routing_policy="local_first")
+    except Exception:
+        pass
+    p2, _, captured2 = _make_resolver(monkeypatch, env={"OCTOMIL_ORG_ID": "org-b"})
+    try:
+        p2.resolve(model="kokoro-en-v0_19", capability="tts", routing_policy="local_first")
+    except Exception:
+        pass
+
+    assert captured1 and captured2
+    assert (
+        captured1[0] != captured2[0]
+    ), f"cache key must change when org_id changes; got {captured1[0]} == {captured2[0]}"
+
+
+def test_resolve_cache_key_includes_api_base(monkeypatch):
+    """Reviewer P1: switching ``OCTOMIL_API_BASE`` (e.g. staging →
+    prod) must change the cache key, even if everything else is
+    the same."""
+    p1, _, captured1 = _make_resolver(
+        monkeypatch,
+        env={"OCTOMIL_API_BASE": "https://api.octomil.com"},
+    )
+    try:
+        p1.resolve(model="kokoro-en-v0_19", capability="tts", routing_policy="local_first")
+    except Exception:
+        pass
+    p2, _, captured2 = _make_resolver(
+        monkeypatch,
+        env={"OCTOMIL_API_BASE": "https://staging.octomil.com"},
+    )
+    try:
+        p2.resolve(model="kokoro-en-v0_19", capability="tts", routing_policy="local_first")
+    except Exception:
+        pass
+
+    assert captured1 and captured2
+    assert captured1[0] != captured2[0]
+
+
+def test_resolve_cache_key_includes_key_type(monkeypatch):
+    """Reviewer P1: switching auth shape (server key vs api key vs
+    no key) must change the cache key."""
+    p1, _, captured1 = _make_resolver(monkeypatch, env={"OCTOMIL_SERVER_KEY": "sk-x"})
+    try:
+        p1.resolve(model="kokoro-en-v0_19", capability="tts", routing_policy="local_first")
+    except Exception:
+        pass
+    p2, _, captured2 = _make_resolver(monkeypatch, env={"OCTOMIL_API_KEY": "ak-x"})
+    try:
+        p2.resolve(model="kokoro-en-v0_19", capability="tts", routing_policy="local_first")
+    except Exception:
+        pass
+    p3, _, captured3 = _make_resolver(monkeypatch)  # no key
+    try:
+        p3.resolve(model="kokoro-en-v0_19", capability="tts", routing_policy="local_first")
+    except Exception:
+        pass
+
+    assert captured1 and captured2 and captured3
+    keys = {captured1[0], captured2[0], captured3[0]}
+    assert len(keys) == 3, f"key_type must distinguish all three auth shapes; got {keys}"
+
+
+def test_resolve_cache_key_includes_installed_runtime_hash():
+    """Reviewer P1: changing the installed-runtimes profile must
+    invalidate the cache. A plan that recommends mlx-lm shouldn't
+    survive after the user uninstalled mlx-lm."""
+    from octomil.runtime.planner.planner import (
+        _benchmark_cache_key,
+        _installed_runtimes_hash,
+    )
+    from octomil.runtime.planner.schemas import DeviceRuntimeProfile, InstalledRuntime
+
+    a = DeviceRuntimeProfile(
+        sdk="python",
+        sdk_version="4.10.1",
+        platform="darwin",
+        arch="arm64",
+        chip="m2",
+        installed_runtimes=[],
+    )
+    b = DeviceRuntimeProfile(
+        sdk="python",
+        sdk_version="4.10.1",
+        platform="darwin",
+        arch="arm64",
+        chip="m2",
+        installed_runtimes=[InstalledRuntime(engine="mlx-lm", version="0.20")],
+    )
+    auth_ctx = {"api_base": "x", "org_id_hash": "y", "key_type": "server"}
+    key_a = _benchmark_cache_key(model="m", capability="tts", policy="p", device=a, auth_ctx=auth_ctx)
+    key_b = _benchmark_cache_key(model="m", capability="tts", policy="p", device=b, auth_ctx=auth_ctx)
+    assert key_a != key_b
+    assert _installed_runtimes_hash(a) != _installed_runtimes_hash(b)
+
+
 @pytest.mark.parametrize(
     "missing_field",
     ["capability", "model", "policy", "org_id_hash", "api_base", "sdk_version"],
