@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+## 4.10.0 (2026-04-26)
+
+### Features
+
+- **Prepare lifecycle.** New `await client.prepare(model="@app/<slug>/tts", capability="tts")` and `octomil prepare <model>` CLI command. Pre-warms an on-device TTS artifact via the runtime planner: lazy candidates short-circuit on second call, `explicit_only` candidates succeed, and `disabled` raises with an actionable message. Dashboard quickstarts surface the same one-liner.
+- **Durable artifact downloader** (`octomil.runtime.lifecycle.durable_download`): multi-URL fallback, HTTP-Range resume from `.parts/*.part`, SQLite progress journal flushed every 4 MiB and clamped against on-disk size at open, signed-URL header forwarding, idempotent on already-verified files. Shared filesystem-key helper (`_fs_key.safe_filesystem_key`) keeps `PrepareManager` artifact dirs and `FileLock` lock files NAME_MAX-safe and Windows-safe under non-ASCII inputs.
+- **`PrepareManager`** validates planner metadata before any disk/network: locality, delivery_mode, prepare_policy, digest + download_urls, multi-file rejection (per-file manifest is a follow-up), required-files path traversal/dot/abs/backslash/NUL, artifact_id sanitization. `can_prepare(candidate)` is a pure dry-run for the routing layer.
+- TTS dispatch threads the prepared `model_dir` into `SherpaTtsEngine.create_backend(model_dir=...)`. First-run lazy prepare on a clean device now actually runs: runtime/package availability is split from artifact staging, and synthetic planner candidates are rejected before routing commits to local.
+
+### Notes
+
+- `client.prepare()` is TTS-only today. Transcription, embedding, and chat will be added one at a time as their backends consume the prepared `model_dir`. The CLI mirrors the same single-choice contract.
+- The Node SDK ships its own `Octomil.prepare(...)` planner-introspection endpoint in `@octomil/sdk@1.5.0`. Nothing in the Node tree downloads bytes yet — host processes shell out to `octomil prepare` (Python) when materialization is needed.
+
 ## 4.9.0 (2026-04-25)
 
 ### Features
