@@ -91,6 +91,48 @@ class PrepareManager:
     def cache_dir(self) -> Path:
         return self._cache_dir
 
+    def can_prepare(self, candidate: RuntimeCandidatePlan) -> bool:
+        """Dry-run preparability check.
+
+        Returns ``True`` only when ``candidate`` carries enough planner
+        metadata for :meth:`prepare` to succeed: it is a local
+        ``sdk_runtime`` candidate, its ``prepare_policy`` is not disabled,
+        and (for ``prepare_required=True`` candidates) the artifact plan
+        has both a digest and at least one download endpoint.
+
+        ``prepare_required=False`` candidates always return ``True`` —
+        :meth:`prepare` short-circuits to a cached no-files outcome.
+
+        Routing layers should call this before counting a candidate as
+        "available locally"; otherwise the planner can emit synthetic
+        prepare metadata (``prepare_required=True`` but no urls/digest)
+        and the kernel will commit to local routing only to fail at
+        first prepare. ``can_prepare`` is a pure inspection — it never
+        touches disk or network.
+        """
+        if getattr(candidate, "locality", None) != "local":
+            return False
+        delivery_mode = getattr(candidate, "delivery_mode", None) or "sdk_runtime"
+        if delivery_mode != "sdk_runtime":
+            return False
+        if getattr(candidate, "prepare_policy", "lazy") == "disabled":
+            return False
+        if not getattr(candidate, "prepare_required", False):
+            return True
+        artifact = getattr(candidate, "artifact", None)
+        if artifact is None:
+            return False
+        if not getattr(artifact, "digest", None):
+            return False
+        if not getattr(artifact, "download_urls", None):
+            return False
+        # required_files containing more than one entry is currently
+        # unsupported (no per-file manifest). _build_descriptor would raise.
+        required_files = getattr(artifact, "required_files", None) or []
+        if len(required_files) > 1:
+            return False
+        return True
+
     def prepare(
         self,
         candidate: RuntimeCandidatePlan,

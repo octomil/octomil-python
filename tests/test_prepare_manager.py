@@ -451,3 +451,79 @@ def test_artifact_dir_for_caps_visible_portion_directly(cache_dir):
     # name overall stays comfortably below NAME_MAX (96 + 1 + 12 = 109).
     assert len(d.name) <= 109
     assert d.name.endswith("-" + hashlib.sha256(long_id.encode()).hexdigest()[:12])
+
+
+# --- can_prepare dry-run ----------------------------------------------------
+
+
+def test_can_prepare_returns_true_for_complete_local_sdk_runtime_candidate(cache_dir):
+    mgr = PrepareManager(cache_dir=cache_dir)
+    assert mgr.can_prepare(_candidate(artifact=_artifact()))
+
+
+def test_can_prepare_returns_false_when_artifact_missing_digest(cache_dir):
+    mgr = PrepareManager(cache_dir=cache_dir)
+    artifact = RuntimeArtifactPlan(
+        model_id="kokoro-82m",
+        artifact_id="art-x",
+        digest=None,
+        download_urls=[ArtifactDownloadEndpoint(url="https://cdn.example.com/")],
+    )
+    assert not mgr.can_prepare(_candidate(artifact=artifact))
+
+
+def test_can_prepare_returns_false_when_artifact_missing_download_urls(cache_dir):
+    mgr = PrepareManager(cache_dir=cache_dir)
+    artifact = _artifact(endpoints=[])
+    assert not mgr.can_prepare(_candidate(artifact=artifact))
+
+
+def test_can_prepare_returns_false_for_synthetic_artifact_with_only_model_id(cache_dir):
+    """Reviewer's reproducer: planner can emit prepare_required=True with no
+    digest or download_urls. PrepareManager's prepare() rejects this — so
+    can_prepare() must not lie to the routing layer."""
+    mgr = PrepareManager(cache_dir=cache_dir)
+    artifact = RuntimeArtifactPlan(model_id="kokoro-82m")
+    assert not mgr.can_prepare(_candidate(artifact=artifact))
+
+
+def test_can_prepare_returns_false_when_artifact_is_none(cache_dir):
+    mgr = PrepareManager(cache_dir=cache_dir)
+    assert not mgr.can_prepare(_candidate(artifact=None))
+
+
+def test_can_prepare_returns_false_for_disabled_policy(cache_dir):
+    mgr = PrepareManager(cache_dir=cache_dir)
+    assert not mgr.can_prepare(_candidate(artifact=_artifact(), prepare_policy="disabled"))
+
+
+def test_can_prepare_returns_false_for_cloud_candidate(cache_dir):
+    mgr = PrepareManager(cache_dir=cache_dir)
+    assert not mgr.can_prepare(_candidate(artifact=_artifact(), locality="cloud"))
+
+
+def test_can_prepare_returns_false_for_hosted_gateway_delivery(cache_dir):
+    mgr = PrepareManager(cache_dir=cache_dir)
+    assert not mgr.can_prepare(_candidate(artifact=_artifact(), delivery_mode="hosted_gateway"))
+
+
+def test_can_prepare_returns_false_for_multi_file_artifact(cache_dir):
+    mgr = PrepareManager(cache_dir=cache_dir)
+    artifact = _artifact(required_files=["model.onnx", "voices.bin"])
+    assert not mgr.can_prepare(_candidate(artifact=artifact))
+
+
+def test_can_prepare_returns_true_when_prepare_required_false(cache_dir):
+    """prepare() short-circuits to a cached no-files outcome — that is a
+    valid, non-failing call, so can_prepare must return True."""
+    mgr = PrepareManager(cache_dir=cache_dir)
+    assert mgr.can_prepare(_candidate(artifact=_artifact(), prepare_required=False))
+
+
+def test_can_prepare_does_not_touch_disk_or_network(cache_dir):
+    # Empty cache dir, no downloader injected — can_prepare must work
+    # entirely from the candidate inspection.
+    mgr = PrepareManager(cache_dir=cache_dir)
+    assert mgr.can_prepare(_candidate(artifact=_artifact()))
+    # Cache dir has only what __init__ created (.locks would be lazy).
+    assert not (cache_dir / "artifacts").exists() or not any((cache_dir / "artifacts").iterdir())
