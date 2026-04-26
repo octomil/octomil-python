@@ -94,44 +94,24 @@ class PrepareManager:
     def can_prepare(self, candidate: RuntimeCandidatePlan) -> bool:
         """Dry-run preparability check.
 
-        Returns ``True`` only when ``candidate`` carries enough planner
-        metadata for :meth:`prepare` to succeed: it is a local
-        ``sdk_runtime`` candidate, its ``prepare_policy`` is not disabled,
-        and (for ``prepare_required=True`` candidates) the artifact plan
-        has both a digest and at least one download endpoint.
+        Returns ``True`` only when :meth:`prepare` is structurally
+        guaranteed to succeed on ``candidate``'s metadata. The check
+        mirrors *every* validation ``prepare()`` performs before any
+        disk/network work, including the path-safety checks for
+        ``required_files[0]`` and ``artifact_id``. Synthetic or malformed
+        planner metadata (no digest, no urls, traversal in
+        ``required_files``, NUL-byte ``artifact_id``, etc.) returns
+        ``False`` so the routing layer can treat the candidate as
+        unavailable instead of committing to local and failing in
+        ``prepare()``.
 
-        ``prepare_required=False`` candidates always return ``True`` —
-        :meth:`prepare` short-circuits to a cached no-files outcome.
-
-        Routing layers should call this before counting a candidate as
-        "available locally"; otherwise the planner can emit synthetic
-        prepare metadata (``prepare_required=True`` but no urls/digest)
-        and the kernel will commit to local routing only to fail at
-        first prepare. ``can_prepare`` is a pure inspection — it never
-        touches disk or network.
+        Pure inspection — never touches disk or network.
         """
-        if getattr(candidate, "locality", None) != "local":
-            return False
-        delivery_mode = getattr(candidate, "delivery_mode", None) or "sdk_runtime"
-        if delivery_mode != "sdk_runtime":
-            return False
-        if getattr(candidate, "prepare_policy", "lazy") == "disabled":
-            return False
-        if not getattr(candidate, "prepare_required", False):
+        try:
+            _validate_for_prepare(candidate)
             return True
-        artifact = getattr(candidate, "artifact", None)
-        if artifact is None:
+        except OctomilError:
             return False
-        if not getattr(artifact, "digest", None):
-            return False
-        if not getattr(artifact, "download_urls", None):
-            return False
-        # required_files containing more than one entry is currently
-        # unsupported (no per-file manifest). _build_descriptor would raise.
-        required_files = getattr(artifact, "required_files", None) or []
-        if len(required_files) > 1:
-            return False
-        return True
 
     def prepare(
         self,
@@ -145,8 +125,12 @@ class PrepareManager:
         candidate is not preparable, the policy forbids the call site, or
         the underlying download fails after exhausting all endpoints.
         """
-        self._reject_non_local(candidate)
-        self._check_policy(candidate, mode)
+        # Single source of truth for structural validation. Anything that
+        # raises here would also make ``can_prepare`` return False.
+        _validate_for_prepare(candidate)
+        # explicit_only-vs-mode is the one check ``can_prepare`` cannot
+        # perform (it has no mode). Run it here for the canonical message.
+        self._check_explicit_only_vs_mode(candidate, mode)
 
         if not candidate.prepare_required:
             # Server says no preparation is needed — usually because the
@@ -199,33 +183,14 @@ class PrepareManager:
             cached=False,
         )
 
-    def _reject_non_local(self, candidate: RuntimeCandidatePlan) -> None:
-        if candidate.locality != "local":
-            raise OctomilError(
-                code=ErrorCode.INVALID_INPUT,
-                message=(
-                    f"PrepareManager only handles local candidates; got locality={candidate.locality!r}. "
-                    f"Cloud candidates are dispatched through the hosted gateway."
-                ),
-            )
-        delivery_mode = candidate.delivery_mode or "sdk_runtime"
-        if delivery_mode != "sdk_runtime":
-            raise OctomilError(
-                code=ErrorCode.INVALID_INPUT,
-                message=(f"PrepareManager only handles sdk_runtime delivery; got delivery_mode={delivery_mode!r}."),
-            )
+    def _check_explicit_only_vs_mode(self, candidate: RuntimeCandidatePlan, mode: PrepareMode) -> None:
+        """Explicit-only candidates may only be prepared via mode=EXPLICIT.
 
-    def _check_policy(self, candidate: RuntimeCandidatePlan, mode: PrepareMode) -> None:
-        policy = candidate.prepare_policy
-        if policy == "disabled":
-            raise OctomilError(
-                code=ErrorCode.INVALID_INPUT,
-                message=(
-                    "Candidate's prepare_policy is 'disabled'. The server has marked this artifact "
-                    "as ineligible for SDK-side preparation; resolve via a different routing policy."
-                ),
-            )
-        if policy == "explicit_only" and mode is not PrepareMode.EXPLICIT:
+        This is the one check that depends on the *call site* (mode) rather
+        than the candidate alone, so it lives outside ``_validate_for_prepare``
+        and is not consulted by ``can_prepare``.
+        """
+        if candidate.prepare_policy == "explicit_only" and mode is not PrepareMode.EXPLICIT:
             raise OctomilError(
                 code=ErrorCode.INVALID_INPUT,
                 message=(
@@ -356,6 +321,109 @@ class PrepareManager:
                 return None
             verified[required.relative_path] = target
         return verified
+
+
+def _validate_for_prepare(candidate: RuntimeCandidatePlan) -> None:
+    """Apply every structural check :meth:`PrepareManager.prepare` performs
+    before any disk/network work.
+
+    Raises :class:`OctomilError(INVALID_INPUT)` with an actionable message
+    on the first failure. ``prepare()`` calls this for the canonical error
+    text; ``can_prepare()`` calls this and treats any exception as
+    "not preparable". Putting the rules in one place is what keeps
+    ``can_prepare`` honest: anything ``prepare`` would reject is also
+    rejected by the dry-run.
+    """
+    # Locality + delivery_mode: PrepareManager only handles local sdk_runtime.
+    if getattr(candidate, "locality", None) != "local":
+        raise OctomilError(
+            code=ErrorCode.INVALID_INPUT,
+            message=(
+                f"PrepareManager only handles local candidates; got locality={getattr(candidate, 'locality', None)!r}."
+            ),
+        )
+    delivery_mode = getattr(candidate, "delivery_mode", None) or "sdk_runtime"
+    if delivery_mode != "sdk_runtime":
+        raise OctomilError(
+            code=ErrorCode.INVALID_INPUT,
+            message=(f"PrepareManager only handles sdk_runtime delivery; got delivery_mode={delivery_mode!r}."),
+        )
+
+    # Policy: 'disabled' is a hard stop. 'explicit_only' is policy-vs-mode
+    # and can only be checked at prepare() call time, so can_prepare lets
+    # it pass — the kernel's lazy path will surface the canonical message.
+    policy = getattr(candidate, "prepare_policy", "lazy")
+    if policy == "disabled":
+        raise OctomilError(
+            code=ErrorCode.INVALID_INPUT,
+            message=(
+                "Candidate's prepare_policy is 'disabled'. The server has marked this artifact "
+                "as ineligible for SDK-side preparation; resolve via a different routing policy."
+            ),
+        )
+
+    # prepare_required=False short-circuits to a no-files cached outcome
+    # — every shape past the locality/policy gates is fine.
+    if not getattr(candidate, "prepare_required", False):
+        return
+
+    artifact = getattr(candidate, "artifact", None)
+    if artifact is None:
+        raise OctomilError(
+            code=ErrorCode.INVALID_INPUT,
+            message=(
+                "Candidate marks prepare_required=True but carries no artifact plan. "
+                "This is a server contract violation; refusing to prepare."
+            ),
+        )
+    if not getattr(artifact, "download_urls", None):
+        raise OctomilError(
+            code=ErrorCode.INVALID_INPUT,
+            message=(
+                f"Artifact '{artifact.artifact_id or artifact.model_id}' has no download_urls. "
+                f"Cannot prepare; the planner must emit at least one endpoint."
+            ),
+        )
+    if not getattr(artifact, "digest", None):
+        raise OctomilError(
+            code=ErrorCode.INVALID_INPUT,
+            message=(
+                f"Artifact '{artifact.artifact_id or artifact.model_id}' has no digest. "
+                f"Refusing to prepare without integrity verification."
+            ),
+        )
+
+    required_files = getattr(artifact, "required_files", None) or []
+    if len(required_files) > 1:
+        raise OctomilError(
+            code=ErrorCode.INVALID_INPUT,
+            message=(
+                f"Artifact '{artifact.artifact_id or artifact.model_id}' lists "
+                f"{len(required_files)} required_files but the planner schema only carries a "
+                f"single artifact-level digest. Multi-file artifacts require a per-file "
+                f"manifest_uri (planned in a follow-up PR); refusing to prepare without "
+                f"per-file integrity."
+            ),
+        )
+    if required_files:
+        # Untrusted planner path. _validate_relative_path raises
+        # OctomilError(INVALID_INPUT) on traversal, dot segments,
+        # backslashes, NUL bytes, absolute paths, etc.
+        _validate_relative_path(required_files[0])
+
+    # artifact_id is used as a filesystem key. Match the checks
+    # ``artifact_dir_for`` performs (empty/NUL) so can_prepare cannot lie.
+    artifact_id = artifact.artifact_id or artifact.model_id
+    if not artifact_id:
+        raise OctomilError(
+            code=ErrorCode.INVALID_INPUT,
+            message="Refusing to prepare artifact with empty artifact_id.",
+        )
+    if "\x00" in artifact_id:
+        raise OctomilError(
+            code=ErrorCode.INVALID_INPUT,
+            message=f"artifact_id contains a NUL byte: {artifact_id!r}",
+        )
 
 
 def _artifact_id(candidate: RuntimeCandidatePlan) -> str:
