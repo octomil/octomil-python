@@ -407,3 +407,47 @@ def test_prepare_distinct_planner_ids_get_distinct_directories(cache_dir):
     assert dir_b.parent == artifacts_root
     # Same input twice -> same directory (deterministic).
     assert mgr.artifact_dir_for("a/b") == dir_a
+
+
+def test_prepare_caps_long_but_safe_artifact_id_to_filesystem_safe_length(cache_dir):
+    # 5000 safe characters would exceed NAME_MAX on every common filesystem.
+    # Manager must keep the on-disk key under 256 bytes and surface a usable
+    # path, not a raw OSError.
+    long_id = "a" * 5000
+    payload = b"x"
+    digest = _digest(payload)
+    artifact = RuntimeArtifactPlan(
+        model_id="m",
+        artifact_id=long_id,
+        digest=digest,
+        required_files=[],
+        download_urls=[ArtifactDownloadEndpoint(url="https://cdn.example.com/")],
+    )
+
+    def handler(request):
+        return httpx.Response(200, content=payload)
+
+    mgr = _manager_with_handler(cache_dir, handler)
+    outcome = mgr.prepare(_candidate(artifact=artifact))
+
+    artifacts_root = (cache_dir / "artifacts").resolve()
+    assert outcome.artifact_dir.parent == artifacts_root
+    assert (
+        len(outcome.artifact_dir.name.encode("utf-8")) <= 255
+    ), f"artifact_dir component must fit NAME_MAX, got {len(outcome.artifact_dir.name)} chars"
+    # Two distinct long ids that share their first chars must still get
+    # distinct keys (the digest covers the full original id).
+    other_id = "a" * 4999 + "b"
+    other_dir = mgr.artifact_dir_for(other_id)
+    assert other_dir != outcome.artifact_dir
+    assert len(other_dir.name.encode("utf-8")) <= 255
+
+
+def test_artifact_dir_for_caps_visible_portion_directly(cache_dir):
+    mgr = PrepareManager(cache_dir=cache_dir)
+    long_id = "z" * 5000
+    d = mgr.artifact_dir_for(long_id)
+    # Visible (everything before the trailing -<hash>) is capped; the dir
+    # name overall stays comfortably below NAME_MAX (96 + 1 + 12 = 109).
+    assert len(d.name) <= 109
+    assert d.name.endswith("-" + hashlib.sha256(long_id.encode()).hexdigest()[:12])

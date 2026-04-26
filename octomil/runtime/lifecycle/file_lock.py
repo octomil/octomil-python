@@ -6,6 +6,7 @@ Uses fcntl.flock on Unix and msvcrt.locking on Windows.
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import os
 import sys
@@ -14,6 +15,11 @@ from pathlib import Path
 from types import TracebackType
 
 logger = logging.getLogger(__name__)
+
+# Cap the visible portion of the on-disk lock name. NAME_MAX on common
+# filesystems is 255 bytes; we leave headroom for the ``-<12-char-hash>``
+# suffix and the ``.lock`` extension.
+_MAX_LOCK_NAME_CHARS = 96
 
 
 def _default_lock_dir() -> Path:
@@ -51,8 +57,14 @@ class FileLock:
     ) -> None:
         self._lock_dir = lock_dir or _default_lock_dir()
         self._lock_dir.mkdir(parents=True, exist_ok=True)
-        # Sanitise name for filesystem safety
+        # Sanitise name for filesystem safety, then cap and disambiguate so
+        # planner-supplied ids longer than NAME_MAX do not surface as raw
+        # OSError(File name too long). Truncated names from distinct inputs
+        # are kept distinct by suffixing the sha256 of the original name.
         safe_name = name.replace("/", "_").replace("\\", "_").replace(":", "_")
+        if len(safe_name) > _MAX_LOCK_NAME_CHARS:
+            digest = hashlib.sha256(name.encode("utf-8")).hexdigest()[:12]
+            safe_name = f"{safe_name[:_MAX_LOCK_NAME_CHARS].rstrip('_')}-{digest}"
         self._lock_path = self._lock_dir / f"{safe_name}.lock"
         self._timeout = timeout
         self._poll_interval = poll_interval
