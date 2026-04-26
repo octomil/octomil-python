@@ -101,7 +101,9 @@ def test_prepare_downloads_and_returns_outcome(cache_dir):
     assert outcome.delivery_mode == "sdk_runtime"
     assert outcome.prepare_policy == "lazy"
     assert outcome.engine == "sherpa-onnx"
-    assert outcome.artifact_dir == cache_dir / "artifacts" / artifact.artifact_id
+    artifacts_root = (cache_dir / "artifacts").resolve()
+    assert outcome.artifact_dir.parent == artifacts_root
+    assert outcome.artifact_dir.name.startswith(artifact.artifact_id + "-")
     assert outcome.files[""].read_bytes() == payload
     assert served, "downloader should have hit the network"
 
@@ -221,8 +223,10 @@ def test_prepare_single_required_file_uses_relative_path_under_artifact_dir(cach
     mgr = _manager_with_handler(cache_dir, handler)
     outcome = mgr.prepare(_candidate(artifact=artifact))
     assert outcome.files["model.onnx"].read_bytes() == payload
-    assert outcome.artifact_dir == cache_dir / "artifacts" / "art-multi"
-    assert outcome.files["model.onnx"] == (cache_dir / "artifacts" / "art-multi" / "model.onnx").resolve()
+    artifacts_root = (cache_dir / "artifacts").resolve()
+    assert outcome.artifact_dir.parent == artifacts_root
+    assert outcome.artifact_dir.name.startswith("art-multi-")
+    assert outcome.files["model.onnx"] == (outcome.artifact_dir / "model.onnx").resolve()
 
 
 def test_prepare_rejects_multi_file_artifact_until_per_file_manifest_exists(cache_dir):
@@ -270,12 +274,6 @@ def test_prepare_cached_shortcut_rejects_corrupt_existing_file(cache_dir):
         required_files=[],
         download_urls=[ArtifactDownloadEndpoint(url="https://cdn.example.com/")],
     )
-    # Pre-place a corrupt file at the destination so a permissive cached
-    # shortcut would treat it as ready. Manager must re-download.
-    artifact_dir = cache_dir / "artifacts" / "art-corrupt"
-    artifact_dir.mkdir(parents=True)
-    (artifact_dir / "artifact").write_bytes(b"WRONG BYTES")
-
     served: list[str] = []
 
     def handler(request):
@@ -283,6 +281,11 @@ def test_prepare_cached_shortcut_rejects_corrupt_existing_file(cache_dir):
         return httpx.Response(200, content=payload)
 
     mgr = _manager_with_handler(cache_dir, handler)
+    # Pre-place a corrupt file at the destination so a permissive cached
+    # shortcut would treat it as ready. Manager must re-download.
+    artifact_dir = mgr.artifact_dir_for("art-corrupt")
+    artifact_dir.mkdir(parents=True, exist_ok=True)
+    (artifact_dir / "artifact").write_bytes(b"WRONG BYTES")
     outcome = mgr.prepare(_candidate(artifact=artifact))
     assert not outcome.cached, "corrupt file must not be returned as cached"
     assert outcome.files[""].read_bytes() == payload
@@ -299,15 +302,15 @@ def test_prepare_cached_shortcut_rejects_directory_at_target(cache_dir):
         required_files=[],
         download_urls=[ArtifactDownloadEndpoint(url="https://cdn.example.com/")],
     )
-    # Plant a directory where the artifact file is expected.
-    artifact_dir = cache_dir / "artifacts" / "art-dir"
-    artifact_dir.mkdir(parents=True)
-    (artifact_dir / "artifact").mkdir()
 
     def handler(request):
         return httpx.Response(200, content=payload)
 
     mgr = _manager_with_handler(cache_dir, handler)
+    # Plant a directory where the artifact file is expected.
+    artifact_dir = mgr.artifact_dir_for("art-dir")
+    artifact_dir.mkdir(parents=True, exist_ok=True)
+    (artifact_dir / "artifact").mkdir()
     # The downloader will try to write a file where a directory exists and
     # raise; but the cached shortcut must NOT return cached=True.
     with pytest.raises(Exception):
@@ -324,16 +327,83 @@ def test_prepare_cached_shortcut_returns_cached_only_after_digest_verifies(cache
         required_files=[],
         download_urls=[ArtifactDownloadEndpoint(url="https://cdn.example.com/")],
     )
-    # Pre-place the correct file. Manager must serve from cache without
-    # touching the network.
-    artifact_dir = cache_dir / "artifacts" / "art-cache-good"
-    artifact_dir.mkdir(parents=True)
-    (artifact_dir / "artifact").write_bytes(payload)
 
     def handler(request):
         raise AssertionError("network must not be touched on a digest-verified cache hit")
 
     mgr = _manager_with_handler(cache_dir, handler)
+    # Pre-place the correct file at the manager-derived location so the
+    # cached path can find it. Manager must serve from cache without
+    # touching the network.
+    artifact_dir = mgr.artifact_dir_for("art-cache-good")
+    artifact_dir.mkdir(parents=True, exist_ok=True)
+    (artifact_dir / "artifact").write_bytes(payload)
     outcome = mgr.prepare(_candidate(artifact=artifact))
     assert outcome.cached
     assert outcome.files[""].read_bytes() == payload
+
+
+@pytest.mark.parametrize(
+    "evil_id",
+    [
+        "../../escaped-artifact",
+        "/tmp/octomil-absolute-artifact",
+        "..",
+        ".",
+        "a/b/c",
+        "subdir/../escape",
+        "with\x00null",
+    ],
+)
+def test_prepare_sanitizes_or_rejects_unsafe_artifact_id(tmp_path, cache_dir, evil_id):
+    payload = b"data"
+    digest = _digest(payload)
+    artifact = RuntimeArtifactPlan(
+        model_id="m",
+        artifact_id=evil_id,
+        digest=digest,
+        required_files=[],
+        download_urls=[ArtifactDownloadEndpoint(url="https://cdn.example.com/")],
+    )
+
+    served: list[str] = []
+
+    def handler(request):
+        served.append(str(request.url))
+        return httpx.Response(200, content=payload)
+
+    mgr = _manager_with_handler(cache_dir, handler)
+    artifacts_root = (cache_dir / "artifacts").resolve()
+    # Track every path that exists under tmp_path before and after to be
+    # sure no write escaped the per-test sandbox.
+    pre_existing = {p for p in tmp_path.rglob("*") if p.is_file()}
+
+    try:
+        outcome = mgr.prepare(_candidate(artifact=artifact))
+    except OctomilError as exc:
+        assert exc.code == ErrorCode.INVALID_INPUT
+        return
+
+    # If accepted, the resolved artifact_dir must live under <cache>/artifacts.
+    assert outcome.artifact_dir.parent == artifacts_root
+    assert outcome.artifact_dir.is_relative_to(artifacts_root)
+    # And no file landed outside the per-test sandbox.
+    written = {p for p in tmp_path.rglob("*") if p.is_file()}
+    new_files = written - pre_existing
+    for new_file in new_files:
+        assert new_file.resolve().is_relative_to(tmp_path.resolve())
+
+
+def test_prepare_distinct_planner_ids_get_distinct_directories(cache_dir):
+    # Two artifact ids that sanitize to the same visible name must still
+    # land in distinct directories — the digest suffix prevents collision.
+    mgr = PrepareManager(cache_dir=cache_dir)
+    # Both ids sanitize to "a_b" but should not share an artifact_dir.
+    dir_a = mgr.artifact_dir_for("a/b")
+    dir_b = mgr.artifact_dir_for("a b")
+    assert dir_a != dir_b
+    artifacts_root = (cache_dir / "artifacts").resolve()
+    assert dir_a.parent == artifacts_root
+    assert dir_b.parent == artifacts_root
+    # Same input twice -> same directory (deterministic).
+    assert mgr.artifact_dir_for("a/b") == dir_a
