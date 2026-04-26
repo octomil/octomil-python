@@ -24,7 +24,7 @@ from __future__ import annotations
 from contextlib import ExitStack
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 from unittest.mock import patch
 
 import pytest
@@ -334,11 +334,8 @@ def test_preparable_capabilities_excludes_chat_and_responses():
 
 
 def test_local_prepare_cache_skips_redundant_calls_within_one_request(tmp_path):
-    """If two local attempts point at the same artifact_id, the cached
-    helper must call ``PrepareManager.prepare`` only once per
-    ``create_response`` call. Future fallback retries (or planner
-    selections that emit the same local candidate twice) shouldn't
-    re-download."""
+    """Repeated lookups for the same candidate must hit the cache and
+    call ``PrepareManager.prepare`` only once per ``create_response``."""
     candidate = _local_chat_candidate(engine="mlx-lm")
     artifact_dir = tmp_path / "gemma3-1b"
     artifact_dir.mkdir()
@@ -346,11 +343,203 @@ def test_local_prepare_cache_skips_redundant_calls_within_one_request(tmp_path):
     kernel = ExecutionKernel(prepare_manager=pm)
 
     cache: dict[str, Any] = {}
-    candidate_selection = _Selection(candidates=[candidate], locality="local", engine="mlx-lm")
-    first = kernel._prepare_local_chat_artifact_cached(candidate_selection, cache)
-    second = kernel._prepare_local_chat_artifact_cached(candidate_selection, cache)
+    first = kernel._prepare_local_chat_artifact_cached(candidate, cache)
+    second = kernel._prepare_local_chat_artifact_cached(candidate, cache)
     assert first == second == str(artifact_dir)
     assert pm.prepare_calls == ["gemma3-1b"]
+
+
+# ---------------------------------------------------------------------------
+# Reviewer P1 (multi-candidate): per-candidate filtering and per-candidate
+# prepare. Plans like [bad local mlx, good local llama, cloud] must keep
+# the good local candidate; ``fallback_allowed=False`` plans must not be
+# silently promoted to cloud.
+# ---------------------------------------------------------------------------
+
+
+def _local_chat_candidate_with(
+    engine: str,
+    artifact_id: str,
+    *,
+    synthetic: bool = False,
+) -> RuntimeCandidatePlan:
+    """Local sdk_runtime candidate. ``synthetic=True`` strips digest/url
+    so PrepareManager.can_prepare rejects it."""
+    artifact_kwargs: dict[str, Any] = {"model_id": artifact_id, "artifact_id": artifact_id}
+    if not synthetic:
+        artifact_kwargs["digest"] = "sha256:" + "0" * 64
+        artifact_kwargs["download_urls"] = [ArtifactDownloadEndpoint(url="https://cdn.example.com/")]
+    return RuntimeCandidatePlan(
+        locality="local",
+        priority=0,
+        confidence=0.9,
+        reason="planner",
+        engine=engine,
+        artifact=RuntimeArtifactPlan(**artifact_kwargs),
+        delivery_mode="sdk_runtime",
+        prepare_required=True,
+        prepare_policy="lazy",
+    )
+
+
+@pytest.mark.asyncio
+async def test_filter_only_drops_individually_unpreparable_local_candidate(tmp_path):
+    """Reviewer P1: the prior selection-wide filter dropped *all* local
+    candidates whenever the first one was unpreparable. Plans like
+    ``[synthetic local mlx, real local llama, cloud]`` lost the good
+    llama fallback. The per-candidate filter must keep llama."""
+
+    class _SelectivePM:
+        """``can_prepare`` rejects synthetic candidates (no digest/url),
+        accepts real ones; ``prepare`` succeeds for real ones."""
+
+        def __init__(self, artifact_dir: Path) -> None:
+            self._dir = artifact_dir
+            self.can_prepare_calls: list[str] = []
+            self.prepare_calls: list[str] = []
+
+        def can_prepare(self, candidate) -> bool:
+            artifact = candidate.artifact
+            self.can_prepare_calls.append(artifact.artifact_id)
+            return bool(getattr(artifact, "digest", None) and getattr(artifact, "download_urls", None))
+
+        def prepare(self, candidate, *, mode=None):
+            self.prepare_calls.append(candidate.artifact.artifact_id)
+            return PrepareOutcome(
+                artifact_id=candidate.artifact.artifact_id,
+                artifact_dir=self._dir,
+                files={"": self._dir / "artifact"},
+                engine=candidate.engine,
+                delivery_mode="sdk_runtime",
+                prepare_policy="lazy",
+                cached=False,
+            )
+
+    artifact_dir = tmp_path / "qwen-2-1b"
+    artifact_dir.mkdir()
+    pm = _SelectivePM(artifact_dir)
+
+    bad_mlx = _local_chat_candidate_with("mlx-lm", "gemma3-1b", synthetic=True)
+    good_llama = _local_chat_candidate_with("llama.cpp", "qwen-2-1b")
+    cloud = _cloud_candidate()
+    selection = _Selection(candidates=[bad_mlx, good_llama, cloud], fallback_allowed=True)
+    kernel = ExecutionKernel(prepare_manager=pm)
+    kernel._resolve = lambda capability, **kw: _make_defaults()
+
+    captured: list[dict[str, Any]] = []
+
+    async def capturing_build_router(*args, **kwargs):
+        captured.append(kwargs)
+        # llama attempt fails at routing so we can observe that cloud
+        # is a true fallback and not the silent winner.
+        raise RuntimeError("llama unavailable in test")
+
+    with ExitStack() as stack:
+        stack.enter_context(patch("octomil.execution.kernel._resolve_planner_selection", return_value=selection))
+        stack.enter_context(patch.object(kernel, "_build_router", side_effect=capturing_build_router))
+        with pytest.raises(Exception):
+            await kernel.create_response("Hello", model="gemma3-1b")
+
+    localities = [getattr(call.get("planner_selection"), "locality", None) for call in captured]
+    # First attempt: the surviving local llama (bad mlx filtered out).
+    # Second: cloud as fallback.
+    assert localities[:2] == ["local", "cloud"], f"expected llama then cloud, got {localities!r} (full: {captured!r})"
+    assert captured[0].get("prepared_model_dir") == str(artifact_dir)
+    assert pm.prepare_calls == ["qwen-2-1b"], f"expected only llama prepared, got {pm.prepare_calls!r}"
+
+
+@pytest.mark.asyncio
+async def test_filter_returns_empty_when_primary_unpreparable_and_fallback_disallowed(tmp_path):
+    """Reviewer P1: when ``fallback_allowed=False`` and the primary
+    candidate is unpreparable, the helper must not silently promote
+    cloud (or any other remaining candidate). Returns an empty list so
+    the runner raises its actionable "no runnable candidate" error."""
+    from octomil.runtime.lifecycle.prepare_manager import PrepareManager
+
+    bad_local = _local_chat_candidate_with("mlx-lm", "gemma3-1b", synthetic=True)
+    cloud = _cloud_candidate()
+    selection = _Selection(candidates=[bad_local, cloud], fallback_allowed=False)
+    real_pm = PrepareManager(cache_dir=tmp_path)
+    kernel = ExecutionKernel(prepare_manager=real_pm)
+    kernel._resolve = lambda capability, **kw: _make_defaults()
+
+    captured: list[dict[str, Any]] = []
+
+    async def capturing_build_router(*args, **kwargs):
+        captured.append(kwargs)
+        return _StubRouter()
+
+    with ExitStack() as stack:
+        stack.enter_context(patch("octomil.execution.kernel._resolve_planner_selection", return_value=selection))
+        stack.enter_context(patch.object(kernel, "_build_router", side_effect=capturing_build_router))
+        with pytest.raises(Exception):
+            await kernel.create_response("Hello", model="gemma3-1b")
+
+    assert captured == [], (
+        "fallback_allowed=False with unpreparable primary must surface the "
+        f"runner's no-candidate error, not promote cloud. Got attempts: {captured!r}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_each_local_attempt_prepares_its_own_candidate(tmp_path):
+    """Reviewer P1: the lazy helper used to prepare the first local
+    candidate of the whole selection regardless of which attempt was
+    running, so a [local mlx, local llama] plan would prepare the mlx
+    artifact for both attempts. The candidate-specific helper must
+    prepare each candidate's own artifact."""
+    artifact_a = tmp_path / "gemma3-1b"
+    artifact_a.mkdir()
+    artifact_b = tmp_path / "qwen-2-1b"
+    artifact_b.mkdir()
+
+    class _MultiArtifactPM:
+        def __init__(self) -> None:
+            self.prepare_calls: list[str] = []
+
+        def can_prepare(self, candidate) -> bool:
+            return True
+
+        def prepare(self, candidate, *, mode=None):
+            artifact_id = candidate.artifact.artifact_id
+            self.prepare_calls.append(artifact_id)
+            target = artifact_a if artifact_id == "gemma3-1b" else artifact_b
+            return PrepareOutcome(
+                artifact_id=artifact_id,
+                artifact_dir=target,
+                files={"": target / "artifact"},
+                engine=candidate.engine,
+                delivery_mode="sdk_runtime",
+                prepare_policy="lazy",
+                cached=False,
+            )
+
+    pm = _MultiArtifactPM()
+    candidate_a = _local_chat_candidate_with("mlx-lm", "gemma3-1b")
+    candidate_b = _local_chat_candidate_with("llama.cpp", "qwen-2-1b")
+    selection = _Selection(candidates=[candidate_a, candidate_b], fallback_allowed=True)
+    kernel = ExecutionKernel(prepare_manager=pm)
+    kernel._resolve = lambda capability, **kw: _make_defaults()
+
+    captured_dirs: list[Optional[str]] = []
+
+    async def capturing_build_router(*args, **kwargs):
+        captured_dirs.append(kwargs.get("prepared_model_dir"))
+        # First attempt fails so the runner moves to the second local.
+        if len(captured_dirs) == 1:
+            raise RuntimeError("first local attempt failed")
+        return _StubRouter()
+
+    with ExitStack() as stack:
+        stack.enter_context(patch("octomil.execution.kernel._resolve_planner_selection", return_value=selection))
+        stack.enter_context(patch.object(kernel, "_build_router", side_effect=capturing_build_router))
+        await kernel.create_response("Hello", model="gemma3-1b")
+
+    assert captured_dirs == [
+        str(artifact_a),
+        str(artifact_b),
+    ], f"each local attempt must prepare its own artifact; got {captured_dirs!r}"
+    assert pm.prepare_calls == ["gemma3-1b", "qwen-2-1b"]
 
 
 # ---------------------------------------------------------------------------

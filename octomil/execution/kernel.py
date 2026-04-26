@@ -310,13 +310,16 @@ class ExecutionKernel:
 
         routing_policy = _resolve_routing_policy(defaults)
         candidates = _selection_candidate_dicts(selection, routing_policy)
-        # PR 10c: when the planner emits an unpreparable local
-        # sdk_runtime candidate (synthetic plan: missing digest/url,
-        # traversal, etc.), filter it out so the runner doesn't burn an
-        # attempt cold-loading through the engine's own download path.
-        # Mirrors the TTS / transcription hard veto.
-        candidates = _filter_unpreparable_local_candidates(self, selection, candidates)
         fallback_allowed = _candidate_fallback_allowed(selection, routing_policy)
+        # PR 10c: drop *individually* unpreparable local sdk_runtime
+        # candidates (synthetic plan: missing digest/url, traversal,
+        # etc.) so the runner doesn't burn an attempt cold-loading
+        # through the engine's own download path. Other local
+        # candidates in the same plan survive.
+        runner_to_original = _runner_dict_to_planner_candidate(selection, candidates)
+        candidates = _filter_unpreparable_local_candidates(
+            self, selection, candidates, fallback_allowed=fallback_allowed
+        )
 
         gen_config = GenerationConfig(
             max_tokens=max_output_tokens or 2048,
@@ -346,7 +349,8 @@ class ExecutionKernel:
             candidate_selection = _candidate_to_selection(selection, candidate)
             local_dir: Optional[str] = None
             if candidate.get("locality") == "local":
-                local_dir = self._prepare_local_chat_artifact_cached(selection, prepared_dirs)
+                planner_candidate = runner_to_original.get(id(candidate))
+                local_dir = self._prepare_local_chat_artifact_cached(planner_candidate, prepared_dirs)
             router = await self._build_router(
                 effective_model,
                 CAPABILITY_CHAT,
@@ -426,8 +430,11 @@ class ExecutionKernel:
 
         routing_policy = _resolve_routing_policy(defaults)
         candidates = _selection_candidate_dicts(selection, routing_policy)
-        candidates = _filter_unpreparable_local_candidates(self, selection, candidates)
         fallback_allowed = _candidate_fallback_allowed(selection, routing_policy)
+        runner_to_original = _runner_dict_to_planner_candidate(selection, candidates)
+        candidates = _filter_unpreparable_local_candidates(
+            self, selection, candidates, fallback_allowed=fallback_allowed
+        )
 
         gen_config = GenerationConfig(
             max_tokens=max_output_tokens or 2048,
@@ -447,8 +454,6 @@ class ExecutionKernel:
 
         runner = CandidateAttemptRunner(fallback_allowed=fallback_allowed, streaming=True)
 
-        # Per-call prepared-dir cache; prepare fires lazily inside the
-        # local branch only.
         prepared_dirs: dict[str, Optional[str]] = {}
 
         t0 = time.monotonic()
@@ -463,7 +468,8 @@ class ExecutionKernel:
                 candidate_selection = _candidate_to_selection(selection, candidate)
                 local_dir: Optional[str] = None
                 if candidate.get("locality") == "local":
-                    local_dir = self._prepare_local_chat_artifact_cached(selection, prepared_dirs)
+                    planner_candidate = runner_to_original.get(id(candidate))
+                    local_dir = self._prepare_local_chat_artifact_cached(planner_candidate, prepared_dirs)
                 router = await self._build_router(
                     effective_model,
                     CAPABILITY_CHAT,
@@ -547,8 +553,11 @@ class ExecutionKernel:
 
         routing_policy = _resolve_routing_policy(defaults)
         candidates = _selection_candidate_dicts(selection, routing_policy)
-        candidates = _filter_unpreparable_local_candidates(self, selection, candidates)
         fallback_allowed = _candidate_fallback_allowed(selection, routing_policy)
+        runner_to_original = _runner_dict_to_planner_candidate(selection, candidates)
+        candidates = _filter_unpreparable_local_candidates(
+            self, selection, candidates, fallback_allowed=fallback_allowed
+        )
 
         gen_config = GenerationConfig(
             max_tokens=max_output_tokens or 2048,
@@ -577,7 +586,8 @@ class ExecutionKernel:
                 candidate_selection = _candidate_to_selection(selection, candidate)
                 local_dir: Optional[str] = None
                 if candidate.get("locality") == "local":
-                    local_dir = self._prepare_local_chat_artifact_cached(selection, prepared_dirs)
+                    planner_candidate = runner_to_original.get(id(candidate))
+                    local_dir = self._prepare_local_chat_artifact_cached(planner_candidate, prepared_dirs)
                 router = await self._build_router(
                     effective_model,
                     CAPABILITY_CHAT,
@@ -1361,32 +1371,42 @@ class ExecutionKernel:
 
     def _prepare_local_chat_artifact_cached(
         self,
-        selection: Optional[Any],
+        candidate: Optional[Any],
         cache: dict[str, Optional[str]],
     ) -> Optional[str]:
-        """Lazy, per-call prepare for the local chat candidate.
+        """Lazy, per-call prepare for *this specific* local candidate.
 
-        Called from inside the local branch of the candidate runner so
+        Called from inside the local branch of the candidate runner
+        with the planner candidate that's about to be attempted, so
         cloud-first plans (and plans whose primary cloud candidate
-        succeeds) never trigger prepare. Caches the prepared dir by
-        artifact_id within the call so a local-then-local retry under
-        fallback doesn't re-prepare.
+        succeeds) never trigger prepare. Caches by artifact_id within
+        the call so a local-then-local retry under fallback doesn't
+        re-prepare.
 
-        ``selection`` is the original planner selection (with its full
-        ``candidates`` list); the helper picks the first local
-        sdk_runtime candidate. Returns ``None`` (cold-load through the
-        engine's own resolution path) when:
-          - no local sdk_runtime candidate exists,
-          - ``prepare_required`` is False (engine manages its own bytes,
-            e.g. ollama), or
-          - the candidate has no artifact id (synthetic policy-driven
+        Multi-local plans like ``[local mlx, local llama, cloud]`` get
+        per-candidate behaviour: the mlx attempt prepares the mlx
+        artifact, the llama attempt prepares the llama artifact. The
+        prior helper grabbed the first local sdk_runtime candidate of
+        the *whole selection*, which meant every local attempt prepared
+        the same first artifact regardless of which one the runner was
+        currently dispatching to.
+
+        Returns ``None`` (cold-load through the engine's own resolution
+        path) when:
+          - the candidate is missing or not a local sdk_runtime shape,
+          - ``prepare_required`` is False (engine-managed, e.g. ollama),
+          - the candidate has no artifact id (synthetic policy
             candidate built without planner metadata).
-        ``manager.prepare`` exceptions are surfaced unchanged so the
-        runner records the failure and falls back to cloud on the next
-        attempt — same contract as the TTS / transcription paths.
+        ``manager.prepare`` exceptions surface unchanged so the runner
+        records the failure and falls back to the next candidate — same
+        contract as the TTS / transcription paths.
         """
-        candidate = _local_sdk_runtime_candidate(selection)
         if candidate is None:
+            return None
+        if getattr(candidate, "locality", None) != "local":
+            return None
+        delivery_mode = getattr(candidate, "delivery_mode", None) or "sdk_runtime"
+        if delivery_mode != "sdk_runtime":
             return None
         if not getattr(candidate, "prepare_required", False):
             return None
@@ -1654,34 +1674,108 @@ class ExecutionKernel:
 # ---------------------------------------------------------------------------
 
 
+def _runner_dict_to_planner_candidate(
+    selection: Optional[Any],
+    candidates: list[dict[str, Any]],
+) -> dict[int, Any]:
+    """Map each runner-dict in ``candidates`` to its planner candidate.
+
+    ``_selection_candidate_dicts`` produces its dicts in 1:1 order with
+    ``selection.candidates`` whenever the planner emitted a non-empty
+    list, so we pair by position. The dict identity (``id(c)``) is the
+    map key — that survives the post-filter list as long as the dicts
+    aren't copied (which they aren't: filter just removes entries).
+
+    Dicts that have no original (the policy-synthesized fallback path
+    when the planner emitted nothing) are not mapped; ``cache.get``
+    returns ``None`` for those, which the prepare helper treats as
+    no-op.
+    """
+    originals = list(getattr(selection, "candidates", None) or [])
+    mapping: dict[int, Any] = {}
+    for idx, dict_candidate in enumerate(candidates):
+        if idx < len(originals):
+            mapping[id(dict_candidate)] = originals[idx]
+    return mapping
+
+
 def _filter_unpreparable_local_candidates(
     kernel: "ExecutionKernel",
     selection: Optional[Any],
     candidates: list[dict[str, Any]],
+    *,
+    fallback_allowed: bool,
 ) -> list[dict[str, Any]]:
-    """Drop local candidates the SDK can't prepare from the runner list.
+    """Drop *only* the unpreparable local candidates from the runner list.
 
-    When the planner emits a ``prepare_required=True`` local sdk_runtime
-    candidate but ``PrepareManager.can_prepare`` rejects the metadata
-    (synthetic plan: missing digest/url, traversal, etc.), the candidate
-    is unpreparable. Without this filter, the runner would try local,
-    ``_build_router`` would call ``engine.create_backend`` with no
-    ``model_dir``, and the engine would silently fall back to its own
-    HuggingFace ``snapshot_download`` / ``from_pretrained`` path —
-    letting a malformed planner plan still win local routing instead of
-    being treated as unavailable. The TTS and transcription paths apply
-    the same hard veto via ``_local_candidate_is_unpreparable``; this
-    helper does the equivalent for the candidate-runner-driven chat
-    dispatch.
+    The earlier shape of this helper looked at ``_local_candidate_is_unpreparable``
+    (which inspects the *first* local sdk_runtime candidate of the
+    selection) and then removed *every* local candidate. That was wrong
+    in two ways:
 
-    A safety floor: if the filter would empty the list, leave at least
-    one cloud candidate behind. If only the unpreparable local
-    candidate exists, return ``[]`` and let the runner surface the
-    actionable error.
+      1. Multi-local plans like ``[bad local mlx, good local llama, cloud]``
+         lost the valid llama fallback. The bad mlx candidate poisoned
+         the entire local lane.
+      2. Plans with ``fallback_allowed=False`` like
+         ``[bad local, cloud]`` could be silently promoted to cloud:
+         the local primary disappeared and cloud — which the planner
+         only emitted as a non-fallback option — became the first
+         remaining candidate.
+
+    The fix evaluates each local sdk_runtime candidate independently
+    against ``PrepareManager.can_prepare`` and drops only the
+    individually unpreparable ones. When a *primary* candidate (index
+    0) is unpreparable AND ``fallback_allowed`` is False, the helper
+    returns an empty list so the runner surfaces the planner's "no
+    runnable candidate" error instead of laundering the request to
+    cloud.
+
+    Cloud candidates and engine-managed (``prepare_required=False``)
+    local candidates pass through untouched.
     """
-    if not kernel._local_candidate_is_unpreparable(selection):
-        return candidates
-    return [c for c in candidates if c.get("locality") != "local"]
+    from octomil.runtime.lifecycle.prepare_manager import PrepareManager
+
+    manager = kernel._prepare_manager or PrepareManager()
+    # ``_selection_candidate_dicts`` produces its list 1:1 in order with
+    # ``selection.candidates`` whenever the planner emitted a non-empty
+    # list, so we can pair them by position. When the dicts came from
+    # the policy synthesis path (no planner candidates) the originals
+    # list is shorter / empty and the corresponding entries pair to
+    # ``None`` — those candidates have no prepare metadata to validate
+    # so they pass through unchanged.
+    originals = list(getattr(selection, "candidates", None) or [])
+    paired: list[tuple[dict[str, Any], Optional[Any]]] = []
+    for idx, dict_candidate in enumerate(candidates):
+        original = originals[idx] if idx < len(originals) else None
+        paired.append((dict_candidate, original))
+
+    def _is_unpreparable_local(candidate_dict: dict[str, Any], original: Optional[Any]) -> bool:
+        if candidate_dict.get("locality") != "local":
+            return False
+        delivery_mode = candidate_dict.get("delivery_mode") or "sdk_runtime"
+        if delivery_mode != "sdk_runtime":
+            return False
+        if original is None:
+            # No matching planner plan object — synthetic policy
+            # candidate, no prepare metadata to validate.
+            return False
+        if not getattr(original, "prepare_required", False):
+            return False
+        try:
+            return not manager.can_prepare(original)
+        except Exception:
+            return True
+
+    primary_unpreparable = bool(paired) and _is_unpreparable_local(*paired[0])
+    filtered = [c for c, original in paired if not _is_unpreparable_local(c, original)]
+
+    if primary_unpreparable and not fallback_allowed:
+        # The planner forbids fallback and the primary is unrunnable.
+        # Returning [] lets the runner surface its actionable "no
+        # runnable candidate" error instead of silently promoting the
+        # remaining (fallback-only or cloud) candidates.
+        return []
+    return filtered
 
 
 def _local_sdk_runtime_candidate(selection: Optional[Any]) -> Optional[Any]:
