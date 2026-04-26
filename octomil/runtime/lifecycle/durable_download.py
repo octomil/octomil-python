@@ -103,16 +103,29 @@ def _validate_relative_path(relative_path: str) -> str:
                 f"Artifacts must be addressed with forward-slash POSIX paths."
             ),
         )
+    # Reject any literal dot segment ('.', './', 'a/./b', etc.) before
+    # PurePosixPath silently collapses them. Empty-segment, parent-segment,
+    # and current-dir segments all point at directories, not files; passing
+    # them through would let untrusted planner input target ``dest_dir``
+    # itself (or a parent) and trigger IsADirectoryError downstream.
+    raw_segments = relative_path.split("/")
+    if any(seg in ("", ".", "..") for seg in raw_segments):
+        raise OctomilError(
+            code=ErrorCode.INVALID_INPUT,
+            message=(f"Required file path must not contain '.', '..', or empty segments: {relative_path!r}"),
+        )
     pure = PurePosixPath(relative_path)
     if pure.is_absolute() or pure.drive or pure.anchor:
         raise OctomilError(
             code=ErrorCode.INVALID_INPUT,
             message=f"Required file path must be relative, got: {relative_path!r}",
         )
-    if any(part in ("", "..") for part in pure.parts):
+    # Defense in depth — PurePosixPath should not produce empty/.. parts after
+    # the segment check above, but recheck so future refactors cannot regress.
+    if any(part in ("", ".", "..") for part in pure.parts):
         raise OctomilError(
             code=ErrorCode.INVALID_INPUT,
-            message=f"Required file path must not contain '..' or empty segments: {relative_path!r}",
+            message=f"Required file path must not contain '.', '..', or empty segments: {relative_path!r}",
         )
     return str(pure)
 
