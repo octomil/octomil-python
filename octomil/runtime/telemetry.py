@@ -21,13 +21,22 @@ from typing import Any
 
 FORBIDDEN_TELEMETRY_KEYS = frozenset(
     {
+        # Content (prompts, completions, raw media)
         "prompt",
+        "prompts",
         "input",
+        "inputs",
         "output",
+        "outputs",
         "completion",
+        "completions",
+        "response_text",
         "audio",
         "audio_bytes",
+        "audio_data",
+        "file",
         "file_path",
+        "filename",
         "text",
         "content",
         "messages",
@@ -35,8 +44,30 @@ FORBIDDEN_TELEMETRY_KEYS = frozenset(
         "documents",
         "image",
         "image_url",
+        "image_bytes",
+        "image_data",
         "embedding",
         "embeddings",
+        "request_body",
+        "raw_body",
+        "body",
+        # Secrets / auth — match the server-side telemetry contract so
+        # the SDK never even SENDS values that the server will reject.
+        # The earlier set covered content but left auth headers
+        # un-stripped, so 'Authorization: Bearer ...' could leave the
+        # device.
+        "secret",
+        "secrets",
+        "api_key",
+        "api_keys",
+        "authorization",
+        "auth_header",
+        "credential",
+        "credentials",
+        "password",
+        "token",
+        "access_token",
+        "refresh_token",
     }
 )
 
@@ -45,7 +76,9 @@ def validate_telemetry_safety(payload: dict[str, Any]) -> None:
     """Raises ValueError if payload contains forbidden keys.
 
     Recursively checks nested dicts and list elements to ensure no
-    prompt/output/audio/PII data leaks into telemetry.
+    prompt/output/audio/auth/PII data leaks into telemetry. Case-
+    insensitive: ``Authorization`` is treated identically to
+    ``authorization``.
     """
     _check_keys_recursive(payload, path="")
 
@@ -54,11 +87,11 @@ def _check_keys_recursive(obj: Any, path: str) -> None:
     """Recursively validate that no forbidden keys exist in the structure."""
     if isinstance(obj, dict):
         for key, value in obj.items():
-            if key in FORBIDDEN_TELEMETRY_KEYS:
+            if isinstance(key, str) and key.lower() in FORBIDDEN_TELEMETRY_KEYS:
                 raise ValueError(
                     f"Forbidden telemetry key '{key}' found at path '{path}.{key}'. "
                     f"Telemetry payloads must NEVER contain prompt, input, output, "
-                    f"audio, file paths, or PII data."
+                    f"audio, file paths, auth headers, secrets, or PII data."
                 )
             _check_keys_recursive(value, path=f"{path}.{key}")
     elif isinstance(obj, (list, tuple)):

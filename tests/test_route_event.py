@@ -2,9 +2,14 @@ from __future__ import annotations
 
 from octomil.runtime.routing.model_ref import parse_model_ref
 from octomil.runtime.routing.route_event import (
+    FORBIDDEN_TELEMETRY_KEYS,
     CandidateAttemptSummary,
     build_route_event,
     emit_route_event,
+    strip_forbidden_keys,
+)
+from octomil.runtime.telemetry import (
+    FORBIDDEN_TELEMETRY_KEYS as TELEMETRY_FORBIDDEN_KEYS,
 )
 
 
@@ -83,3 +88,51 @@ def test_parse_model_ref_uses_canonical_kinds() -> None:
         assert parse_model_ref(model).kind == expected_kind
 
     assert parse_model_ref("deploy_abc123").deployment_id == "deploy_abc123"
+
+
+def test_route_event_forbidden_keys_match_telemetry_contract() -> None:
+    """The route-event sanitizer must enforce the same forbidden set as
+    octomil.runtime.telemetry. Otherwise a payload routed through
+    emit_route_event() can carry secrets that the central contract
+    would have stripped."""
+    assert FORBIDDEN_TELEMETRY_KEYS == TELEMETRY_FORBIDDEN_KEYS
+
+
+def test_strip_forbidden_keys_drops_auth_case_insensitively() -> None:
+    """Authorization (capital A), API_KEY (uppercase) — both must be
+    stripped. The earlier case-sensitive impl let these through, which
+    was the privacy gap PR 7 missed in route_event.py."""
+    payload = {
+        "Authorization": "Bearer sk-secret",
+        "API_KEY": "sk-secret",
+        "metadata": {
+            "Token": "abc",
+            "password": "hunter2",
+            "engine": "llamacpp",
+        },
+        "engine": "mlx",
+    }
+    cleaned, stripped = strip_forbidden_keys(payload)
+    assert "Authorization" not in cleaned
+    assert "API_KEY" not in cleaned
+    assert "Token" not in cleaned["metadata"]
+    assert "password" not in cleaned["metadata"]
+    assert cleaned["engine"] == "mlx"
+    assert cleaned["metadata"]["engine"] == "llamacpp"
+    # Stripped names preserve original case for logging.
+    assert "Authorization" in stripped
+    assert "API_KEY" in stripped
+
+
+def test_strip_forbidden_keys_recurses_through_lists() -> None:
+    payload = {
+        "candidates": [
+            {"engine": "mlx", "Authorization": "Bearer leak"},
+            {"engine": "llamacpp", "secret": "..."},
+        ]
+    }
+    cleaned, _ = strip_forbidden_keys(payload)
+    for cand in cleaned["candidates"]:
+        assert "Authorization" not in cand
+        assert "secret" not in cand
+        assert "engine" in cand
