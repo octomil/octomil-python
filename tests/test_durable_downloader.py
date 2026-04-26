@@ -372,6 +372,11 @@ def test_empty_endpoints_raises(cache_dir, dest_dir):
         "weights/../../../../etc/passwd",
         "//absolute/posix",
         "with\x00null.bin",
+        ".",
+        "./",
+        "./.",
+        "a/./b",
+        "weights/.",
     ],
 )
 def test_rejects_unsafe_relative_paths(cache_dir, dest_dir, bad_path):
