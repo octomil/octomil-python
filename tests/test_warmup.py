@@ -181,8 +181,9 @@ def test_warmup_loads_backend_and_caches_it(tmp_path):
     assert outcome.prepare_outcome.artifact_id == "kokoro-en-v0_19"
     assert pm.prepare_calls == ["kokoro-en-v0_19"]
     assert _FakeSherpaBackend.load_calls == 1
-    # Cache populated.
-    assert ("tts", "kokoro-en-v0_19") in kernel._warmed_backends
+    # Cache populated under the artifact-identity key.
+    cached_keys = list(kernel._warmed_backends.keys())
+    assert any(k[0] == "tts" and k[1] == "kokoro-en-v0_19" for k in cached_keys), cached_keys
 
 
 def test_post_warmup_dispatch_skips_backend_construction(tmp_path):
@@ -190,14 +191,16 @@ def test_post_warmup_dispatch_skips_backend_construction(tmp_path):
     call returns the cached instance without re-running
     ``engine.create_backend`` or ``backend.load_model``."""
     kernel = ExecutionKernel()
-
     sentinel_backend = object()
-    kernel._warmed_backends[("tts", "kokoro-en-v0_19")] = sentinel_backend
+    candidate = _local_candidate(engine="sherpa-onnx")
+    key = kernel._warmup_cache_key("tts", "kokoro-en-v0_19", candidate)
+    kernel._warmed_backends[key] = sentinel_backend
 
-    # The resolver short-circuits on the cache hit; the engine import
-    # is never reached. (If it were, the patch below would fail the
-    # test by raising.)
-    with patch("octomil.runtime.engines.sherpa.SherpaTtsEngine") as fake_engine:
+    selection = _Selection(candidates=[candidate])
+
+    with ExitStack() as stack:
+        stack.enter_context(patch("octomil.execution.kernel._resolve_planner_selection", return_value=selection))
+        fake_engine = stack.enter_context(patch("octomil.runtime.engines.sherpa.SherpaTtsEngine"))
         fake_engine.side_effect = AssertionError("engine constructor must not be called on cache hit")
         result = kernel._resolve_local_tts_backend("kokoro-en-v0_19")
 
@@ -206,11 +209,16 @@ def test_post_warmup_dispatch_skips_backend_construction(tmp_path):
 
 def test_post_warmup_transcription_dispatch_skips_registry_walk(tmp_path):
     kernel = ExecutionKernel()
-
     sentinel_backend = object()
-    kernel._warmed_backends[("transcription", "whisper-tiny")] = sentinel_backend
+    candidate = _local_candidate(engine="whisper.cpp", artifact_id="whisper-tiny")
+    key = kernel._warmup_cache_key("transcription", "whisper-tiny", candidate)
+    kernel._warmed_backends[key] = sentinel_backend
 
-    with patch("octomil.runtime.engines.get_registry") as fake_registry:
+    selection = _Selection(candidates=[candidate])
+
+    with ExitStack() as stack:
+        stack.enter_context(patch("octomil.execution.kernel._resolve_planner_selection", return_value=selection))
+        fake_registry = stack.enter_context(patch("octomil.runtime.engines.get_registry"))
         fake_registry.side_effect = AssertionError("registry walk must not be called on cache hit")
         result = kernel._resolve_local_transcription_backend("whisper-tiny")
 
@@ -247,7 +255,7 @@ def test_warmup_returns_partial_success_when_backend_construction_fails(tmp_path
     assert outcome.backend_loaded is False
     assert outcome.prepare_outcome.artifact_id == "kokoro-en-v0_19"
     assert pm.prepare_calls == ["kokoro-en-v0_19"]
-    assert ("tts", "kokoro-en-v0_19") not in kernel._warmed_backends
+    assert kernel._warmed_backends == {}
 
 
 # ---------------------------------------------------------------------------
@@ -257,13 +265,253 @@ def test_warmup_returns_partial_success_when_backend_construction_fails(tmp_path
 
 def test_release_warmed_backends_clears_cache():
     kernel = ExecutionKernel()
-    kernel._warmed_backends[("tts", "model-a")] = object()
-    kernel._warmed_backends[("transcription", "model-b")] = object()
+    kernel._warmed_backends[("tts", "model-a", None, None, None)] = object()
+    kernel._warmed_backends[("transcription", "model-b", None, None, None)] = object()
     kernel.release_warmed_backends()
     assert kernel._warmed_backends == {}
     # Idempotent.
     kernel.release_warmed_backends()
     assert kernel._warmed_backends == {}
+
+
+# ---------------------------------------------------------------------------
+# Reviewer P1: @app refs must warm under the runtime model id, not the alias
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_warmup_app_ref_caches_under_runtime_model_not_alias(tmp_path):
+    """Reviewer P1: ``client.warmup(model='@app/foo/tts')`` must warm
+    + cache under the *resolved* model id (``kokoro-en-v0_19``), not
+    the app alias. The inference path resolves planner selections via
+    ``_runtime_model_for_selection``; if warmup keys under the alias,
+    the next ``synthesize_speech`` lookup misses the cache and pays
+    cold-start latency."""
+    artifact_dir = tmp_path / "kokoro"
+    artifact_dir.mkdir()
+    pm = _FakePM(artifact_dir)
+    kernel = ExecutionKernel(prepare_manager=pm)
+
+    @dataclass
+    class _AppResolution:
+        selected_model: str = "kokoro-en-v0_19"
+
+    selection_with_app = _Selection(
+        candidates=[_local_candidate(engine="sherpa-onnx")],
+        app_resolution=_AppResolution(),
+    )
+
+    # ``_resolve`` returns the alias as ``defaults.model`` (mimicking
+    # production where local-config doesn't know the app target);
+    # warmup must consult the planner's app_resolution to get the
+    # concrete model id.
+    kernel._resolve = lambda capability, **kw: type(  # type: ignore[method-assign]
+        "_D",
+        (),
+        {
+            "model": "@app/foo/tts",
+            "policy_preset": "local_first",
+            "inline_policy": None,
+            "cloud_profile": None,
+        },
+    )()
+
+    class _FakeEngine:
+        def create_backend(self, model: str, **kwargs: Any) -> _FakeSherpaBackend:
+            return _FakeSherpaBackend(model, **kwargs)
+
+    with ExitStack() as stack:
+        stack.enter_context(
+            patch("octomil.execution.kernel._resolve_planner_selection", return_value=selection_with_app)
+        )
+        stack.enter_context(patch("octomil.runtime.engines.sherpa.SherpaTtsEngine", _FakeEngine))
+        outcome = kernel.warmup(model="@app/foo/tts", capability="tts")
+
+    assert outcome.backend_loaded is True
+    assert outcome.model == "kokoro-en-v0_19", (
+        f"warmup must report the resolved runtime model, got {outcome.model!r}. "
+        "The alias key would miss the inference cache lookup."
+    )
+    cached_keys = list(kernel._warmed_backends.keys())
+    assert all(k[1] == "kokoro-en-v0_19" for k in cached_keys), cached_keys
+    assert all(k[1] != "@app/foo/tts" for k in cached_keys), cached_keys
+
+
+# ---------------------------------------------------------------------------
+# Reviewer P1: transcription warmup must call load_model before caching
+# ---------------------------------------------------------------------------
+
+
+def test_transcription_warmup_calls_load_model_before_caching(tmp_path):
+    """Reviewer P1: ``_resolve_local_transcription_backend`` only
+    runs ``engine.create_backend``; ``_WhisperBackend.load_model`` is
+    lazy and runs inside ``transcribe()``. If warmup caches the
+    not-yet-loaded backend, the first real transcription still pays
+    cold load latency. The kernel must invoke ``load_model`` before
+    putting the backend in the cache."""
+    artifact_dir = tmp_path / "whisper"
+    artifact_dir.mkdir()
+    pm = _FakePM(artifact_dir)
+    kernel = ExecutionKernel(prepare_manager=pm)
+    _stub_kernel_resolve(kernel, "whisper-tiny")
+
+    selection = _Selection(candidates=[_local_candidate(engine="whisper.cpp", artifact_id="whisper-tiny")])
+
+    class _LazyWhisperBackend:
+        load_calls = 0
+
+        def __init__(self, model: str, **kwargs: Any) -> None:
+            self.model = model
+            self.kwargs = kwargs
+
+        def load_model(self, model_name: str) -> None:
+            type(self).load_calls += 1
+
+        def transcribe(self, audio_path: str) -> dict[str, Any]:
+            return {"text": "ok"}
+
+    @dataclass
+    class _Detection:
+        engine: Any
+        available: bool
+
+    class _FakeEngine:
+        def create_backend(self, model: str, **kwargs: Any) -> _LazyWhisperBackend:
+            return _LazyWhisperBackend(model, **kwargs)
+
+    class _FakeRegistry:
+        def detect_all(self, model: str):
+            return [_Detection(engine=_FakeEngine(), available=True)]
+
+    with ExitStack() as stack:
+        stack.enter_context(patch("octomil.execution.kernel._resolve_planner_selection", return_value=selection))
+        stack.enter_context(patch("octomil.runtime.engines.get_registry", return_value=_FakeRegistry()))
+        outcome = kernel.warmup(model="whisper-tiny", capability="transcription")
+
+    assert outcome.backend_loaded is True
+    assert _LazyWhisperBackend.load_calls == 1, (
+        "transcription warmup must call backend.load_model before caching; "
+        "otherwise the first transcribe still pays cold load latency."
+    )
+    cached_keys = list(kernel._warmed_backends.keys())
+    assert any(k[0] == "transcription" and k[1] == "whisper-tiny" for k in cached_keys), cached_keys
+
+
+def test_transcription_warmup_treats_load_model_failure_as_load_skipped(tmp_path):
+    """When ``load_model`` raises (corrupt artifact, missing native
+    lib), the cache must NOT be populated; outcome reports
+    ``backend_loaded=False`` and prepare bytes stay on disk."""
+    artifact_dir = tmp_path / "whisper"
+    artifact_dir.mkdir()
+    pm = _FakePM(artifact_dir)
+    kernel = ExecutionKernel(prepare_manager=pm)
+    _stub_kernel_resolve(kernel, "whisper-tiny")
+
+    selection = _Selection(candidates=[_local_candidate(engine="whisper.cpp", artifact_id="whisper-tiny")])
+
+    class _BadWhisperBackend:
+        def __init__(self, model: str, **kwargs: Any) -> None:
+            pass
+
+        def load_model(self, model_name: str) -> None:
+            raise RuntimeError("native libwhisper missing on this host")
+
+        def transcribe(self, audio_path: str) -> dict[str, Any]:
+            return {"text": ""}
+
+    @dataclass
+    class _Detection:
+        engine: Any
+        available: bool
+
+    class _FakeEngine:
+        def create_backend(self, model: str, **kwargs: Any) -> _BadWhisperBackend:
+            return _BadWhisperBackend(model, **kwargs)
+
+    class _FakeRegistry:
+        def detect_all(self, model: str):
+            return [_Detection(engine=_FakeEngine(), available=True)]
+
+    with ExitStack() as stack:
+        stack.enter_context(patch("octomil.execution.kernel._resolve_planner_selection", return_value=selection))
+        stack.enter_context(patch("octomil.runtime.engines.get_registry", return_value=_FakeRegistry()))
+        outcome = kernel.warmup(model="whisper-tiny", capability="transcription")
+
+    assert outcome.backend_loaded is False
+    assert outcome.prepare_outcome.artifact_id == "whisper-tiny"  # bytes still on disk
+    assert kernel._warmed_backends == {}
+
+
+# ---------------------------------------------------------------------------
+# Reviewer P1: cache must distinguish artifact identities (digest/format)
+# ---------------------------------------------------------------------------
+
+
+def test_warmup_cache_does_not_alias_distinct_artifacts_with_same_runtime_model(tmp_path):
+    """Reviewer P1: two warmups for the same ``runtime_model`` but
+    different artifact identities (different digests, formats, or
+    quantizations) must not alias. The lookup against the *current*
+    planner selection must select the correct cached backend."""
+    kernel = ExecutionKernel()
+
+    cand_v1 = RuntimeCandidatePlan(
+        locality="local",
+        priority=0,
+        confidence=0.9,
+        reason="v1",
+        engine="sherpa-onnx",
+        artifact=RuntimeArtifactPlan(
+            model_id="kokoro-en-v0_19",
+            artifact_id="kokoro-en-v0_19",
+            digest="sha256:" + "a" * 64,
+            format="onnx",
+            quantization="fp32",
+            download_urls=[ArtifactDownloadEndpoint(url="https://cdn.example.com/v1")],
+        ),
+        delivery_mode="sdk_runtime",
+        prepare_required=True,
+        prepare_policy="lazy",
+    )
+    cand_v2 = RuntimeCandidatePlan(
+        locality="local",
+        priority=0,
+        confidence=0.9,
+        reason="v2",
+        engine="sherpa-onnx",
+        artifact=RuntimeArtifactPlan(
+            model_id="kokoro-en-v0_19",
+            artifact_id="kokoro-en-v0_19",
+            digest="sha256:" + "b" * 64,  # different bytes
+            format="onnx",
+            quantization="int8",  # different quantization
+            download_urls=[ArtifactDownloadEndpoint(url="https://cdn.example.com/v2")],
+        ),
+        delivery_mode="sdk_runtime",
+        prepare_required=True,
+        prepare_policy="lazy",
+    )
+
+    backend_v1 = object()
+    backend_v2 = object()
+    kernel._warmed_backends[kernel._warmup_cache_key("tts", "kokoro-en-v0_19", cand_v1)] = backend_v1
+    kernel._warmed_backends[kernel._warmup_cache_key("tts", "kokoro-en-v0_19", cand_v2)] = backend_v2
+
+    # Two distinct cache slots — no aliasing.
+    assert backend_v1 is not backend_v2
+    assert len(kernel._warmed_backends) == 2
+
+    # Lookup for a request whose planner emits the v2 candidate must
+    # return the v2 backend, even though v1 was cached first under
+    # the same runtime model.
+    selection_v2 = _Selection(candidates=[cand_v2])
+    with patch("octomil.execution.kernel._resolve_planner_selection", return_value=selection_v2):
+        result = kernel._lookup_warmed_backend("tts", "kokoro-en-v0_19")
+    assert result is backend_v2
+
+    selection_v1 = _Selection(candidates=[cand_v1])
+    with patch("octomil.execution.kernel._resolve_planner_selection", return_value=selection_v1):
+        result = kernel._lookup_warmed_backend("tts", "kokoro-en-v0_19")
+    assert result is backend_v1
 
 
 # ---------------------------------------------------------------------------
