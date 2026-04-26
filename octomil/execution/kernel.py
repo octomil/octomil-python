@@ -306,13 +306,15 @@ class ExecutionKernel:
         policy_preset = defaults.policy_preset or "local_first"
 
         # Planner-driven routing
-        selection = _resolve_planner_selection(effective_model, CAPABILITY_CHAT, policy_preset)
+        planner_model = _planner_model_for_request(effective_model=effective_model, app=app, capability=CAPABILITY_CHAT)
+        selection = _resolve_planner_selection(planner_model, CAPABILITY_CHAT, policy_preset)
 
         # PR B: app-ref refusal — see _enforce_app_ref_routing_policy.
         _enforce_app_ref_routing_policy(
             requested_model=model or effective_model,
             selection=selection,
             explicit_policy=policy,
+            explicit_app=app,
         )
 
         routing_policy = _resolve_routing_policy(defaults)
@@ -456,13 +458,15 @@ class ExecutionKernel:
             raise _no_model_error(CAPABILITY_CHAT)
 
         policy_preset = defaults.policy_preset or "local_first"
-        selection = _resolve_planner_selection(effective_model, CAPABILITY_CHAT, policy_preset)
+        planner_model = _planner_model_for_request(effective_model=effective_model, app=app, capability=CAPABILITY_CHAT)
+        selection = _resolve_planner_selection(planner_model, CAPABILITY_CHAT, policy_preset)
 
         # PR B: app-ref refusal — see _enforce_app_ref_routing_policy.
         _enforce_app_ref_routing_policy(
             requested_model=model or effective_model,
             selection=selection,
             explicit_policy=policy,
+            explicit_app=app,
         )
         routing_policy = _resolve_routing_policy(defaults)
         if _is_local_only_policy(policy):
@@ -600,13 +604,15 @@ class ExecutionKernel:
             raise _no_model_error(CAPABILITY_CHAT)
 
         policy_preset = defaults.policy_preset or "local_first"
-        selection = _resolve_planner_selection(effective_model, CAPABILITY_CHAT, policy_preset)
+        planner_model = _planner_model_for_request(effective_model=effective_model, app=app, capability=CAPABILITY_CHAT)
+        selection = _resolve_planner_selection(planner_model, CAPABILITY_CHAT, policy_preset)
 
         # PR B: app-ref refusal — see _enforce_app_ref_routing_policy.
         _enforce_app_ref_routing_policy(
             requested_model=model or effective_model,
             selection=selection,
             explicit_policy=policy,
+            explicit_app=app,
         )
 
         routing_policy = _resolve_routing_policy(defaults)
@@ -742,7 +748,10 @@ class ExecutionKernel:
             raise _no_model_error(CAPABILITY_EMBEDDING)
 
         policy_preset = defaults.policy_preset or "local_first"
-        selection = _resolve_planner_selection(effective_model, CAPABILITY_EMBEDDING, policy_preset)
+        planner_model = _planner_model_for_request(
+            effective_model=effective_model, app=app, capability=CAPABILITY_EMBEDDING
+        )
+        selection = _resolve_planner_selection(planner_model, CAPABILITY_EMBEDDING, policy_preset)
 
         routing_policy = _resolve_routing_policy(defaults)
 
@@ -880,13 +889,17 @@ class ExecutionKernel:
             raise _no_model_error(CAPABILITY_TRANSCRIPTION)
 
         policy_preset = defaults.policy_preset or "local_first"
-        selection = _resolve_planner_selection(effective_model, CAPABILITY_TRANSCRIPTION, policy_preset)
+        planner_model = _planner_model_for_request(
+            effective_model=effective_model, app=app, capability=CAPABILITY_TRANSCRIPTION
+        )
+        selection = _resolve_planner_selection(planner_model, CAPABILITY_TRANSCRIPTION, policy_preset)
 
         # PR B: same app-ref refusal + local-only forcing as TTS.
         _enforce_app_ref_routing_policy(
             requested_model=model or effective_model,
             selection=selection,
             explicit_policy=policy,
+            explicit_app=app,
         )
 
         routing_policy = _resolve_routing_policy(defaults)
@@ -1076,7 +1089,8 @@ class ExecutionKernel:
             raise _no_model_error(CAPABILITY_TTS)
 
         policy_preset = defaults.policy_preset or "local_first"
-        selection = _resolve_planner_selection(effective_model, CAPABILITY_TTS, policy_preset)
+        planner_model = _planner_model_for_request(effective_model=effective_model, app=app, capability=CAPABILITY_TTS)
+        selection = _resolve_planner_selection(planner_model, CAPABILITY_TTS, policy_preset)
         runtime_model = _runtime_model_for_selection(selection, effective_model)
 
         planner_policy = _tts_policy_from_selection(selection)
@@ -1100,6 +1114,7 @@ class ExecutionKernel:
             requested_model=requested_model,
             selection=selection,
             explicit_policy=policy,
+            explicit_app=app,
         )
 
         routing_policy = _resolve_routing_policy(defaults)
@@ -1976,11 +1991,44 @@ def _is_local_only_policy(policy: Optional[str]) -> bool:
     return policy.strip().lower() in _LOCAL_ONLY_POLICY_NAMES
 
 
+def _planner_model_for_request(
+    *,
+    effective_model: str,
+    app: Optional[str],
+    capability: str,
+) -> str:
+    """Synthesize an ``@app/<slug>/<capability>`` ref when ``app=`` is set.
+
+    Reviewer P1 on PR #454: the public facade exposes ``app=`` so a
+    caller can do ``client.audio.speech.create(model='kokoro-82m',
+    app='eternum')``. Previously that ``app`` value reached
+    ``ResolvedExecutionDefaults`` but never propagated into the
+    planner — ``RuntimePlanner.resolve()`` only sets ``app_slug`` by
+    parsing an ``@app/...`` model ref. The result was that the
+    request bypassed the app's routing policy entirely AND fell
+    through the app-ref refusal gate (``requested_model`` was a
+    concrete model id, not an ``@app/`` string).
+
+    The fix is the smallest one that uses the existing app-ref
+    machinery: when ``app=`` is set and ``effective_model`` is not
+    already an app ref, synthesize ``@app/<app>/<capability>``. The
+    planner sees an app ref, the app-resolution path runs, and the
+    refusal gate treats the request as app-scoped just like it would
+    for a caller that wrote out ``@app/...`` in ``model``.
+    """
+    if not app:
+        return effective_model
+    if isinstance(effective_model, str) and effective_model.startswith("@app/"):
+        return effective_model
+    return f"@app/{app}/{capability}"
+
+
 def _enforce_app_ref_routing_policy(
     *,
     requested_model: str,
     selection: Optional[Any],
     explicit_policy: Optional[str],
+    explicit_app: Optional[str] = None,
 ) -> None:
     """Refuse to silently cloud-route an ``@app/...`` ref on planner outage.
 
@@ -2017,21 +2065,26 @@ def _enforce_app_ref_routing_policy(
     """
     if explicit_policy is not None:
         return
-    if not isinstance(requested_model, str) or not requested_model.startswith("@app/"):
+    is_app_scoped = (isinstance(requested_model, str) and requested_model.startswith("@app/")) or bool(explicit_app)
+    if not is_app_scoped:
         return
     if selection is not None:
         # Planner answered. Even if it returned a synthetic cloud
         # fallback, the request has a planner-blessed path.
         return
+    descriptor = requested_model
+    if explicit_app and isinstance(requested_model, str) and not requested_model.startswith("@app/"):
+        descriptor = f"{requested_model!r} app={explicit_app!r}"
     raise OctomilError(
         code=OctomilErrorCode.RUNTIME_UNAVAILABLE,
         message=(
-            f"Could not resolve app routing policy for {requested_model!r}; "
+            f"Could not resolve app routing policy for {descriptor}; "
             "the runtime planner is unavailable (network, auth, or planner-import "
             "failure). The SDK refuses to silently fall back to cloud for "
-            "@app/... refs because that surfaces a confusing 403 to local-first "
-            "callers. Pass policy='local_only' to force local, policy='cloud_first' "
-            "to allow cloud, or fix planner connectivity / OCTOMIL_SERVER_KEY auth."
+            "app-scoped requests because that surfaces a confusing 403 to "
+            "local-first callers. Pass policy='local_only' to force local, "
+            "policy='cloud_first' to allow cloud, or fix planner connectivity / "
+            "OCTOMIL_SERVER_KEY auth."
         ),
     )
 

@@ -15,6 +15,7 @@ Three reviewer concerns get pinned here:
 
 from __future__ import annotations
 
+from typing import Any
 from unittest.mock import patch
 
 import pytest
@@ -172,6 +173,142 @@ def test_normalize_api_base_strips_versioned_suffix(raw, expected):
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# Reviewer P1: ``policy='local_only'`` must not be rejected by preset
+# normalization
+# ---------------------------------------------------------------------------
+
+
+def test_local_only_preset_is_accepted_by_resolve_capability_defaults():
+    """The TTS facade documents ``policy='local_only'`` as accepted.
+    ``resolve_capability_defaults`` calls ``_normalise_preset``,
+    whose VALID_PRESETS set must include it — otherwise the public
+    ``client.audio.speech.create(..., policy='local_only')`` call
+    raises ``ValueError`` before any of the cloud-disabled routing
+    even gets a chance to run."""
+    from octomil.config.local import (
+        VALID_PRESETS,
+        RequestOverrides,
+        load_standalone_config,
+        resolve_capability_defaults,
+    )
+
+    assert "local_only" in VALID_PRESETS
+    cfg = load_standalone_config()
+    overrides = RequestOverrides(model="kokoro-en-v0_19", policy="local_only")
+    defaults = resolve_capability_defaults("tts", overrides, cfg)
+    assert defaults.policy_preset == "local_only"
+
+
+@pytest.mark.asyncio
+async def test_facade_speech_create_accepts_local_only_policy(monkeypatch, tmp_path):
+    """End-to-end smoke (no stubbing of ``_resolve``): the public
+    ``client.audio.speech.create(..., policy='local_only')`` path
+    must not raise during preset normalization."""
+    from octomil.audio.speech import FacadeSpeech
+    from octomil.execution.kernel import ExecutionKernel
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.chdir(tmp_path)
+
+    kernel = ExecutionKernel()
+    speech = FacadeSpeech(kernel)
+
+    try:
+        await speech.create(
+            model="kokoro-en-v0_19",
+            input="hello",
+            policy="local_only",
+        )
+    except ValueError as exc:  # pragma: no cover - regression marker
+        pytest.fail(f"local_only must not be rejected by preset normalization: {exc}")
+    except Exception:
+        pass
+
+
+# ---------------------------------------------------------------------------
+# Reviewer P1: ``app=`` must reach planner routing
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_app_kwarg_reaches_planner_via_synthesized_app_ref():
+    """Reviewer P1: the public facade exposes ``app=``, but the
+    kernel previously only stored it on ``ResolvedExecutionDefaults``;
+    planner resolution still got the bare model id and the app's
+    routing policy never applied. The fix synthesizes
+    ``@app/<app>/<capability>`` as the planner-facing model so the
+    existing app-ref machinery does the rest."""
+    from octomil.execution.kernel import ExecutionKernel
+
+    kernel = ExecutionKernel()
+    kernel._resolve = lambda capability, **kw: type(  # type: ignore[method-assign]
+        "_D",
+        (),
+        {
+            "model": "kokoro-en-v0_19",
+            "policy_preset": "local_first",
+            "inline_policy": None,
+            "cloud_profile": None,
+        },
+    )()
+
+    captured: dict[str, Any] = {}
+
+    def fake_resolve_planner_selection(model, capability, policy_preset):
+        captured["planner_model"] = model
+        captured["capability"] = capability
+        return None
+
+    with patch(
+        "octomil.execution.kernel._resolve_planner_selection",
+        side_effect=fake_resolve_planner_selection,
+    ):
+        with pytest.raises(OctomilError) as excinfo:
+            await kernel.synthesize_speech(
+                model="kokoro-en-v0_19",
+                input="hi",
+                app="eternum",
+            )
+
+    assert captured["planner_model"] == "@app/eternum/tts", captured
+    assert excinfo.value.code == OctomilErrorCode.RUNTIME_UNAVAILABLE
+    assert "eternum" in str(excinfo.value)
+
+
+def test_planner_model_helper_synthesizes_app_ref():
+    from octomil.execution.kernel import _planner_model_for_request
+
+    assert _planner_model_for_request(effective_model="kokoro-82m", app=None, capability="tts") == "kokoro-82m"
+    assert (
+        _planner_model_for_request(effective_model="@app/notes/tts", app="other", capability="tts") == "@app/notes/tts"
+    )
+    assert (
+        _planner_model_for_request(effective_model="kokoro-82m", app="eternum", capability="tts") == "@app/eternum/tts"
+    )
+    assert _planner_model_for_request(effective_model="kokoro-82m", app="", capability="tts") == "kokoro-82m"
+
+
+def test_app_kwarg_triggers_refusal_gate_even_when_model_is_concrete():
+    """Reviewer P1: when the caller passes ``app=`` (without an
+    ``@app/`` prefix in ``model=``) and the planner returns no
+    selection, the refusal gate must still fire — the request IS
+    app-scoped."""
+    from octomil.execution.kernel import _enforce_app_ref_routing_policy
+
+    with pytest.raises(OctomilError) as excinfo:
+        _enforce_app_ref_routing_policy(
+            requested_model="kokoro-en-v0_19",
+            selection=None,
+            explicit_policy=None,
+            explicit_app="eternum",
+        )
+    assert excinfo.value.code == OctomilErrorCode.RUNTIME_UNAVAILABLE
+    msg = str(excinfo.value)
+    assert "kokoro-en-v0_19" in msg
+    assert "eternum" in msg
+
+
 @pytest.mark.asyncio
 async def test_facade_speech_passes_policy_and_app_through():
     """Reviewer P1: the public ``client.audio.speech.create`` facade
@@ -258,7 +395,6 @@ async def test_create_response_with_explicit_local_only_blocks_cloud(monkeypatch
     # Planner returns a cloud-only candidate; the dispatcher must
     # ignore it because policy='local_only' was explicit.
     from dataclasses import dataclass, field
-    from typing import Any
 
     from octomil.runtime.planner.schemas import RuntimeCandidatePlan
 
