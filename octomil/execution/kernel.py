@@ -100,6 +100,13 @@ from octomil.runtime.core.types import (
 
 logger = logging.getLogger(__name__)
 
+# Capabilities that ``client.prepare()`` accepts. Every value here must be
+# a string the planner returns and that ``_resolve()`` understands. The
+# TTS adapter actually consumes the prepared dir today; other adapters
+# materialize the bytes via ``prepare`` and pick them up on the next call
+# through their existing engine-managed caches.
+_PREPAREABLE_CAPABILITIES = frozenset({CAPABILITY_TTS, CAPABILITY_TRANSCRIPTION, CAPABILITY_EMBEDDING, CAPABILITY_CHAT})
+
 
 # ---------------------------------------------------------------------------
 # Result types (ExecutionResult, StreamChunk, ChatRoutingDecision stay here)
@@ -1101,29 +1108,30 @@ class ExecutionKernel:
     ) -> Any:
         """Resolve a planner candidate for ``model`` and pre-warm its artifact.
 
-        Public, caller-driven equivalent of the implicit prepare path that
-        :meth:`synthesize_speech` runs lazily. Calls
+        Public, caller-driven equivalent of the implicit prepare path. Calls
         :meth:`PrepareManager.prepare` with ``mode=PrepareMode.EXPLICIT`` so
         candidates whose ``prepare_policy='explicit_only'`` succeed when
-        invoked through this method but still raise the canonical
-        actionable error if pulled in lazily through the inference path.
+        invoked through this method.
+
+        Accepts every capability the planner may emit: ``"tts"``,
+        ``"transcription"``, ``"embedding"``, ``"chat"``. The TTS adapter
+        consumes the prepared ``artifact_dir`` directly today; other
+        adapters will pick it up when their backends accept a ``model_dir``
+        kwarg (separate, smaller follow-ups). Until then, calling
+        ``prepare`` for those capabilities still materializes the artifact
+        in the cache, so the next inference call hits a warm disk path
+        instead of paying download latency on the request path.
 
         Returns a :class:`PrepareOutcome`. Raises :class:`OctomilError` if
-        the planner emits no preparable local candidate or
-        :class:`PrepareManager.prepare` rejects the metadata.
-
-        ``capability`` defaults to ``"tts"`` because that is the only
-        capability today whose adapter consumes prepare metadata; other
-        capabilities still resolve through their own runtime dispatch and
-        do not need pre-warming. Future PRs that wire prepare into other
-        adapters extend the supported values here.
+        the capability is unknown, the planner emits no preparable local
+        candidate, or :class:`PrepareManager.prepare` rejects the metadata.
         """
-        if capability != CAPABILITY_TTS:
+        if capability not in _PREPAREABLE_CAPABILITIES:
             raise OctomilError(
                 code=OctomilErrorCode.INVALID_INPUT,
                 message=(
-                    f"client.prepare() supports capability='tts' today; got {capability!r}. "
-                    f"Other capabilities will be added when their adapters consume prepare metadata."
+                    f"client.prepare() got unknown capability {capability!r}. "
+                    f"Supported: {sorted(_PREPAREABLE_CAPABILITIES)}."
                 ),
             )
 
