@@ -208,9 +208,13 @@ class MLXEngine(EnginePlugin):
                 model_name,
             )
 
+        # ``model_dir`` is the PrepareManager-materialized artifact path.
+        # When set, MLXBackend.load_model passes it to mlx_lm.load() so the
+        # prepared bytes are used instead of triggering a fresh HF download.
         backend = MLXBackend(
             cache_size_mb=kwargs.get("cache_size_mb", 2048),
             cache_enabled=kwargs.get("cache_enabled", True),
+            model_dir=kwargs.get("model_dir"),
         )
         backend.load_model(model_name)
         return backend

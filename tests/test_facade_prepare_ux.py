@@ -136,12 +136,14 @@ def test_kernel_prepare_rejects_unknown_capability(tmp_path):
     assert "vision" in str(excinfo.value)
 
 
-@pytest.mark.parametrize("capability", ["embedding", "chat"])
+@pytest.mark.parametrize("capability", ["embedding", "chat", "responses"])
 def test_kernel_prepare_rejects_unwired_capabilities(tmp_path, capability):
-    """The remaining unwired capabilities (embedding, chat). Their inference
-    adapters do NOT yet thread the prepared model_dir, so prepare must
-    reject them with an actionable INVALID_INPUT message. Transcription
-    was added to the supported set in PR 10a."""
+    """Unwired capabilities — embedding (no model_dir kwarg yet) and
+    chat / responses (kernel-side threading lands in PR 10c, but the
+    public responses facade and MLX snapshot materialization aren't
+    ready). Each must be rejected with an actionable INVALID_INPUT
+    message until their full inference path consumes the prepared dir.
+    Transcription was added in PR 10a."""
     kernel = ExecutionKernel()
     with pytest.raises(OctomilError) as excinfo:
         kernel.prepare(model="m", capability=capability)
@@ -276,11 +278,11 @@ def test_cli_prepare_accepts_tts_capability(tmp_path):
     assert result.exit_code == 0, result.output
 
 
-@pytest.mark.parametrize("cap", ["embedding", "chat"])
+@pytest.mark.parametrize("cap", ["embedding", "chat", "responses"])
 def test_cli_prepare_rejects_unwired_capabilities_at_choice_constraint(cap):
     """CLI surface must match the kernel: tts and transcription are wired,
-    so embedding/chat are rejected at the click choice constraint until
-    their backends consume the prepared dir."""
+    so embedding/chat/responses are rejected at the click choice constraint
+    until their backends consume the prepared dir end-to-end."""
     runner = CliRunner()
     result = runner.invoke(prepare_cmd, ["m", "--capability", cap])
     assert result.exit_code != 0

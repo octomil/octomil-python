@@ -109,6 +109,7 @@ class MLXBackend(InferenceBackend):
         self,
         cache_size_mb: int = 2048,
         cache_enabled: bool = True,
+        model_dir: str | None = None,
     ) -> None:
         super().__init__()
         self._model: Any = None
@@ -117,6 +118,14 @@ class MLXBackend(InferenceBackend):
         self._model_name: str = ""
         self._repo_id: str = ""
         self._cache_enabled = cache_enabled
+        # Optional caller-supplied model directory. PrepareManager passes
+        # this when the planner has materialized the artifact under
+        # ``<cache>/artifacts/<artifact_id>/``. ``mlx_lm.load()`` accepts a
+        # filesystem path (directory containing config.json + safetensors)
+        # the same way it accepts a HuggingFace repo id, so when this is
+        # set we route the load through the prepared bytes instead of a
+        # fresh HF snapshot_download.
+        self._injected_model_dir: str | None = model_dir
         # Multi-entry KV cache pool -- LRU eviction by both entry count and size.
         from ...cache import KVCacheManager
 
@@ -129,11 +138,26 @@ class MLXBackend(InferenceBackend):
         import mlx_lm  # type: ignore[import-untyped]
 
         self._model_name = model_name
-        self._repo_id = resolve_model_name(model_name, "mlx")
+
+        # When PrepareManager has materialized the artifact, load from the
+        # prepared directory directly. mlx_lm.load() resolves a path that
+        # contains config.json + safetensors the same way it resolves a
+        # HuggingFace repo id.
+        if self._injected_model_dir:
+            load_target = self._injected_model_dir
+            self._repo_id = self._injected_model_dir
+            logger.info(
+                "Loading %s from prepared dir %s with mlx-lm...",
+                model_name,
+                self._injected_model_dir,
+            )
+        else:
+            self._repo_id = resolve_model_name(model_name, "mlx")
+            load_target = self._repo_id
+            logger.info("Loading %s (%s) with mlx-lm...", model_name, self._repo_id)
 
         load_start = time.time()
-        logger.info("Loading %s (%s) with mlx-lm...", model_name, self._repo_id)
-        self._model, self._tokenizer, *_ = _load_mlx_model(mlx_lm, self._repo_id)
+        self._model, self._tokenizer, *_ = _load_mlx_model(mlx_lm, load_target)
         load_elapsed_ms = (time.time() - load_start) * 1000
         logger.info("Model loaded: %s", self._repo_id)
 

@@ -110,9 +110,29 @@ logger = logging.getLogger(__name__)
 #   - tts             (PR 4 + 6 + 7)  — SherpaTtsEngine.create_backend(model_dir)
 #   - transcription   (PR 10a)        — _WhisperBackend honors injected model_dir
 #                                       and skips pywhispercpp's HF download path.
-# Wiring backlog:
-#   - embedding:      thread model_dir into the local embeddings backend
-#   - chat/responses: thread model_dir into mlx-lm / llama.cpp adapters
+# Wiring backlog (intentionally NOT in the supported set):
+#   - chat (kernel)   — MLXBackend and LlamaCppBackend accept ``model_dir``
+#                       (PR 10c backend threading), but the capability is
+#                       still gated because:
+#                         (a) the public ``client.responses.create`` facade
+#                             goes through ``OctomilResponses``, which does
+#                             not thread ``model_dir`` into its engine
+#                             ``create_backend`` calls — flipping ``chat``
+#                             on the kernel would mean ``client.prepare``
+#                             succeeds but the next ``client.responses.
+#                             create`` cold-loads anyway;
+#                         (b) PrepareManager materializes only single-file
+#                             artifacts (``<dir>/artifact`` sentinel) and
+#                             has no snapshot/manifest support, so MLX
+#                             loads from a prepared dir don't work for
+#                             real model shapes that mlx_lm requires
+#                             (config.json + tokenizer + safetensors).
+#                       ``chat`` and ``responses`` flip to wired once
+#                       OctomilResponses goes through the kernel (or
+#                       threads model_dir itself) AND PrepareManager grows
+#                       snapshot materialization proven by an MLX e2e test.
+#   - responses        — same gate as chat (dispatches through chat).
+#   - embedding        — thread model_dir into the local embeddings backend.
 _PREPAREABLE_CAPABILITIES = frozenset({CAPABILITY_TTS, CAPABILITY_TRANSCRIPTION})
 
 
@@ -291,6 +311,15 @@ class ExecutionKernel:
         routing_policy = _resolve_routing_policy(defaults)
         candidates = _selection_candidate_dicts(selection, routing_policy)
         fallback_allowed = _candidate_fallback_allowed(selection, routing_policy)
+        # PR 10c: drop *individually* unpreparable local sdk_runtime
+        # candidates (synthetic plan: missing digest/url, traversal,
+        # etc.) so the runner doesn't burn an attempt cold-loading
+        # through the engine's own download path. Other local
+        # candidates in the same plan survive.
+        runner_to_original = _runner_dict_to_planner_candidate(selection, candidates)
+        candidates = _filter_unpreparable_local_candidates(
+            self, selection, candidates, fallback_allowed=fallback_allowed
+        )
 
         gen_config = GenerationConfig(
             max_tokens=max_output_tokens or 2048,
@@ -310,13 +339,24 @@ class ExecutionKernel:
 
         runner = CandidateAttemptRunner(fallback_allowed=fallback_allowed, streaming=False)
 
+        # Cache prepared dirs by artifact_id within this call so a
+        # local-then-local retry (rare but possible under fallback)
+        # doesn't re-download. Prepare runs INSIDE the local attempt:
+        # cloud-first plans never touch local prepare.
+        prepared_dirs: dict[tuple, Optional[str]] = {}
+
         async def _execute_candidate(candidate: dict[str, Any]) -> RuntimeResponse:
             candidate_selection = _candidate_to_selection(selection, candidate)
+            local_dir: Optional[str] = None
+            if candidate.get("locality") == "local":
+                planner_candidate = runner_to_original.get(id(candidate))
+                local_dir = self._prepare_local_chat_artifact_cached(planner_candidate, prepared_dirs)
             router = await self._build_router(
                 effective_model,
                 CAPABILITY_CHAT,
                 defaults,
                 planner_selection=candidate_selection,
+                prepared_model_dir=local_dir,
             )
             return await router.run(request, policy=_routing_policy_for_candidate(candidate))
 
@@ -391,6 +431,10 @@ class ExecutionKernel:
         routing_policy = _resolve_routing_policy(defaults)
         candidates = _selection_candidate_dicts(selection, routing_policy)
         fallback_allowed = _candidate_fallback_allowed(selection, routing_policy)
+        runner_to_original = _runner_dict_to_planner_candidate(selection, candidates)
+        candidates = _filter_unpreparable_local_candidates(
+            self, selection, candidates, fallback_allowed=fallback_allowed
+        )
 
         gen_config = GenerationConfig(
             max_tokens=max_output_tokens or 2048,
@@ -410,6 +454,8 @@ class ExecutionKernel:
 
         runner = CandidateAttemptRunner(fallback_allowed=fallback_allowed, streaming=True)
 
+        prepared_dirs: dict[tuple, Optional[str]] = {}
+
         t0 = time.monotonic()
         collected_text = ""
         selected_locality = LOCALITY_ON_DEVICE
@@ -420,11 +466,16 @@ class ExecutionKernel:
             first_token_emitted = False
             try:
                 candidate_selection = _candidate_to_selection(selection, candidate)
+                local_dir: Optional[str] = None
+                if candidate.get("locality") == "local":
+                    planner_candidate = runner_to_original.get(id(candidate))
+                    local_dir = self._prepare_local_chat_artifact_cached(planner_candidate, prepared_dirs)
                 router = await self._build_router(
                     effective_model,
                     CAPABILITY_CHAT,
                     defaults,
                     planner_selection=candidate_selection,
+                    prepared_model_dir=local_dir,
                 )
                 async for chunk in router.stream(request, policy=_routing_policy_for_candidate(candidate)):
                     text = chunk.text or ""
@@ -503,6 +554,10 @@ class ExecutionKernel:
         routing_policy = _resolve_routing_policy(defaults)
         candidates = _selection_candidate_dicts(selection, routing_policy)
         fallback_allowed = _candidate_fallback_allowed(selection, routing_policy)
+        runner_to_original = _runner_dict_to_planner_candidate(selection, candidates)
+        candidates = _filter_unpreparable_local_candidates(
+            self, selection, candidates, fallback_allowed=fallback_allowed
+        )
 
         gen_config = GenerationConfig(
             max_tokens=max_output_tokens or 2048,
@@ -517,6 +572,8 @@ class ExecutionKernel:
 
         runner = CandidateAttemptRunner(fallback_allowed=fallback_allowed, streaming=True)
 
+        prepared_dirs: dict[tuple, Optional[str]] = {}
+
         t0 = time.monotonic()
         collected_text = ""
         selected_locality = LOCALITY_ON_DEVICE
@@ -527,11 +584,16 @@ class ExecutionKernel:
             first_token_emitted = False
             try:
                 candidate_selection = _candidate_to_selection(selection, candidate)
+                local_dir: Optional[str] = None
+                if candidate.get("locality") == "local":
+                    planner_candidate = runner_to_original.get(id(candidate))
+                    local_dir = self._prepare_local_chat_artifact_cached(planner_candidate, prepared_dirs)
                 router = await self._build_router(
                     effective_model,
                     CAPABILITY_CHAT,
                     defaults,
                     planner_selection=candidate_selection,
+                    prepared_model_dir=local_dir,
                 )
                 async for chunk in router.stream(request, policy=_routing_policy_for_candidate(candidate)):
                     text = chunk.text or ""
@@ -1239,9 +1301,14 @@ class ExecutionKernel:
         ``model_dir`` kwarg — exposing ``prepare`` for them now would be
         a false success: the bytes would land on disk and the next
         inference call would still cold-start through the engine's own
-        lookup. The current set is the source of truth; the lifecycle
-        support fixture in octomil-contracts cites the e2e test that
-        proves each cell's claim.
+        lookup. PR 10c added the kernel-side threading for chat into
+        ``MLXBackend`` and ``LlamaCppBackend``, but the capability
+        remains gated until (a) the public ``client.responses.create``
+        facade goes through the kernel (or threads ``model_dir``
+        itself), and (b) PrepareManager grows snapshot/manifest support
+        for multi-file MLX artifacts. The current set is the source of
+        truth; the lifecycle support fixture in octomil-contracts cites
+        the e2e test that proves each cell's claim.
 
         Returns a :class:`PrepareOutcome`. Raises :class:`OctomilError` if
         the capability is not yet wired, the planner emits no preparable
@@ -1301,6 +1368,74 @@ class ExecutionKernel:
         manager = self._prepare_manager or PrepareManager()
         outcome = manager.prepare(candidate)
         return str(outcome.artifact_dir)
+
+    def _prepare_local_chat_artifact_cached(
+        self,
+        candidate: Optional[Any],
+        cache: dict[tuple, Optional[str]],
+    ) -> Optional[str]:
+        """Lazy, per-call prepare for *this specific* local candidate.
+
+        Called from inside the local branch of the candidate runner
+        with the planner candidate that's about to be attempted, so
+        cloud-first plans (and plans whose primary cloud candidate
+        succeeds) never trigger prepare. The cache de-dupes redundant
+        prepares for the same artifact shape within a single
+        ``create_response`` call.
+
+        Cache key
+        ~~~~~~~~~
+        ``(artifact_id, digest, format, quantization)``. Earlier shapes
+        keyed only on ``artifact_id`` / ``model_id``, which let two
+        local candidates that shared the logical id but carried
+        different digests or formats reuse the first candidate's
+        prepared directory — for example, an MLX snapshot candidate
+        and a GGUF candidate that both quote ``model_id="gemma3-1b"``
+        because ``artifact_id`` was omitted. The second candidate would
+        receive a ``model_dir`` containing the wrong bytes. Including
+        digest / format / quantization in the key ensures the cache
+        only short-circuits when the planner is truly asking for the
+        same verified artifact.
+
+        Returns ``None`` (cold-load through the engine's own resolution
+        path) when:
+          - the candidate is missing or not a local sdk_runtime shape,
+          - ``prepare_required`` is False (engine-managed, e.g. ollama),
+          - the candidate has no artifact id (synthetic policy
+            candidate built without planner metadata).
+        ``manager.prepare`` exceptions surface unchanged so the runner
+        records the failure and falls back to the next candidate — same
+        contract as the TTS / transcription paths.
+        """
+        if candidate is None:
+            return None
+        if getattr(candidate, "locality", None) != "local":
+            return None
+        delivery_mode = getattr(candidate, "delivery_mode", None) or "sdk_runtime"
+        if delivery_mode != "sdk_runtime":
+            return None
+        if not getattr(candidate, "prepare_required", False):
+            return None
+        artifact = getattr(candidate, "artifact", None)
+        artifact_id = getattr(artifact, "artifact_id", None) or getattr(artifact, "model_id", None)
+        if not artifact_id:
+            return None
+        cache_key = (
+            artifact_id,
+            getattr(artifact, "digest", None),
+            getattr(artifact, "format", None),
+            getattr(artifact, "quantization", None),
+        )
+        if cache_key in cache:
+            return cache[cache_key]
+
+        from octomil.runtime.lifecycle.prepare_manager import PrepareManager
+
+        manager = self._prepare_manager or PrepareManager()
+        outcome = manager.prepare(candidate)
+        prepared = str(outcome.artifact_dir)
+        cache[cache_key] = prepared
+        return prepared
 
     def _prepare_local_tts_artifact(self, selection: Optional[Any]) -> Optional[str]:
         """Run :class:`PrepareManager` for the local TTS candidate, if any.
@@ -1451,12 +1586,20 @@ class ExecutionKernel:
         defaults: ResolvedExecutionDefaults,
         *,
         planner_selection: Optional[Any] = None,
+        prepared_model_dir: Optional[str] = None,
     ) -> RouterModelRuntime:
         """Build a RouterModelRuntime for the given model and capability.
 
         When a planner_selection is provided and recommends a specific engine,
         the local factory tries that engine first before falling back to the
         default registry resolution.
+
+        ``prepared_model_dir`` is threaded into ``engine.create_backend``
+        as ``model_dir=...`` for engines that consume prepared bytes
+        (mlx-lm, llama.cpp, sherpa-onnx, whisper). Engines that do not
+        recognize the kwarg ignore it (each ``create_backend`` accepts
+        ``**kwargs``). When ``None`` the engine's own model resolution
+        path runs unchanged.
         """
         from octomil.runtime.core.registry import ModelRuntimeRegistry
 
@@ -1469,6 +1612,9 @@ class ExecutionKernel:
             if planner_selection is not None and planner_selection.locality == "local"
             else None
         )
+        backend_kwargs: dict[str, Any] = {}
+        if prepared_model_dir:
+            backend_kwargs["model_dir"] = prepared_model_dir
 
         def local_factory(hint: str):
             if planner_forces_cloud:
@@ -1486,7 +1632,7 @@ class ExecutionKernel:
                         from octomil.runtime.core.engine_bridge import _infer_tool_call_tier
                         from octomil.runtime.core.types import RuntimeCapabilities
 
-                        backend = engine.create_backend(model)
+                        backend = engine.create_backend(model, **backend_kwargs)
                         return InferenceBackendAdapter(
                             backend=backend,
                             model_name=model,
@@ -1538,6 +1684,128 @@ class ExecutionKernel:
 # ---------------------------------------------------------------------------
 # Error helpers
 # ---------------------------------------------------------------------------
+
+
+def _runner_dict_to_planner_candidate(
+    selection: Optional[Any],
+    candidates: list[dict[str, Any]],
+) -> dict[int, Any]:
+    """Map each runner-dict in ``candidates`` to its planner candidate.
+
+    ``_selection_candidate_dicts`` produces its dicts in 1:1 order with
+    ``selection.candidates`` whenever the planner emitted a non-empty
+    list, so we pair by position. The dict identity (``id(c)``) is the
+    map key — that survives the post-filter list as long as the dicts
+    aren't copied (which they aren't: filter just removes entries).
+
+    Dicts that have no original (the policy-synthesized fallback path
+    when the planner emitted nothing) are not mapped; ``cache.get``
+    returns ``None`` for those, which the prepare helper treats as
+    no-op.
+    """
+    originals = list(getattr(selection, "candidates", None) or [])
+    mapping: dict[int, Any] = {}
+    for idx, dict_candidate in enumerate(candidates):
+        if idx < len(originals):
+            mapping[id(dict_candidate)] = originals[idx]
+    return mapping
+
+
+def _filter_unpreparable_local_candidates(
+    kernel: "ExecutionKernel",
+    selection: Optional[Any],
+    candidates: list[dict[str, Any]],
+    *,
+    fallback_allowed: bool,
+) -> list[dict[str, Any]]:
+    """Drop *only* the unpreparable local candidates from the runner list.
+
+    The earlier shape of this helper looked at ``_local_candidate_is_unpreparable``
+    (which inspects the *first* local sdk_runtime candidate of the
+    selection) and then removed *every* local candidate. That was wrong
+    in two ways:
+
+      1. Multi-local plans like ``[bad local mlx, good local llama, cloud]``
+         lost the valid llama fallback. The bad mlx candidate poisoned
+         the entire local lane.
+      2. Plans with ``fallback_allowed=False`` like
+         ``[bad local, cloud]`` could be silently promoted to cloud:
+         the local primary disappeared and cloud — which the planner
+         only emitted as a non-fallback option — became the first
+         remaining candidate.
+
+    The fix evaluates each local sdk_runtime candidate independently
+    against ``PrepareManager.can_prepare`` and drops only the
+    individually unpreparable ones. When a *primary* candidate (index
+    0) is unpreparable AND ``fallback_allowed`` is False, the helper
+    returns an empty list so the runner surfaces the planner's "no
+    runnable candidate" error instead of laundering the request to
+    cloud.
+
+    Cloud candidates and engine-managed (``prepare_required=False``)
+    local candidates pass through untouched.
+    """
+    from octomil.runtime.lifecycle.prepare_manager import PrepareManager
+
+    manager = kernel._prepare_manager or PrepareManager()
+    # ``_selection_candidate_dicts`` produces its list 1:1 in order with
+    # ``selection.candidates`` whenever the planner emitted a non-empty
+    # list, so we can pair them by position. When the dicts came from
+    # the policy synthesis path (no planner candidates) the originals
+    # list is shorter / empty and the corresponding entries pair to
+    # ``None`` — those candidates have no prepare metadata to validate
+    # so they pass through unchanged.
+    originals = list(getattr(selection, "candidates", None) or [])
+    paired: list[tuple[dict[str, Any], Optional[Any]]] = []
+    for idx, dict_candidate in enumerate(candidates):
+        original = originals[idx] if idx < len(originals) else None
+        paired.append((dict_candidate, original))
+
+    def _is_unpreparable_local(candidate_dict: dict[str, Any], original: Optional[Any]) -> bool:
+        if candidate_dict.get("locality") != "local":
+            return False
+        delivery_mode = candidate_dict.get("delivery_mode") or "sdk_runtime"
+        if delivery_mode != "sdk_runtime":
+            return False
+        if original is None:
+            # No matching planner plan object — synthetic policy
+            # candidate, no prepare metadata to validate.
+            return False
+        if not getattr(original, "prepare_required", False):
+            return False
+        try:
+            return not manager.can_prepare(original)
+        except Exception:
+            return True
+
+    primary_unpreparable = bool(paired) and _is_unpreparable_local(*paired[0])
+    filtered = [c for c, original in paired if not _is_unpreparable_local(c, original)]
+
+    if primary_unpreparable and not fallback_allowed:
+        # Planner forbids fallback and the primary is unrunnable.
+        # Raising an actionable OctomilError here is better than
+        # returning ``[]`` and letting the runner emit a generic
+        # "No runtime available": the latter loses the rejected
+        # primary's identity (engine, artifact_id, reason), which
+        # is exactly the diagnostic the caller needs to fix their
+        # plan or relax fallback_allowed.
+        primary_dict, primary_original = paired[0]
+        engine = primary_dict.get("engine") or getattr(primary_original, "engine", None) or "?"
+        artifact = getattr(primary_original, "artifact", None)
+        artifact_id = getattr(artifact, "artifact_id", None) or getattr(artifact, "model_id", None) or "<unknown>"
+        reason = primary_dict.get("reason") or getattr(primary_original, "reason", "") or ""
+        raise OctomilError(
+            code=OctomilErrorCode.RUNTIME_UNAVAILABLE,
+            message=(
+                f"local_runtime_unavailable: planner emitted a local sdk_runtime candidate "
+                f"(engine={engine!r}, artifact={artifact_id!r}) but PrepareManager.can_prepare "
+                f"rejected the metadata (synthetic plan: missing digest/url, traversal, disabled "
+                f"policy, etc.) and fallback_allowed=False blocks promotion to cloud. "
+                f"{('reason=' + reason + '. ') if reason else ''}"
+                f"Fix the planner candidate or relax fallback_allowed to admit cloud."
+            ),
+        )
+    return filtered
 
 
 def _local_sdk_runtime_candidate(selection: Optional[Any]) -> Optional[Any]:

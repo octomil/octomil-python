@@ -16,7 +16,10 @@ actually consume the prepared ``model_dir``:
 Embedding and chat (plus responses, which routes through chat) will be
 added one at a time as their backends learn to consume the prepared
 directory; until then, calling prepare for them would download bytes
-the next inference ignores. The CLI mirrors the kernel's
+the next inference ignores. PR 10c added the kernel-side threading for
+chat into MLX/llama.cpp, but the CLI flag stays gated until the public
+``responses.create`` facade goes through the kernel and PrepareManager
+grows multi-file snapshot support. The CLI mirrors the kernel's
 ``_PREPAREABLE_CAPABILITIES`` set via the ``--capability`` choice list.
 
 Usage::
@@ -43,8 +46,8 @@ import click
     help=(
         "Which capability's planner candidate to prepare. Today: 'tts' (SherpaTtsEngine "
         "consumes the prepared dir) and 'transcription' (whisper.cpp loads the prepared "
-        ".bin/.gguf/.ggml file instead of triggering its own download). Embedding and "
-        "chat are added one at a time as their backends consume the prepared dir."
+        ".bin/.gguf/.ggml file instead of triggering its own download). Chat / responses "
+        "and embedding are added once their backends consume the prepared dir."
     ),
 )
 @click.option(

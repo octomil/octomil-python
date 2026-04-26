@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import time
 from typing import Any, AsyncIterator
 
@@ -32,6 +33,7 @@ class LlamaCppBackend(InferenceBackend):
         self,
         cache_size_mb: int = 2048,
         cache_enabled: bool = True,
+        model_dir: str | None = None,
     ) -> None:
         super().__init__()
         self._llm: Any = None
@@ -39,6 +41,46 @@ class LlamaCppBackend(InferenceBackend):
         self._cache_size_mb = cache_size_mb
         self._cache_enabled = cache_enabled
         self._llama_cache: Any = None
+        # Optional caller-supplied model directory. PrepareManager passes
+        # this when the planner has materialized the artifact under
+        # ``<cache>/artifacts/<artifact_id>/``. We look for a ``.gguf``
+        # file inside (sentinel ``artifact`` first, then any *.gguf) and
+        # load it via ``llama_cpp.Llama(model_path=...)`` so the prepared
+        # bytes drive inference instead of huggingface_hub downloading
+        # the GGUF anew.
+        self._injected_model_dir: str | None = model_dir
+
+    def _resolve_local_gguf_file(self) -> str | None:
+        """Return a path to a GGUF file inside the injected ``model_dir``.
+
+        Resolution order:
+
+        1. PrepareManager's single-file sentinel ``<dir>/artifact``. The
+           planner emits this when ``required_files`` is empty; the
+           sentinel has no extension so a naive ``.gguf`` glob would
+           miss it. We return the sentinel verbatim — llama_cpp.Llama
+           opens the file as GGUF regardless of suffix because it
+           inspects the magic bytes.
+        2. Any ``*.gguf`` at the top level of the directory. Covers the
+           multi-file artifact / legacy ``required_files=['name.gguf']``
+           case.
+
+        Returns ``None`` when no dir is injected, the dir is missing,
+        or no candidate file is found — the existing HF/repo path runs
+        unchanged.
+        """
+        if not self._injected_model_dir:
+            return None
+        model_dir = self._injected_model_dir
+        if not os.path.isdir(model_dir):
+            return None
+        sentinel = os.path.join(model_dir, "artifact")
+        if os.path.isfile(sentinel):
+            return sentinel
+        for entry in sorted(os.listdir(model_dir)):
+            if entry.lower().endswith(".gguf"):
+                return os.path.join(model_dir, entry)
+        return None
 
     def _attach_cache(self) -> None:
         """Attach a LlamaCache to the loaded model if caching is enabled."""
@@ -58,6 +100,27 @@ class LlamaCppBackend(InferenceBackend):
         from llama_cpp import Llama  # type: ignore[import-untyped]
 
         self._model_name = model_name
+
+        # PrepareManager-materialized artifact takes priority over every
+        # other lookup. Resolve a single .gguf file inside the injected
+        # directory and load via Llama(model_path=...) so the prepared
+        # bytes are used. If the directory has no candidate GGUF (e.g.
+        # malformed manifest) we fall through to the existing HF/repo
+        # resolution path so users still get an error message that
+        # points at the recovery action.
+        prepared_path = self._resolve_local_gguf_file()
+        if prepared_path:
+            logger.info("Loading prepared GGUF: %s", prepared_path)
+            self._llm = Llama(
+                model_path=prepared_path,
+                n_ctx=4096,
+                n_batch=256,
+                n_gpu_layers=-1,
+                flash_attn=True,
+                verbose=False,
+            )
+            self._attach_cache()
+            return
 
         # Local GGUF file path
         if model_name.endswith(".gguf"):
