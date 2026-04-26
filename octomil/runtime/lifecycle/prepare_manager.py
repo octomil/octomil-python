@@ -29,6 +29,9 @@ from octomil.runtime.lifecycle.durable_download import (
     DownloadEndpoint,
     DurableDownloader,
     RequiredFile,
+    _digest_matches,
+    _safe_join,
+    _validate_relative_path,
 )
 from octomil.runtime.planner.schemas import RuntimeCandidatePlan
 
@@ -130,13 +133,12 @@ class PrepareManager:
         artifact_dir = self._cache_dir / "artifacts" / descriptor.artifact_id
         artifact_dir.mkdir(parents=True, exist_ok=True)
 
-        all_present = self._already_present(descriptor, artifact_dir)
-        if all_present:
-            files = {f.relative_path: _resolve_path(artifact_dir, f.relative_path) for f in descriptor.required_files}
+        cached_files = self._already_verified(descriptor, artifact_dir)
+        if cached_files is not None:
             return PrepareOutcome(
                 artifact_id=descriptor.artifact_id,
                 artifact_dir=artifact_dir,
-                files=files,
+                files=cached_files,
                 engine=candidate.engine,
                 delivery_mode=candidate.delivery_mode or "sdk_runtime",
                 prepare_policy=candidate.prepare_policy,
@@ -212,11 +214,32 @@ class PrepareManager:
             for ep in artifact.download_urls
         ]
 
+        # The current planner schema gives us a single artifact-level digest
+        # and a flat list of required_files. There is no per-file manifest
+        # yet, so a multi-file artifact cannot be verified — every file would
+        # be checked against the same digest and at least one would fail. A
+        # later PR adds manifest_uri parsing; for now, refuse multi-file
+        # artifacts loudly rather than silently broadcast one digest across
+        # files.
+        if len(artifact.required_files) > 1:
+            raise OctomilError(
+                code=ErrorCode.INVALID_INPUT,
+                message=(
+                    f"Artifact '{artifact.artifact_id or artifact.model_id}' lists "
+                    f"{len(artifact.required_files)} required_files but the planner "
+                    f"schema in this release only carries a single artifact-level digest. "
+                    f"Multi-file artifacts require a per-file manifest_uri (planned in a "
+                    f"follow-up PR); refusing to prepare without per-file integrity."
+                ),
+            )
+
         if artifact.required_files:
-            required = [
-                RequiredFile(relative_path=p, digest=artifact.digest, size_bytes=artifact.size_bytes)
-                for p in artifact.required_files
-            ]
+            # Validate the planner-supplied path before it is ever used as a
+            # filesystem name or URL component. _validate_relative_path is the
+            # same helper DurableDownloader uses, so PrepareManager and the
+            # downloader share one trust boundary.
+            safe_path = _validate_relative_path(artifact.required_files[0])
+            required = [RequiredFile(relative_path=safe_path, digest=artifact.digest, size_bytes=artifact.size_bytes)]
         else:
             required = [RequiredFile(relative_path="", digest=artifact.digest, size_bytes=artifact.size_bytes)]
 
@@ -226,12 +249,37 @@ class PrepareManager:
             endpoints=endpoints,
         )
 
-    def _already_present(self, descriptor: ArtifactDescriptor, artifact_dir: Path) -> bool:
+    def _already_verified(self, descriptor: ArtifactDescriptor, artifact_dir: Path) -> dict[str, Path] | None:
+        """Return the file map iff every required file exists, sits under
+        ``artifact_dir`` after symlink/path resolution, and matches its digest.
+
+        Returns ``None`` (cache miss) on any mismatch — the caller then runs
+        the downloader, which performs the same containment + digest checks
+        as the authoritative path.
+        """
+        verified: dict[str, Path] = {}
         for required in descriptor.required_files:
-            target = _resolve_path(artifact_dir, required.relative_path)
-            if not target.exists():
-                return False
-        return True
+            try:
+                if required.relative_path:
+                    target = _safe_join(artifact_dir, required.relative_path)
+                else:
+                    target = artifact_dir.resolve() / "artifact"
+            except OctomilError:
+                # Path validation already failed at descriptor build, so this
+                # is a defense-in-depth path. Treat as cache miss; the
+                # downloader call that follows will surface the real error.
+                return None
+            if not target.is_file():
+                return None
+            if not _digest_matches(target, required.digest):
+                logger.info(
+                    "Artifact %s file %r exists but digest mismatch; will re-download",
+                    descriptor.artifact_id,
+                    required.relative_path,
+                )
+                return None
+            verified[required.relative_path] = target
+        return verified
 
 
 def _artifact_id(candidate: RuntimeCandidatePlan) -> str:
@@ -239,9 +287,3 @@ def _artifact_id(candidate: RuntimeCandidatePlan) -> str:
     if artifact is None:
         return f"<no-artifact:{candidate.engine or 'unknown'}>"
     return artifact.artifact_id or artifact.model_id
-
-
-def _resolve_path(artifact_dir: Path, relative_path: str) -> Path:
-    if not relative_path:
-        return artifact_dir / "artifact"
-    return artifact_dir / relative_path
