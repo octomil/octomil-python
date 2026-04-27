@@ -2112,13 +2112,40 @@ def _execution_model_for_cloud_dispatch(
     return effective_model
 
 
+def _planner_visible_capability(capability: str) -> str:
+    """Map an internal capability constant to the planner-visible name.
+
+    The internal ``CAPABILITY_CHAT`` constant is ``"chat"``, but the
+    planner endpoint and server-side routing model both speak of
+    that public surface as ``"responses"``.
+    ``RuntimePlanner.resolve`` already runs incoming capability
+    strings through ``_PLANNER_CAPABILITY_MAP`` for its outbound
+    request — but when the SDK *synthesizes* an app ref like
+    ``@app/<app>/<capability>`` locally, that synthesized string IS
+    the canonical app ref the server keys quotas / billing / app
+    metadata against. If we synthesized ``@app/eternum/chat`` and
+    the server only knows ``@app/eternum/responses``, the app
+    resolution would fall apart even though the planner endpoint
+    received ``capability="responses"``.
+
+    Aligning both halves on the public name keeps the planner's
+    parsed capability and the server-visible app ref in agreement.
+    Other capabilities (tts, transcription, embedding) round-trip
+    unchanged because the planner map only rewrites
+    ``chat → responses``.
+    """
+
+    return _PLANNER_CAPABILITY_MAP.get(capability, capability)
+
+
 def _planner_model_for_request(
     *,
     effective_model: str,
     app: Optional[str],
     capability: str,
 ) -> str:
-    """Synthesize an ``@app/<slug>/<capability>`` ref when ``app=`` is set.
+    """Synthesize an ``@app/<slug>/<canonical-capability>`` ref when
+    ``app=`` is set.
 
     Reviewer P1 on PR #454: the public facade exposes ``app=`` so a
     caller can do ``client.audio.speech.create(model='kokoro-82m',
@@ -2130,18 +2157,20 @@ def _planner_model_for_request(
     through the app-ref refusal gate (``requested_model`` was a
     concrete model id, not an ``@app/`` string).
 
-    The fix is the smallest one that uses the existing app-ref
-    machinery: when ``app=`` is set and ``effective_model`` is not
-    already an app ref, synthesize ``@app/<app>/<capability>``. The
-    planner sees an app ref, the app-resolution path runs, and the
-    refusal gate treats the request as app-scoped just like it would
-    for a caller that wrote out ``@app/...`` in ``model``.
+    The synthesis uses the *planner-visible* capability name (so
+    chat → ``@app/<app>/responses``, not ``@app/<app>/chat``) so the
+    same string the planner endpoint receives also identifies the
+    app on the server side for cloud dispatch. Otherwise
+    ``RuntimePlanner.resolve`` would parse our synthesized
+    ``@app/eternum/chat`` and the cloud branch would dispatch under
+    a capability the server doesn't recognize.
     """
     if not app:
         return effective_model
     if isinstance(effective_model, str) and effective_model.startswith("@app/"):
         return effective_model
-    return f"@app/{app}/{capability}"
+    canonical_capability = _planner_visible_capability(capability)
+    return f"@app/{app}/{canonical_capability}"
 
 
 def _enforce_app_ref_routing_policy(

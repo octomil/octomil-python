@@ -486,8 +486,126 @@ async def test_chat_cloud_dispatch_uses_app_ref_not_resolved_model():
 
     # Local resolution still uses the concrete model id (for engine
     # registry lookup if local were chosen); cloud dispatch sees the
-    # app ref.
-    assert captured_kwargs["cloud_execution_model"] == "@app/eternum/chat", captured_kwargs
+    # *canonical* public-capability app ref. ``CAPABILITY_CHAT`` is
+    # the SDK's internal constant; the planner / server keys the app
+    # under its public ``"responses"`` capability, so the synthesized
+    # ref must match that.
+    assert captured_kwargs["cloud_execution_model"] == "@app/eternum/responses", captured_kwargs
+
+
+# ---------------------------------------------------------------------------
+# Reviewer P1: planner + cloud must agree on canonical capability
+# ---------------------------------------------------------------------------
+
+
+def test_planner_visible_capability_maps_chat_to_responses():
+    """The internal ``CAPABILITY_CHAT`` constant is "chat", but the
+    server-visible canonical app capability is "responses". The
+    helper must map them so synthesized app refs and planner
+    requests agree."""
+    from octomil.execution.kernel import _planner_visible_capability
+
+    assert _planner_visible_capability("chat") == "responses"
+    # Other capabilities round-trip unchanged.
+    assert _planner_visible_capability("tts") == "tts"
+    assert _planner_visible_capability("transcription") == "transcription"
+    assert _planner_visible_capability("embedding") == "embeddings"
+
+
+def test_planner_model_for_chat_request_uses_responses_capability():
+    """``app=`` + ``CAPABILITY_CHAT`` → synthesized ref MUST use
+    ``responses`` (the canonical public capability), not ``chat``."""
+    from octomil.execution.kernel import _planner_model_for_request
+
+    assert (
+        _planner_model_for_request(
+            effective_model="gpt-4o-mini",
+            app="eternum",
+            capability="chat",
+        )
+        == "@app/eternum/responses"
+    )
+    # tts / transcription unchanged.
+    assert (
+        _planner_model_for_request(
+            effective_model="kokoro-82m",
+            app="eternum",
+            capability="tts",
+        )
+        == "@app/eternum/tts"
+    )
+
+
+@pytest.mark.asyncio
+async def test_planner_fetch_plan_sees_responses_capability_for_chat_app_ref():
+    """End-to-end: when ``create_response(model='m', app='eternum')``
+    runs, the planner client's ``fetch_plan`` MUST receive
+    ``capability='responses'`` AND an app-scoped model that the
+    server can key against. The synthesized ref makes both halves
+    agree.
+
+    Without this fix, ``RuntimePlanner.resolve`` parses
+    ``@app/eternum/chat`` and overwrites the mapped capability with
+    the ref suffix (``chat``), so even though the planner map says
+    chat → responses, the actual request reaches ``fetch_plan`` with
+    the wrong capability."""
+    from octomil.runtime.planner.planner import RuntimePlanner
+    from octomil.runtime.planner.schemas import (
+        AppResolution,
+        RuntimePlanResponse,
+    )
+    from octomil.runtime.planner.store import RuntimePlannerStore
+
+    captured: dict[str, Any] = {}
+
+    class _RecordingClient:
+        def fetch_plan(self, *, model, capability, routing_policy, device, allow_cloud_fallback, app_slug):
+            captured["model"] = model
+            captured["capability"] = capability
+            captured["app_slug"] = app_slug
+            return RuntimePlanResponse(
+                model=model,
+                capability=capability,
+                policy=routing_policy,
+                candidates=[],
+                plan_ttl_seconds=60,
+                app_resolution=AppResolution(
+                    app_id="app_eternum",
+                    app_slug=app_slug or "",
+                    capability=capability,
+                    selected_model="gpt-4o-mini",
+                    routing_policy="cloud_first",
+                ),
+            )
+
+    # Use a brand-new tmp DB so the planner doesn't hit any prior
+    # cached plan and skips fetch_plan.
+    import os as _os
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as _td:
+        _os.environ["OCTOMIL_RUNTIME_PLANNER_DB"] = _os.path.join(_td, "p.sqlite3")
+        try:
+            planner = RuntimePlanner(
+                store=RuntimePlannerStore(),
+                client=_RecordingClient(),
+            )
+            # The kernel synthesizes the ref. Resolve directly with
+            # the synthesized identity to pin what fetch_plan sees.
+            planner.resolve(
+                model="@app/eternum/responses",
+                capability="responses",
+                routing_policy="cloud_first",
+            )
+
+            assert captured["capability"] == "responses", captured
+            assert captured["app_slug"] == "eternum", captured
+            # The model the planner client sees is the app ref so
+            # the server can key the request against the eternum app
+            # — not the resolved underlying model.
+            assert captured["model"] == "@app/eternum/responses", captured
+        finally:
+            _os.environ.pop("OCTOMIL_RUNTIME_PLANNER_DB", None)
 
 
 def test_app_kwarg_triggers_refusal_gate_even_when_model_is_concrete():
