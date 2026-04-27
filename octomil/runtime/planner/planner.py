@@ -20,7 +20,11 @@ from .schemas import (
     RuntimePlanResponse,
     RuntimeSelection,
 )
-from .store import RuntimePlannerStore
+from .store import (
+    RuntimePlannerStoreProtocol,
+    _make_cache_key,
+    build_runtime_planner_store,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -56,11 +60,59 @@ class RuntimePlanner:
     def __init__(
         self,
         *,
-        store: RuntimePlannerStore | None = None,
+        store: RuntimePlannerStoreProtocol | None = None,
         client: RuntimePlannerClient | None = None,
     ) -> None:
-        self._store = store or RuntimePlannerStore()
+        self._store: RuntimePlannerStoreProtocol = store or build_runtime_planner_store()
         self._client = client if client is not None else _client_from_env()
+
+    def _auth_cache_context(self) -> dict[str, str | None]:
+        """Auth/API context fields that must distinguish cache entries.
+
+        Reviewer P1: cache entries belong to a specific
+        (api_base, org, key_type) tuple. A plan cached under org A
+        must not serve a request under org B even if both use the
+        same model/capability/policy/SDK on the same machine, and a
+        plan cached against staging must not serve a production
+        request after the operator switches ``OCTOMIL_API_BASE``.
+        We surface only:
+
+          - ``api_base``: post-normalization origin the planner client
+            is configured to talk to;
+          - ``org_id_hash``: SHA-256(org_id)[:16] when an
+            ``OCTOMIL_ORG_ID`` is set; ``""`` otherwise;
+          - ``key_type``: which env var the key came from
+            (``OCTOMIL_SERVER_KEY`` / ``OCTOMIL_API_KEY`` / ``"none"``).
+
+        We deliberately do NOT include the key itself or its
+        hash-of-the-key in the cache identifier — the key rotates;
+        the org is what we're scoping to.
+        """
+        api_base: str | None = None
+        if self._client is not None:
+            api_base = getattr(self._client, "_base_url", None)
+        if api_base is None:
+            api_base = (os.environ.get("OCTOMIL_API_BASE") or "https://api.octomil.com").rstrip("/")
+
+        raw_org = (os.environ.get("OCTOMIL_ORG_ID") or "").strip()
+        org_id_hash = ""
+        if raw_org:
+            import hashlib as _hashlib
+
+            org_id_hash = _hashlib.sha256(raw_org.encode()).hexdigest()[:16]
+
+        if os.environ.get("OCTOMIL_SERVER_KEY"):
+            key_type = "server"
+        elif os.environ.get("OCTOMIL_API_KEY"):
+            key_type = "api"
+        else:
+            key_type = "none"
+
+        return {
+            "api_base": api_base or "",
+            "org_id_hash": org_id_hash,
+            "key_type": key_type,
+        }
 
     def resolve(
         self,
@@ -102,13 +154,30 @@ class RuntimePlanner:
         # Step 2: Check local plan cache
         from octomil import __version__
 
-        cache_key = self._store._make_cache_key(
+        # The cache key MUST distinguish across every context that
+        # could change a server plan's correctness for this caller.
+        # Reviewer P1: previously the key was only
+        # ``(model, capability, policy, sdk_version, platform, arch)``
+        # — which let a plan cached under org A leak to org B on the
+        # same machine, or a plan cached against staging
+        # ``OCTOMIL_API_BASE`` serve a request after switching to
+        # production. Pull the auth/API/runtime context off the
+        # client (when present) and the device profile, so the
+        # production key matches the contract the unit tests pin.
+        auth_ctx = self._auth_cache_context()
+        cache_key = _make_cache_key(
             model=effective_model,
             capability=capability,
             policy=routing_policy,
             sdk_version=__version__,
             platform=device.platform,
             arch=device.arch,
+            chip=device.chip,
+            installed_hash=_installed_runtimes_hash(device),
+            api_base=auth_ctx["api_base"],
+            org_id_hash=auth_ctx["org_id_hash"],
+            key_type=auth_ctx["key_type"],
+            app_slug=app_slug,
         )
 
         cached_plan = self._store.get_plan(cache_key)
@@ -282,8 +351,17 @@ class RuntimePlanner:
                 reason="cloud_only policy — no local engines attempted",
             )
 
-        # Step 5: Check local benchmark cache
-        bm_cache_key = _benchmark_cache_key(model=model, capability=capability, policy=routing_policy, device=device)
+        # Step 5: Check local benchmark cache. Same auth/API context
+        # as the plan cache key — a benchmark recorded under org A's
+        # planner shouldn't serve a request after switching orgs or
+        # the API base.
+        bm_cache_key = _benchmark_cache_key(
+            model=model,
+            capability=capability,
+            policy=routing_policy,
+            device=device,
+            auth_ctx=self._auth_cache_context(),
+        )
         cached_bm = self._store.get_benchmark(bm_cache_key)
         if cached_bm is not None:
             return RuntimeSelection(
@@ -582,8 +660,10 @@ def _benchmark_cache_key(
     capability: str,
     policy: str,
     device: DeviceRuntimeProfile,
+    auth_ctx: dict[str, str | None] | None = None,
 ) -> str:
-    return RuntimePlannerStore._make_cache_key(
+    auth_ctx = auth_ctx or {"api_base": "", "org_id_hash": "", "key_type": "none"}
+    return _make_cache_key(
         model=model,
         capability=capability,
         policy=policy,
@@ -592,6 +672,9 @@ def _benchmark_cache_key(
         arch=device.arch,
         chip=device.chip,
         installed_hash=_installed_runtimes_hash(device),
+        api_base=auth_ctx.get("api_base"),
+        org_id_hash=auth_ctx.get("org_id_hash"),
+        key_type=auth_ctx.get("key_type"),
     )
 
 

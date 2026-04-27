@@ -31,6 +31,9 @@ _PLANNER_CAPABILITY_MAP = {
 }
 
 
+_PLANNER_BOOTSTRAP_WARNED = False
+
+
 def _resolve_planner_selection(
     model: str,
     capability: str,
@@ -39,21 +42,70 @@ def _resolve_planner_selection(
     """Try planner-based runtime selection. Returns RuntimeSelection or None.
 
     Never raises -- planner failure is non-fatal.
+
+    Logging
+    ~~~~~~~
+    There are two failure modes the SDK should log differently:
+
+      - **Bootstrap / import failures** (planner module won't load,
+        cache backend won't initialize, auth misconfig). These are
+        actionable: the operator needs to install an extra, pin a
+        cache dir, or set ``OCTOMIL_SERVER_KEY``. We log at
+        WARNING **once per process** so the message surfaces without
+        flooding logs. (Repeated warnings on every call would be
+        noise — the first one is enough.)
+      - **HTTP planner misses** (network unavailable, 404 for an
+        unknown model id, auth 401, transient 5xx). The SDK can
+        still fall back to local routing, so these stay at DEBUG to
+        keep production logs clean. The HTTP client handles its own
+        per-request error reporting.
+
+    The two are distinguished by the exception type / origin: import
+    or bootstrap errors fire before ``planner.resolve`` is called.
     """
     if os.environ.get("OCTOMIL_RUNTIME_PLANNER_CACHE") == "0":
         return None
+
+    # Bootstrap phase: import the planner module. ImportError /
+    # AttributeError / cache-backend errors here are
+    # configuration-actionable.
     try:
         from octomil.runtime.planner.planner import RuntimePlanner
+    except Exception:
+        global _PLANNER_BOOTSTRAP_WARNED
+        if not _PLANNER_BOOTSTRAP_WARNED:
+            logger.warning(
+                "runtime planner unavailable: failed to import or initialize the planner. "
+                "Local routing will be used; cloud-only models will fail with "
+                "RUNTIME_UNAVAILABLE. Install [planner] extras or check logs.",
+                exc_info=True,
+            )
+            _PLANNER_BOOTSTRAP_WARNED = True
+        return None
 
+    try:
         planner_cap = _PLANNER_CAPABILITY_MAP.get(capability, capability)
         planner = RuntimePlanner()
+    except Exception:
+        if not _PLANNER_BOOTSTRAP_WARNED:
+            logger.warning(
+                "runtime planner unavailable: planner instance failed to construct. Local routing will be used.",
+                exc_info=True,
+            )
+            _PLANNER_BOOTSTRAP_WARNED = True
+        return None
+
+    # Resolve phase: HTTP misses, auth failures, transient 5xx. Stay
+    # at DEBUG — the per-request error already surfaces through the
+    # client, and routing falls through to local.
+    try:
         return planner.resolve(
             model=model,
             capability=planner_cap,
             routing_policy=policy_preset,
         )
     except Exception:
-        logger.debug("Planner selection failed", exc_info=True)
+        logger.debug("Planner selection failed for %s/%s", capability, model, exc_info=True)
         return None
 
 
