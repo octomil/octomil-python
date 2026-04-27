@@ -306,9 +306,23 @@ class ExecutionKernel:
         policy_preset = defaults.policy_preset or "local_first"
 
         # Planner-driven routing
-        selection = _resolve_planner_selection(effective_model, CAPABILITY_CHAT, policy_preset)
+        planner_model = _planner_model_for_request(effective_model=effective_model, app=app, capability=CAPABILITY_CHAT)
+        selection = _resolve_planner_selection(planner_model, CAPABILITY_CHAT, policy_preset)
+
+        # PR B: app-ref refusal — see _enforce_app_ref_routing_policy.
+        _enforce_app_ref_routing_policy(
+            requested_model=model or effective_model,
+            selection=selection,
+            explicit_policy=policy,
+            explicit_app=app,
+        )
 
         routing_policy = _resolve_routing_policy(defaults)
+        # PR B: explicit local-only / private policy forces a
+        # cloud_only-rejected candidate list so a planner outage can't
+        # leak the request to cloud even if cloud creds are present.
+        if _is_local_only_policy(policy):
+            routing_policy = routing_policy.with_cloud_disabled()
         candidates = _selection_candidate_dicts(selection, routing_policy)
         fallback_allowed = _candidate_fallback_allowed(selection, routing_policy)
         # PR 10c: drop *individually* unpreparable local sdk_runtime
@@ -320,6 +334,24 @@ class ExecutionKernel:
         candidates = _filter_unpreparable_local_candidates(
             self, selection, candidates, fallback_allowed=fallback_allowed
         )
+        if _is_local_only_policy(policy):
+            # Drop any cloud candidate the planner emitted. The
+            # explicit local_only / private policy forbids cloud
+            # locality regardless of what the plan recommends.
+            candidates = [c for c in candidates if c.get("locality") != "cloud"]
+        # PR B: when local-only forcing emptied the candidate list
+        # (planner gave only cloud, no local) and the caller insisted
+        # on local, surface an actionable error rather than a generic
+        # "no runtime available".
+        if _is_local_only_policy(policy) and not candidates:
+            raise OctomilError(
+                code=OctomilErrorCode.RUNTIME_UNAVAILABLE,
+                message=(
+                    f"local_runtime_unavailable: caller passed policy={policy!r} but "
+                    f"no local candidate is available for {effective_model!r}. "
+                    "Install the relevant local engine extras or relax the policy."
+                ),
+            )
 
         gen_config = GenerationConfig(
             max_tokens=max_output_tokens or 2048,
@@ -357,6 +389,12 @@ class ExecutionKernel:
                 defaults,
                 planner_selection=candidate_selection,
                 prepared_model_dir=local_dir,
+                cloud_execution_model=_execution_model_for_cloud_dispatch(
+                    requested_model=model,
+                    effective_model=effective_model,
+                    planner_model=planner_model,
+                    app=app,
+                ),
             )
             return await router.run(request, policy=_routing_policy_for_candidate(candidate))
 
@@ -426,15 +464,38 @@ class ExecutionKernel:
             raise _no_model_error(CAPABILITY_CHAT)
 
         policy_preset = defaults.policy_preset or "local_first"
-        selection = _resolve_planner_selection(effective_model, CAPABILITY_CHAT, policy_preset)
+        planner_model = _planner_model_for_request(effective_model=effective_model, app=app, capability=CAPABILITY_CHAT)
+        selection = _resolve_planner_selection(planner_model, CAPABILITY_CHAT, policy_preset)
 
+        # PR B: app-ref refusal — see _enforce_app_ref_routing_policy.
+        _enforce_app_ref_routing_policy(
+            requested_model=model or effective_model,
+            selection=selection,
+            explicit_policy=policy,
+            explicit_app=app,
+        )
         routing_policy = _resolve_routing_policy(defaults)
+        if _is_local_only_policy(policy):
+            routing_policy = routing_policy.with_cloud_disabled()
         candidates = _selection_candidate_dicts(selection, routing_policy)
         fallback_allowed = _candidate_fallback_allowed(selection, routing_policy)
         runner_to_original = _runner_dict_to_planner_candidate(selection, candidates)
         candidates = _filter_unpreparable_local_candidates(
             self, selection, candidates, fallback_allowed=fallback_allowed
         )
+        if _is_local_only_policy(policy):
+            # Drop any cloud candidate the planner emitted. The
+            # explicit local_only / private policy forbids cloud
+            # locality regardless of what the plan recommends.
+            candidates = [c for c in candidates if c.get("locality") != "cloud"]
+            if not candidates:
+                raise OctomilError(
+                    code=OctomilErrorCode.RUNTIME_UNAVAILABLE,
+                    message=(
+                        f"local_runtime_unavailable: caller passed policy={policy!r} but "
+                        f"no local candidate is available for {effective_model!r}."
+                    ),
+                )
 
         gen_config = GenerationConfig(
             max_tokens=max_output_tokens or 2048,
@@ -476,6 +537,12 @@ class ExecutionKernel:
                     defaults,
                     planner_selection=candidate_selection,
                     prepared_model_dir=local_dir,
+                    cloud_execution_model=_execution_model_for_cloud_dispatch(
+                        requested_model=model,
+                        effective_model=effective_model,
+                        planner_model=planner_model,
+                        app=app,
+                    ),
                 )
                 async for chunk in router.stream(request, policy=_routing_policy_for_candidate(candidate)):
                     text = chunk.text or ""
@@ -549,15 +616,39 @@ class ExecutionKernel:
             raise _no_model_error(CAPABILITY_CHAT)
 
         policy_preset = defaults.policy_preset or "local_first"
-        selection = _resolve_planner_selection(effective_model, CAPABILITY_CHAT, policy_preset)
+        planner_model = _planner_model_for_request(effective_model=effective_model, app=app, capability=CAPABILITY_CHAT)
+        selection = _resolve_planner_selection(planner_model, CAPABILITY_CHAT, policy_preset)
+
+        # PR B: app-ref refusal — see _enforce_app_ref_routing_policy.
+        _enforce_app_ref_routing_policy(
+            requested_model=model or effective_model,
+            selection=selection,
+            explicit_policy=policy,
+            explicit_app=app,
+        )
 
         routing_policy = _resolve_routing_policy(defaults)
+        if _is_local_only_policy(policy):
+            routing_policy = routing_policy.with_cloud_disabled()
         candidates = _selection_candidate_dicts(selection, routing_policy)
         fallback_allowed = _candidate_fallback_allowed(selection, routing_policy)
         runner_to_original = _runner_dict_to_planner_candidate(selection, candidates)
         candidates = _filter_unpreparable_local_candidates(
             self, selection, candidates, fallback_allowed=fallback_allowed
         )
+        if _is_local_only_policy(policy):
+            # Drop any cloud candidate the planner emitted. The
+            # explicit local_only / private policy forbids cloud
+            # locality regardless of what the plan recommends.
+            candidates = [c for c in candidates if c.get("locality") != "cloud"]
+            if not candidates:
+                raise OctomilError(
+                    code=OctomilErrorCode.RUNTIME_UNAVAILABLE,
+                    message=(
+                        f"local_runtime_unavailable: caller passed policy={policy!r} but "
+                        f"no local candidate is available for {effective_model!r}."
+                    ),
+                )
 
         gen_config = GenerationConfig(
             max_tokens=max_output_tokens or 2048,
@@ -594,6 +685,12 @@ class ExecutionKernel:
                     defaults,
                     planner_selection=candidate_selection,
                     prepared_model_dir=local_dir,
+                    cloud_execution_model=_execution_model_for_cloud_dispatch(
+                        requested_model=model,
+                        effective_model=effective_model,
+                        planner_model=planner_model,
+                        app=app,
+                    ),
                 )
                 async for chunk in router.stream(request, policy=_routing_policy_for_candidate(candidate)):
                     text = chunk.text or ""
@@ -669,12 +766,35 @@ class ExecutionKernel:
             raise _no_model_error(CAPABILITY_EMBEDDING)
 
         policy_preset = defaults.policy_preset or "local_first"
-        selection = _resolve_planner_selection(effective_model, CAPABILITY_EMBEDDING, policy_preset)
+        planner_model = _planner_model_for_request(
+            effective_model=effective_model, app=app, capability=CAPABILITY_EMBEDDING
+        )
+        selection = _resolve_planner_selection(planner_model, CAPABILITY_EMBEDDING, policy_preset)
+
+        # PR B follow-up: apply the same app-ref refusal gate as
+        # TTS / transcription / chat. Embeddings was the lone surface
+        # where ``model='nomic-...', app='private-app', policy=None``
+        # plus a planner outage could still silently route to cloud.
+        # The refusal is the same shape: with no explicit policy AND
+        # an app-scoped request AND no planner selection, raise so
+        # the caller picks ``local_only`` / ``cloud_first`` or fixes
+        # planner connectivity.
+        _enforce_app_ref_routing_policy(
+            requested_model=model or effective_model,
+            selection=selection,
+            explicit_policy=policy,
+            explicit_app=app,
+        )
 
         routing_policy = _resolve_routing_policy(defaults)
 
         local_available = self._can_local(effective_model, CAPABILITY_EMBEDDING)
         cloud_available = _cloud_available(defaults)
+        # Same explicit local-only / private cloud-disable as the
+        # other dispatchers: even if cloud creds are present in env,
+        # ``policy='local_only'`` blocks promotion to cloud.
+        if _is_local_only_policy(policy):
+            cloud_available = False
         locality, is_fallback = _select_locality_for_capability(
             routing_policy,
             local_available=local_available,
@@ -688,7 +808,19 @@ class ExecutionKernel:
 
         if locality == LOCALITY_CLOUD:
             assert defaults.cloud_profile is not None
-            result = await self._cloud_embed(inputs, effective_model, defaults.cloud_profile, is_fallback)
+            # PR B follow-up: when ``app=`` was explicit (or ``model``
+            # was already an app ref), cloud dispatch must run under
+            # the app identity, not the resolved underlying model.
+            # Otherwise the planner sees ``@app/foo/embeddings`` but
+            # the hosted call goes out under ``nomic-...`` and the
+            # server can't apply the app's quota / policy / billing.
+            cloud_model = _execution_model_for_cloud_dispatch(
+                requested_model=model,
+                effective_model=effective_model,
+                planner_model=planner_model,
+                app=app,
+            )
+            result = await self._cloud_embed(inputs, cloud_model, defaults.cloud_profile, is_fallback)
             result.route = route
             return result
 
@@ -807,7 +939,18 @@ class ExecutionKernel:
             raise _no_model_error(CAPABILITY_TRANSCRIPTION)
 
         policy_preset = defaults.policy_preset or "local_first"
-        selection = _resolve_planner_selection(effective_model, CAPABILITY_TRANSCRIPTION, policy_preset)
+        planner_model = _planner_model_for_request(
+            effective_model=effective_model, app=app, capability=CAPABILITY_TRANSCRIPTION
+        )
+        selection = _resolve_planner_selection(planner_model, CAPABILITY_TRANSCRIPTION, policy_preset)
+
+        # PR B: same app-ref refusal + local-only forcing as TTS.
+        _enforce_app_ref_routing_policy(
+            requested_model=model or effective_model,
+            selection=selection,
+            explicit_policy=policy,
+            explicit_app=app,
+        )
 
         routing_policy = _resolve_routing_policy(defaults)
         # Routing is satisfied if a backend is already staged OR if the
@@ -825,6 +968,8 @@ class ExecutionKernel:
                 self._can_prepare_local_transcription(effective_model, selection)
             )
         cloud_available = _cloud_available(defaults)
+        if _is_local_only_policy(policy):
+            cloud_available = False
         locality, is_fallback = _select_locality_for_capability(
             routing_policy,
             local_available=local_available,
@@ -838,8 +983,18 @@ class ExecutionKernel:
 
         if locality == LOCALITY_CLOUD:
             assert defaults.cloud_profile is not None
+            # PR B follow-up: send the app ref to cloud when ``app=``
+            # was explicit so the server keeps app-scoping. Local
+            # ``effective_model`` keeps driving local backend
+            # resolution below.
+            cloud_model = _execution_model_for_cloud_dispatch(
+                requested_model=model,
+                effective_model=effective_model,
+                planner_model=planner_model,
+                app=app,
+            )
             result = await self._cloud_transcribe(
-                audio_data, effective_model, defaults.cloud_profile, language, is_fallback
+                audio_data, cloud_model, defaults.cloud_profile, language, is_fallback
             )
             result.route = route
             return result
@@ -994,7 +1149,8 @@ class ExecutionKernel:
             raise _no_model_error(CAPABILITY_TTS)
 
         policy_preset = defaults.policy_preset or "local_first"
-        selection = _resolve_planner_selection(effective_model, CAPABILITY_TTS, policy_preset)
+        planner_model = _planner_model_for_request(effective_model=effective_model, app=app, capability=CAPABILITY_TTS)
+        selection = _resolve_planner_selection(planner_model, CAPABILITY_TTS, policy_preset)
         runtime_model = _runtime_model_for_selection(selection, effective_model)
 
         planner_policy = _tts_policy_from_selection(selection)
@@ -1002,6 +1158,24 @@ class ExecutionKernel:
             policy_preset = planner_policy
             defaults.policy_preset = planner_policy
             defaults.inline_policy = None
+
+        # PR B: refuse to silently route an @app/... ref to cloud when
+        # planner resolution failed AND the caller didn't pass an
+        # explicit policy. Without this, an outage of the planner +
+        # an app whose intended policy is "private" lets the SDK
+        # cold-route to cloud, surfacing a confusing 403 telling the
+        # caller to use a local SDK that they're already using.
+        # When the caller explicitly passed ``policy='local_only'``
+        # or ``policy='private'``, they've expressed their intent
+        # directly — honour it by forcing cloud_available=False
+        # below so a planner outage cannot leak a local-only request
+        # to the network.
+        _enforce_app_ref_routing_policy(
+            requested_model=requested_model,
+            selection=selection,
+            explicit_policy=policy,
+            explicit_app=app,
+        )
 
         routing_policy = _resolve_routing_policy(defaults)
         # Local routing is satisfied if the artifact is already staged OR
@@ -1020,6 +1194,12 @@ class ExecutionKernel:
                 runtime_model, selection
             )
         cloud_available = _cloud_available(defaults)
+        # PR B: explicit private / local_only policies force
+        # cloud_available=False so a planner outage cannot leak the
+        # request to a hosted backend even if cloud creds happen to
+        # be present in the environment.
+        if _is_local_only_policy(policy):
+            cloud_available = False
 
         # Policy gating mirrors transcription. local_only never falls back.
         try:
@@ -1050,7 +1230,17 @@ class ExecutionKernel:
 
         if locality == LOCALITY_CLOUD:
             assert defaults.cloud_profile is not None, "cloud locality requires cloud profile"
-            cloud_model = requested_model if requested_model.startswith("@app/") else runtime_model
+            # PR B follow-up: when ``app=`` is explicit, send the
+            # synthesized ``@app/<app>/tts`` ref to cloud so the
+            # server applies the app's quota / policy / billing.
+            # The pre-existing ``@app/...`` pass-through behaviour
+            # for callers who put the ref in ``model=`` keeps working.
+            cloud_model = _execution_model_for_cloud_dispatch(
+                requested_model=requested_model,
+                effective_model=runtime_model,
+                planner_model=planner_model,
+                app=app,
+            )
             t0 = time.monotonic()
             cloud_result = await self._cloud_synthesize_speech(
                 cloud_model,
@@ -1587,6 +1777,7 @@ class ExecutionKernel:
         *,
         planner_selection: Optional[Any] = None,
         prepared_model_dir: Optional[str] = None,
+        cloud_execution_model: Optional[str] = None,
     ) -> RouterModelRuntime:
         """Build a RouterModelRuntime for the given model and capability.
 
@@ -1600,6 +1791,13 @@ class ExecutionKernel:
         recognize the kwarg ignore it (each ``create_backend`` accepts
         ``**kwargs``). When ``None`` the engine's own model resolution
         path runs unchanged.
+
+        ``cloud_execution_model`` is the identity to send to hosted
+        inference. PR B follow-up: when the caller passed ``app=`` (or
+        the request was an ``@app/...`` ref), cloud dispatch must run
+        under the app identity even though local backend resolution
+        uses the resolved runtime model. ``None`` (default) keeps the
+        legacy behaviour of running cloud under ``model``.
         """
         from octomil.runtime.core.registry import ModelRuntimeRegistry
 
@@ -1667,10 +1865,17 @@ class ExecutionKernel:
                 api_key = os.environ.get(defaults.cloud_profile.api_key_env, "")
                 if not api_key:
                     return None
+                # When the caller explicitly app-scoped the request,
+                # send the synthesized ``@app/<app>/<cap>`` identity
+                # to the hosted endpoint so server-side routing /
+                # quota / billing match the planner's app
+                # resolution. Falls back to the resolved ``model``
+                # for non-app callers (legacy behaviour).
+                cloud_model = cloud_execution_model or model
                 return CloudModelRuntime(
                     base_url=_openai_base_url(defaults.cloud_profile),
                     api_key=api_key,
-                    model=model,
+                    model=cloud_model,
                 )
             except Exception:
                 return None
@@ -1851,6 +2056,187 @@ def _tts_policy_from_selection(selection: Any) -> Optional[str]:
             if policy == "auto":
                 return "auto"
     return None
+
+
+_LOCAL_ONLY_POLICY_NAMES = frozenset({"private", "local_only"})
+
+
+def _is_local_only_policy(policy: Optional[str]) -> bool:
+    """Return True iff ``policy`` is an explicit local-only preset.
+
+    Used by the chat / TTS / transcription dispatchers to force
+    ``cloud_available=False`` when the caller has expressed a hard
+    requirement that the request must not leave the device. Both
+    ``"private"`` and ``"local_only"`` qualify; the SDK treats
+    "private" as the privacy-strict superset of "local_only" (no
+    benchmark uploads either).
+    """
+    if not policy:
+        return False
+    return policy.strip().lower() in _LOCAL_ONLY_POLICY_NAMES
+
+
+def _execution_model_for_cloud_dispatch(
+    *,
+    requested_model: Optional[str],
+    effective_model: str,
+    planner_model: str,
+    app: Optional[str],
+) -> str:
+    """Return the model id cloud dispatch should send under.
+
+    Reviewer P1 (post PR #454): the planner now sees
+    ``@app/<app>/<capability>`` when ``app=`` is explicit, but each
+    capability's cloud branch was passing the *resolved* runtime
+    model (e.g. ``kokoro-en-v0_19``) to the hosted endpoint. That
+    means the server can't apply the app's quota / routing policy /
+    billing the planner just blessed — the request reaches hosted
+    inference under a different identity than the one routing was
+    decided against.
+
+    Resolution rule:
+
+      - ``requested_model`` is already an ``@app/...`` ref → send
+        the request as-is so the server keeps app-scoping.
+      - ``requested_model`` is concrete BUT ``app=`` was explicit
+        → send the synthesized ``@app/<app>/<capability>`` ref
+        (the same one the planner saw) so cloud dispatch agrees
+        with the routing decision.
+      - otherwise → send the concrete ``effective_model``. Same
+        behaviour as before for non-app callers.
+    """
+    if requested_model is not None and isinstance(requested_model, str) and requested_model.startswith("@app/"):
+        return requested_model
+    if app and planner_model.startswith("@app/"):
+        return planner_model
+    return effective_model
+
+
+def _planner_visible_capability(capability: str) -> str:
+    """Map an internal capability constant to the planner-visible name.
+
+    The internal ``CAPABILITY_CHAT`` constant is ``"chat"``, but the
+    planner endpoint and server-side routing model both speak of
+    that public surface as ``"responses"``.
+    ``RuntimePlanner.resolve`` already runs incoming capability
+    strings through ``_PLANNER_CAPABILITY_MAP`` for its outbound
+    request — but when the SDK *synthesizes* an app ref like
+    ``@app/<app>/<capability>`` locally, that synthesized string IS
+    the canonical app ref the server keys quotas / billing / app
+    metadata against. If we synthesized ``@app/eternum/chat`` and
+    the server only knows ``@app/eternum/responses``, the app
+    resolution would fall apart even though the planner endpoint
+    received ``capability="responses"``.
+
+    Aligning both halves on the public name keeps the planner's
+    parsed capability and the server-visible app ref in agreement.
+    Other capabilities (tts, transcription, embedding) round-trip
+    unchanged because the planner map only rewrites
+    ``chat → responses``.
+    """
+
+    return _PLANNER_CAPABILITY_MAP.get(capability, capability)
+
+
+def _planner_model_for_request(
+    *,
+    effective_model: str,
+    app: Optional[str],
+    capability: str,
+) -> str:
+    """Synthesize an ``@app/<slug>/<canonical-capability>`` ref when
+    ``app=`` is set.
+
+    Reviewer P1 on PR #454: the public facade exposes ``app=`` so a
+    caller can do ``client.audio.speech.create(model='kokoro-82m',
+    app='eternum')``. Previously that ``app`` value reached
+    ``ResolvedExecutionDefaults`` but never propagated into the
+    planner — ``RuntimePlanner.resolve()`` only sets ``app_slug`` by
+    parsing an ``@app/...`` model ref. The result was that the
+    request bypassed the app's routing policy entirely AND fell
+    through the app-ref refusal gate (``requested_model`` was a
+    concrete model id, not an ``@app/`` string).
+
+    The synthesis uses the *planner-visible* capability name (so
+    chat → ``@app/<app>/responses``, not ``@app/<app>/chat``) so the
+    same string the planner endpoint receives also identifies the
+    app on the server side for cloud dispatch. Otherwise
+    ``RuntimePlanner.resolve`` would parse our synthesized
+    ``@app/eternum/chat`` and the cloud branch would dispatch under
+    a capability the server doesn't recognize.
+    """
+    if not app:
+        return effective_model
+    if isinstance(effective_model, str) and effective_model.startswith("@app/"):
+        return effective_model
+    canonical_capability = _planner_visible_capability(capability)
+    return f"@app/{app}/{canonical_capability}"
+
+
+def _enforce_app_ref_routing_policy(
+    *,
+    requested_model: str,
+    selection: Optional[Any],
+    explicit_policy: Optional[str],
+    explicit_app: Optional[str] = None,
+) -> None:
+    """Refuse to silently cloud-route an ``@app/...`` ref on planner outage.
+
+    Reviewer P1: when the caller asks for an app ref like
+    ``@app/eternum/tts`` and the planner is unreachable (auth
+    misconfig, network partition, Ren'Py / sandboxed embed without
+    an HTTP transport), the SDK previously fell through to the
+    routing-policy default (typically ``local_first``), which can
+    silently land the request on a hosted provider. That's the worst
+    DX shape: a developer who deliberately chose a private app gets
+    a 403 from cloud telling them to use a local SDK that they're
+    already using.
+
+    This helper preserves caller intent:
+
+      - When ``explicit_policy`` is ``"private"`` / ``"local_only"``
+        — caller has expressed a hard local requirement. We let the
+        request proceed; ``cloud_available`` is forced False
+        downstream by :func:`_is_local_only_policy` so the planner
+        outage cannot leak it to cloud.
+      - When ``explicit_policy`` is some other value (``cloud_first``,
+        ``performance_first``, etc.) — caller has accepted that cloud
+        is allowed. We let the request proceed unchanged.
+      - When ``explicit_policy`` is ``None`` AND the request is an
+        app ref AND the planner returned no selection — the SDK
+        cannot know the app's intended routing policy. Raising here
+        is better than guessing: caller should either fix the
+        planner / auth or pass an explicit ``policy=`` so we know
+        what they want.
+
+    Non-app refs (concrete model ids like ``kokoro-en-v0_19``) skip
+    this check entirely; the caller has already named the artifact
+    they want and there's no app-side policy to consult.
+    """
+    if explicit_policy is not None:
+        return
+    is_app_scoped = (isinstance(requested_model, str) and requested_model.startswith("@app/")) or bool(explicit_app)
+    if not is_app_scoped:
+        return
+    if selection is not None:
+        # Planner answered. Even if it returned a synthetic cloud
+        # fallback, the request has a planner-blessed path.
+        return
+    descriptor = requested_model
+    if explicit_app and isinstance(requested_model, str) and not requested_model.startswith("@app/"):
+        descriptor = f"{requested_model!r} app={explicit_app!r}"
+    raise OctomilError(
+        code=OctomilErrorCode.RUNTIME_UNAVAILABLE,
+        message=(
+            f"Could not resolve app routing policy for {descriptor}; "
+            "the runtime planner is unavailable (network, auth, or planner-import "
+            "failure). The SDK refuses to silently fall back to cloud for "
+            "app-scoped requests because that surfaces a confusing 403 to "
+            "local-first callers. Pass policy='local_only' to force local, "
+            "policy='cloud_first' to allow cloud, or fix planner connectivity / "
+            "OCTOMIL_SERVER_KEY auth."
+        ),
+    )
 
 
 def _local_tts_runtime_unavailable(model: str) -> OctomilError:

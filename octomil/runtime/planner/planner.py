@@ -507,9 +507,36 @@ def _client_from_env() -> RuntimePlannerClient | None:
     if not api_key:
         return None
     return RuntimePlannerClient(
-        base_url=os.environ.get("OCTOMIL_API_BASE") or "https://api.octomil.com",
+        base_url=_normalize_api_base(os.environ.get("OCTOMIL_API_BASE")),
         api_key=api_key,
     )
+
+
+def _normalize_api_base(raw: str | None) -> str:
+    """Normalize ``OCTOMIL_API_BASE`` to the planner's expected origin.
+
+    The planner's HTTP paths are versioned (``/api/v2/runtime/plan``).
+    If a user sets ``OCTOMIL_API_BASE=https://api.octomil.com/api/v1``
+    or ``…/v1/`` (a common shape from older docs / curl examples),
+    the naive concatenation produces
+    ``https://api.octomil.com/api/v1/api/v2/runtime/plan`` — a 404
+    that's hard to debug. Strip any trailing ``/api/vX`` (or just
+    ``/v1`` / ``/v2``) plus trailing slashes so the planner client
+    appends its own versioned path cleanly.
+
+    Empty / unset → the production default. The result never has a
+    trailing slash.
+    """
+    if not raw:
+        return "https://api.octomil.com"
+    url = raw.strip().rstrip("/")
+    # Strip trailing /api/vN if present.
+    import re
+
+    url = re.sub(r"/api/v\d+/?$", "", url)
+    # Strip trailing /vN if present (legacy form without /api).
+    url = re.sub(r"/v\d+/?$", "", url)
+    return url.rstrip("/")
 
 
 def _canonical_engine_id(engine: str | None) -> str:

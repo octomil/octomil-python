@@ -58,6 +58,27 @@ class RoutingPolicy:
     def cloud_only(cls) -> RoutingPolicy:
         return cls(mode=ContractRoutingPolicy.CLOUD_ONLY, prefer_local=False, fallback="none")
 
+    def with_cloud_disabled(self) -> RoutingPolicy:
+        """Return a copy with cloud locality forbidden.
+
+        Used by the chat / TTS / transcription dispatchers when the
+        caller passes ``policy='private'`` or ``policy='local_only'``
+        explicitly: even if the resolved routing policy was something
+        looser (the planner returned ``local_first`` with cloud
+        fallback, the local config defaulted to ``auto``, etc.), we
+        downgrade it to ``LOCAL_ONLY`` with ``fallback='none'`` so a
+        planner outage cannot leak the request to a hosted backend.
+
+        Idempotent: calling on an already-cloud-disabled policy
+        returns an equivalent ``LOCAL_ONLY`` instance.
+        """
+        return RoutingPolicy(
+            mode=ContractRoutingPolicy.LOCAL_ONLY,
+            prefer_local=True,
+            max_latency_ms=self.max_latency_ms,
+            fallback="none",
+        )
+
     @classmethod
     def from_desired_state_entry(cls, entry: dict[str, Any]) -> Optional[RoutingPolicy]:
         """Build a RoutingPolicy from a desired-state model entry.

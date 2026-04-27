@@ -21,7 +21,23 @@ CAPABILITY_TRANSCRIPTION = "transcription"
 CAPABILITY_TTS = "tts"
 
 # Supported serving-policy preset short names.
-VALID_PRESETS = frozenset({"private", "local_first", "performance_first", "cloud_first", "cloud_only"})
+#
+# ``local_only`` is the privacy-aware policy that forces
+# ``cloud_available=False`` downstream — the same guarantee as
+# ``private`` but without the additional "no benchmark uploads"
+# constraint. PR B publicises both names on the TTS / chat /
+# transcription facades; the kernel's ``_is_local_only_policy``
+# helper treats them equivalently.
+VALID_PRESETS = frozenset(
+    {
+        "private",
+        "local_only",
+        "local_first",
+        "performance_first",
+        "cloud_first",
+        "cloud_only",
+    }
+)
 
 # Legacy presets that must normalise silently.
 _LEGACY_PRESET_MAP = {"quality_first": "cloud_first", "quality": "cloud_first"}
