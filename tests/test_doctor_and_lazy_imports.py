@@ -212,6 +212,113 @@ def test_pandas_pyarrow_moved_off_core_dependencies():
 
 # Reviewer P1 follow-up on PR #455: end-to-end thin-client import
 # must not load pandas / pyarrow / torch.
+@pytest.mark.parametrize(
+    "alias",
+    # ``auth`` is the canonical outer ``octomil/auth.py`` and
+    # intentionally NOT aliased to the inner package.
+    ["secagg", "api_client", "filters", "registry", "control_plane"],
+)
+def test_documented_submodule_imports_still_work_after_lazy_aliasing(alias):
+    """Reviewer P1 on PR #455 (post-9d8452c): making every alias
+    lazy through module-level ``__getattr__`` removed the
+    ``sys.modules['octomil.<alias>']`` registrations that made
+    documented imports work.
+
+    Previously this test reproduced the bug:
+
+        import octomil.secagg                # ModuleNotFoundError
+        from octomil.secagg import ECKeyPair # ModuleNotFoundError
+
+    Both shapes must work now without bringing the eager pandas
+    chain back. The fix is an ``importlib`` ``MetaPathFinder``
+    that intercepts ``octomil.<alias>`` and maps it to
+    ``octomil.python.octomil.<alias>``."""
+    import importlib
+
+    # Use ``importlib.import_module`` (equivalent to ``import
+    # octomil.secagg``) because the parametrized alias is dynamic.
+    mod = importlib.import_module(f"octomil.{alias}")
+    assert mod is not None
+    # The alias resolves to the inner package's submodule.
+    assert mod.__name__.startswith("octomil.python.octomil.")
+
+
+def test_from_octomil_dot_secagg_import_attribute_works():
+    """``from octomil.secagg import ECKeyPair`` is the most
+    common shape for downstream FL callers; pin it explicitly."""
+    from octomil.secagg import ECKeyPair  # noqa: F401
+
+    assert ECKeyPair is not None
+
+
+def test_alias_import_does_not_pull_pandas_into_sys_modules():
+    """``import octomil.secagg`` (or any other lightweight alias)
+    must NOT trigger pandas / pyarrow on its way through. The
+    inner package's ``__init__`` is lazy, so importing one
+    submodule should not cascade to ``federated_client``."""
+    import subprocess
+    import sys as _sys
+
+    code = (
+        "import sys\n"
+        "import octomil.secagg  # noqa: F401\n"
+        "print('PANDAS_LOADED' if 'pandas' in sys.modules else 'PANDAS_CLEAN')\n"
+    )
+    result = subprocess.run(
+        [_sys.executable, "-c", code],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "PANDAS_CLEAN" in result.stdout, result.stdout
+
+
+def test_model_ops_raise_sites_resolve_OctomilClientError_at_runtime(tmp_path):
+    """Reviewer P2 on PR #455: bare ``raise OctomilClientError(...)``
+    in method bodies hits ``LOAD_GLOBAL`` which doesn't consult
+    module-level ``__getattr__``. The previous revision left those
+    raises as bare names and the method crashed with ``NameError``
+    inside the actual error path.
+
+    The fix routes every raise through ``_octomil_client_error()``;
+    this test pins ``ModelOpsMixin.push`` against a directory with
+    no model files (the canonical ``OctomilClientError`` path)."""
+    from octomil.model_ops import ModelOpsMixin
+    from octomil.python.octomil.api_client import OctomilClientError
+
+    # Empty directory triggers the "no model file found" raise.
+    empty_dir = tmp_path / "empty"
+    empty_dir.mkdir()
+
+    # Build a minimal mixin instance — only ``push`` itself is
+    # exercised, and only the early-return raise path; we don't need
+    # the rest of OctomilClient's wiring.
+    instance = ModelOpsMixin.__new__(ModelOpsMixin)
+    instance._reporter = None  # type: ignore[attr-defined]
+    instance._registry = None  # type: ignore[attr-defined]
+    instance._api = None  # type: ignore[attr-defined]
+    instance._rollouts = None  # type: ignore[attr-defined]
+    instance._models = {}  # type: ignore[attr-defined]
+    instance._org_id = "test"  # type: ignore[attr-defined]
+
+    with pytest.raises(OctomilClientError) as excinfo:
+        instance.push(str(empty_dir), name="m", version="1.0.0")
+
+    assert "No model file found" in str(excinfo.value)
+
+
+def test_model_ops_module_getattr_still_returns_OctomilClientError():
+    """Attribute access on the module surface (``octomil.model_ops.
+    OctomilClientError``) must still resolve via ``__getattr__``.
+    This is the path tests / docs reach for; only the bytecode-
+    embedded ``LOAD_GLOBAL`` path needed the helper-function shim."""
+    import octomil.model_ops as model_ops
+    from octomil.python.octomil.api_client import OctomilClientError as canonical
+
+    assert model_ops.OctomilClientError is canonical
+
+
 def test_import_octomil_does_not_load_pandas_pyarrow_or_torch():
     """The headline reviewer goal: ``import octomil`` in a fresh
     subprocess must not transitively import pandas / pyarrow / torch

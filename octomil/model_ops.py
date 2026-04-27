@@ -34,20 +34,48 @@ from .models import (
 # imports the real class on demand.
 if TYPE_CHECKING:
     from .model import Model
-    from .python.octomil.api_client import OctomilClientError, _ApiClient
+    from .python.octomil.api_client import _ApiClient
     from .python.octomil.control_plane import RolloutsAPI
     from .python.octomil.registry import ModelRegistry
     from .telemetry import TelemetryReporter
 
 
 def __getattr__(name: str):  # noqa: D401  (module-level dunder)
-    """Lazy resolver for the inner-package exception class."""
-    if name == "OctomilClientError":
-        from .python.octomil.api_client import OctomilClientError as _err
+    """Lazy resolver for the inner-package exception class.
 
-        globals()[name] = _err
-        return _err
+    Python's normal name resolution skips module ``__getattr__`` for
+    bare-name lookups inside method bodies (a method's globals are
+    the *module*, but ``raise OctomilClientError(...)`` runs through
+    ``LOAD_GLOBAL`` which does not call ``__getattr__``). The raise
+    sites below therefore use ``_octomil_client_error()`` instead of
+    a bare global name. This function still exists so
+    ``octomil.model_ops.OctomilClientError`` works for callers /
+    tests that legitimately do attribute access on the module.
+    """
+    if name == "OctomilClientError":
+        return _octomil_client_error()
     raise AttributeError(f"module 'octomil.model_ops' has no attribute {name!r}")
+
+
+def _octomil_client_error():
+    """Resolve and cache the inner ``OctomilClientError`` class.
+
+    Reviewer P1 on PR #455 (post-6eaebdb): ``raise
+    OctomilClientError(...)`` inside method bodies hits Python's
+    bytecode ``LOAD_GLOBAL``, which only consults the module's
+    globals dict — never module-level ``__getattr__``. The previous
+    revision left the bare-name reference in raise sites and the
+    method crashed with ``NameError``. This helper imports the
+    class on first call, caches it on the module, and returns it
+    so each raise site is ``raise _octomil_client_error()(...)``.
+    """
+    cached = globals().get("_OctomilClientError")
+    if cached is not None:
+        return cached
+    from .python.octomil.api_client import OctomilClientError as _err
+
+    globals()["_OctomilClientError"] = _err
+    return _err
 
 
 _logger = logging.getLogger(__name__)
@@ -110,7 +138,7 @@ class ModelOpsMixin:
         if os.path.isdir(file_path):
             resolved = _find_model_file(file_path)
             if not resolved:
-                raise OctomilClientError(
+                raise _octomil_client_error()(
                     f"No model file found in directory: {file_path}\n"
                     f"Expected extensions: {', '.join(sorted(_MODEL_EXTENSIONS))}"
                 )
@@ -534,9 +562,7 @@ class ModelOpsMixin:
                 versions_resp = self._registry.list_versions(model_id)
                 versions = versions_resp.get("versions", [])
                 if len(versions) < 2:
-                    from .python.octomil.api_client import OctomilClientError
-
-                    raise OctomilClientError(f"Cannot rollback {name}: only one version exists")
+                    raise _octomil_client_error()(f"Cannot rollback {name}: only one version exists")
                 # Versions come sorted newest-first from the API; pick the second.
                 to_version = versions[1].get("version", "")
 

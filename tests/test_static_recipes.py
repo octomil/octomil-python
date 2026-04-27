@@ -58,6 +58,52 @@ def test_kokoro_recipe_uses_single_file_tarball_until_manifest_support_lands():
     assert f.extract is True, "tarball must be flagged for post-download extraction"
 
 
+def test_kokoro_recipe_digest_is_not_the_all_zero_placeholder():
+    """Reviewer P1: shipping a recipe with ``sha256:0000…0000``
+    means the durable downloader rejects every download — the real
+    SHA-256 of the upstream tarball can never equal 64 zeroes.
+    Catch the regression at the recipe-table level."""
+    from octomil.runtime.lifecycle.static_recipes import _RECIPES
+
+    placeholder = "sha256:" + "0" * 64
+    for (model_id, capability), recipe in _RECIPES.items():
+        for f in recipe.files:
+            assert f.digest != placeholder, (
+                f"recipe {model_id!r}/{capability!r} ships placeholder "
+                f"digest for {f.relative_path!r}; replace with the real SHA-256."
+            )
+            assert f.digest.startswith("sha256:")
+            assert len(f.digest) == len("sha256:") + 64
+
+
+def test_recipe_module_import_rejects_placeholder_digest_at_construction():
+    """Defense in depth: ``_assert_no_placeholder_digest`` runs at
+    import time of ``static_recipes``. A future contributor who
+    reverts to all-zero placeholders gets an immediate ``ValueError``
+    on first import of the module."""
+    from octomil.runtime.lifecycle.static_recipes import (
+        StaticRecipe,
+        _assert_no_placeholder_digest,
+        _StaticArtifactFile,
+    )
+
+    bad = StaticRecipe(
+        model_id="bad",
+        capability="tts",
+        engine="sherpa-onnx",
+        files=[
+            _StaticArtifactFile(
+                relative_path="x.tar.bz2",
+                url="https://x/x.tar.bz2",
+                digest="sha256:" + "0" * 64,
+            ),
+        ],
+    )
+    with pytest.raises(ValueError) as excinfo:
+        _assert_no_placeholder_digest(bad)
+    assert "placeholder" in str(excinfo.value).lower()
+
+
 def test_recipe_artifact_digest_is_the_actual_file_digest_not_a_manifest_hash():
     """Reviewer P1: ``PrepareManager._build_descriptor`` hands the
     artifact-level digest directly to the durable downloader as the

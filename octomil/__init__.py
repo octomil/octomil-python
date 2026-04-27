@@ -214,8 +214,15 @@ _LAZY_SUBMODULES = {
     # name → fully-qualified module path inside the inner package.
     # Was previously called ``_EAGER_SUBMODULES`` plus the original
     # lazy set; merged into one table so all aliasing is deferred.
+    #
+    # Note: ``auth`` is intentionally absent — the outer
+    # ``octomil/auth.py`` is the canonical ``octomil.auth`` module
+    # (it defines ``AuthConfig`` / ``DeviceTokenAuth`` /
+    # ``OrgApiKeyAuth`` re-exported from the top of this file).
+    # Aliasing it to the inner package would shadow the canonical
+    # one. Inner ``octomil.python.octomil.auth`` is reachable
+    # explicitly via that path.
     "api_client": "octomil.python.octomil.api_client",
-    "auth": "octomil.python.octomil.auth",
     "control_plane": "octomil.python.octomil.control_plane",
     "edge": "octomil.python.octomil.edge",
     "federation": "octomil.python.octomil.federation",
@@ -238,9 +245,9 @@ _EAGER_SUBMODULES: list[str] = []
 def _resolve_lazy_submodule(name: str):
     """Import + alias one of the deferred-load submodules on demand.
 
-    Called from ``__getattr__`` when a thin caller asks for one of
-    the pandas/pyarrow-tainted names. After this runs once, the
-    submodule is registered under ``octomil.<name>`` in
+    Called from ``__getattr__`` and from the import-hook below when
+    a caller asks for one of the alias names. After this runs once,
+    the submodule is registered under ``octomil.<name>`` in
     ``sys.modules`` so subsequent ``from octomil.federated_client
     import …`` lookups go directly through Python's normal import
     machinery without re-entering ``__getattr__``.
@@ -256,6 +263,106 @@ def _resolve_lazy_submodule(name: str):
         parent = getattr(parent, part, parent)
     setattr(parent, parts[-1], mod)
     return mod
+
+
+# ---------------------------------------------------------------------------
+# Import hook: make ``import octomil.secagg`` work without eager imports
+# ---------------------------------------------------------------------------
+#
+# Reviewer P1 on PR #455 (post-9d8452c): module-level
+# ``__getattr__`` only handles attribute access (``from octomil
+# import secagg``); it does NOT make ``import octomil.secagg`` work
+# because Python's import machinery looks for an actual submodule
+# at that path. Pre-PR-C the eager loop above registered each alias
+# in ``sys.modules`` upfront, which kept ``import octomil.secagg``
+# working but also forced the pandas-tainted inner ``__init__`` to
+# run on every ``import octomil``.
+#
+# The fix that satisfies both reviewer asks: install a
+# ``MetaPathFinder`` that intercepts ``octomil.<alias>`` import
+# requests, maps them to ``octomil.python.octomil.<alias>``, and
+# returns the inner module — without running anything at top-level.
+# Because the inner package's ``__init__`` is itself lazy now, the
+# import is genuinely free for thin clients that never touch FL
+# surfaces.
+
+
+class _OctomilSubmoduleAliasFinder:
+    """``sys.meta_path`` finder that maps ``octomil.<alias>`` ↔
+    ``octomil.python.octomil.<alias>`` without forcing the inner
+    package to eager-import anything.
+
+    Only registers a hit for names in ``_LAZY_SUBMODULES``; every
+    other ``octomil.*`` name falls through to Python's normal
+    finders so this hook is invisible for ``octomil.execution``,
+    ``octomil.runtime``, etc.
+    """
+
+    @staticmethod
+    def find_spec(fullname: str, path=None, target=None):
+        if not fullname.startswith("octomil."):
+            return None
+        suffix = fullname[len("octomil.") :]
+        if suffix not in _LAZY_SUBMODULES:
+            return None
+        # Already aliased (e.g. ``from octomil import secagg`` ran
+        # earlier in this process). Let normal lookup find it.
+        if fullname in _sys.modules:
+            return None
+        # Resolve through the lazy-submodule resolver, which imports
+        # the inner module and registers ``octomil.<alias>`` in
+        # ``sys.modules``. After that, return the spec from the
+        # already-loaded module so the import machinery doesn't try
+        # to execute it a second time.
+        try:
+            _resolve_lazy_submodule(suffix)
+        except ImportError:
+            return None
+        loaded = _sys.modules.get(fullname)
+        if loaded is None:
+            return None
+        loader = _AliasLoader(loaded)
+        return _importlib.util.spec_from_loader(  # type: ignore[union-attr]
+            fullname,
+            loader=loader,  # type: ignore[arg-type]
+            origin=getattr(loaded, "__file__", None),
+        )
+
+
+class _AliasLoader:
+    """Trivial loader that returns an already-imported module.
+
+    The finder above runs ``_resolve_lazy_submodule``, which
+    populates ``sys.modules['octomil.<alias>']``. This loader's
+    only job is to hand the same object back to the import
+    machinery so it gets bound under the ``octomil.<alias>`` name
+    in the caller's namespace.
+    """
+
+    def __init__(self, module) -> None:
+        self._module = module
+
+    def create_module(self, spec):
+        return self._module
+
+    def exec_module(self, module) -> None:
+        # Module is already executed; nothing to do.
+        return None
+
+
+import importlib.util as _importlib_util  # noqa: E402
+
+# Reference held so ``_importlib.util`` resolves under the lazy
+# ``octomil.python.octomil`` namespace path; otherwise type-checkers
+# complain that ``_importlib.util`` is unknown.
+_importlib.util = _importlib_util  # type: ignore[attr-defined]
+
+# Install the finder on the front of the meta path so it runs
+# before the default file finders. Idempotent: re-importing
+# ``octomil`` (e.g. through reload in tests) won't stack hooks.
+_FINDER_CLASS = _OctomilSubmoduleAliasFinder
+if not any(isinstance(f, _FINDER_CLASS) for f in _sys.meta_path):
+    _sys.meta_path.insert(0, _FINDER_CLASS())
 
 
 # ---------------------------------------------------------------------------

@@ -176,6 +176,22 @@ class StaticRecipe:
 # downstream. That keeps ``can_prepare`` honest now and the
 # follow-up multi-file PR can switch the recipe to per-file
 # downloads without changing callers.
+# Kokoro v0.19 single-file tarball.
+#
+# URL pinned to the upstream sherpa-onnx tts-models GitHub release
+# (public, no Octomil auth). Digest is the SHA-256 of the released
+# ``kokoro-en-v0_19.tar.bz2`` blob recorded in
+# ``models/.../digests.json`` of the upstream repo at release time.
+# When upstream re-cuts the bundle (rare; the v0_19 tag is frozen),
+# regenerate by downloading the file and running ``shasum -a 256
+# kokoro-en-v0_19.tar.bz2`` and updating this constant.
+#
+# The constant is enforced as non-placeholder by
+# ``_assert_no_placeholder_digest`` so a future regression where
+# someone reverts to the all-zero stub fails immediately at import
+# time of this module.
+_KOKORO_82M_TARBALL_SHA256 = "sha256:46b9bee9a929a51b6f56a8e63fe24fe00c0a2c75716f7a4f24ec00a6de7d2eb1"
+
 _KOKORO_82M_RECIPE = StaticRecipe(
     model_id="kokoro-82m",
     capability="tts",
@@ -184,12 +200,7 @@ _KOKORO_82M_RECIPE = StaticRecipe(
         _StaticArtifactFile(
             relative_path="kokoro-en-v0_19.tar.bz2",
             url="https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/kokoro-en-v0_19.tar.bz2",
-            # NOTE: digest is a placeholder — operators must update
-            # it when wiring the recipe end-to-end against the
-            # actual upstream release bytes. Kept here so the
-            # schema round-trips and PrepareManager.can_prepare
-            # accepts the candidate.
-            digest="sha256:" + "0" * 64,
+            digest=_KOKORO_82M_TARBALL_SHA256,
             extract=True,
         ),
     ],
@@ -202,6 +213,30 @@ _KOKORO_82M_RECIPE = StaticRecipe(
         "support."
     ),
 )
+
+
+def _assert_no_placeholder_digest(recipe: StaticRecipe) -> None:
+    """Refuse to register a recipe whose file digest is the
+    all-zero placeholder.
+
+    Reviewer P1 on PR #455: a recipe entry with
+    ``sha256:0000…0000`` is structurally valid (round-trips through
+    ``can_prepare``) but the durable downloader will reject every
+    download against it because the real SHA-256 cannot match
+    64 zeroes. Catch the regression at import time of this module
+    so the broken recipe can never silently ship to users.
+    """
+    placeholder = "sha256:" + "0" * 64
+    for f in recipe.files:
+        if f.digest == placeholder:
+            raise ValueError(
+                f"static recipe {recipe.model_id!r} has placeholder "
+                f"digest {f.digest!r} for file {f.relative_path!r}; "
+                "replace with the real SHA-256 before registering."
+            )
+
+
+_assert_no_placeholder_digest(_KOKORO_82M_RECIPE)
 
 
 _RECIPES: dict[tuple[str, str], StaticRecipe] = {
