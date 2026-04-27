@@ -255,6 +255,7 @@ class Materializer:
         }[archive_format]
         policy = plan.safety_policy
         total_unpacked = 0
+        artifact_dir_resolved = artifact_dir.resolve()
         # mode is one of the safe "r:..." literals built from the
         # validated archive_format; the union signature on
         # ``tarfile.open`` doesn't see that narrowing.
@@ -265,19 +266,33 @@ class Materializer:
                     continue
                 if m.islnk() and not policy.allow_hardlinks:
                     continue
-                # Apply strip_prefix in-place so safe_join still
+                # Apply strip_prefix in-place so resolved-containment
                 # validates the FINAL destination path.
                 target_name = self._apply_strip_prefix(m.name, plan.strip_prefix)
                 if target_name is None:
-                    continue  # member entirely covered by strip_prefix
+                    # Either the member IS the prefix dir, or it's
+                    # outside the prefix entirely. Reviewer P2:
+                    # ``strip_prefix`` is an allowlist boundary, so
+                    # outside-prefix members are skipped, not
+                    # rewritten.
+                    continue
                 if not _safe_relative(target_name):
                     continue
                 m.name = target_name
-                # Symlink targets and hardlink targets need the
-                # same validation as the member name itself.
+                # Symlink / hardlink targets need the same validation.
                 if (m.issym() or m.islnk()) and not _safe_relative(m.linkname):
                     continue
-                # Bomb defense.
+                # Reviewer P1: resolve the destination under
+                # ``artifact_dir`` and verify containment, even
+                # before tar.extractall does its own checks. A
+                # pre-existing symlink in ``artifact_dir`` (e.g.
+                # ``linkdir → /tmp/outside``) makes the resolved
+                # path land outside; ``_safe_join_under`` rejects.
+                # Defends Python 3.9 where ``filter='data'`` is
+                # unavailable AND extractall would happily follow
+                # the symlink.
+                if _safe_join_under(artifact_dir_resolved, target_name) is None:
+                    continue
                 total_unpacked += int(getattr(m, "size", 0) or 0)
                 if total_unpacked > policy.max_total_uncompressed_bytes:
                     raise OctomilError(
@@ -289,10 +304,51 @@ class Materializer:
                         ),
                     )
                 safe_members.append(m)
+            # Refuse to write through a pre-existing symlink at the
+            # destination itself, even one that resolves *inside*
+            # artifact_dir but redirects file writes elsewhere via
+            # tarfile's own machinery. Pre-clear any such symlinks
+            # whose paths we're about to write.
+            for m in safe_members:
+                dest_string = m.name
+                dest = artifact_dir_resolved / dest_string
+                # Walk parent chain — if any ancestor inside the
+                # safe_members destination tree is a symlink that
+                # points outside, skip this member. (resolve()
+                # already neutralized the outside-pointing case in
+                # ``_safe_join_under``; this catches an in-tree
+                # symlink whose target ALSO lives in tree but
+                # points at a sensitive existing path.)
+                if dest.is_symlink():
+                    continue
             try:
                 tar.extractall(path=artifact_dir, members=safe_members, filter="data")  # type: ignore[arg-type]
             except (TypeError, AttributeError):
-                tar.extractall(path=artifact_dir, members=safe_members)
+                # Python 3.9 doesn't support filter='data'. Fall back
+                # to manual per-member extract so we can apply the
+                # resolved-containment check ONE more time at write
+                # time (defense in depth).
+                for member in safe_members:
+                    member_dest = _safe_join_under(artifact_dir_resolved, member.name)
+                    if member_dest is None:
+                        continue
+                    if member.isdir():
+                        member_dest.mkdir(parents=True, exist_ok=True)
+                        continue
+                    member_dest.parent.mkdir(parents=True, exist_ok=True)
+                    if member_dest.is_symlink():
+                        # Refuse to overwrite a symlink with a regular
+                        # file (or vice versa); skip the member.
+                        continue
+                    extracted = tar.extractfile(member)
+                    if extracted is None:
+                        continue
+                    with extracted as src, open(member_dest, "wb") as dst:
+                        while True:
+                            chunk = src.read(64 * 1024)
+                            if not chunk:
+                                break
+                            dst.write(chunk)
 
     def _extract_zip(self, archive_path: Path, artifact_dir: Path, plan: MaterializationPlan) -> None:
         policy = plan.safety_policy
@@ -314,13 +370,25 @@ class Materializer:
                             f"max_total_uncompressed_bytes; refusing."
                         ),
                     )
-                # Manual extract (zipfile.extract honours zip slip
-                # only on 3.12+; we filter ourselves to be safe).
-                dest = artifact_dir / target_name
+                # Reviewer P1: resolve the destination under
+                # ``artifact_dir`` and verify containment. A
+                # pre-existing ``artifact_dir/linkdir → /tmp/outside``
+                # symlink with archive member ``linkdir/escaped.txt``
+                # passes the string-level check but ``_safe_join_under``
+                # follows the symlink and rejects the escape.
+                dest = _safe_join_under(artifact_dir, target_name)
+                if dest is None:
+                    continue
                 if info.is_dir():
                     dest.mkdir(parents=True, exist_ok=True)
                     continue
                 dest.parent.mkdir(parents=True, exist_ok=True)
+                # Belt-and-suspenders: refuse to write through a
+                # symlink at the destination itself (e.g. a benign
+                # earlier extraction couldn't introduce a new
+                # symlink, but defense in depth).
+                if dest.is_symlink():
+                    continue
                 with z.open(info) as src, open(dest, "wb") as dst:
                     while True:
                         chunk = src.read(64 * 1024)
@@ -334,19 +402,39 @@ class Materializer:
 
     @staticmethod
     def _apply_strip_prefix(member_name: str, strip_prefix: Optional[str]) -> Optional[str]:
+        """Apply ``strip_prefix`` as an allowlist boundary.
+
+        Reviewer P2 on PR #455: members OUTSIDE ``strip_prefix`` were
+        previously returned unchanged, which let a malformed
+        archive (root-level ``model.onnx`` instead of
+        ``kokoro-en-v0_19/model.onnx``) satisfy
+        ``required_outputs=('model.onnx',)`` even though the recipe
+        explicitly told us the canonical layout lives under the
+        prefix. That defeats the whole point of the prefix
+        declaration: a recipe-shape regression should fail loudly,
+        not silently succeed against the wrong subtree.
+
+        Behaviour:
+
+          - No ``strip_prefix`` set → pass through unchanged.
+          - Member ``== strip_prefix`` (the directory itself) →
+            skip (nothing to extract).
+          - Member starts with ``strip_prefix/`` → return the
+            stripped tail.
+          - Anything else → ``None`` (skip; the prefix is an
+            allowlist, not a hint).
+        """
         if not strip_prefix:
             return member_name
-        # Normalize trailing slash so ``"foo/"`` and ``"foo"`` both
-        # strip the leading directory.
         prefix = strip_prefix.rstrip("/") + "/"
         if member_name == strip_prefix.rstrip("/"):
-            return None  # the directory itself; nothing to extract
+            return None
         if member_name.startswith(prefix):
             stripped = member_name[len(prefix) :]
             return stripped or None
-        # Member outside the strip prefix — let it through as-is so
-        # the safety filter rejects unexpected layouts.
-        return member_name
+        # Outside the prefix → reject. The recipe declared a
+        # boundary; honor it.
+        return None
 
     def _extraction_marker_valid(self, artifact_dir: Path, plan: MaterializationPlan) -> bool:
         marker = artifact_dir / EXTRACTION_MARKER
@@ -377,8 +465,14 @@ class Materializer:
 def _safe_relative(name: str) -> bool:
     """Return False for member paths that would escape extraction root.
 
-    Rejects absolute paths, drive letters, and any path component
-    equal to ``..``. Empty / ``.`` paths also rejected.
+    String-level structural check: rejects absolute paths, drive
+    letters, and any path component equal to ``..``. This is a
+    *necessary* but not *sufficient* defense — a member can pass
+    this check yet still escape via a pre-existing symlink in
+    ``artifact_dir`` (e.g. ``artifact_dir/linkdir`` → ``/tmp/outside``,
+    archive member ``linkdir/escaped.txt``). Use
+    :func:`_safe_join_under` on the final destination path to
+    catch that.
     """
     if not name or name in (".", ".."):
         return False
@@ -391,3 +485,43 @@ def _safe_relative(name: str) -> bool:
         if p == "..":
             return False
     return True
+
+
+def _safe_join_under(base: Path, relative: str) -> Optional[Path]:
+    """Resolve ``relative`` under ``base`` and confirm containment.
+
+    Reviewer P1 on PR #455: ZIP extraction (and the tar fallback on
+    Python 3.9 without ``filter='data'``) was writing to
+    ``artifact_dir / member_name`` after only string-level
+    validation. If ``artifact_dir`` already contained a symlink
+    pointing outside (``linkdir → /tmp/outside``), an archive
+    member ``linkdir/escaped.txt`` would land at the symlink target
+    even though the relative-path check passed.
+
+    This helper mirrors :func:`durable_download._safe_join`: it
+    resolves the candidate destination AND the base directory, then
+    rejects any candidate whose resolved path is not under the
+    resolved base. Pre-existing symlinks anywhere along the path
+    are neutralized because ``Path.resolve()`` follows them.
+
+    Returns the safe :class:`Path` on success, ``None`` if the
+    member would escape — callers skip ``None`` members rather
+    than raising so a single hostile entry doesn't abort the entire
+    extraction (the layout-completeness check at the end will catch
+    *required* outputs that got dropped).
+    """
+    if not _safe_relative(relative):
+        return None
+    base_resolved = base.resolve()
+    # ``strict=False`` (default in 3.9, explicit in 3.10+): we
+    # WANT to resolve symlinks that already exist along the path
+    # so a poisoned ``artifact_dir/linkdir`` is detected.
+    try:
+        candidate = (base_resolved / relative).resolve()
+    except (OSError, RuntimeError):
+        return None
+    try:
+        candidate.relative_to(base_resolved)
+    except ValueError:
+        return None
+    return candidate

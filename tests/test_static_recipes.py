@@ -295,6 +295,126 @@ def test_materializer_refuses_path_traversal(tmp_path):
     assert not (artifact_dir / ".." / "escape.bin").exists()
 
 
+def test_materializer_zip_refuses_pre_existing_symlink_escape(tmp_path):
+    """Reviewer P1 on PR #455 (post-636ff06): the zip path used to
+    resolve member destinations as ``artifact_dir / target_name``
+    after only string-level validation. If ``artifact_dir`` already
+    contains a symlink pointing outside the dir (e.g.
+    ``linkdir → /tmp/outside``), an archive member ``linkdir/
+    escaped.txt`` lands at the symlink target.
+
+    Fix: every destination goes through ``_safe_join_under`` which
+    resolves symlinks and verifies the resolved path is under the
+    resolved artifact_dir. Hostile member is skipped; legitimate
+    members extract normally."""
+    import zipfile
+
+    artifact_dir = tmp_path / "artifact"
+    artifact_dir.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (artifact_dir / "linkdir").symlink_to(outside, target_is_directory=True)
+
+    archive_src = tmp_path / "_zip_src"
+    archive_src.mkdir()
+    safe_payload = archive_src / "safe.txt"
+    safe_payload.write_bytes(b"safe content")
+    escape_payload = archive_src / "escaped.txt"
+    escape_payload.write_bytes(b"i should never land outside")
+
+    archive = artifact_dir / "evil.zip"
+    with zipfile.ZipFile(archive, "w") as z:
+        z.write(safe_payload, arcname="safe.txt")
+        z.write(escape_payload, arcname="linkdir/escaped.txt")
+
+    plan = MaterializationPlan(
+        kind="archive",
+        source="evil.zip",
+        archive_format="zip",
+        required_outputs=("safe.txt",),
+    )
+    Materializer().materialize(artifact_dir, plan)
+
+    assert (artifact_dir / "safe.txt").read_bytes() == b"safe content"
+    assert not (outside / "escaped.txt").exists()
+
+
+def test_materializer_tar_refuses_pre_existing_symlink_escape(tmp_path):
+    """Same regression as the zip case, against the tar fallback
+    path used on Python 3.9 (no ``filter='data'``). The
+    ``_safe_join_under`` check runs both at member-collection time
+    AND inside the per-member extract fallback."""
+    artifact_dir = tmp_path / "artifact"
+    artifact_dir.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (artifact_dir / "linkdir").symlink_to(outside, target_is_directory=True)
+
+    src = tmp_path / "_tar_src"
+    src.mkdir()
+    safe = src / "safe.bin"
+    safe.write_bytes(b"safe")
+    escape = src / "escape.bin"
+    escape.write_bytes(b"would escape")
+
+    archive = artifact_dir / "evil.tar.bz2"
+    with tarfile.open(archive, "w:bz2") as tar:
+        tar.add(safe, arcname="safe.bin")
+        tar.add(escape, arcname="linkdir/escaped.bin")
+
+    plan = MaterializationPlan(
+        kind="archive",
+        source="evil.tar.bz2",
+        archive_format="tar.bz2",
+        required_outputs=("safe.bin",),
+    )
+    Materializer().materialize(artifact_dir, plan)
+
+    assert (artifact_dir / "safe.bin").read_bytes() == b"safe"
+    assert not (outside / "escaped.bin").exists()
+
+
+def test_strip_prefix_is_an_allowlist_boundary(tmp_path):
+    """Reviewer P2 on PR #455: when ``strip_prefix`` is set,
+    archive members OUTSIDE the prefix used to be returned
+    unchanged and accepted. A malformed archive with root-level
+    ``model.onnx`` could then satisfy
+    ``required_outputs=('model.onnx',)`` for a recipe that
+    explicitly told us to expect everything under
+    ``kokoro-en-v0_19/``. That defeats the prefix declaration.
+
+    Fix: ``_apply_strip_prefix`` returns ``None`` for members
+    outside the prefix, so they're skipped. ``required_outputs``
+    can NOT be satisfied by content sitting at the wrong subtree."""
+    artifact_dir = tmp_path / "artifact"
+    artifact_dir.mkdir()
+    src = tmp_path / "_src"
+    src.mkdir()
+    # Misshapen archive: root-level ``model.onnx`` instead of the
+    # expected ``kokoro-en-v0_19/model.onnx``.
+    bad = src / "model.onnx"
+    bad.write_bytes(b"misshapen-root-level")
+    archive = artifact_dir / "rootfile.tar.bz2"
+    with tarfile.open(archive, "w:bz2") as tar:
+        tar.add(bad, arcname="model.onnx")
+
+    plan = MaterializationPlan(
+        kind="archive",
+        source="rootfile.tar.bz2",
+        archive_format="tar.bz2",
+        strip_prefix="kokoro-en-v0_19/",
+        required_outputs=("model.onnx",),
+    )
+    # Materializer must NOT accept the root-level member as
+    # satisfying ``required_outputs`` — it should refuse with
+    # missing-output because nothing under the prefix existed.
+    with pytest.raises(OctomilError) as excinfo:
+        Materializer().materialize(artifact_dir, plan)
+    assert excinfo.value.code == OctomilErrorCode.RUNTIME_UNAVAILABLE
+    assert "model.onnx" in str(excinfo.value)
+    assert not (artifact_dir / EXTRACTION_MARKER).exists()
+
+
 def test_materializer_keeps_extraction_inside_artifact_dir_for_absolute_paths(tmp_path):
     """Tarfile strips leading slashes so an ``arcname='/etc/passwd'``
     member ends up as ``etc/passwd`` (no longer absolute) at extract
