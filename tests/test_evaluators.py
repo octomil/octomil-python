@@ -257,10 +257,18 @@ class TestRegexPredicateEvaluator:
 
 
 class TestSafetyPassedEvaluator:
-    def test_no_checker_passes(self):
+    def test_no_checker_fails_closed(self):
+        """Fail-closed contract: a required ``safety_passed`` gate
+        without an app-provided checker MUST NOT silently pass — that
+        would let unsafe content through whenever an integrator
+        forgot to wire up safety. ``SafetyPassedEvaluator`` returns
+        ``passed=False`` with ``reason_code='no_safety_checker_configured'``
+        instead, so the gate visibly blocks until the integrator
+        supplies a checker.
+        """
         ev = SafetyPassedEvaluator()
         result = ev.evaluate(gate={"code": "safety_passed"}, response="anything")
-        assert result.passed is True
+        assert result.passed is False
         assert result.reason_code == "no_safety_checker_configured"
 
     def test_checker_returns_true(self):
@@ -318,6 +326,15 @@ class TestEvaluatorRegistry:
         assert reg.get("json_parseable") is not None
         assert reg.get("schema_valid") is not None
         assert reg.get("tool_call_valid") is not None
+        # ``safety_passed`` is registered ONLY when ``with_defaults``
+        # gets a ``safety_check`` callback — auto-registering a
+        # checkerless safety evaluator would silently fail-close on
+        # every safety-gated route, masking the missing wiring. The
+        # integrator must opt in.
+        assert reg.get("safety_passed") is None
+
+    def test_with_defaults_registers_safety_passed_when_checker_provided(self):
+        reg = EvaluatorRegistry.with_defaults(safety_check=lambda _: True)
         assert reg.get("safety_passed") is not None
 
     def test_with_defaults_and_extras(self):

@@ -52,6 +52,7 @@ hidden_imports = [
     "octomil.runtime.engines.llamacpp.engine",
     "octomil.runtime.engines.ort.engine",
     "octomil.runtime.engines.whisper.engine",
+    "octomil.runtime.engines.sherpa.engine",
     "octomil.runtime.engines.echo.engine",
     "octomil.runtime.engines.experimental.mlc.engine",
     "octomil.runtime.engines.experimental.mnn.engine",

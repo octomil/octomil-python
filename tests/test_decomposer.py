@@ -638,7 +638,14 @@ class TestMultiModelServeDecomposition:
             echo.load_model(name)
             return echo
 
-        with patch("octomil.serve.app._detect_backend", side_effect=mock_detect):
+        # Both ``octomil.serve.app`` and ``octomil.serve.multi_model``
+        # do ``from .detection import _detect_backend`` — each holds
+        # its own local binding, so the multi-model lifespan path
+        # needs the multi_model patch too.
+        with (
+            patch("octomil.serve.app._detect_backend", side_effect=mock_detect),
+            patch("octomil.serve.multi_model._detect_backend", side_effect=mock_detect),
+        ):
             app = create_multi_model_app(
                 ["small-model", "medium-model", "large-model"],
             )

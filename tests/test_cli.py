@@ -65,10 +65,16 @@ class TestMainGroup:
         assert "Octomil" in result.output
 
     def test_version(self):
+        # Track ``octomil.__version__`` rather than pinning a specific
+        # release number — every release used to require touching this
+        # test even though the contract is "the CLI prints whatever
+        # version the package self-reports".
+        from octomil import __version__
+
         runner = CliRunner()
         result = runner.invoke(main, ["--version"])
         assert result.exit_code == 0
-        assert "4.7.0" in result.output
+        assert __version__ in result.output
 
     def test_no_args_shows_quickstart(self):
         """Bare `octomil` with no args shows focused onboarding screen."""
