@@ -899,9 +899,7 @@ def test_synthesize_speech_uses_prepared_static_recipe_when_planner_offline(tmp_
         stack.enter_context(patch("octomil.runtime.engines.sherpa.is_sherpa_tts_model", return_value=True))
         stack.enter_context(patch("octomil.runtime.engines.sherpa.is_sherpa_tts_runtime_available", return_value=True))
         stack.enter_context(patch("octomil.execution.kernel._resolve_planner_selection", return_value=None))
-        response = asyncio.get_event_loop().run_until_complete(
-            kernel.synthesize_speech(model="kokoro-82m", input="hello")
-        )
+        response = asyncio.run(kernel.synthesize_speech(model="kokoro-82m", input="hello"))
 
     assert response.route.locality == "on_device"
     assert response.route.engine == "sherpa-onnx"
@@ -973,9 +971,7 @@ def test_synthesize_speech_local_first_wins_when_prepared_cache_present(tmp_path
         stack.enter_context(patch("octomil.runtime.engines.sherpa.is_sherpa_tts_runtime_available", return_value=True))
         stack.enter_context(patch("octomil.execution.kernel._resolve_planner_selection", return_value=None))
         stack.enter_context(patch.object(kernel, "_cloud_synthesize_speech", new=cloud_spy))
-        response = asyncio.get_event_loop().run_until_complete(
-            kernel.synthesize_speech(model="kokoro-82m", input="hello")
-        )
+        response = asyncio.run(kernel.synthesize_speech(model="kokoro-82m", input="hello"))
 
     assert response.route.locality == "on_device"
     cloud_spy.assert_not_called()
@@ -1088,9 +1084,7 @@ def test_synthesize_speech_prepared_cache_short_circuits_echo_only_synthetic_can
         stack.enter_context(patch("octomil.runtime.engines.sherpa.is_sherpa_tts_runtime_available", return_value=True))
         stack.enter_context(patch("octomil.execution.kernel._resolve_planner_selection", return_value=selection))
         stack.enter_context(prepare_spy)
-        response = asyncio.get_event_loop().run_until_complete(
-            kernel.synthesize_speech(model="kokoro-82m", input="hello")
-        )
+        response = asyncio.run(kernel.synthesize_speech(model="kokoro-82m", input="hello"))
 
     assert response.route.locality == "on_device"
     assert response.route.engine == "sherpa-onnx"
@@ -1228,9 +1222,7 @@ def test_synthesize_speech_prepared_cache_does_not_shadow_planner_selected_artif
         stack.enter_context(patch("octomil.runtime.engines.sherpa.is_sherpa_tts_model", return_value=True))
         stack.enter_context(patch("octomil.runtime.engines.sherpa.is_sherpa_tts_runtime_available", return_value=True))
         stack.enter_context(patch("octomil.execution.kernel._resolve_planner_selection", return_value=selection))
-        response = asyncio.get_event_loop().run_until_complete(
-            kernel.synthesize_speech(model="kokoro-82m", input="hello")
-        )
+        response = asyncio.run(kernel.synthesize_speech(model="kokoro-82m", input="hello"))
 
     # The planner candidate's prepare() ran exactly once for the
     # private artifact id — the static cache did NOT shadow it.
@@ -1332,9 +1324,7 @@ def test_synthesize_speech_app_scoped_synthetic_candidate_surfaces_planner_error
         stack.enter_context(patch("octomil.runtime.engines.sherpa.is_sherpa_tts_runtime_available", return_value=True))
         stack.enter_context(patch("octomil.execution.kernel._resolve_planner_selection", return_value=selection))
         with pytest.raises(OctomilError) as excinfo:
-            asyncio.get_event_loop().run_until_complete(
-                kernel.synthesize_speech(model="@app/tts-tester/tts", input="hello")
-            )
+            asyncio.run(kernel.synthesize_speech(model="@app/tts-tester/tts", input="hello"))
 
     # The error came from the routing/prepare path, not the cache.
     # Backend never loaded — the public Kokoro bytes were not
@@ -1431,9 +1421,7 @@ def test_synthesize_speech_explicit_app_kwarg_does_not_short_circuit_cache(tmp_p
         stack.enter_context(patch("octomil.runtime.engines.sherpa.is_sherpa_tts_runtime_available", return_value=True))
         stack.enter_context(patch("octomil.execution.kernel._resolve_planner_selection", return_value=selection))
         with pytest.raises(OctomilError) as excinfo:
-            asyncio.get_event_loop().run_until_complete(
-                kernel.synthesize_speech(model="kokoro-82m", input="hello", app="tts-tester")
-            )
+            asyncio.run(kernel.synthesize_speech(model="kokoro-82m", input="hello", app="tts-tester"))
 
     assert backend_calls == [], "explicit app= must NOT silently load the public static cache"
     assert excinfo.value.code == OctomilErrorCode.RUNTIME_UNAVAILABLE
@@ -1513,7 +1501,7 @@ def test_synthesize_speech_direct_mismatched_identity_does_not_short_circuit_cac
         stack.enter_context(patch("octomil.runtime.engines.sherpa.is_sherpa_tts_runtime_available", return_value=True))
         stack.enter_context(patch("octomil.execution.kernel._resolve_planner_selection", return_value=selection))
         with pytest.raises(OctomilError):
-            asyncio.get_event_loop().run_until_complete(kernel.synthesize_speech(model="kokoro-82m", input="hello"))
+            asyncio.run(kernel.synthesize_speech(model="kokoro-82m", input="hello"))
 
     assert backend_calls == [], "backend must not load when the planner candidate's identity is mismatched"
 
@@ -1556,9 +1544,7 @@ def test_synthesize_speech_app_scoped_no_candidate_does_not_short_circuit_cache(
         stack.enter_context(patch("octomil.runtime.engines.sherpa.is_sherpa_tts_runtime_available", return_value=True))
         stack.enter_context(patch("octomil.execution.kernel._resolve_planner_selection", return_value=selection))
         with pytest.raises(OctomilError) as excinfo:
-            asyncio.get_event_loop().run_until_complete(
-                kernel.synthesize_speech(model="@app/tts-tester/tts", input="hello")
-            )
+            asyncio.run(kernel.synthesize_speech(model="@app/tts-tester/tts", input="hello"))
 
     # Reviewer P2 (round 5): even when the planner emits no
     # candidate at all, an app-scoped failure must blame the
@@ -1686,9 +1672,7 @@ def test_synthesize_speech_prepared_cache_used_when_candidate_matches_static_rec
         stack.enter_context(patch("octomil.runtime.engines.sherpa.is_sherpa_tts_model", return_value=True))
         stack.enter_context(patch("octomil.runtime.engines.sherpa.is_sherpa_tts_runtime_available", return_value=True))
         stack.enter_context(patch("octomil.execution.kernel._resolve_planner_selection", return_value=selection))
-        response = asyncio.get_event_loop().run_until_complete(
-            kernel.synthesize_speech(model="kokoro-82m", input="hello")
-        )
+        response = asyncio.run(kernel.synthesize_speech(model="kokoro-82m", input="hello"))
 
     assert prepare_calls == [], "matching candidate must not invoke PrepareManager.prepare"
     assert captured["create_backend_kwargs"] == {"model_dir": str(static_cache_dir)}
