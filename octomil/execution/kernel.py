@@ -1257,18 +1257,29 @@ class ExecutionKernel:
 
         routing_policy = _resolve_routing_policy(defaults)
         # Local routing is satisfied if a prepared artifact dir is
-        # already on disk OR the planner emitted a preparable
-        # sdk_runtime candidate the kernel can materialize.
+        # already on disk AND the runtime can load it, OR the
+        # planner emitted a preparable sdk_runtime candidate the
+        # kernel can materialize.
         #
         # Order of checks matters:
         #
-        #   1. ``_has_local_tts_backend`` (prepared cache present)
-        #      wins unconditionally. PR D contract: a complete
-        #      ``client.prepare`` outcome on disk IS local
-        #      availability — even when the planner is currently
-        #      returning a broken/synthetic candidate (server-side
-        #      bug, transient outage). We have a verified artifact;
-        #      we don't need a fresh prepare to honor the request.
+        #   1. A complete prepared cache (``prepared_cache_dir``)
+        #      AND an importable sherpa-onnx runtime wins
+        #      unconditionally. PR D contract: a verified
+        #      ``client.prepare`` outcome IS local availability —
+        #      even when the planner is currently returning a
+        #      broken/synthetic candidate (server-side bug,
+        #      transient outage). We carry the dir through to
+        #      dispatch so we don't re-call the broken candidate's
+        #      ``prepare()`` (P1: see ``_prepare_local_tts_artifact``
+        #      below — without this, a synthetic candidate's
+        #      missing-download_urls error would surface even
+        #      though the prepared cache was usable).
+        #
+        #      Cache-without-runtime is NOT local availability:
+        #      under ``local_first`` we'd otherwise commit to local
+        #      and raise "could not load sherpa backend" instead of
+        #      cleanly falling back to cloud (P2).
         #   2. Otherwise, the unpreparable-candidate veto fires.
         #      When the planner says "prepare this artifact" but the
         #      metadata is structurally rejected by ``can_prepare``
@@ -1277,8 +1288,12 @@ class ExecutionKernel:
         #      crashing in ``prepare()``.
         #   3. Finally, ``_can_prepare_local_tts`` admits the
         #      clean-device first-run case (no cache yet, candidate
-        #      is sound).
-        if self._has_local_tts_backend(runtime_model):
+        #      is sound, runtime importable).
+        prepared_cache_dir: Optional[str] = None
+        if self._sherpa_tts_runtime_loadable(runtime_model):
+            prepared_cache_dir = self._prepared_local_artifact_dir(CAPABILITY_TTS, runtime_model)
+
+        if prepared_cache_dir is not None:
             local_available = True
         elif self._local_candidate_is_unpreparable(selection):
             local_available = False
@@ -1369,18 +1384,20 @@ class ExecutionKernel:
             )
 
         self._validate_local_voice(runtime_model, voice)
-        prepared_model_dir = self._prepare_local_tts_artifact(selection)
-        # PR D: when the planner emitted no candidate (offline,
-        # planner outage, or static-recipe-only SDK use), thread
-        # the prepared-cache dir into the backend. If the caller
-        # has already run ``client.prepare(model, capability='tts')``
-        # the bytes + materialized layout sit at the deterministic
-        # ``<cache>/artifacts/<key>`` path. ``SherpaTtsEngine.
-        # create_backend(model_dir=...)`` is the only supported
-        # source for the artifact dir — there is no env / home
-        # fallback after the 4.11.0 cutover.
-        if prepared_model_dir is None:
-            prepared_model_dir = self._prepared_local_artifact_dir(CAPABILITY_TTS, runtime_model)
+        # PR D: when a prepared static-recipe cache is what made
+        # local routing available, use it directly and SKIP the
+        # planner-driven prepare. Otherwise a synthetic / broken
+        # planner candidate (e.g. ``artifact_id='private-kokoro-v2'``
+        # with no ``download_urls``) would still hit
+        # ``_prepare_local_tts_artifact(selection)`` →
+        # ``manager.prepare(candidate)`` and surface a
+        # ``no download_urls`` error even though the cache was
+        # already usable. The reorder above admitted the route
+        # because of the cache; honor that here.
+        if prepared_cache_dir is not None:
+            prepared_model_dir: Optional[str] = prepared_cache_dir
+        else:
+            prepared_model_dir = self._prepare_local_tts_artifact(selection)
         # PR 11 follow-up: thread the planner candidate through so
         # the warmup-cache lookup uses the *current* artifact
         # identity. Without this, a v1 backend cached earlier in the
@@ -1460,25 +1477,41 @@ class ExecutionKernel:
         }
 
     def _has_local_tts_backend(self, model: str) -> bool:
-        """Return True iff a prepared TTS artifact dir already sits on disk.
+        """Return True iff the local TTS path can serve ``model`` *now*.
 
-        Used for the *no-prepare* branch (engine manages its own bytes,
-        planner emitted no candidate, or ``prepare_required=False``). The
-        clean-device first-run case — bytes not yet on disk — is admitted
-        separately by :meth:`_can_prepare_local_tts`.
+        After the PR D cutover, "ready" means BOTH:
 
-        After the PR D cutover there is exactly one shape that counts
-        as "ready": a complete prepared layout under PrepareManager's
-        artifact cache (``<cache>/artifacts/<key>``) for a static
-        recipe whose ``required_outputs`` all sit on disk and whose
-        extraction marker was written. That is what
-        ``client.prepare(model, capability='tts')`` produces, so the
-        release promise — prepare followed by ``speech.create`` without
-        manual staging — is honored. The legacy
-        ``OCTOMIL_SHERPA_MODELS_DIR`` / ``~/.octomil/models/sherpa``
-        path was removed.
+          1. A complete prepared layout under PrepareManager's
+             artifact cache (``<cache>/artifacts/<key>``) for the
+             static recipe — the on-disk shape ``client.prepare(
+             model, capability='tts')`` produces. The legacy
+             ``OCTOMIL_SHERPA_MODELS_DIR`` / ``~/.octomil/models/sherpa``
+             path was removed; this is the only on-disk source.
+          2. The sherpa-onnx runtime is importable and the model id
+             is recognized. Cache-without-runtime cannot be loaded;
+             admitting it as local availability would let
+             ``local_first`` commit to local and raise "could not
+             load sherpa backend" instead of falling back to cloud.
         """
+        if not self._sherpa_tts_runtime_loadable(model):
+            return False
         return self._prepared_local_artifact_dir(CAPABILITY_TTS, model) is not None
+
+    @staticmethod
+    def _sherpa_tts_runtime_loadable(model: str) -> bool:
+        """Return True iff sherpa-onnx is importable AND ``model`` is a
+        recognized Sherpa TTS id.
+
+        Pure runtime-availability check — does NOT touch disk. Pairs
+        with :meth:`_prepared_local_artifact_dir` to gate
+        :meth:`_has_local_tts_backend`.
+        """
+        try:
+            from octomil.runtime.engines.sherpa import is_sherpa_tts_runtime_available
+
+            return is_sherpa_tts_runtime_available(model)
+        except Exception:
+            return False
 
     def _prepared_local_artifact_dir(self, capability: str, model: str) -> Optional[str]:
         """Return ``<cache>/artifacts/<key>`` when ``(model, capability)``

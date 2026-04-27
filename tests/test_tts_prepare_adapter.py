@@ -406,12 +406,16 @@ async def test_clean_device_without_sherpa_package_fails_closed(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_synthetic_local_candidate_does_not_admit_local_routing(tmp_path):
+async def test_synthetic_local_candidate_does_not_admit_local_routing(tmp_path, monkeypatch):
     """Reviewer's contract reproducer: planner emits prepare_required=True
     on a candidate with no digest/download_urls. _can_prepare_local_tts must
     return False so the kernel does NOT commit to local routing — otherwise
     local_first would land here and fail at first prepare instead of
     falling back to cloud."""
+    # Isolate the cache dir so a developer's real prepared kokoro under
+    # ``~/.cache/octomil/artifacts`` does not satisfy the prepared-cache
+    # check and accidentally admit local routing for this contract test.
+    monkeypatch.setenv("OCTOMIL_CACHE_DIR", str(tmp_path / "empty-cache"))
     # Synthetic artifact: only model_id, no digest, no download_urls.
     candidate = RuntimeCandidatePlan(
         locality="local",

@@ -743,19 +743,25 @@ def _stage_kokoro_prepared_cache(tmp_path):
 def test_has_local_tts_backend_counts_prepared_static_recipe_cache(tmp_path, monkeypatch):
     """PR D contract: a complete prepared layout under PrepareManager's
     artifact cache is the *only* on-disk source counted as local
-    availability after the legacy staging cutover. The kernel must
-    return True from ``_has_local_tts_backend`` when that layout is
-    present, even with no planner candidate and no legacy
+    availability after the legacy staging cutover. With the runtime
+    importable AND the cache present, ``_has_local_tts_backend`` must
+    return True even with no planner candidate and no legacy
     ``~/.octomil/models/sherpa`` staging on disk."""
+    from unittest.mock import patch
+
     from octomil.execution.kernel import ExecutionKernel
 
     monkeypatch.setenv("OCTOMIL_CACHE_DIR", str(tmp_path / "cache"))
     _stage_kokoro_prepared_cache(tmp_path)
 
     kernel = ExecutionKernel()
-    assert kernel._has_local_tts_backend("kokoro-82m") is True
-    # Aliases registered against the same recipe also count.
-    assert kernel._has_local_tts_backend("kokoro-en-v0_19") is True
+    # Patch the runtime-loadable check to True so this test isolates
+    # the prepared-cache contract from sherpa-onnx availability
+    # (covered by the symmetric test below).
+    with patch("octomil.runtime.engines.sherpa.is_sherpa_tts_runtime_available", return_value=True):
+        assert kernel._has_local_tts_backend("kokoro-82m") is True
+        # Aliases registered against the same recipe also count.
+        assert kernel._has_local_tts_backend("kokoro-en-v0_19") is True
 
 
 def test_has_local_tts_backend_false_without_prepared_cache(tmp_path, monkeypatch):
@@ -763,12 +769,33 @@ def test_has_local_tts_backend_false_without_prepared_cache(tmp_path, monkeypatc
     on-disk source. ``_has_local_tts_backend`` must return False so
     the route-selection chain falls back to ``_can_prepare_local_tts``
     (planner candidate route) or fails closed."""
+    from unittest.mock import patch
+
     from octomil.execution.kernel import ExecutionKernel
 
     monkeypatch.setenv("OCTOMIL_CACHE_DIR", str(tmp_path / "empty"))
 
     kernel = ExecutionKernel()
-    assert kernel._has_local_tts_backend("kokoro-82m") is False
+    with patch("octomil.runtime.engines.sherpa.is_sherpa_tts_runtime_available", return_value=True):
+        assert kernel._has_local_tts_backend("kokoro-82m") is False
+
+
+def test_has_local_tts_backend_false_when_runtime_not_loadable(tmp_path, monkeypatch):
+    """P2 fix: cache-without-runtime is NOT local availability. With
+    a complete prepared layout on disk but sherpa-onnx unimportable
+    (or the model id unrecognized), ``_has_local_tts_backend`` must
+    return False so ``local_first`` falls back to cloud rather than
+    committing to local and raising "could not load sherpa backend"."""
+    from unittest.mock import patch
+
+    from octomil.execution.kernel import ExecutionKernel
+
+    monkeypatch.setenv("OCTOMIL_CACHE_DIR", str(tmp_path / "cache"))
+    _stage_kokoro_prepared_cache(tmp_path)
+
+    kernel = ExecutionKernel()
+    with patch("octomil.runtime.engines.sherpa.is_sherpa_tts_runtime_available", return_value=False):
+        assert kernel._has_local_tts_backend("kokoro-82m") is False
 
 
 def test_prepared_local_artifact_dir_returns_none_for_unknown_capability(tmp_path, monkeypatch):
@@ -955,3 +982,118 @@ def test_synthesize_speech_local_first_wins_when_prepared_cache_present(tmp_path
     # Sanity: the prepared artifact path landed at the deterministic
     # cache_dir/artifacts/<key> location (no env override leak).
     assert str(artifact_dir).startswith(str(tmp_path / "cache" / "artifacts"))
+
+
+def test_synthesize_speech_prepared_cache_short_circuits_synthetic_planner_candidate(tmp_path, monkeypatch):
+    """P1 regression: when the prepared cache made local routing
+    available, the dispatch path must NOT call the planner
+    candidate's ``prepare()`` — the candidate may be synthetic
+    (different ``artifact_id``, no ``download_urls``) and would
+    raise from PrepareManager even though the cached artifact is
+    perfectly usable.
+
+    Repro: prepared ``kokoro-82m`` cache on disk + planner local
+    candidate with ``artifact_id='private-kokoro-v2'`` and no
+    ``download_urls``. Earlier the route-selection reorder admitted
+    local (correct), but the local branch then called
+    ``_prepare_local_tts_artifact(selection)`` which raised
+    ``no download_urls``. Fix: carry the chosen cache dir from
+    route selection into dispatch and skip planner prepare."""
+    import asyncio
+    from contextlib import ExitStack
+    from unittest.mock import patch
+
+    from octomil.execution.kernel import ExecutionKernel
+    from octomil.runtime.planner.schemas import RuntimeArtifactPlan, RuntimeCandidatePlan
+
+    monkeypatch.setenv("OCTOMIL_CACHE_DIR", str(tmp_path / "cache"))
+    monkeypatch.delenv("OCTOMIL_SERVER_KEY", raising=False)
+    monkeypatch.delenv("OCTOMIL_API_KEY", raising=False)
+    artifact_dir = _stage_kokoro_prepared_cache(tmp_path)
+
+    class _Selection:
+        candidates: list
+        locality = None
+        engine = None
+        artifact = None
+        source = None
+        fallback_allowed = True
+        reason = ""
+        app_resolution = None
+        resolution = None
+
+        def __init__(self, candidates):
+            self.candidates = candidates
+
+    # Synthetic planner candidate: different artifact_id, no urls.
+    synthetic = RuntimeCandidatePlan(
+        locality="local",
+        priority=0,
+        confidence=0.9,
+        reason="synthetic-private-kokoro-v2",
+        engine="sherpa-onnx",
+        artifact=RuntimeArtifactPlan(model_id="kokoro-82m", artifact_id="private-kokoro-v2"),
+        delivery_mode="sdk_runtime",
+        prepare_required=True,
+        prepare_policy="lazy",
+    )
+    selection = _Selection(candidates=[synthetic])
+
+    captured: dict = {}
+
+    class _FakeBackend:
+        def __init__(self, model_name, **kwargs):
+            captured["create_backend_kwargs"] = kwargs
+
+        def load_model(self, model_name):
+            return None
+
+        def synthesize(self, text, voice, speed):
+            return {
+                "audio_bytes": b"RIFF\x00\x00\x00\x00WAVE",
+                "content_type": "audio/wav",
+                "format": "wav",
+                "sample_rate": 24000,
+                "duration_ms": 50,
+            }
+
+    class _FakeEngine:
+        def create_backend(self, model_name, **kwargs):
+            return _FakeBackend(model_name, **kwargs)
+
+    kernel = ExecutionKernel()
+    kernel._resolve = lambda capability, **kw: type(  # type: ignore[method-assign]
+        "_D",
+        (),
+        {
+            "model": "kokoro-82m",
+            "policy_preset": "local_only",
+            "inline_policy": None,
+            "cloud_profile": None,
+        },
+    )()
+    # Spy on _prepare_local_tts_artifact: it must NOT be called when
+    # the prepared cache short-circuits routing.
+    prepare_spy = patch.object(
+        kernel,
+        "_prepare_local_tts_artifact",
+        side_effect=AssertionError(
+            "_prepare_local_tts_artifact must not run when the prepared cache short-circuits routing"
+        ),
+    )
+
+    with ExitStack() as stack:
+        stack.enter_context(patch("octomil.runtime.engines.sherpa.SherpaTtsEngine", _FakeEngine))
+        stack.enter_context(patch("octomil.runtime.engines.sherpa.is_sherpa_tts_model", return_value=True))
+        stack.enter_context(patch("octomil.runtime.engines.sherpa.is_sherpa_tts_runtime_available", return_value=True))
+        stack.enter_context(patch("octomil.execution.kernel._resolve_planner_selection", return_value=selection))
+        stack.enter_context(prepare_spy)
+        response = asyncio.get_event_loop().run_until_complete(
+            kernel.synthesize_speech(model="kokoro-82m", input="hello")
+        )
+
+    assert response.route.locality == "on_device"
+    assert response.route.engine == "sherpa-onnx"
+    # The cache dir — NOT a synthetic candidate's prepare outcome —
+    # was threaded into the backend.
+    assert captured["create_backend_kwargs"] == {"model_dir": str(artifact_dir)}
