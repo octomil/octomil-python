@@ -389,6 +389,12 @@ class ExecutionKernel:
                 defaults,
                 planner_selection=candidate_selection,
                 prepared_model_dir=local_dir,
+                cloud_execution_model=_execution_model_for_cloud_dispatch(
+                    requested_model=model,
+                    effective_model=effective_model,
+                    planner_model=planner_model,
+                    app=app,
+                ),
             )
             return await router.run(request, policy=_routing_policy_for_candidate(candidate))
 
@@ -531,6 +537,12 @@ class ExecutionKernel:
                     defaults,
                     planner_selection=candidate_selection,
                     prepared_model_dir=local_dir,
+                    cloud_execution_model=_execution_model_for_cloud_dispatch(
+                        requested_model=model,
+                        effective_model=effective_model,
+                        planner_model=planner_model,
+                        app=app,
+                    ),
                 )
                 async for chunk in router.stream(request, policy=_routing_policy_for_candidate(candidate)):
                     text = chunk.text or ""
@@ -673,6 +685,12 @@ class ExecutionKernel:
                     defaults,
                     planner_selection=candidate_selection,
                     prepared_model_dir=local_dir,
+                    cloud_execution_model=_execution_model_for_cloud_dispatch(
+                        requested_model=model,
+                        effective_model=effective_model,
+                        planner_model=planner_model,
+                        app=app,
+                    ),
                 )
                 async for chunk in router.stream(request, policy=_routing_policy_for_candidate(candidate)):
                     text = chunk.text or ""
@@ -753,10 +771,30 @@ class ExecutionKernel:
         )
         selection = _resolve_planner_selection(planner_model, CAPABILITY_EMBEDDING, policy_preset)
 
+        # PR B follow-up: apply the same app-ref refusal gate as
+        # TTS / transcription / chat. Embeddings was the lone surface
+        # where ``model='nomic-...', app='private-app', policy=None``
+        # plus a planner outage could still silently route to cloud.
+        # The refusal is the same shape: with no explicit policy AND
+        # an app-scoped request AND no planner selection, raise so
+        # the caller picks ``local_only`` / ``cloud_first`` or fixes
+        # planner connectivity.
+        _enforce_app_ref_routing_policy(
+            requested_model=model or effective_model,
+            selection=selection,
+            explicit_policy=policy,
+            explicit_app=app,
+        )
+
         routing_policy = _resolve_routing_policy(defaults)
 
         local_available = self._can_local(effective_model, CAPABILITY_EMBEDDING)
         cloud_available = _cloud_available(defaults)
+        # Same explicit local-only / private cloud-disable as the
+        # other dispatchers: even if cloud creds are present in env,
+        # ``policy='local_only'`` blocks promotion to cloud.
+        if _is_local_only_policy(policy):
+            cloud_available = False
         locality, is_fallback = _select_locality_for_capability(
             routing_policy,
             local_available=local_available,
@@ -770,7 +808,19 @@ class ExecutionKernel:
 
         if locality == LOCALITY_CLOUD:
             assert defaults.cloud_profile is not None
-            result = await self._cloud_embed(inputs, effective_model, defaults.cloud_profile, is_fallback)
+            # PR B follow-up: when ``app=`` was explicit (or ``model``
+            # was already an app ref), cloud dispatch must run under
+            # the app identity, not the resolved underlying model.
+            # Otherwise the planner sees ``@app/foo/embeddings`` but
+            # the hosted call goes out under ``nomic-...`` and the
+            # server can't apply the app's quota / policy / billing.
+            cloud_model = _execution_model_for_cloud_dispatch(
+                requested_model=model,
+                effective_model=effective_model,
+                planner_model=planner_model,
+                app=app,
+            )
+            result = await self._cloud_embed(inputs, cloud_model, defaults.cloud_profile, is_fallback)
             result.route = route
             return result
 
@@ -933,8 +983,18 @@ class ExecutionKernel:
 
         if locality == LOCALITY_CLOUD:
             assert defaults.cloud_profile is not None
+            # PR B follow-up: send the app ref to cloud when ``app=``
+            # was explicit so the server keeps app-scoping. Local
+            # ``effective_model`` keeps driving local backend
+            # resolution below.
+            cloud_model = _execution_model_for_cloud_dispatch(
+                requested_model=model,
+                effective_model=effective_model,
+                planner_model=planner_model,
+                app=app,
+            )
             result = await self._cloud_transcribe(
-                audio_data, effective_model, defaults.cloud_profile, language, is_fallback
+                audio_data, cloud_model, defaults.cloud_profile, language, is_fallback
             )
             result.route = route
             return result
@@ -1170,7 +1230,17 @@ class ExecutionKernel:
 
         if locality == LOCALITY_CLOUD:
             assert defaults.cloud_profile is not None, "cloud locality requires cloud profile"
-            cloud_model = requested_model if requested_model.startswith("@app/") else runtime_model
+            # PR B follow-up: when ``app=`` is explicit, send the
+            # synthesized ``@app/<app>/tts`` ref to cloud so the
+            # server applies the app's quota / policy / billing.
+            # The pre-existing ``@app/...`` pass-through behaviour
+            # for callers who put the ref in ``model=`` keeps working.
+            cloud_model = _execution_model_for_cloud_dispatch(
+                requested_model=requested_model,
+                effective_model=runtime_model,
+                planner_model=planner_model,
+                app=app,
+            )
             t0 = time.monotonic()
             cloud_result = await self._cloud_synthesize_speech(
                 cloud_model,
@@ -1707,6 +1777,7 @@ class ExecutionKernel:
         *,
         planner_selection: Optional[Any] = None,
         prepared_model_dir: Optional[str] = None,
+        cloud_execution_model: Optional[str] = None,
     ) -> RouterModelRuntime:
         """Build a RouterModelRuntime for the given model and capability.
 
@@ -1720,6 +1791,13 @@ class ExecutionKernel:
         recognize the kwarg ignore it (each ``create_backend`` accepts
         ``**kwargs``). When ``None`` the engine's own model resolution
         path runs unchanged.
+
+        ``cloud_execution_model`` is the identity to send to hosted
+        inference. PR B follow-up: when the caller passed ``app=`` (or
+        the request was an ``@app/...`` ref), cloud dispatch must run
+        under the app identity even though local backend resolution
+        uses the resolved runtime model. ``None`` (default) keeps the
+        legacy behaviour of running cloud under ``model``.
         """
         from octomil.runtime.core.registry import ModelRuntimeRegistry
 
@@ -1787,10 +1865,17 @@ class ExecutionKernel:
                 api_key = os.environ.get(defaults.cloud_profile.api_key_env, "")
                 if not api_key:
                     return None
+                # When the caller explicitly app-scoped the request,
+                # send the synthesized ``@app/<app>/<cap>`` identity
+                # to the hosted endpoint so server-side routing /
+                # quota / billing match the planner's app
+                # resolution. Falls back to the resolved ``model``
+                # for non-app callers (legacy behaviour).
+                cloud_model = cloud_execution_model or model
                 return CloudModelRuntime(
                     base_url=_openai_base_url(defaults.cloud_profile),
                     api_key=api_key,
-                    model=model,
+                    model=cloud_model,
                 )
             except Exception:
                 return None
@@ -1989,6 +2074,42 @@ def _is_local_only_policy(policy: Optional[str]) -> bool:
     if not policy:
         return False
     return policy.strip().lower() in _LOCAL_ONLY_POLICY_NAMES
+
+
+def _execution_model_for_cloud_dispatch(
+    *,
+    requested_model: Optional[str],
+    effective_model: str,
+    planner_model: str,
+    app: Optional[str],
+) -> str:
+    """Return the model id cloud dispatch should send under.
+
+    Reviewer P1 (post PR #454): the planner now sees
+    ``@app/<app>/<capability>`` when ``app=`` is explicit, but each
+    capability's cloud branch was passing the *resolved* runtime
+    model (e.g. ``kokoro-en-v0_19``) to the hosted endpoint. That
+    means the server can't apply the app's quota / routing policy /
+    billing the planner just blessed — the request reaches hosted
+    inference under a different identity than the one routing was
+    decided against.
+
+    Resolution rule:
+
+      - ``requested_model`` is already an ``@app/...`` ref → send
+        the request as-is so the server keeps app-scoping.
+      - ``requested_model`` is concrete BUT ``app=`` was explicit
+        → send the synthesized ``@app/<app>/<capability>`` ref
+        (the same one the planner saw) so cloud dispatch agrees
+        with the routing decision.
+      - otherwise → send the concrete ``effective_model``. Same
+        behaviour as before for non-app callers.
+    """
+    if requested_model is not None and isinstance(requested_model, str) and requested_model.startswith("@app/"):
+        return requested_model
+    if app and planner_model.startswith("@app/"):
+        return planner_model
+    return effective_model
 
 
 def _planner_model_for_request(

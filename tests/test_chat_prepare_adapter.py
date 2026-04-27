@@ -227,7 +227,7 @@ async def test_cloud_first_plan_does_not_prepare_local_fallback(tmp_path):
     kernel = ExecutionKernel(prepare_manager=pm)
     kernel._resolve = lambda capability, **kw: _make_defaults()
 
-    async def fake_build_router(model, capability, defaults, *, planner_selection=None, prepared_model_dir=None):
+    async def fake_build_router(model, capability, defaults, *, planner_selection=None, prepared_model_dir=None, **_kw):
         return _StubRouter(prepared_model_dir=prepared_model_dir)
 
     with ExitStack() as stack:

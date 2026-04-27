@@ -289,6 +289,207 @@ def test_planner_model_helper_synthesizes_app_ref():
     assert _planner_model_for_request(effective_model="kokoro-82m", app="", capability="tts") == "kokoro-82m"
 
 
+# ---------------------------------------------------------------------------
+# Reviewer P1: embeddings must enforce the same gate
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_embeddings_refuses_app_scoped_request_when_planner_unavailable_and_no_policy():
+    """Reviewer P1: ``create_embeddings`` was the lone surface where
+    ``model='nomic-embed', app='private-app', policy=None`` plus a
+    planner outage could still silently route to cloud, recreating
+    the private-app DX/security bug fixed elsewhere. Same refusal
+    gate must apply."""
+    from octomil.execution.kernel import ExecutionKernel
+
+    kernel = ExecutionKernel()
+    kernel._resolve = lambda capability, **kw: type(  # type: ignore[method-assign]
+        "_D",
+        (),
+        {
+            "model": "nomic-embed-text-v1.5",
+            "policy_preset": "local_first",
+            "inline_policy": None,
+            "cloud_profile": None,
+        },
+    )()
+
+    with patch("octomil.execution.kernel._resolve_planner_selection", return_value=None):
+        with pytest.raises(OctomilError) as excinfo:
+            await kernel.create_embeddings(
+                ["hello"],
+                model="nomic-embed-text-v1.5",
+                app="private-app",
+            )
+
+    assert excinfo.value.code == OctomilErrorCode.RUNTIME_UNAVAILABLE
+    msg = str(excinfo.value)
+    assert "private-app" in msg
+    assert "nomic-embed-text-v1.5" in msg
+
+
+@pytest.mark.asyncio
+async def test_embeddings_explicit_local_only_disables_cloud():
+    """When the caller passes ``policy='local_only'``, embeddings
+    must not promote to cloud even if cloud creds are present.
+    This mirrors the TTS / chat / transcription gating."""
+    from octomil.execution.kernel import ExecutionKernel
+
+    class _StubCloudProfile:
+        api_key_env = "STUB_API_KEY"
+        api_base = "https://stub.example.com"
+
+    kernel = ExecutionKernel()
+    kernel._resolve = lambda capability, **kw: type(  # type: ignore[method-assign]
+        "_D",
+        (),
+        {
+            "model": "nomic-embed-text-v1.5",
+            "policy_preset": "local_only",
+            "inline_policy": None,
+            "cloud_profile": _StubCloudProfile(),
+        },
+    )()
+    # Pretend the local backend is unavailable so the dispatcher
+    # would normally fall back to cloud — but local_only must block
+    # that and surface the local-unavailable error.
+    kernel._can_local = lambda model, capability: False  # type: ignore[method-assign]
+
+    with patch("octomil.execution.kernel._resolve_planner_selection", return_value=None):
+        with pytest.raises(Exception) as excinfo:
+            await kernel.create_embeddings(
+                ["hello"],
+                model="nomic-embed-text-v1.5",
+                policy="local_only",
+            )
+
+    # Must not be a cloud request — the error indicates local
+    # unavailability, NOT a successful cloud dispatch.
+    msg = str(excinfo.value).lower()
+    assert "local" in msg or "unavailable" in msg
+
+
+# ---------------------------------------------------------------------------
+# Reviewer P1: cloud dispatch must run under the app identity
+# ---------------------------------------------------------------------------
+
+
+def test_execution_model_for_cloud_dispatch_prefers_app_ref():
+    from octomil.execution.kernel import _execution_model_for_cloud_dispatch
+
+    # No app, concrete model → resolved model.
+    assert (
+        _execution_model_for_cloud_dispatch(
+            requested_model="kokoro-82m",
+            effective_model="kokoro-en-v0_19",
+            planner_model="kokoro-82m",
+            app=None,
+        )
+        == "kokoro-en-v0_19"
+    )
+    # Explicit @app/ in the request → preserve as-is.
+    assert (
+        _execution_model_for_cloud_dispatch(
+            requested_model="@app/eternum/tts",
+            effective_model="kokoro-en-v0_19",
+            planner_model="@app/eternum/tts",
+            app=None,
+        )
+        == "@app/eternum/tts"
+    )
+    # Concrete model + ``app=`` → synthesized app ref.
+    assert (
+        _execution_model_for_cloud_dispatch(
+            requested_model="kokoro-82m",
+            effective_model="kokoro-en-v0_19",
+            planner_model="@app/eternum/tts",
+            app="eternum",
+        )
+        == "@app/eternum/tts"
+    )
+
+
+@pytest.mark.asyncio
+async def test_chat_cloud_dispatch_uses_app_ref_not_resolved_model():
+    """Reviewer P1: when chat routes to cloud and ``app=`` was
+    explicit, the hosted call must go out under the synthesized
+    ``@app/<app>/responses`` identity, not the resolved underlying
+    model id. Otherwise server-side quota / billing / policy can't
+    be applied."""
+    from octomil.execution.kernel import ExecutionKernel
+
+    kernel = ExecutionKernel()
+    kernel._resolve = lambda capability, **kw: type(  # type: ignore[method-assign]
+        "_D",
+        (),
+        {
+            "model": "gpt-4o-mini",
+            "policy_preset": "cloud_first",
+            "inline_policy": None,
+            "cloud_profile": None,
+        },
+    )()
+
+    captured_kwargs: dict[str, Any] = {}
+
+    async def fake_build_router(
+        model,
+        capability,
+        defaults,
+        *,
+        planner_selection=None,
+        prepared_model_dir=None,
+        cloud_execution_model=None,
+    ):
+        captured_kwargs["cloud_execution_model"] = cloud_execution_model
+        captured_kwargs["model"] = model
+
+        from octomil.runtime.core.types import RuntimeResponse, RuntimeUsage
+
+        class _R:
+            async def run(self, request, *, policy=None):
+                return RuntimeResponse(
+                    text="ok",
+                    usage=RuntimeUsage(prompt_tokens=1, completion_tokens=1, total_tokens=2),
+                    finish_reason="stop",
+                )
+
+            async def stream(self, request, *, policy=None):
+                yield None
+
+        return _R()
+
+    # Cloud-only candidate so the runner picks cloud immediately.
+    from dataclasses import dataclass, field
+
+    from octomil.runtime.planner.schemas import RuntimeCandidatePlan
+
+    @dataclass
+    class _Selection:
+        candidates: list[RuntimeCandidatePlan] = field(default_factory=list)
+        locality: str | None = None
+        engine: str | None = None
+        artifact: Any = None
+        source: str | None = None
+        fallback_allowed: bool = True
+        reason: str = ""
+        app_resolution: Any = None
+        resolution: Any = None
+
+    cloud_only = RuntimeCandidatePlan(locality="cloud", priority=0, confidence=0.9, reason="cloud")
+    selection = _Selection(candidates=[cloud_only])
+
+    with patch("octomil.execution.kernel._resolve_planner_selection", return_value=selection):
+        with patch.object(kernel, "_build_router", side_effect=fake_build_router):
+            await kernel.create_response("hi", model="kokoro-82m", app="eternum")
+
+    # Local resolution still uses the concrete model id (for engine
+    # registry lookup if local were chosen); cloud dispatch sees the
+    # app ref.
+    assert captured_kwargs["cloud_execution_model"] == "@app/eternum/chat", captured_kwargs
+
+
 def test_app_kwarg_triggers_refusal_gate_even_when_model_is_concrete():
     """Reviewer P1: when the caller passes ``app=`` (without an
     ``@app/`` prefix in ``model=``) and the planner returns no
