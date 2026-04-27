@@ -638,7 +638,7 @@ class TestMultiModelServeDecomposition:
             echo.load_model(name)
             return echo
 
-        with patch("octomil.serve._detect_backend", side_effect=mock_detect):
+        with patch("octomil.serve.app._detect_backend", side_effect=mock_detect):
             app = create_multi_model_app(
                 ["small-model", "medium-model", "large-model"],
             )

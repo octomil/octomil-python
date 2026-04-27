@@ -575,7 +575,7 @@ class TestBenchmarkCommand:
 
         with (
             patch("octomil.commands.benchmark._get_api_key", return_value=api_key or ""),
-            patch("octomil.serve._detect_backend", return_value=mock_backend),
+            patch("octomil.serve.app._detect_backend", return_value=mock_backend),
             patch("psutil.Process", return_value=mock_process),
             patch("psutil.virtual_memory", return_value=mock_vm),
         ):
@@ -592,7 +592,7 @@ class TestBenchmarkCommand:
 
         with (
             patch("octomil.commands.benchmark._get_api_key", return_value="test-key"),
-            patch("octomil.serve._detect_backend", return_value=mock_backend),
+            patch("octomil.serve.app._detect_backend", return_value=mock_backend),
             patch("psutil.Process", return_value=mock_process),
             patch("psutil.virtual_memory", return_value=mock_vm),
         ):

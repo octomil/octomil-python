@@ -547,7 +547,7 @@ class TestGenerationRequestExtended:
 @pytest.fixture
 def echo_app():
     """Create a FastAPI app with EchoBackend for testing."""
-    with patch("octomil.serve._detect_backend") as mock_detect:
+    with patch("octomil.serve.app._detect_backend") as mock_detect:
         echo = EchoBackend()
         echo.load_model("test-model")
         mock_detect.return_value = echo
@@ -564,7 +564,7 @@ def echo_app():
 @pytest.fixture
 def json_mode_app():
     """Create a FastAPI app with json_mode=True and EchoBackend."""
-    with patch("octomil.serve._detect_backend") as mock_detect:
+    with patch("octomil.serve.app._detect_backend") as mock_detect:
         echo = EchoBackend()
         echo.load_model("test-model")
         mock_detect.return_value = echo

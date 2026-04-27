@@ -124,7 +124,7 @@ class TestGetToolUseTools:
 
 def _make_echo_app(tool_use: bool):
     """Create a FastAPI app with EchoBackend and lifespan triggered."""
-    with patch("octomil.serve._detect_backend") as mock_detect:
+    with patch("octomil.serve.app._detect_backend") as mock_detect:
         echo = EchoBackend()
         echo.load_model("test-model")
         mock_detect.return_value = echo

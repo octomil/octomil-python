@@ -303,7 +303,7 @@ class TestRequestQueueUnit:
 @pytest.fixture
 def echo_app_with_queue():
     """Create a FastAPI app with EchoBackend and request queue enabled."""
-    with patch("octomil.serve._detect_backend") as mock_detect:
+    with patch("octomil.serve.app._detect_backend") as mock_detect:
         echo = EchoBackend()
         echo.load_model("test-model")
         mock_detect.return_value = echo
@@ -323,7 +323,7 @@ def echo_app_with_queue():
 @pytest.fixture
 def echo_app_no_queue():
     """Create a FastAPI app with EchoBackend and NO request queue."""
-    with patch("octomil.serve._detect_backend") as mock_detect:
+    with patch("octomil.serve.app._detect_backend") as mock_detect:
         echo = EchoBackend()
         echo.load_model("test-model")
         mock_detect.return_value = echo

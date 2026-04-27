@@ -666,7 +666,7 @@ async def _make_echo_app_async(**create_kwargs):
 
     from octomil.serve import EchoBackend, create_app
 
-    with _patch("octomil.serve._detect_backend") as mock_detect:
+    with _patch("octomil.serve.app._detect_backend") as mock_detect:
         echo = EchoBackend()
         echo.load_model("test-model")
         mock_detect.return_value = echo

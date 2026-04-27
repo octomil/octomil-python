@@ -494,7 +494,7 @@ def echo_app_with_early_exit():
 
     ee_cfg = EarlyExitConfig(enabled=True, threshold=0.3, total_layers=32)
 
-    with patch("octomil.serve._detect_backend") as mock_detect:
+    with patch("octomil.serve.app._detect_backend") as mock_detect:
         echo = EchoBackend()
         echo.load_model("test-model")
         mock_detect.return_value = echo
@@ -515,7 +515,7 @@ def echo_app_without_early_exit():
     """Create a FastAPI app with EchoBackend and no early exit."""
     from octomil.serve import EchoBackend, create_app
 
-    with patch("octomil.serve._detect_backend") as mock_detect:
+    with patch("octomil.serve.app._detect_backend") as mock_detect:
         echo = EchoBackend()
         echo.load_model("test-model")
         mock_detect.return_value = echo

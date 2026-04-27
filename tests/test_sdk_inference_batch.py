@@ -38,7 +38,7 @@ from octomil.streaming import StreamToken
 @pytest.fixture
 def echo_app():
     """Create a FastAPI app backed by EchoBackend."""
-    with patch("octomil.serve._detect_backend") as mock_detect:
+    with patch("octomil.serve.app._detect_backend") as mock_detect:
         echo = EchoBackend()
         echo.load_model("test-model")
         mock_detect.return_value = echo
@@ -55,7 +55,7 @@ def echo_app():
 @pytest.fixture
 def echo_app_with_queue():
     """Create a FastAPI app backed by EchoBackend with request queue."""
-    with patch("octomil.serve._detect_backend") as mock_detect:
+    with patch("octomil.serve.app._detect_backend") as mock_detect:
         echo = EchoBackend()
         echo.load_model("test-model")
         mock_detect.return_value = echo

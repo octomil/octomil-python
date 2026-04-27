@@ -198,7 +198,7 @@ class TestBenchmarkReexec:
             runner = CliRunner()
             # Will fail after re-exec check since _detect_backend won't work,
             # but we just need to verify try_venv_reexec was called
-            with patch("octomil.serve._detect_backend") as mock_detect:
+            with patch("octomil.serve.app._detect_backend") as mock_detect:
                 mock_backend = MagicMock()
                 mock_backend.name = "ollama"
                 mock_detect.return_value = mock_backend
@@ -220,7 +220,7 @@ class TestBenchmarkReexec:
         if frozen is not None:
             delattr(sys, "frozen")
         try:
-            with patch("octomil.serve._detect_backend") as mock_detect:
+            with patch("octomil.serve.app._detect_backend") as mock_detect:
                 mock_backend = MagicMock()
                 mock_backend.name = "echo"
                 mock_backend.generate.return_value = (
