@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### Breaking
+
+- **TTS dispatch cuts over to PrepareManager's artifact cache.** The legacy `OCTOMIL_SHERPA_MODELS_DIR` / `~/.octomil/models/sherpa/<model>/` resolution path is removed from `_SherpaTtsBackend._resolve_model_dir`; calling `engine.create_backend(...)` without an injected `model_dir=` now raises with a message pointing at `client.prepare(model, capability='tts')`. `is_sherpa_tts_model_staged()` is removed (no replacement — the kernel now consults PrepareManager's artifact cache directly). `local_tts_runtime_unavailable` text now references `octomil prepare` / `client.prepare` rather than the legacy staging dirs. Callers who hand-staged Kokoro under the legacy paths must run `octomil prepare kokoro-82m --capability tts` once; subsequent `speech.create` calls reuse the cache.
+
+### Features
+
+- **`audio.speech.create` honors the static-recipe prepared cache.** New `ExecutionKernel._prepared_local_artifact_dir(capability, model)` consults the static-recipe table (`octomil.runtime.lifecycle.static_recipes`), derives the same `<cache>/artifacts/<key>` path PrepareManager wrote to via `artifact_dir_for(...)`, and runs `Materializer().materialize(...)` idempotently. `_has_local_tts_backend` now returns true iff that layout is on disk; the `synthesize_speech` dispatch threads the dir into `SherpaTtsEngine.create_backend(model_dir=...)` even when the planner emits no candidate. End-to-end regression in `tests/test_static_recipes.py::test_synthesize_speech_uses_prepared_static_recipe_when_planner_offline` and the `local_first` non-fall-through pin in `test_synthesize_speech_local_first_wins_when_prepared_cache_present`.
+
 ## 4.10.1 (2026-04-26)
 
 ### Features

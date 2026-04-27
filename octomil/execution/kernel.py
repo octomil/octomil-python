@@ -1256,21 +1256,64 @@ class ExecutionKernel:
         )
 
         routing_policy = _resolve_routing_policy(defaults)
-        # Local routing is satisfied if the artifact is already staged OR
-        # the planner emitted a preparable sdk_runtime candidate the
-        # kernel can materialize via PrepareManager. The unpreparable-
-        # candidate veto fires first: when the planner says "prepare this
-        # artifact" but the metadata is structurally rejected by
-        # ``can_prepare`` (synthetic plan), local must be unavailable
-        # regardless of whether a backend happens to be staged on disk.
-        # Otherwise local_first would still pick local and crash in
-        # prepare() instead of falling back to cloud.
-        if self._local_candidate_is_unpreparable(selection):
+        # Local routing is satisfied if a prepared artifact dir is
+        # already on disk AND the runtime can load it AND the
+        # planner did not select a *different* artifact identity, OR
+        # the planner emitted a preparable sdk_runtime candidate
+        # the kernel can materialize.
+        #
+        # The prepared cache may short-circuit dispatch in three
+        # well-defined cases — anything else means the planner has
+        # picked an artifact and we must defer to it, even if the
+        # static-recipe cache happens to be on disk for the same
+        # runtime model:
+        #
+        #   a) No local sdk_runtime candidate at all (planner
+        #      offline, returned only cloud, etc.).
+        #   b) Candidate is structurally unpreparable
+        #      (``can_prepare`` rejects it: synthetic, no urls,
+        #      no digest, traversal). The planner's intent cannot
+        #      be honored, but a usable prepared artifact already
+        #      exists; that artifact wins instead of failing closed.
+        #   c) Candidate's artifact identity (artifact_id + digest)
+        #      matches the static recipe's. The planner-selected
+        #      artifact IS the static-recipe artifact, just already
+        #      on disk; no re-download needed.
+        #
+        # The new P1 reviewer reproducer: planner emits a
+        # *legitimate* candidate for ``kokoro-82m`` with
+        # ``artifact_id='private-kokoro-v2'``, a real digest, and a
+        # working download_url. None of (a)-(c) hold; we must run
+        # the planner's prepare and load *that* artifact, NOT the
+        # static-recipe cache that happens to share ``runtime_model``.
+        #
+        # Cache-without-runtime is NOT local availability either:
+        # under ``local_first`` we'd otherwise commit to local and
+        # raise "could not load sherpa backend" instead of cleanly
+        # falling back to cloud (PR D P2).
+        local_candidate = _local_sdk_runtime_candidate(selection)
+        # PR D round 4: an explicit ``app=`` kwarg is the same
+        # scope as an ``@app/...`` model ref — PR B's
+        # ``_planner_model_for_request`` synthesizes
+        # ``@app/<app>/tts`` for planner resolution either way.
+        # Treating only the model-ref form as app-scoped let
+        # ``speech.create(model='kokoro-82m', app='tts-tester')``
+        # silently fall through to the public static cache when
+        # the planner returned an echo-only candidate, hiding the
+        # same Task #51 server bug the model-ref form refuses.
+        app_scoped = bool(app) or _is_app_ref(requested_model or "")
+        prepared_cache_dir: Optional[str] = None
+        if self._sherpa_tts_runtime_loadable(runtime_model) and self._prepared_cache_may_short_circuit(
+            local_candidate, runtime_model, CAPABILITY_TTS, app_scoped=app_scoped
+        ):
+            prepared_cache_dir = self._prepared_local_artifact_dir(CAPABILITY_TTS, runtime_model)
+
+        if prepared_cache_dir is not None:
+            local_available = True
+        elif self._local_candidate_is_unpreparable(selection):
             local_available = False
         else:
-            local_available = self._has_local_tts_backend(runtime_model) or self._can_prepare_local_tts(
-                runtime_model, selection
-            )
+            local_available = self._can_prepare_local_tts(runtime_model, selection)
         cloud_available = _cloud_available(defaults)
         # PR B: explicit private / local_only policies force
         # cloud_available=False so a planner outage cannot leak the
@@ -1289,7 +1332,13 @@ class ExecutionKernel:
             )
         except RuntimeError as exc:
             if "local" in str(exc).lower():
-                raise _local_tts_runtime_unavailable(runtime_model) from exc
+                raise self._tts_local_unavailable_error(
+                    runtime_model,
+                    requested_model=requested_model,
+                    app=app,
+                    local_candidate=local_candidate,
+                    app_scoped=app_scoped,
+                ) from exc
             raise OctomilError(
                 code=OctomilErrorCode.RUNTIME_UNAVAILABLE,
                 message=str(exc),
@@ -1297,7 +1346,13 @@ class ExecutionKernel:
 
         if locality == LOCALITY_ON_DEVICE and not local_available:
             # Don't try to load — fail closed with the canonical error.
-            raise _local_tts_runtime_unavailable(runtime_model)
+            raise self._tts_local_unavailable_error(
+                runtime_model,
+                requested_model=requested_model,
+                app=app,
+                local_candidate=local_candidate,
+                app_scoped=app_scoped,
+            )
 
         speech_route = SpeechRoute(
             locality="on_device" if locality == LOCALITY_ON_DEVICE else "cloud",
@@ -1356,12 +1411,25 @@ class ExecutionKernel:
             )
 
         self._validate_local_voice(runtime_model, voice)
-        prepared_model_dir = self._prepare_local_tts_artifact(selection)
-        # PR 11 follow-up: thread the planner candidate through so
+        # PR D: when a prepared static-recipe cache is what made
+        # local routing available, use it directly and SKIP the
+        # planner-driven prepare. Otherwise a synthetic / broken
+        # planner candidate (e.g. ``artifact_id='private-kokoro-v2'``
+        # with no ``download_urls``) would still hit
+        # ``_prepare_local_tts_artifact(selection)`` →
+        # ``manager.prepare(candidate)`` and surface a
+        # ``no download_urls`` error even though the cache was
+        # already usable. The reorder above admitted the route
+        # because of the cache; honor that here.
+        if prepared_cache_dir is not None:
+            prepared_model_dir: Optional[str] = prepared_cache_dir
+        else:
+            prepared_model_dir = self._prepare_local_tts_artifact(selection)
+        # PR 11 follow-up: thread the planner candidate (already
+        # resolved above for the cache short-circuit decision) so
         # the warmup-cache lookup uses the *current* artifact
         # identity. Without this, a v1 backend cached earlier in the
         # process could shadow a freshly prepared v2 ``model_dir``.
-        local_candidate = _local_sdk_runtime_candidate(selection)
         backend = self._resolve_local_tts_backend(
             runtime_model,
             prepared_model_dir=prepared_model_dir,
@@ -1436,20 +1504,328 @@ class ExecutionKernel:
         }
 
     def _has_local_tts_backend(self, model: str) -> bool:
-        """Return True iff the local TTS engine + artifact are both ready now.
+        """Return True iff the local TTS path can serve ``model`` *now*.
 
-        Used for the *no-prepare* branch (engine manages its own bytes,
-        planner emitted no candidate, or ``prepare_required=False``). The
-        clean-device first-run case is admitted separately by
-        :meth:`_can_prepare_local_tts` so that path does not require
-        pre-staged files.
+        After the PR D cutover, "ready" means BOTH:
+
+          1. A complete prepared layout under PrepareManager's
+             artifact cache (``<cache>/artifacts/<key>``) for the
+             static recipe — the on-disk shape ``client.prepare(
+             model, capability='tts')`` produces. The legacy
+             ``OCTOMIL_SHERPA_MODELS_DIR`` / ``~/.octomil/models/sherpa``
+             path was removed; this is the only on-disk source.
+          2. The sherpa-onnx runtime is importable and the model id
+             is recognized. Cache-without-runtime cannot be loaded;
+             admitting it as local availability would let
+             ``local_first`` commit to local and raise "could not
+             load sherpa backend" instead of falling back to cloud.
+        """
+        if not self._sherpa_tts_runtime_loadable(model):
+            return False
+        return self._prepared_local_artifact_dir(CAPABILITY_TTS, model) is not None
+
+    def _prepared_cache_may_short_circuit(
+        self,
+        local_candidate: Optional[Any],
+        model: str,
+        capability: str,
+        *,
+        app_scoped: bool,
+    ) -> bool:
+        """Decide whether the static-recipe prepared cache may
+        short-circuit the planner candidate's ``prepare()`` call.
+
+        Reviewer history:
+
+        - Round 2 fixed cache-shadowing of a *preparable* candidate
+          with a different identity by introducing
+          :meth:`_candidate_matches_static_recipe`.
+        - Round 4 (this gate): the previous "candidate is
+          unpreparable → cache wins" escape hatch was too broad. A
+          planner candidate with ``artifact_id='private-kokoro-v2'``
+          and missing ``download_urls`` IS naming a different
+          artifact (a private fork); silently substituting the
+          public Kokoro cache hides the planner/server bug AND
+          serves the wrong bytes. App-scoped requests
+          (``@app/<slug>/...``) are even more dangerous: the user
+          asked for the app's artifact, not the public one.
+
+        After round 4, the cache may short-circuit the planner only
+        in three narrow cases:
+
+          a) Identity match: candidate's ``artifact_id`` AND
+             ``digest`` equal the static recipe's. The planner-
+             selected artifact IS the recipe's artifact, already on
+             disk. Bit-identical reuse.
+          b) The request is *direct* (``app_scoped=False``) AND no
+             local candidate was emitted. Planner is offline /
+             returned only cloud. The user typed
+             ``model='kokoro-82m'`` and we fall back to the public
+             static recipe — exactly what they asked for.
+          c) The request is *direct* AND the candidate carries no
+             meaningful artifact identity — i.e. no ``digest`` AND
+             ``artifact_id`` is missing OR equals the runtime model.
+             The planner echoed the model name back without
+             committing to a specific artifact version; treat as
+             silent and fall through to the public cache.
+
+        ``app_scoped`` is True for BOTH ``model='@app/<slug>/<cap>'``
+        and ``model='kokoro-82m', app='<slug>'`` — PR B's
+        ``_planner_model_for_request`` synthesizes the same planner
+        ref in either case, and the user expressed an app-scoped
+        intent both times.
+
+        App-scoped requests are deliberately excluded from (b)/(c):
+        a missing or echo-only candidate for an app ref means the
+        planner could not resolve the app, and the right behavior
+        is to surface that error (Task #51) rather than substitute
+        the public artifact. Identity match (a) still applies —
+        if the planner explicitly selected the recipe-shaped
+        artifact for an app, the cache is the right bytes.
+        """
+        # (a) Identity match — works for both app-scoped and direct.
+        if local_candidate is not None and self._candidate_matches_static_recipe(local_candidate, model, capability):
+            return True
+
+        # App-scoped requests: only identity match (a) admits the
+        # cache. Anything else surfaces the planner error.
+        # ``app_scoped`` is true for BOTH ``model='@app/...'`` and
+        # ``model='kokoro-82m', app='tts-tester'`` — PR B's
+        # ``_planner_model_for_request`` synthesizes the same
+        # ``@app/<slug>/<capability>`` planner ref either way.
+        if app_scoped:
+            return False
+
+        # Direct request:
+        # (b) no candidate at all.
+        if local_candidate is None:
+            return True
+        # (c) candidate carries no meaningful artifact identity.
+        if not self._candidate_has_meaningful_identity(local_candidate, model):
+            return True
+        return False
+
+    @staticmethod
+    def _candidate_has_meaningful_identity(candidate: Any, runtime_model: str) -> bool:
+        """Return True iff ``candidate`` names a *specific* artifact
+        beyond echoing the runtime model.
+
+        Meaningful when EITHER:
+
+          - ``artifact.digest`` is present (planner committed to a
+            specific bytes version), OR
+          - ``artifact.artifact_id`` is set AND differs from
+            ``runtime_model`` (planner named something other than
+            the model).
+
+        ``artifact_id`` equal to ``runtime_model`` with no digest is
+        treated as "the planner echoed the model name" — not a
+        commitment to a particular artifact. Empty / missing
+        ``artifact_id`` and ``digest`` is the synthetic-no-info case.
+        """
+        artifact = getattr(candidate, "artifact", None)
+        if artifact is None:
+            return False
+        digest = getattr(artifact, "digest", None)
+        if digest:
+            return True
+        artifact_id = getattr(artifact, "artifact_id", None)
+        if not artifact_id:
+            return False
+        return artifact_id != runtime_model
+
+    @staticmethod
+    def _candidate_matches_static_recipe(candidate: Any, model: str, capability: str) -> bool:
+        """Return True iff ``candidate``'s artifact identity matches
+        the static recipe registered for ``(model, capability)``.
+
+        "Matches" means same ``artifact_id`` AND same ``digest`` —
+        a candidate with the recipe's id but a different digest is
+        a *different* artifact (e.g. a private re-cut) and must not
+        be served from the static-recipe cache.
         """
         try:
-            from octomil.runtime.engines.sherpa import is_sherpa_tts_model_staged
-
-            return is_sherpa_tts_model_staged(model)
+            from octomil.runtime.lifecycle.static_recipes import get_static_recipe
         except Exception:
             return False
+        recipe = get_static_recipe(model, capability)
+        if recipe is None:
+            return False
+        artifact = getattr(candidate, "artifact", None)
+        if artifact is None:
+            return False
+        candidate_id = getattr(artifact, "artifact_id", None) or getattr(artifact, "model_id", None)
+        candidate_digest = getattr(artifact, "digest", None)
+        if not candidate_id or not candidate_digest:
+            return False
+        if candidate_id != recipe.model_id:
+            return False
+        if not recipe.files:
+            return False
+        return candidate_digest == recipe.files[0].digest
+
+    def _tts_local_unavailable_error(
+        self,
+        runtime_model: str,
+        *,
+        requested_model: Optional[str],
+        app: Optional[str],
+        local_candidate: Optional[Any],
+        app_scoped: bool,
+    ) -> OctomilError:
+        """Pick the right ``RUNTIME_UNAVAILABLE`` error for a failed
+        local TTS attempt.
+
+        Reviewer P2 (round 5): the generic
+        :func:`_local_tts_runtime_unavailable` message tells the
+        user to install ``octomil[tts]`` and run
+        ``octomil prepare kokoro-82m`` — the right remediation for a
+        clean-device first run on a direct request, but actively
+        misleading for an app-scoped request that was refused
+        because the planner returned a synthetic / echo-only
+        candidate. Both ``[tts]`` AND ``prepare`` may already be
+        green; the actual problem is server-side (Task #51).
+
+        Branch on ``app_scoped`` AND "candidate exists but didn't
+        give us a usable artifact" (no candidate / unpreparable /
+        no meaningful identity / mismatched). When that holds, raise
+        a planner-config error that names the app and points at
+        server config. Otherwise fall through to the canonical
+        clean-device message.
+        """
+        if app_scoped and self._app_planner_returned_unusable_candidate(local_candidate, runtime_model):
+            slug = app or self._app_slug_from_model_ref(requested_model) or "<app>"
+            requested = requested_model or f"@app/{slug}/tts"
+            return OctomilError(
+                code=OctomilErrorCode.RUNTIME_UNAVAILABLE,
+                message=(
+                    f"local_tts_app_planner_unresolved: app {slug!r} "
+                    f"(requested as {requested!r}) routed to runtime model "
+                    f"{runtime_model!r}, but the runtime planner returned no "
+                    f"usable artifact identity (missing download_urls / digest, "
+                    f"or echoed the model name without committing to a version). "
+                    f"This is a planner / app-config issue, not a missing local "
+                    f"install — the SDK refused to silently substitute the "
+                    f"public {runtime_model!r} static-recipe cache because that "
+                    f"could ship the wrong bytes for {slug!r}. Verify the app's "
+                    f"runtime configuration in the dashboard, OCTOMIL_SERVER_KEY "
+                    f"auth, and that the app's planner emits a complete "
+                    f"download_urls / digest for its TTS artifact."
+                ),
+            )
+        return _local_tts_runtime_unavailable(runtime_model)
+
+    def _app_planner_returned_unusable_candidate(
+        self,
+        local_candidate: Optional[Any],
+        runtime_model: str,
+    ) -> bool:
+        """Return True iff an app-scoped request's planner candidate
+        is in a "can't honor this" state: no candidate at all, no
+        meaningful artifact identity (echo-only / empty), or
+        otherwise unpreparable. These are the shapes the
+        cache-short-circuit gate refuses for app-scoped requests, so
+        the resulting failure should attribute to the planner / app
+        config, not a missing local install.
+        """
+        if local_candidate is None:
+            return True
+        if not self._candidate_has_meaningful_identity(local_candidate, runtime_model):
+            return True
+        # Meaningful identity present but missing urls/digest etc.
+        # ``_local_candidate_is_unpreparable`` consults
+        # ``PrepareManager.can_prepare`` for the precise structural
+        # rules; routing already invoked it.
+        try:
+            from octomil.runtime.lifecycle.prepare_manager import PrepareManager
+        except Exception:
+            return True
+        manager = getattr(self, "_prepare_manager", None) or PrepareManager()
+        try:
+            return not manager.can_prepare(local_candidate)
+        except Exception:
+            return True
+
+    @staticmethod
+    def _app_slug_from_model_ref(model: Optional[str]) -> Optional[str]:
+        """Extract ``<slug>`` from ``@app/<slug>/<capability>``."""
+        if not model or not isinstance(model, str) or not model.startswith("@app/"):
+            return None
+        parts = model.split("/", 3)
+        if len(parts) < 3:
+            return None
+        slug = parts[1]
+        return slug or None
+
+    @staticmethod
+    def _sherpa_tts_runtime_loadable(model: str) -> bool:
+        """Return True iff sherpa-onnx is importable AND ``model`` is a
+        recognized Sherpa TTS id.
+
+        Pure runtime-availability check — does NOT touch disk. Pairs
+        with :meth:`_prepared_local_artifact_dir` to gate
+        :meth:`_has_local_tts_backend`.
+        """
+        try:
+            from octomil.runtime.engines.sherpa import is_sherpa_tts_runtime_available
+
+            return is_sherpa_tts_runtime_available(model)
+        except Exception:
+            return False
+
+    def _prepared_local_artifact_dir(self, capability: str, model: str) -> Optional[str]:
+        """Return ``<cache>/artifacts/<key>`` when ``(model, capability)``
+        already has a complete prepared layout on disk, else ``None``.
+
+        Generic across capabilities: looks up the static recipe for
+        ``(model, capability)``, derives the same cache key
+        :class:`PrepareManager` writes to via ``artifact_dir_for``, and
+        runs the recipe's :class:`Materializer` idempotently. When the
+        layout was completed by an earlier ``client.prepare(...)`` call,
+        the materializer is a marker-presence check — no I/O beyond a
+        few ``stat`` calls; nothing is downloaded. A partially-extracted
+        layout (marker missing but archive still on disk) is re-extracted
+        from the local archive — still no network.
+
+        Used by ``_has_local_tts_backend`` to count a prepared cache as
+        local availability, and by ``synthesize_speech`` to thread the
+        prepared dir into ``SherpaTtsEngine.create_backend(model_dir=...)``
+        when the planner emitted no candidate (offline / planner outage /
+        purely-static SDK use). Without this, ``client.prepare`` could
+        succeed but ``speech.create`` would still fall through to the
+        legacy staging path and raise ``local_tts_runtime_unavailable``,
+        which was the bug PR D fixes.
+        """
+        try:
+            from octomil.runtime.lifecycle.materialization import Materializer
+            from octomil.runtime.lifecycle.prepare_manager import PrepareManager
+            from octomil.runtime.lifecycle.static_recipes import get_static_recipe
+        except Exception:
+            return None
+
+        recipe = get_static_recipe(model, capability)
+        if recipe is None:
+            return None
+
+        # ``__new__``-constructed kernels in tests skip ``__init__``,
+        # so ``_prepare_manager`` may not exist as an attribute. Treat
+        # a missing attribute the same as the no-injection case.
+        manager = getattr(self, "_prepare_manager", None) or PrepareManager()
+        # Tests inject a stripped-down PrepareManager stub that lacks
+        # ``artifact_dir_for``; treat any failure as "no prepared dir"
+        # and let the rest of the route-selection chain decide.
+        try:
+            artifact_dir = manager.artifact_dir_for(recipe.model_id)
+        except Exception:
+            return None
+        if not artifact_dir.is_dir():
+            return None
+
+        try:
+            Materializer().materialize(artifact_dir, recipe.materialization)
+        except Exception:
+            return None
+        return str(artifact_dir)
 
     def _local_candidate_is_unpreparable(self, selection: Optional[Any]) -> bool:
         """Return True iff the planner's local sdk_runtime candidate is
@@ -2013,11 +2389,10 @@ class ExecutionKernel:
 
         Returns the prepared ``artifact_dir`` as a string when the planner
         marks the local candidate as ``delivery_mode='sdk_runtime'`` with
-        ``prepare_required=True``. Returns ``None`` when no preparation is
-        required (engine manages its own artifacts, ``prepare_required=False``,
-        or no planner candidate was emitted) — callers fall back to the
-        existing ``OCTOMIL_SHERPA_MODELS_DIR`` / ``~/.octomil/models``
-        resolution path.
+        ``prepare_required=True``. Returns ``None`` when no planner-driven
+        preparation is required — the dispatch path then consults
+        :meth:`_prepared_local_artifact_dir` for a static-recipe prepared
+        cache, which after the PR D cutover is the only on-disk source.
 
         Errors from PrepareManager (policy violations, contract violations,
         download failures) are surfaced unchanged so users get the actionable
@@ -2066,9 +2441,11 @@ class ExecutionKernel:
             engine = SherpaTtsEngine()
             backend_kwargs: dict[str, Any] = {}
             if prepared_model_dir:
-                # PrepareManager materialized the artifact at this path; load
-                # the sherpa-onnx model from there instead of the env/home
-                # fallback, so the freshly-prepared bytes are what we run.
+                # PrepareManager materialized the artifact at this path;
+                # load the sherpa-onnx model from there. After the PR D
+                # cutover this is the *only* supported source — the
+                # backend's ``_resolve_model_dir`` raises when no
+                # ``model_dir`` is injected.
                 backend_kwargs["model_dir"] = prepared_model_dir
             backend = engine.create_backend(model, **backend_kwargs)
             backend.load_model(model)
@@ -2654,14 +3031,31 @@ def _enforce_app_ref_routing_policy(
     )
 
 
+def _is_app_ref(model: str) -> bool:
+    """Return True for ``@app/<slug>/<capability>`` model refs.
+
+    Used by the prepared-cache short-circuit gate to refuse cache
+    substitution when the request was app-scoped — silently serving
+    the public static-recipe artifact in place of a private app
+    artifact would hide the planner/server config error and could
+    serve the wrong bytes.
+    """
+    return isinstance(model, str) and model.startswith("@app/")
+
+
 def _local_tts_runtime_unavailable(model: str) -> OctomilError:
     return OctomilError(
         code=OctomilErrorCode.RUNTIME_UNAVAILABLE,
         message=(
             "local_tts_runtime_unavailable: sherpa-onnx is not installed "
-            "or the requested model is not staged. Install sherpa-onnx "
-            f"and stage '{model}' under "
-            "$OCTOMIL_SHERPA_MODELS_DIR or ~/.octomil/models/sherpa/."
+            "or no prepared artifact dir exists for "
+            f"'{model}'. Install sherpa-onnx (`pip install octomil[tts]`) "
+            f"and run `octomil prepare {model} --capability tts` "
+            "(or `client.prepare(model='" + model + "', capability='tts')`) "
+            "before invoking speech.create. The legacy "
+            "OCTOMIL_SHERPA_MODELS_DIR / ~/.octomil/models/sherpa staging "
+            "path was removed in 4.11.0; PrepareManager's artifact cache "
+            "is the only supported source."
         ),
     )
 

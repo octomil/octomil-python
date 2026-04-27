@@ -154,7 +154,16 @@ _KOKORO_82M_RECIPE = StaticRecipe(
     files=[
         _StaticArtifactFile(
             relative_path="kokoro-en-v0_19.tar.bz2",
-            url="https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/kokoro-en-v0_19.tar.bz2",
+            # ``DurableDownloader._resolve_url`` joins
+            # ``endpoint.url`` with ``relative_path`` as
+            # ``f"{base.rstrip('/')}/{rel}"``. The ``url`` here must
+            # therefore be the *parent directory* — the file name
+            # comes from ``relative_path``. Setting ``url`` to the
+            # full file URL produced
+            # ``…/kokoro-en-v0_19.tar.bz2/kokoro-en-v0_19.tar.bz2``
+            # which 404s. Caught by the 4.11.0 release-gate smoke
+            # test against the public GitHub release.
+            url="https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models",
             digest=_KOKORO_82M_TARBALL_SHA256,
         ),
     ],

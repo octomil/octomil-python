@@ -132,16 +132,15 @@ class _FakeSherpaEngine:
         return _FakeBackend(model_name, **kwargs)
 
 
-def _patch_sherpa_helpers(stack, *, staged: bool = True, runtime_available: bool = True):
+def _patch_sherpa_helpers(stack, *, runtime_available: bool = True):
     """Patch sherpa-onnx engine helpers for kernel TTS tests.
 
-    ``staged`` controls whether files are already on disk (the existing
-    happy path). ``runtime_available`` controls whether sherpa-onnx is
-    importable and the model id is recognized — this is what gates the
-    clean-device prepare path. Tests that exercise first-run lazy
-    prepare set ``staged=False, runtime_available=True``.
+    ``runtime_available`` controls whether sherpa-onnx is importable and
+    the model id is recognized — that's what gates clean-device prepare.
+    There is no ``staged`` flag after the PR D cutover: legacy staging
+    (``OCTOMIL_SHERPA_MODELS_DIR`` / ``~/.octomil/models/sherpa``) was
+    removed; the only on-disk source is PrepareManager's artifact cache.
     """
-    stack.enter_context(patch("octomil.runtime.engines.sherpa.is_sherpa_tts_model_staged", return_value=staged))
     stack.enter_context(patch("octomil.runtime.engines.sherpa.is_sherpa_tts_model", return_value=True))
     stack.enter_context(
         patch(
@@ -209,7 +208,15 @@ async def test_local_tts_prepare_is_invoked_and_artifact_dir_threads_to_backend(
 
 
 @pytest.mark.asyncio
-async def test_local_tts_skips_prepare_when_prepare_required_false(tmp_path):
+async def test_local_tts_prepare_required_false_fails_closed_after_cutover(tmp_path, monkeypatch):
+    """PR D cutover: ``prepare_required=False`` no longer admits local
+    routing on its own — the legacy ``OCTOMIL_SHERPA_MODELS_DIR`` /
+    ``~/.octomil/models/sherpa`` fallback is gone, so without a
+    PrepareManager-prepared dir there are no bytes for the backend
+    to read. The kernel must fail closed with the canonical
+    ``local_tts_runtime_unavailable`` rather than calling prepare or
+    silently routing."""
+    monkeypatch.setenv("OCTOMIL_CACHE_DIR", str(tmp_path / "empty-cache"))
     candidate = _local_candidate(prepare_required=False)
     selection = _Selection(candidates=[candidate])
     fake_pm = _FakePrepareManager(tmp_path / "never-used")
@@ -220,11 +227,11 @@ async def test_local_tts_skips_prepare_when_prepare_required_false(tmp_path):
         _patch_sherpa_helpers(stack)
         stack.enter_context(patch("octomil.execution.kernel._resolve_planner_selection", return_value=selection))
         kernel = _kernel_with(selection, fake_pm)
-        await kernel.synthesize_speech(model="kokoro-en-v0_19", input="hi")
+        with pytest.raises(OctomilError) as excinfo:
+            await kernel.synthesize_speech(model="kokoro-en-v0_19", input="hi")
 
-    assert fake_pm.calls == []
-    # No prepared dir means the backend uses its env/home fallback (no model_dir kwarg).
-    assert _FakeBackend.last_kwargs == {}
+    assert excinfo.value.code == ErrorCode.RUNTIME_UNAVAILABLE
+    assert fake_pm.calls == [], "prepare must not run when prepare_required=False"
 
 
 @pytest.mark.asyncio
@@ -250,11 +257,12 @@ async def test_local_tts_explicit_only_policy_surfaces_actionable_error(tmp_path
 
 
 @pytest.mark.asyncio
-async def test_local_tts_skips_prepare_for_hosted_gateway_candidate(tmp_path):
-    # Local candidate, but delivery_mode='hosted_gateway' (e.g. some niche
-    # local-bridge case). Manager's job is sdk_runtime only, so prepare must
-    # be skipped entirely; the kernel proceeds with whatever the backend
-    # finds via its existing resolution path.
+async def test_local_tts_hosted_gateway_candidate_does_not_admit_local_routing(tmp_path, monkeypatch):
+    """PR D cutover: a ``delivery_mode='hosted_gateway'`` candidate is
+    not a local sdk_runtime route. PrepareManager only handles
+    sdk_runtime, and the legacy on-disk fallback is gone, so the
+    kernel must NOT route locally and must NOT call prepare."""
+    monkeypatch.setenv("OCTOMIL_CACHE_DIR", str(tmp_path / "empty-cache"))
     candidate = _local_candidate(delivery_mode="hosted_gateway")
     selection = _Selection(candidates=[candidate])
     fake_pm = _FakePrepareManager(tmp_path / "never-used")
@@ -265,16 +273,24 @@ async def test_local_tts_skips_prepare_for_hosted_gateway_candidate(tmp_path):
         _patch_sherpa_helpers(stack)
         stack.enter_context(patch("octomil.execution.kernel._resolve_planner_selection", return_value=selection))
         kernel = _kernel_with(selection, fake_pm)
-        await kernel.synthesize_speech(model="kokoro-en-v0_19", input="hi")
+        with pytest.raises(OctomilError) as excinfo:
+            await kernel.synthesize_speech(model="kokoro-en-v0_19", input="hi")
 
+    assert excinfo.value.code == ErrorCode.RUNTIME_UNAVAILABLE
     assert fake_pm.calls == [], "hosted_gateway candidate must not call prepare"
-    assert _FakeBackend.last_kwargs == {}
 
 
 @pytest.mark.asyncio
-async def test_local_tts_no_planner_candidates_skips_prepare(tmp_path):
-    # Planner returned no candidates (e.g. offline). Prepare adapter must
-    # tolerate this and let the existing local resolution path run.
+async def test_local_tts_no_planner_candidates_and_no_prepared_cache_fails_closed(tmp_path, monkeypatch):
+    """PR D cutover: planner offline + no prepared artifact cache + no
+    legacy staging => local_tts_runtime_unavailable. Without the
+    legacy ``~/.octomil/models/sherpa`` fallback, "the planner is
+    offline" alone is no longer enough to keep local routing alive;
+    a prepared artifact dir under PrepareManager's cache (or a
+    successful preparable candidate) is required."""
+    # Point cache_dir somewhere empty so the static-recipe lookup
+    # cannot find a prepared dir for kokoro.
+    monkeypatch.setenv("OCTOMIL_CACHE_DIR", str(tmp_path / "empty-cache"))
     selection = _Selection(candidates=[])
     fake_pm = _FakePrepareManager(tmp_path / "never-used")
 
@@ -284,8 +300,10 @@ async def test_local_tts_no_planner_candidates_skips_prepare(tmp_path):
         _patch_sherpa_helpers(stack)
         stack.enter_context(patch("octomil.execution.kernel._resolve_planner_selection", return_value=selection))
         kernel = _kernel_with(selection, fake_pm)
-        await kernel.synthesize_speech(model="kokoro-en-v0_19", input="hi")
+        with pytest.raises(OctomilError) as excinfo:
+            await kernel.synthesize_speech(model="kokoro-en-v0_19", input="hi")
 
+    assert excinfo.value.code == ErrorCode.RUNTIME_UNAVAILABLE
     assert fake_pm.calls == []
 
 
@@ -330,7 +348,7 @@ async def test_clean_device_lazy_prepare_admits_local_routing(tmp_path):
 
     with ExitStack() as stack:
         # Clean device: bytes NOT staged, but sherpa-onnx package IS importable.
-        _patch_sherpa_helpers(stack, staged=False, runtime_available=True)
+        _patch_sherpa_helpers(stack, runtime_available=True)
         stack.enter_context(patch("octomil.execution.kernel._resolve_planner_selection", return_value=selection))
         kernel = _kernel_with(selection, fake_pm)
         resp = await kernel.synthesize_speech(model="@app/eternum/tts", input="hello")
@@ -356,7 +374,7 @@ async def test_clean_device_no_planner_candidate_still_fails_closed(tmp_path):
     from contextlib import ExitStack
 
     with ExitStack() as stack:
-        _patch_sherpa_helpers(stack, staged=False, runtime_available=True)
+        _patch_sherpa_helpers(stack, runtime_available=True)
         stack.enter_context(patch("octomil.execution.kernel._resolve_planner_selection", return_value=selection))
         kernel = _kernel_with(selection, fake_pm)
         with pytest.raises(OctomilError) as excinfo:
@@ -378,7 +396,7 @@ async def test_clean_device_without_sherpa_package_fails_closed(tmp_path):
     from contextlib import ExitStack
 
     with ExitStack() as stack:
-        _patch_sherpa_helpers(stack, staged=False, runtime_available=False)
+        _patch_sherpa_helpers(stack, runtime_available=False)
         stack.enter_context(patch("octomil.execution.kernel._resolve_planner_selection", return_value=selection))
         kernel = _kernel_with(selection, fake_pm)
         with pytest.raises(OctomilError):
@@ -388,12 +406,16 @@ async def test_clean_device_without_sherpa_package_fails_closed(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_synthetic_local_candidate_does_not_admit_local_routing(tmp_path):
+async def test_synthetic_local_candidate_does_not_admit_local_routing(tmp_path, monkeypatch):
     """Reviewer's contract reproducer: planner emits prepare_required=True
     on a candidate with no digest/download_urls. _can_prepare_local_tts must
     return False so the kernel does NOT commit to local routing — otherwise
     local_first would land here and fail at first prepare instead of
     falling back to cloud."""
+    # Isolate the cache dir so a developer's real prepared kokoro under
+    # ``~/.cache/octomil/artifacts`` does not satisfy the prepared-cache
+    # check and accidentally admit local routing for this contract test.
+    monkeypatch.setenv("OCTOMIL_CACHE_DIR", str(tmp_path / "empty-cache"))
     # Synthetic artifact: only model_id, no digest, no download_urls.
     candidate = RuntimeCandidatePlan(
         locality="local",
@@ -413,7 +435,7 @@ async def test_synthetic_local_candidate_does_not_admit_local_routing(tmp_path):
 
     with ExitStack() as stack:
         # Clean device, sherpa-onnx installed, but candidate metadata is incomplete.
-        _patch_sherpa_helpers(stack, staged=False, runtime_available=True)
+        _patch_sherpa_helpers(stack, runtime_available=True)
         stack.enter_context(patch("octomil.execution.kernel._resolve_planner_selection", return_value=selection))
         kernel = _kernel_with(selection, prepare_manager=None)
         # Use the real PrepareManager so can_prepare runs the actual rejection.
