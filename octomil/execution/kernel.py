@@ -135,6 +135,19 @@ logger = logging.getLogger(__name__)
 #   - embedding        — thread model_dir into the local embeddings backend.
 _PREPAREABLE_CAPABILITIES = frozenset({CAPABILITY_TTS, CAPABILITY_TRANSCRIPTION})
 
+# Capabilities whose dispatch path can construct + cache a backend
+# ahead of first inference — i.e., where ``client.warmup()`` produces
+# real first-call savings instead of a false-success. A capability
+# enters this set only when both:
+#   (a) it's already in ``_PREPAREABLE_CAPABILITIES`` (prepare bytes
+#       on disk first), AND
+#   (b) the kernel's local resolver consults the warmup cache before
+#       calling ``engine.create_backend`` again.
+# Today: tts + transcription. Chat / responses join once their
+# OctomilResponses bypass and MLX snapshot materialization gates
+# clear (same blockers as prepare).
+_WARMUPABLE_CAPABILITIES = frozenset({CAPABILITY_TTS, CAPABILITY_TRANSCRIPTION})
+
 
 # ---------------------------------------------------------------------------
 # Result types (ExecutionResult, StreamChunk, ChatRoutingDecision stay here)
@@ -170,6 +183,39 @@ class StreamChunk:
     delta: str = ""
     done: bool = False
     result: Optional[ExecutionResult] = None
+
+
+@dataclass
+class WarmupOutcome:
+    """Result of :meth:`ExecutionKernel.warmup`.
+
+    ``client.warmup(model, capability)`` runs prepare (so the artifact
+    bytes are on disk), constructs the local backend with the prepared
+    ``model_dir``, calls ``backend.load_model``, and caches the
+    instance so the next inference call reuses it. The outcome reports
+    everything a caller needs to confirm warmup happened *and* drove
+    real work — first-call latency savings only show up when
+    ``backend_loaded`` is True.
+
+    Fields
+    ~~~~~~
+    - ``capability`` / ``model``: the warmed cell.
+    - ``prepare_outcome``: the underlying :class:`PrepareOutcome`. The
+      same fields the prepare CLI prints (artifact_id, artifact_dir,
+      cached, files map).
+    - ``backend_loaded``: True when ``engine.create_backend`` +
+      ``backend.load_model`` both succeeded; False when warmup ran
+      but a downstream backend constructor refused (engine missing on
+      this host, runtime imports failed, etc.) — prepare bytes are
+      still on disk, just not loaded.
+    - ``latency_ms``: wall time for the full prepare + load loop.
+    """
+
+    capability: str
+    model: str
+    prepare_outcome: Any
+    backend_loaded: bool
+    latency_ms: float
 
 
 @dataclass
@@ -222,6 +268,20 @@ class ExecutionKernel:
         # production code lazily constructs a default-rooted manager on first
         # prepare call.
         self._prepare_manager: Optional[Any] = prepare_manager
+        # PR 11: warmup cache. ``client.warmup(model, capability)`` runs
+        # prepare and then constructs + load_model's the local backend
+        # so the next inference dispatch can reuse it without paying
+        # cold-start latency. Keyed by ``_warmup_cache_key`` —
+        # ``(capability, runtime_model, digest, format, quantization)``
+        # — so distinct artifact identities (different versions, MLX
+        # snapshot vs GGUF, etc.) sharing the same runtime model don't
+        # alias. The local resolvers
+        # (``_resolve_local_tts_backend`` /
+        # ``_resolve_local_transcription_backend``) call
+        # ``_lookup_warmed_backend`` which composes the same key
+        # against the *current* planner selection. Reset by
+        # ``release_warmed_backends`` (test helper).
+        self._warmed_backends: dict[tuple, Any] = {}
 
     @property
     def config_set(self) -> LoadedConfigSet:
@@ -1005,10 +1065,19 @@ class ExecutionKernel:
         # engine.create_backend so whisper.cpp loads the prepared file
         # instead of triggering pywhispercpp's own download path.
         prepared_dir = self._prepare_local_transcription_artifact(selection)
+        # PR 11 follow-up: thread the planner candidate through to the
+        # backend resolver so the warmup-cache lookup uses the current
+        # request's artifact identity, not a re-planned one.
+        local_candidate = _local_sdk_runtime_candidate(selection)
 
         t0 = time.monotonic()
         result = await self._local_transcribe(
-            audio_data, effective_model, language, is_fallback, prepared_model_dir=prepared_dir
+            audio_data,
+            effective_model,
+            language,
+            is_fallback,
+            prepared_model_dir=prepared_dir,
+            planner_candidate=local_candidate,
         )
         latency_ms = (time.monotonic() - t0) * 1000
         result.route = route
@@ -1073,6 +1142,7 @@ class ExecutionKernel:
         fallback_used: bool = False,
         *,
         prepared_model_dir: Optional[str] = None,
+        planner_candidate: Optional[Any] = None,
     ) -> ExecutionResult:
         """Dispatch audio transcription to a local Whisper-compatible backend.
 
@@ -1080,8 +1150,16 @@ class ExecutionKernel:
         the artifact under. When set, the resolver passes it as
         ``model_dir`` to the engine so whisper.cpp loads the prepared file
         instead of going through pywhispercpp's own download path.
+
+        ``planner_candidate`` (when known) is threaded through so the
+        warmup-cache lookup uses the *current* request's artifact
+        identity instead of re-planning from ``model``.
         """
-        backend = self._resolve_local_transcription_backend(model, prepared_model_dir=prepared_model_dir)
+        backend = self._resolve_local_transcription_backend(
+            model,
+            prepared_model_dir=prepared_model_dir,
+            planner_candidate=planner_candidate,
+        )
         if backend is None:
             raise RuntimeError(f"No local transcription runtime found for model '{model}'.")
 
@@ -1279,9 +1357,15 @@ class ExecutionKernel:
 
         self._validate_local_voice(runtime_model, voice)
         prepared_model_dir = self._prepare_local_tts_artifact(selection)
+        # PR 11 follow-up: thread the planner candidate through so
+        # the warmup-cache lookup uses the *current* artifact
+        # identity. Without this, a v1 backend cached earlier in the
+        # process could shadow a freshly prepared v2 ``model_dir``.
+        local_candidate = _local_sdk_runtime_candidate(selection)
         backend = self._resolve_local_tts_backend(
             runtime_model,
             prepared_model_dir=prepared_model_dir,
+            planner_candidate=local_candidate,
         )
         if backend is None:
             raise OctomilError(
@@ -1593,6 +1677,248 @@ class ExecutionKernel:
 
         return outcome
 
+    def warmup(
+        self,
+        *,
+        model: str,
+        capability: str = "tts",
+        policy: Optional[str] = None,
+        app: Optional[str] = None,
+    ) -> WarmupOutcome:
+        """Run ``prepare`` and load the local backend so first-call is hot.
+
+        Strict superset of :meth:`prepare`: bytes on disk *plus* the
+        engine constructed and ``backend.load_model`` complete, with
+        the loaded instance cached on the kernel so the next dispatch
+        call reuses it. Currently supports the same capabilities as
+        ``prepare`` (tts + transcription) — chat / responses inherit
+        the same gates.
+
+        Failure modes
+        ~~~~~~~~~~~~~
+        - Capability not in :data:`_WARMUPABLE_CAPABILITIES` →
+          :class:`OctomilError` ``INVALID_INPUT`` (same actionable
+          message as ``prepare``).
+        - PrepareManager rejects the candidate or download fails →
+          original error propagates unchanged.
+        - Backend construction / load fails → returns
+          ``WarmupOutcome(backend_loaded=False)`` so the prepare half
+          isn't lost. Caller decides whether that's fatal; subsequent
+          inference will fall through the cold path naturally.
+
+        Returns a :class:`WarmupOutcome` with the underlying
+        :class:`PrepareOutcome`, ``backend_loaded`` flag, and
+        ``latency_ms`` wall time.
+        """
+        if capability not in _WARMUPABLE_CAPABILITIES:
+            raise OctomilError(
+                code=OctomilErrorCode.INVALID_INPUT,
+                message=(
+                    f"client.warmup() does not yet support capability {capability!r}. "
+                    f"Supported today: {sorted(_WARMUPABLE_CAPABILITIES)}. "
+                    f"Other capabilities will be added once their backends thread the "
+                    f"prepared model_dir into dispatch and the kernel can cache the "
+                    f"loaded instance."
+                ),
+            )
+
+        t0 = time.monotonic()
+
+        # We need the planner selection up front for two reasons:
+        #   1. ``_runtime_model_for_selection`` resolves ``@app/...``
+        #      refs to the concrete model id (e.g. ``kokoro-en-v0_19``);
+        #      that's the key the inference dispatch path uses, so the
+        #      cache MUST be keyed under it (not the request alias).
+        #   2. The same selection feeds the cache's artifact-identity
+        #      tuple (digest/format/quantization) so a second
+        #      ``warmup`` for the same runtime model but a different
+        #      artifact version doesn't reuse the stale cached backend.
+        defaults = self._resolve(capability, model=model, policy=policy, app=app)
+        effective_model = defaults.model or model
+        if not effective_model:
+            raise _no_model_error(capability)
+        policy_preset = defaults.policy_preset or "local_first"
+        selection = _resolve_planner_selection(effective_model, capability, policy_preset)
+        runtime_model = _runtime_model_for_selection(selection, effective_model)
+        candidate = _local_sdk_runtime_candidate(selection)
+        if candidate is None:
+            raise OctomilError(
+                code=OctomilErrorCode.RUNTIME_UNAVAILABLE,
+                message=(
+                    f"warmup: planner returned no local sdk_runtime candidate for "
+                    f"model={effective_model!r} capability={capability!r}. The model is "
+                    f"either cloud-only or the planner is offline."
+                ),
+            )
+
+        # Run prepare via PrepareManager directly (mode=EXPLICIT) so
+        # candidates with ``prepare_policy='explicit_only'`` succeed,
+        # mirroring ``self.prepare``. Doing it here (instead of
+        # delegating to ``self.prepare``) lets us reuse the same
+        # ``selection`` / ``candidate`` for both prepare and the cache
+        # key — no second planner round-trip, no risk of resolving a
+        # different artifact for the cache than the one prepare ran on.
+        from octomil.runtime.lifecycle.prepare_manager import PrepareManager, PrepareMode
+
+        manager = self._prepare_manager or PrepareManager()
+        prepare_outcome = manager.prepare(candidate, mode=PrepareMode.EXPLICIT)
+        artifact_dir = str(prepare_outcome.artifact_dir)
+        cache_key = self._warmup_cache_key(capability, runtime_model, candidate)
+
+        backend_loaded = False
+        if capability == CAPABILITY_TTS:
+            backend = self._resolve_local_tts_backend(runtime_model, prepared_model_dir=artifact_dir)
+            if backend is not None:
+                self._warmed_backends[cache_key] = backend
+                backend_loaded = True
+        elif capability == CAPABILITY_TRANSCRIPTION:
+            backend = self._resolve_local_transcription_backend(runtime_model, prepared_model_dir=artifact_dir)
+            if backend is not None:
+                # ``_resolve_local_transcription_backend`` only calls
+                # ``engine.create_backend``; ``_WhisperBackend`` (and
+                # most ASR backends) keep ``load_model`` lazy so the
+                # actual model parse + memory allocation happens on
+                # the first ``transcribe`` call. Force load_model now
+                # so the warmup contract is real: by the time the
+                # outcome is returned, the next ``transcribe_audio``
+                # dispatch reuses an *already-loaded* instance.
+                load_fn = getattr(backend, "load_model", None)
+                if callable(load_fn):
+                    try:
+                        load_fn(runtime_model)
+                    except Exception:
+                        # Backend constructor returned but load_model
+                        # raised (corrupt artifact, missing native
+                        # lib, etc.) — keep prepare bytes on disk and
+                        # report load_skipped, same shape as a failed
+                        # ``create_backend``.
+                        backend = None
+                if backend is not None:
+                    self._warmed_backends[cache_key] = backend
+                    backend_loaded = True
+
+        latency_ms = (time.monotonic() - t0) * 1000.0
+        return WarmupOutcome(
+            capability=capability,
+            model=runtime_model,
+            prepare_outcome=prepare_outcome,
+            backend_loaded=backend_loaded,
+            latency_ms=latency_ms,
+        )
+
+    @staticmethod
+    def _warmup_cache_key(
+        capability: str,
+        runtime_model: str,
+        candidate: Optional[Any],
+    ) -> tuple[str, str, Optional[str], Optional[str], Optional[str]]:
+        """Compose a cache key that distinguishes artifact identity.
+
+        Two private apps or two artifact versions can resolve to the
+        same ``runtime_model`` but represent different artifacts
+        (different digests, formats, quantizations). Keying solely by
+        ``(capability, runtime_model)`` would let warmup cache the
+        first artifact and then serve a *stale* backend for a later
+        warmup of the same model with different bytes.
+
+        ``digest`` is the strongest distinguishing field; ``format``
+        and ``quantization`` cover cases where the planner omits the
+        digest but emits separate engine artifacts (MLX safetensors
+        vs GGUF, q4 vs q4_k_m, etc.). All three may be None when the
+        candidate has no artifact metadata; in that case the key
+        degenerates to ``(capability, runtime_model, None, None,
+        None)`` and behaves like the original (capability, model)
+        cache.
+        """
+        artifact = getattr(candidate, "artifact", None) if candidate is not None else None
+        return (
+            capability,
+            runtime_model,
+            getattr(artifact, "digest", None) if artifact is not None else None,
+            getattr(artifact, "format", None) if artifact is not None else None,
+            getattr(artifact, "quantization", None) if artifact is not None else None,
+        )
+
+    def _lookup_warmed_backend(
+        self,
+        capability: str,
+        runtime_model: str,
+        *,
+        candidate: Optional[Any] = None,
+    ) -> Optional[Any]:
+        """Look up a cached warmed backend for the *current* request.
+
+        The local resolvers call this at the top of their resolution
+        path. The lookup composes the same cache key the warmup
+        writer used: digest/format/quantization off the local
+        candidate so two warmups for the same runtime model but
+        different artifact identities don't collide.
+
+        Reviewer P1 (post PR 11)
+        ~~~~~~~~~~~~~~~~~~~~~~~~
+        The earlier shape of this helper had a tail loop that
+        returned *any* cached backend matching ``(capability,
+        runtime_model)`` when the precise key missed. That defeated
+        the artifact-identity fix: with v1 warmed and the current
+        request resolving v2, the resolver could return the v1
+        backend before the freshly-prepared v2 ``model_dir`` ever
+        loaded. The current rule is:
+
+          - When a current candidate is known (caller threaded one in
+            OR the planner returned one), use the *exact* key only.
+            An exact-key miss is a real cache miss; the cold path
+            then loads the v2 bytes and warmup writes them under the
+            v2 key. The stale v1 entry isn't used.
+          - When NO current candidate is available (offline planner,
+            synthetic policy candidate, deliberately minimal test
+            setup), fall back to the runtime-model-only scan. A
+            single warmup against a runtime model still serves the
+            common case where there's only one artifact identity in
+            play.
+
+        Callers should thread ``candidate`` (the already-resolved
+        planner candidate from the request currently in flight) when
+        they have it — that avoids a second planner round-trip and
+        guarantees the lookup uses the same artifact identity the
+        request will actually run against.
+        """
+        # Step 1: prefer the caller-supplied candidate (zero extra
+        # planner work; same identity the request will run against).
+        if candidate is None:
+            try:
+                selection = _resolve_planner_selection(runtime_model, capability, "local_first")
+                candidate = _local_sdk_runtime_candidate(selection)
+            except Exception:
+                candidate = None
+
+        # Step 2: when an artifact identity exists for this request,
+        # the cache hit MUST be against that identity. An exact-key
+        # miss is a real miss. (If we fell through to the model-only
+        # scan here, a stale v1 backend would shadow the freshly
+        # prepared v2 bytes — the precise bug the reviewer flagged.)
+        if candidate is not None:
+            key = self._warmup_cache_key(capability, runtime_model, candidate)
+            return self._warmed_backends.get(key)
+
+        # Step 3: no artifact identity available for this request.
+        # The model-only scan is the legitimate fallback shape: it
+        # serves the common case where exactly one warmup happened
+        # against the runtime model and no planner is in play
+        # (offline / Ren'Py / synthetic tests).
+        for stored_key, backend in self._warmed_backends.items():
+            if len(stored_key) >= 2 and stored_key[0] == capability and stored_key[1] == runtime_model:
+                return backend
+        return None
+
+    def release_warmed_backends(self) -> None:
+        """Drop every cached warmed backend.
+
+        Used by tests and long-running embedded callers that want to
+        free GPU memory between phases. The next inference dispatch
+        rebuilds through the normal cold path. Idempotent.
+        """
+        self._warmed_backends.clear()
+
     def _prepare_local_transcription_artifact(self, selection: Optional[Any]) -> Optional[str]:
         """Run PrepareManager for the local transcription candidate, if any.
 
@@ -1714,7 +2040,26 @@ class ExecutionKernel:
         model: str,
         *,
         prepared_model_dir: Optional[str] = None,
+        planner_candidate: Optional[Any] = None,
     ) -> Optional[Any]:
+        # PR 11: prefer the warmup cache. When the caller invoked
+        # ``client.warmup(model, capability='tts')`` earlier in this
+        # session, the loaded SherpaTts backend is already in
+        # ``_warmed_backends`` and the next ``synthesize_speech`` call
+        # reuses it without paying ``engine.create_backend`` +
+        # ``backend.load_model`` again.
+        #
+        # The lookup composes the artifact-identity cache key
+        # (digest/format/quantization) against the *current* request:
+        # callers that already resolved a planner selection thread
+        # ``planner_candidate`` so we don't re-plan and we use the
+        # exact identity the request will run against. An exact-key
+        # miss with a current candidate is a real cache miss — it
+        # never falls back to a stale backend cached under a
+        # different artifact identity.
+        cached = self._lookup_warmed_backend(CAPABILITY_TTS, model, candidate=planner_candidate)
+        if cached is not None:
+            return cached
         try:
             from octomil.runtime.engines.sherpa import SherpaTtsEngine
 
@@ -1797,6 +2142,7 @@ class ExecutionKernel:
         model: str,
         *,
         prepared_model_dir: Optional[str] = None,
+        planner_candidate: Optional[Any] = None,
     ) -> Optional[Any]:
         """Return a transcription backend for ``model``.
 
@@ -1806,7 +2152,21 @@ class ExecutionKernel:
         this and skips its own pywhispercpp download path; engines that
         don't recognize the kwarg ignore it (the registry's create_backend
         accepts ``**kwargs``).
+
+        ``planner_candidate``, when supplied, is the candidate the
+        request will run against. The warmup-cache lookup uses its
+        artifact identity so a stale backend cached under a different
+        digest/format never shadows the freshly-prepared bytes.
         """
+        # PR 11: warmup cache hit short-circuits the registry walk.
+        # Reviewer P1: pass the caller's planner candidate so the
+        # cache lookup uses the *current* request's artifact identity
+        # rather than re-planning from ``runtime_model``. An
+        # exact-identity miss is a real miss — no fall-through to a
+        # stale (capability, model)-only entry from a prior version.
+        cached = self._lookup_warmed_backend(CAPABILITY_TRANSCRIPTION, model, candidate=planner_candidate)
+        if cached is not None:
+            return cached
         try:
             from octomil.runtime.engines import get_registry
 

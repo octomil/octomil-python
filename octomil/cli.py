@@ -68,12 +68,14 @@ from octomil.commands import (  # noqa: E402
     prepare,
     serve,
     setup,
+    warmup,
 )
 
 # Register inference commands first so they appear before serve in help output.
 for _mod in [
     inference,
     prepare,
+    warmup,
     serve,
     local,
     model_ops,
