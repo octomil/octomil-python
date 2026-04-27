@@ -160,6 +160,12 @@ class TestSynthesizeSpeechRouting:
 
         kernel = ExecutionKernel.__new__(ExecutionKernel)
         kernel._config_set = MagicMock()
+        # __new__ skips __init__; explicitly initialize the
+        # attributes the post-PR-11 / PR-D dispatch path reads so
+        # tests don't trip on AttributeError for state the real
+        # constructor would have set.
+        kernel._warmed_backends = {}
+        kernel._prepare_manager = None
 
         # Resolve gives local_only with no cloud profile.
         defaults = ResolvedExecutionDefaults(
@@ -180,12 +186,26 @@ class TestSynthesizeSpeechRouting:
         ):
             routing.return_value = MagicMock()
             with pytest.raises(OctomilError) as ei:
+                # PR B (#454) ``_enforce_app_ref_routing_policy`` refuses
+                # an ``@app/...`` ref with no explicit policy when the
+                # planner returned no selection, to avoid silently
+                # routing to cloud. Passing ``policy='local_only'``
+                # explicitly lets routing proceed so we hit the
+                # post-PR-D ``local_tts_app_planner_unresolved``
+                # error this test pins (was
+                # ``local_tts_runtime_unavailable`` pre-PR-D round-5).
                 await kernel.synthesize_speech(
                     model="@app/tts-tester/tts",
                     input="hello",
+                    policy="local_only",
                 )
             assert ei.value.code == OctomilErrorCode.RUNTIME_UNAVAILABLE
-            assert "local_tts_runtime_unavailable" in str(ei.value)
+            # PR D round-5 (#457): app-scoped requests with no usable
+            # planner candidate raise the planner-config-specific error,
+            # pointing operators at dashboard / planner config rather
+            # than ``[tts]`` install + prepare which they may have
+            # already done.
+            assert "local_tts_app_planner_unresolved" in str(ei.value)
 
     @pytest.mark.asyncio
     async def test_local_only_returns_wav_and_does_not_call_cloud(self):
@@ -194,6 +214,12 @@ class TestSynthesizeSpeechRouting:
 
         kernel = ExecutionKernel.__new__(ExecutionKernel)
         kernel._config_set = MagicMock()
+        # __new__ skips __init__; explicitly initialize the
+        # attributes the post-PR-11 / PR-D dispatch path reads so
+        # tests don't trip on AttributeError for state the real
+        # constructor would have set.
+        kernel._warmed_backends = {}
+        kernel._prepare_manager = None
 
         fake_backend = MagicMock()
         fake_backend.synthesize.return_value = {
@@ -217,7 +243,15 @@ class TestSynthesizeSpeechRouting:
             patch.object(kernel, "_resolve", return_value=defaults),
             patch("octomil.execution.kernel._resolve_planner_selection", return_value=None),
             patch("octomil.execution.kernel._resolve_routing_policy"),
-            patch.object(kernel, "_has_local_tts_backend", return_value=True),
+            # PR D round-5 (#457): the kernel inlined the cache /
+            # runtime checks and no longer calls _has_local_tts_backend
+            # from synthesize_speech. Patch the lower-level helpers so
+            # the route admits local: prepared dir present + sherpa
+            # importable, then short-circuit-may = True for direct
+            # request. The synthetic cache path is what actually
+            # delivers ``local_available=True`` after the refactor.
+            patch.object(kernel, "_prepared_local_artifact_dir", return_value="/fake/cache"),
+            patch.object(kernel, "_sherpa_tts_runtime_loadable", return_value=True),
             patch(
                 "octomil.execution.kernel._select_locality_for_capability",
                 return_value=("on_device", False),
@@ -226,9 +260,17 @@ class TestSynthesizeSpeechRouting:
             patch.object(kernel, "_cloud_synthesize_speech", new=cloud_spy),
         ):
             response = await kernel.synthesize_speech(
-                model="@app/tts-tester/tts",
+                # Direct ``model=`` instead of ``@app/...`` ref. The
+                # post-PR-D contract refuses to substitute the public
+                # static-recipe cache for an app artifact (correct
+                # behavior; verified by static_recipes regressions).
+                # This test pins "local_available=True + local_only ->
+                # WAV + no cloud", which is independent of app-ref
+                # routing.
+                model="kokoro-82m",
                 input="hello",
                 voice="af_bella",
+                policy="local_only",
             )
 
         # WAV bytes returned, locality is on_device, cloud branch never invoked.
@@ -249,6 +291,12 @@ class TestSynthesizeSpeechRouting:
 
         kernel = ExecutionKernel.__new__(ExecutionKernel)
         kernel._config_set = MagicMock()
+        # __new__ skips __init__; explicitly initialize the
+        # attributes the post-PR-11 / PR-D dispatch path reads so
+        # tests don't trip on AttributeError for state the real
+        # constructor would have set.
+        kernel._warmed_backends = {}
+        kernel._prepare_manager = None
 
         defaults = ResolvedExecutionDefaults(
             model="kokoro-82m",
@@ -277,50 +325,73 @@ class TestSynthesizeSpeechRouting:
 
     @pytest.mark.asyncio
     async def test_app_ref_uses_planner_model_for_local_availability(self):
+        """Post-PR-D contract: when the planner returns a selection
+        for an ``@app/...`` ref but the local candidate is missing /
+        synthetic, the SDK refuses to silently substitute the public
+        static-recipe cache for the app's artifact. Pre-PR-D, the
+        backend would have been served with the planner-selected
+        model id (``kokoro-82m``) regardless; post-PR-D,
+        ``local_tts_app_planner_unresolved`` is raised with the app
+        slug so operators see the planner / app-config issue rather
+        than getting wrong bytes.
+        """
         from octomil.config.local import ResolvedExecutionDefaults
+        from octomil.errors import OctomilError, OctomilErrorCode
         from octomil.execution.kernel import ExecutionKernel
 
         kernel = ExecutionKernel.__new__(ExecutionKernel)
         kernel._config_set = MagicMock()
+        kernel._warmed_backends = {}
+        kernel._prepare_manager = None
 
-        fake_backend = MagicMock()
-        fake_backend.synthesize.return_value = {
-            "audio_bytes": b"RIFF\x00",
-            "content_type": "audio/wav",
-            "format": "wav",
-            "sample_rate": 24000,
-            "duration_ms": 500,
-        }
         defaults = ResolvedExecutionDefaults(
             model="@app/tts-tester/tts",
             policy_preset="local_first",
             inline_policy=None,
             cloud_profile=None,
         )
+        # Selection carries the app-resolution ``selected_model`` the
+        # kernel uses to route, but no actual local sdk_runtime
+        # candidate — exactly the Task #51 server bug shape.
         selection = SimpleNamespace(
+            candidates=[],
             app_resolution=SimpleNamespace(
                 selected_model="kokoro-82m",
                 routing_policy="private",
             ),
             resolution=None,
+            locality=None,
+            engine=None,
+            artifact=None,
+            source=None,
+            fallback_allowed=True,
+            reason="",
         )
         cloud_spy = AsyncMock()
 
         with (
             patch.object(kernel, "_resolve", return_value=defaults),
             patch("octomil.execution.kernel._resolve_planner_selection", return_value=selection),
-            patch.object(kernel, "_has_local_tts_backend", return_value=True) as has_local,
-            patch.object(kernel, "_resolve_local_tts_backend", return_value=fake_backend),
+            # Cache happens to be on disk (e.g. from a previous
+            # ``client.prepare(kokoro-82m, capability='tts')``).
+            patch.object(kernel, "_prepared_local_artifact_dir", return_value="/fake/cache"),
+            patch.object(kernel, "_sherpa_tts_runtime_loadable", return_value=True),
             patch.object(kernel, "_cloud_synthesize_speech", new=cloud_spy),
         ):
-            response = await kernel.synthesize_speech(
-                model="@app/tts-tester/tts",
-                input="hello",
-            )
+            with pytest.raises(OctomilError) as ei:
+                await kernel.synthesize_speech(
+                    model="@app/tts-tester/tts",
+                    input="hello",
+                    # PR B: explicit policy required for app refs when
+                    # the planner returned no usable candidate.
+                    policy="local_only",
+                )
 
-        has_local.assert_called_once_with("kokoro-82m")
-        assert response.model == "kokoro-82m"
-        assert response.route.locality == "on_device"
+        assert ei.value.code == OctomilErrorCode.RUNTIME_UNAVAILABLE
+        # Names the app slug — the post-PR-D actionable error.
+        assert "local_tts_app_planner_unresolved" in str(ei.value)
+        assert "tts-tester" in str(ei.value)
+        # Cloud branch never invoked under ``local_only``.
         cloud_spy.assert_not_called()
 
     @pytest.mark.asyncio
@@ -330,6 +401,12 @@ class TestSynthesizeSpeechRouting:
 
         kernel = ExecutionKernel.__new__(ExecutionKernel)
         kernel._config_set = MagicMock()
+        # __new__ skips __init__; explicitly initialize the
+        # attributes the post-PR-11 / PR-D dispatch path reads so
+        # tests don't trip on AttributeError for state the real
+        # constructor would have set.
+        kernel._warmed_backends = {}
+        kernel._prepare_manager = None
 
         cloud_profile = CloudProfile(api_key_env="OCTOMIL_SERVER_KEY")
         defaults = ResolvedExecutionDefaults(
@@ -382,6 +459,12 @@ class TestSynthesizeSpeechRouting:
 
         kernel = ExecutionKernel.__new__(ExecutionKernel)
         kernel._config_set = MagicMock()
+        # __new__ skips __init__; explicitly initialize the
+        # attributes the post-PR-11 / PR-D dispatch path reads so
+        # tests don't trip on AttributeError for state the real
+        # constructor would have set.
+        kernel._warmed_backends = {}
+        kernel._prepare_manager = None
 
         defaults = ResolvedExecutionDefaults(
             model="kokoro-82m",
@@ -392,7 +475,12 @@ class TestSynthesizeSpeechRouting:
         with (
             patch.object(kernel, "_resolve", return_value=defaults),
             patch("octomil.execution.kernel._resolve_planner_selection", return_value=None),
-            patch.object(kernel, "_has_local_tts_backend", return_value=False),
+            # Post-PR-D: the kernel inlines the cache / runtime
+            # checks, so patch the helpers directly rather than the
+            # higher-level ``_has_local_tts_backend`` (which the
+            # dispatch path no longer calls).
+            patch.object(kernel, "_prepared_local_artifact_dir", return_value=None),
+            patch.object(kernel, "_sherpa_tts_runtime_loadable", return_value=False),
         ):
             with pytest.raises(OctomilError) as ei:
                 await kernel.synthesize_speech(model="kokoro-82m", input="hello")
@@ -407,6 +495,12 @@ class TestSynthesizeSpeechRouting:
 
         kernel = ExecutionKernel.__new__(ExecutionKernel)
         kernel._config_set = MagicMock()
+        # __new__ skips __init__; explicitly initialize the
+        # attributes the post-PR-11 / PR-D dispatch path reads so
+        # tests don't trip on AttributeError for state the real
+        # constructor would have set.
+        kernel._warmed_backends = {}
+        kernel._prepare_manager = None
 
         with pytest.raises(OctomilError) as ei:
             await kernel.synthesize_speech(model="kokoro-82m", input="   ")
