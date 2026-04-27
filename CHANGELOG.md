@@ -2,13 +2,67 @@
 
 ## Unreleased
 
+## 4.11.0 (2026-04-27)
+
+Bundles the prepare-lifecycle / embedded-Python reliability work from PRs #451–457.
+
 ### Breaking
 
-- **TTS dispatch cuts over to PrepareManager's artifact cache.** The legacy `OCTOMIL_SHERPA_MODELS_DIR` / `~/.octomil/models/sherpa/<model>/` resolution path is removed from `_SherpaTtsBackend._resolve_model_dir`; calling `engine.create_backend(...)` without an injected `model_dir=` now raises with a message pointing at `client.prepare(model, capability='tts')`. `is_sherpa_tts_model_staged()` is removed (no replacement — the kernel now consults PrepareManager's artifact cache directly). `local_tts_runtime_unavailable` text now references `octomil prepare` / `client.prepare` rather than the legacy staging dirs. Callers who hand-staged Kokoro under the legacy paths must run `octomil prepare kokoro-82m --capability tts` once; subsequent `speech.create` calls reuse the cache.
+- **TTS dispatch cuts over to PrepareManager's artifact cache (PR D, #457).** The legacy `OCTOMIL_SHERPA_MODELS_DIR` / `~/.octomil/models/sherpa/<model>/` resolution path is removed from `_SherpaTtsBackend._resolve_model_dir`; calling `engine.create_backend(...)` without an injected `model_dir=` now raises with a message pointing at `client.prepare(model, capability='tts')`. `is_sherpa_tts_model_staged()` is removed (no replacement — the kernel consults PrepareManager's artifact cache directly). `local_tts_runtime_unavailable` text references `octomil prepare` / `client.prepare` rather than the legacy staging dirs. Callers who hand-staged Kokoro under the legacy paths must run `octomil prepare kokoro-82m --capability tts` once; subsequent `speech.create` calls reuse the cache.
 
 ### Features
 
-- **`audio.speech.create` honors the static-recipe prepared cache.** New `ExecutionKernel._prepared_local_artifact_dir(capability, model)` consults the static-recipe table (`octomil.runtime.lifecycle.static_recipes`), derives the same `<cache>/artifacts/<key>` path PrepareManager wrote to via `artifact_dir_for(...)`, and runs `Materializer().materialize(...)` idempotently. `_has_local_tts_backend` now returns true iff that layout is on disk; the `synthesize_speech` dispatch threads the dir into `SherpaTtsEngine.create_backend(model_dir=...)` even when the planner emits no candidate. End-to-end regression in `tests/test_static_recipes.py::test_synthesize_speech_uses_prepared_static_recipe_when_planner_offline` and the `local_first` non-fall-through pin in `test_synthesize_speech_local_first_wins_when_prepared_cache_present`.
+- **Chat / responses prepare wiring (PR 10c, #451).** `MLXBackend` and `LlamaCppBackend` accept `model_dir` and load from PrepareManager's prepared dir (mlx_lm reads it like an HF repo id; llama_cpp opens the `<dir>/artifact` sentinel by GGUF magic bytes). Kernel threads `prepared_model_dir` through `_build_router` for `create_response` / `stream_response` / `stream_chat_messages`. Capability remains gated in `_PREPAREABLE_CAPABILITIES` until OctomilResponses goes through the kernel and PrepareManager grows multi-file snapshot support — both tracked as follow-ups.
+
+- **Unified `client.warmup()` (PR 11, #452).** Strict superset of `prepare()`: pulls bytes on disk, constructs the local backend with the prepared `model_dir`, and caches the loaded instance. The next inference dispatch in the same process skips the cold-start `engine.create_backend` + `backend.load_model` loop. Cache key is `(capability, runtime_model, digest, format, quantization)` so distinct artifact identities can't alias. Strict-on-current-candidate lookup: an exact-key miss is a real cache miss — never falls back to a stale entry from a prior version. Transcription path force-loads `backend.load_model` before caching (`_WhisperBackend.load_model` was lazy and would otherwise pay the cold load on first transcribe). New `Octomil.warmup()` async facade and `octomil warmup` CLI.
+
+- **Routing controls on the public facade (PR B, #454).** `client.audio.speech.create(..., policy=, app=)` now accepted; same kwargs already on transcription / chat / embeddings. `policy='local_only'` is now a valid preset (no longer rejected by `_normalise_preset`). Explicit `policy='private'` / `'local_only'` forces `cloud_available=False` so a planner outage cannot leak the request to a hosted backend.
+
+- **Private `@app` refusal on planner outage (PR B, #454).** When the caller passes an `@app/<slug>/<capability>` ref (or `app=` with a concrete model) AND the planner returned no selection AND no explicit policy was given, the SDK now raises `OctomilError(RUNTIME_UNAVAILABLE)` naming the failed planner and suggesting `policy='local_only'` / fixing `OCTOMIL_SERVER_KEY`. Replaces the earlier silent cloud fallback that surfaced confusing 403s to local-first callers.
+
+- **Cloud dispatch under canonical app identity (PR B, #454).** When `app=` is explicit (or `model=` is `@app/...`), the cloud branch sends the synthesized `@app/<app>/<canonical-capability>` ref to hosted inference instead of the resolved underlying model id. The canonical capability resolution maps `chat → responses` so the planner endpoint and the server-side app identity stay in agreement (`@app/eternum/responses`, never `@app/eternum/chat`).
+
+- **Local TTS bootstrap (PR C, #455).**
+
+  - New `[tts]` extra: `pip install "octomil[tts]"` pulls `sherpa-onnx>=1.12`.
+  - Static offline recipe catalog. `octomil prepare kokoro-82m --capability tts` works without a server planner round-trip — the SDK ships canonical Kokoro v0.19 metadata (URL + verified GitHub-release SHA-256) and the kernel falls back to the recipe when the planner returns no candidate. Recipes are deliberately narrow: only canonical public bundles, never a public-mirror substitute for what was meant to be a private artifact.
+  - Generic `MaterializationPlan` + `Materializer`. Recipes are _data_ (download metadata + materialization plan); the kernel does `outcome = PrepareManager.prepare(candidate); Materializer().materialize(outcome.artifact_dir, recipe.materialization)`. Adding the next model is a data row, not a copy of the Kokoro path. Plans declare `kind='none'` / `'archive'`, `archive_format`, `strip_prefix` (allowlist boundary), `required_outputs`, and a `MaterializationSafetyPolicy` (refuses traversal, symlink/hardlink escapes, zip/tar bombs by default).
+
+- **`octomil doctor` (PR C, #455).** New diagnostic command that prints a structured report covering Python runtime, auth env vars, planner cache backend, artifact cache + free space, installed local engines, and registered static recipes. OK / WARN / ERROR rows; exits 0 on OK or WARN, 1 on ERROR. Never prints key material. The actionable one-liner for embedded callers.
+
+- **`audio.speech.create` honors the prepared static-recipe cache (PR D, #457).** New `ExecutionKernel._prepared_local_artifact_dir(capability, model)` consults the static-recipe table, derives the same `<cache>/artifacts/<key>` path PrepareManager wrote to via `artifact_dir_for(...)`, and runs `Materializer().materialize(...)` idempotently. `_has_local_tts_backend` now returns true iff that layout is on disk AND the sherpa-onnx runtime is loadable; `synthesize_speech` threads the dir into `SherpaTtsEngine.create_backend(model_dir=...)`. Identity-and-scope-gated short circuit: the cache only substitutes a planner candidate when (a) artifact_id+digest match the static recipe exactly, (b) the request is direct (no `@app/...`, no `app=`) and the candidate is missing or echo-only. App-scoped requests with synthetic / mismatched candidates raise `local_tts_app_planner_unresolved` pointing at dashboard / planner config — the SDK never silently substitutes the public Kokoro for a private app artifact.
+
+### Reliability
+
+- **Embedded-Python compatibility (Ren'Py / sandboxed CPython / PyInstaller) (PRs A + C, #453, #455).** `import octomil` no longer crashes on environments where the `_sqlite3` extension or pandas is missing.
+
+  - `RuntimePlannerStore` split into protocol + `SQLiteRuntimePlannerStore` / `MemoryRuntimePlannerStore` / `NullRuntimePlannerStore`. New `build_runtime_planner_store()` factory auto-falls-back to memory when sqlite3 is unavailable, with one WARNING ("`runtime planner sqlite cache unavailable; using in-memory planner cache`" — deliberately not "planner disabled").
+  - `pandas`, `pyarrow`, `numpy`, `torch` removed from core dependencies. New `[analytics]` and `[fl]` extras carry them. `octomil/__init__.py` lazy-loads legacy / FL surfaces (`FederatedClient`, `ModelRegistry`, `SecAggClient`, `data_loader`, `federated_client`, …) via module-level `__getattr__`; the inner `octomil.python.octomil` package's `__init__` is itself lazy. Plain `import octomil` in a fresh subprocess shows pandas / pyarrow / torch absent from `sys.modules`.
+  - Identity-preserving import hook: `import octomil.secagg`, `from octomil.secagg import ECKeyPair`, and `importlib.import_module('octomil.api_client')` all return the **same** module object. Class identity (`m1.OctomilClientError is m2.OctomilClientError`) holds across import shapes so `try / except` round-trips work cleanly.
+
+- **Production planner cache key includes auth/API/runtime context (PR A, #453).** `RuntimePlanner.resolve()` now feeds `_make_cache_key` `api_base`, hashed `org_id`, `key_type`, `chip`, and `_installed_runtimes_hash` so a plan cached under org A doesn't leak to org B on the same machine, a plan cached against staging doesn't survive a switch to production `OCTOMIL_API_BASE`, and uninstalling `mlx-lm` invalidates the cached benchmark recommendations.
+
+- **`OCTOMIL_API_BASE` normalization (PR B, #454).** `_normalize_api_base` strips trailing `/api/vN` (or `/vN`) so `OCTOMIL_API_BASE=https://api.octomil.com/api/v1` no longer produces `…/api/v1/api/v2/runtime/plan`.
+
+- **Bootstrap-vs-HTTP log levels (PR A, #453).** `_resolve_planner_selection` now logs bootstrap / import / cache-construction failures at WARNING (once per process) and HTTP misses at DEBUG. Previously every failure logged DEBUG, hiding actionable problems behind transient HTTP misses.
+
+- **Hard veto on unpreparable planner candidates (TTS + transcription).** A synthetic `prepare_required=True` candidate (no digest / url, traversal in `required_files`, NUL bytes, etc.) cannot win local routing even when a backend is staged on disk. The kernel runs `PrepareManager.can_prepare` as a dry-run before committing to local, so `local_first` falls back to cloud instead of crashing in `prepare()`.
+
+### Safety
+
+- **Generic materializer rejects every probe we knew to throw at it (PR C, #455).** Resolved-containment check via `_safe_join_under` (mirrors `durable_download._safe_join`) catches pre-existing-symlink escapes (`artifact_dir/linkdir → /tmp/outside`) on both ZIP and tar paths — the safe member extracts, the escape file never lands at the symlink target. `strip_prefix` is now an allowlist boundary: a malformed archive with root-level `model.onnx` cannot satisfy `required_outputs=('model.onnx',)` for a plan that declared `strip_prefix='kokoro-en-v0_19/'`. Symlinks, hardlinks, and uncompressed-bomb sizes are refused per the plan's `MaterializationSafetyPolicy`. Marker is written LAST and a partial extraction (interrupted before all required outputs landed) is detected and re-extracted instead of silently treated as complete.
+
+### Documentation
+
+- `octomil/cli.py --help` now lists `prepare`, `warmup`, and `doctor` alongside the existing commands.
+- `client.audio.speech.create` docstring documents `policy=` / `app=` and the cloud-disabled forcing for private / local_only.
+
+### Tracked follow-ups
+
+- **Multi-file recipes via `manifest_uri`.** Today's recipes are single-file (Kokoro ships a tarball). PrepareManager only carries one artifact-level digest; per-file digests need `manifest_uri` support. Once that lands, the Kokoro recipe switches to per-asset downloads without changing callers.
+- **OctomilResponses through the kernel.** Flips `chat` / `responses` capabilities from "kernel threading wired" to "publicly preparable" in `_PREPAREABLE_CAPABILITIES`.
+- **MLX snapshot materialization.** `mlx_lm.load(<dir>)` needs a directory with `config.json` + tokenizer + safetensors; PrepareManager today only writes a single-file artifact. Once snapshot-shape support lands, MLX joins the inference-consumes-prepared rung.
+- **CI + suite hygiene.** PR D's CI tuning (xdist parallelism + matrix prune to 3.9/3.11 + pyproject-keyed pip cache) unmasked ~134 pre-existing test failures across compression / grammar / decomposer / client / client_telemetry / facade_wiring suites — these were hidden behind the historical `tests/test_device_auth.py` ImportError on main and require triage independently of this release. PR D's own contract is verified by 48 targeted regressions plus a live `prepare → speech.create` dry run.
 
 ## 4.10.1 (2026-04-26)
 
