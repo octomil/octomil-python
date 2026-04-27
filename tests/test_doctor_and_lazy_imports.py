@@ -243,6 +243,42 @@ def test_documented_submodule_imports_still_work_after_lazy_aliasing(alias):
     assert mod.__name__.startswith("octomil.python.octomil.")
 
 
+def test_alias_import_preserves_single_module_identity():
+    """Reviewer P1 on PR #455 (post-7873ae7): two import shapes
+    pointing at the same alias must yield the SAME module object —
+    otherwise class identity forks and exception catches across
+    the boundary fail.
+
+    Concretely:
+
+        import octomil.api_client as m1
+        m2 = importlib.import_module("octomil.api_client")
+        assert m1 is m2
+
+    Pre-fix this test reproduced the bug:
+    ``m1.OctomilClientError is not m2.OctomilClientError`` and
+    catching an exception raised from one class with the other
+    failed."""
+    import importlib
+
+    import octomil.api_client as m1
+
+    m2 = importlib.import_module("octomil.api_client")
+    m3 = importlib.import_module("octomil.python.octomil.api_client")
+    assert m1 is m2, "two import shapes returned distinct alias modules"
+    assert m1 is m3, "alias and direct inner import returned distinct modules"
+
+    # Class identity follows: an exception class reached via either
+    # alias is the SAME class.
+    assert m1.OctomilClientError is m2.OctomilClientError
+    err = m1.OctomilClientError("boom")
+    # And the canonical raise + catch round-trips correctly.
+    try:
+        raise err
+    except m2.OctomilClientError:
+        pass
+
+
 def test_from_octomil_dot_secagg_import_attribute_works():
     """``from octomil.secagg import ECKeyPair`` is the most
     common shape for downstream FL callers; pin it explicitly."""

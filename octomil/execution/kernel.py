@@ -1578,17 +1578,18 @@ class ExecutionKernel:
         manager = self._prepare_manager or PrepareManager()
         outcome = manager.prepare(candidate, mode=PrepareMode.EXPLICIT)
 
-        # PR C: when the static recipe path provided the candidate AND
-        # any of its files were marked ``extract=True``, materialize
-        # the downloaded archive into the layout the backend expects
-        # (e.g. unpack the Kokoro tarball into ``model.onnx`` +
-        # ``voices.bin`` + ``tokens.txt`` + ``espeak-ng-data/``). The
-        # downloader only writes the archive bytes; the Sherpa
-        # backend reads the unpacked files directly.
-        if used_static_recipe is not None and any(f.extract for f in used_static_recipe.files):
-            from octomil.runtime.lifecycle.static_recipes import materialize_recipe_layout
+        # PR C: post-prepare materialization. The kernel does NOT
+        # know archive shapes / extension matchers / Kokoro layouts —
+        # it just hands the recipe's MaterializationPlan to the
+        # generic Materializer, which handles archive extraction,
+        # safety filtering, idempotency, and required-output
+        # verification. ``kind='none'`` plans (single-file backends
+        # like whisper.cpp) are a no-op aside from layout
+        # validation.
+        if used_static_recipe is not None:
+            from octomil.runtime.lifecycle.materialization import Materializer
 
-            materialize_recipe_layout(used_static_recipe, outcome.artifact_dir)
+            Materializer().materialize(outcome.artifact_dir, used_static_recipe.materialization)
 
         return outcome
 

@@ -287,6 +287,44 @@ def _resolve_lazy_submodule(name: str):
 # surfaces.
 
 
+class _OctomilAliasLoader:
+    """Loader that aliases ``octomil.<name>`` to the inner module
+    object stored at ``octomil.python.octomil.<name>``.
+
+    Reviewer P1 on PR #455 (post-7873ae7): the previous shape
+    created a fresh spec on every ``find_spec`` call, which let
+    Python create *two* module objects for the same alias when
+    different import shapes hit the hook (``import octomil.secagg``
+    vs ``importlib.import_module('octomil.secagg')``). Class
+    identity then forked: ``m1.OctomilClientError is not
+    m2.OctomilClientError``, so an exception raised under one
+    object couldn't be caught under the other.
+
+    Fix: ``create_module`` returns the canonical inner module
+    object directly. Python binds *that exact object* into
+    ``sys.modules[fullname]``, so every later import shape gets
+    back the same object — there's no second module identity to
+    create.
+    """
+
+    def __init__(self, inner_fq: str) -> None:
+        self._inner_fq = inner_fq
+
+    def create_module(self, spec):
+        # Force-import the inner module if it isn't loaded yet.
+        # This is the ONLY place we touch the inner package, so
+        # there's exactly one canonical module object.
+        if self._inner_fq not in _sys.modules:
+            _importlib.import_module(self._inner_fq)
+        return _sys.modules[self._inner_fq]
+
+    def exec_module(self, module) -> None:
+        # Module is the already-executed inner module; nothing
+        # to do. Python will bind it under the alias name via
+        # ``sys.modules[spec.name] = module`` for us.
+        return None
+
+
 class _OctomilSubmoduleAliasFinder:
     """``sys.meta_path`` finder that maps ``octomil.<alias>`` ↔
     ``octomil.python.octomil.<alias>`` without forcing the inner
@@ -296,6 +334,11 @@ class _OctomilSubmoduleAliasFinder:
     other ``octomil.*`` name falls through to Python's normal
     finders so this hook is invisible for ``octomil.execution``,
     ``octomil.runtime``, etc.
+
+    Returns a spec backed by ``_OctomilAliasLoader`` whose
+    ``create_module`` returns the SAME inner module object every
+    time — no duplicate identities, regardless of how the alias
+    is imported.
     """
 
     @staticmethod
@@ -305,56 +348,25 @@ class _OctomilSubmoduleAliasFinder:
         suffix = fullname[len("octomil.") :]
         if suffix not in _LAZY_SUBMODULES:
             return None
-        # Already aliased (e.g. ``from octomil import secagg`` ran
-        # earlier in this process). Let normal lookup find it.
+        # Already aliased — let Python's normal lookup return the
+        # cached object directly (no re-execution).
         if fullname in _sys.modules:
             return None
-        # Resolve through the lazy-submodule resolver, which imports
-        # the inner module and registers ``octomil.<alias>`` in
-        # ``sys.modules``. After that, return the spec from the
-        # already-loaded module so the import machinery doesn't try
-        # to execute it a second time.
-        try:
-            _resolve_lazy_submodule(suffix)
-        except ImportError:
-            return None
-        loaded = _sys.modules.get(fullname)
-        if loaded is None:
-            return None
-        loader = _AliasLoader(loaded)
+        inner_fq = _LAZY_SUBMODULES[suffix]
+        loader = _OctomilAliasLoader(inner_fq)
+        # ``origin`` left None: the alias has no own source file.
         return _importlib.util.spec_from_loader(  # type: ignore[union-attr]
             fullname,
             loader=loader,  # type: ignore[arg-type]
-            origin=getattr(loaded, "__file__", None),
+            origin=None,
         )
-
-
-class _AliasLoader:
-    """Trivial loader that returns an already-imported module.
-
-    The finder above runs ``_resolve_lazy_submodule``, which
-    populates ``sys.modules['octomil.<alias>']``. This loader's
-    only job is to hand the same object back to the import
-    machinery so it gets bound under the ``octomil.<alias>`` name
-    in the caller's namespace.
-    """
-
-    def __init__(self, module) -> None:
-        self._module = module
-
-    def create_module(self, spec):
-        return self._module
-
-    def exec_module(self, module) -> None:
-        # Module is already executed; nothing to do.
-        return None
 
 
 import importlib.util as _importlib_util  # noqa: E402
 
-# Reference held so ``_importlib.util`` resolves under the lazy
-# ``octomil.python.octomil`` namespace path; otherwise type-checkers
-# complain that ``_importlib.util`` is unknown.
+# Reference held so ``_importlib.util`` resolves under attribute
+# access; otherwise type-checkers complain that
+# ``_importlib.util`` is unknown.
 _importlib.util = _importlib_util  # type: ignore[attr-defined]
 
 # Install the finder on the front of the meta path so it runs
