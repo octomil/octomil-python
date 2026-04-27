@@ -1341,6 +1341,14 @@ def test_synthesize_speech_app_scoped_synthetic_candidate_surfaces_planner_error
     # silently substituted for the app's artifact.
     assert backend_calls == []
     assert excinfo.value.code == OctomilErrorCode.RUNTIME_UNAVAILABLE
+    # Reviewer P2 (round 5): the message must point at app /
+    # planner config, NOT at "install octomil[tts] and run
+    # prepare kokoro-82m" — the operator may already have both.
+    msg = str(excinfo.value)
+    assert "local_tts_app_planner_unresolved" in msg
+    assert "tts-tester" in msg
+    assert "kokoro-82m" in msg
+    assert "OCTOMIL_SHERPA_MODELS_DIR" not in msg
 
 
 def test_synthesize_speech_explicit_app_kwarg_does_not_short_circuit_cache(tmp_path, monkeypatch):
@@ -1429,6 +1437,13 @@ def test_synthesize_speech_explicit_app_kwarg_does_not_short_circuit_cache(tmp_p
 
     assert backend_calls == [], "explicit app= must NOT silently load the public static cache"
     assert excinfo.value.code == OctomilErrorCode.RUNTIME_UNAVAILABLE
+    # Reviewer P2 (round 5): same remediation pin for the
+    # explicit-``app=`` form. Error must name the app slug and
+    # the planner, not the legacy staging dirs.
+    msg = str(excinfo.value)
+    assert "local_tts_app_planner_unresolved" in msg
+    assert "tts-tester" in msg
+    assert "OCTOMIL_SHERPA_MODELS_DIR" not in msg
 
 
 def test_synthesize_speech_direct_mismatched_identity_does_not_short_circuit_cache(tmp_path, monkeypatch):
@@ -1540,10 +1555,17 @@ def test_synthesize_speech_app_scoped_no_candidate_does_not_short_circuit_cache(
         stack.enter_context(patch("octomil.runtime.engines.sherpa.is_sherpa_tts_model", return_value=True))
         stack.enter_context(patch("octomil.runtime.engines.sherpa.is_sherpa_tts_runtime_available", return_value=True))
         stack.enter_context(patch("octomil.execution.kernel._resolve_planner_selection", return_value=selection))
-        with pytest.raises(OctomilError):
+        with pytest.raises(OctomilError) as excinfo:
             asyncio.get_event_loop().run_until_complete(
                 kernel.synthesize_speech(model="@app/tts-tester/tts", input="hello")
             )
+
+    # Reviewer P2 (round 5): even when the planner emits no
+    # candidate at all, an app-scoped failure must blame the
+    # planner / app config, not "install [tts] and run prepare".
+    msg = str(excinfo.value)
+    assert "local_tts_app_planner_unresolved" in msg
+    assert "tts-tester" in msg
 
 
 def test_synthesize_speech_prepared_cache_used_when_candidate_matches_static_recipe(tmp_path, monkeypatch):

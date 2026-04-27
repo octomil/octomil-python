@@ -1332,7 +1332,13 @@ class ExecutionKernel:
             )
         except RuntimeError as exc:
             if "local" in str(exc).lower():
-                raise _local_tts_runtime_unavailable(runtime_model) from exc
+                raise self._tts_local_unavailable_error(
+                    runtime_model,
+                    requested_model=requested_model,
+                    app=app,
+                    local_candidate=local_candidate,
+                    app_scoped=app_scoped,
+                ) from exc
             raise OctomilError(
                 code=OctomilErrorCode.RUNTIME_UNAVAILABLE,
                 message=str(exc),
@@ -1340,7 +1346,13 @@ class ExecutionKernel:
 
         if locality == LOCALITY_ON_DEVICE and not local_available:
             # Don't try to load — fail closed with the canonical error.
-            raise _local_tts_runtime_unavailable(runtime_model)
+            raise self._tts_local_unavailable_error(
+                runtime_model,
+                requested_model=requested_model,
+                app=app,
+                local_candidate=local_candidate,
+                app_scoped=app_scoped,
+            )
 
         speech_route = SpeechRoute(
             locality="on_device" if locality == LOCALITY_ON_DEVICE else "cloud",
@@ -1651,6 +1663,99 @@ class ExecutionKernel:
         if not recipe.files:
             return False
         return candidate_digest == recipe.files[0].digest
+
+    def _tts_local_unavailable_error(
+        self,
+        runtime_model: str,
+        *,
+        requested_model: Optional[str],
+        app: Optional[str],
+        local_candidate: Optional[Any],
+        app_scoped: bool,
+    ) -> OctomilError:
+        """Pick the right ``RUNTIME_UNAVAILABLE`` error for a failed
+        local TTS attempt.
+
+        Reviewer P2 (round 5): the generic
+        :func:`_local_tts_runtime_unavailable` message tells the
+        user to install ``octomil[tts]`` and run
+        ``octomil prepare kokoro-82m`` — the right remediation for a
+        clean-device first run on a direct request, but actively
+        misleading for an app-scoped request that was refused
+        because the planner returned a synthetic / echo-only
+        candidate. Both ``[tts]`` AND ``prepare`` may already be
+        green; the actual problem is server-side (Task #51).
+
+        Branch on ``app_scoped`` AND "candidate exists but didn't
+        give us a usable artifact" (no candidate / unpreparable /
+        no meaningful identity / mismatched). When that holds, raise
+        a planner-config error that names the app and points at
+        server config. Otherwise fall through to the canonical
+        clean-device message.
+        """
+        if app_scoped and self._app_planner_returned_unusable_candidate(local_candidate, runtime_model):
+            slug = app or self._app_slug_from_model_ref(requested_model) or "<app>"
+            requested = requested_model or f"@app/{slug}/tts"
+            return OctomilError(
+                code=OctomilErrorCode.RUNTIME_UNAVAILABLE,
+                message=(
+                    f"local_tts_app_planner_unresolved: app {slug!r} "
+                    f"(requested as {requested!r}) routed to runtime model "
+                    f"{runtime_model!r}, but the runtime planner returned no "
+                    f"usable artifact identity (missing download_urls / digest, "
+                    f"or echoed the model name without committing to a version). "
+                    f"This is a planner / app-config issue, not a missing local "
+                    f"install — the SDK refused to silently substitute the "
+                    f"public {runtime_model!r} static-recipe cache because that "
+                    f"could ship the wrong bytes for {slug!r}. Verify the app's "
+                    f"runtime configuration in the dashboard, OCTOMIL_SERVER_KEY "
+                    f"auth, and that the app's planner emits a complete "
+                    f"download_urls / digest for its TTS artifact."
+                ),
+            )
+        return _local_tts_runtime_unavailable(runtime_model)
+
+    def _app_planner_returned_unusable_candidate(
+        self,
+        local_candidate: Optional[Any],
+        runtime_model: str,
+    ) -> bool:
+        """Return True iff an app-scoped request's planner candidate
+        is in a "can't honor this" state: no candidate at all, no
+        meaningful artifact identity (echo-only / empty), or
+        otherwise unpreparable. These are the shapes the
+        cache-short-circuit gate refuses for app-scoped requests, so
+        the resulting failure should attribute to the planner / app
+        config, not a missing local install.
+        """
+        if local_candidate is None:
+            return True
+        if not self._candidate_has_meaningful_identity(local_candidate, runtime_model):
+            return True
+        # Meaningful identity present but missing urls/digest etc.
+        # ``_local_candidate_is_unpreparable`` consults
+        # ``PrepareManager.can_prepare`` for the precise structural
+        # rules; routing already invoked it.
+        try:
+            from octomil.runtime.lifecycle.prepare_manager import PrepareManager
+        except Exception:
+            return True
+        manager = getattr(self, "_prepare_manager", None) or PrepareManager()
+        try:
+            return not manager.can_prepare(local_candidate)
+        except Exception:
+            return True
+
+    @staticmethod
+    def _app_slug_from_model_ref(model: Optional[str]) -> Optional[str]:
+        """Extract ``<slug>`` from ``@app/<slug>/<capability>``."""
+        if not model or not isinstance(model, str) or not model.startswith("@app/"):
+            return None
+        parts = model.split("/", 3)
+        if len(parts) < 3:
+            return None
+        slug = parts[1]
+        return slug or None
 
     @staticmethod
     def _sherpa_tts_runtime_loadable(model: str) -> bool:
