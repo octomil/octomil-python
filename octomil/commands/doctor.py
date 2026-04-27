@@ -171,19 +171,24 @@ def _check_artifact_cache() -> list[tuple[str, str, str]]:
 
 def _check_local_engines() -> list[tuple[str, str, str]]:
     rows: list[tuple[str, str, str]] = []
+    # ``label`` is the user-facing name (matches the pip extra /
+    # PyPI distribution); ``module`` is the actual Python import
+    # name. ``sherpa-onnx`` ships as ``sherpa_onnx`` on import,
+    # which the operator's mental model doesn't match — the row
+    # label sticks with the dist name they typed in ``pip install``.
     engines = [
-        ("sherpa-onnx", "tts (Kokoro / VITS / Piper)"),
-        ("mlx_lm", "chat / responses on Apple Silicon"),
-        ("llama_cpp", "chat / responses (GGUF)"),
-        ("pywhispercpp", "transcription"),
-        ("onnxruntime", "ONNX classifiers"),
+        ("sherpa-onnx", "sherpa_onnx", "tts (Kokoro / VITS / Piper)"),
+        ("mlx_lm", "mlx_lm", "chat / responses on Apple Silicon"),
+        ("llama_cpp", "llama_cpp", "chat / responses (GGUF)"),
+        ("pywhispercpp", "pywhispercpp", "transcription"),
+        ("onnxruntime", "onnxruntime", "ONNX classifiers"),
     ]
-    for module_name, what in engines:
+    for label, module, what in engines:
         try:
-            __import__(module_name)
-            rows.append(_row(_OK, module_name, what))
+            __import__(module)
+            rows.append(_row(_OK, label, what))
         except ImportError:
-            rows.append(_row(_WARN, module_name, f"not installed ({what} → cloud only)"))
+            rows.append(_row(_WARN, label, f"not installed ({what} → cloud only)"))
     return rows
 
 

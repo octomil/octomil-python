@@ -106,8 +106,9 @@ def is_sherpa_tts_model(model_name: str) -> bool:
     """Check if a model name refers to a sherpa-onnx TTS model.
 
     Means "known model id," not "installed and runnable." For runnable
-    detection (sherpa_onnx + on-disk model files), use
-    :func:`is_sherpa_tts_model_staged` instead.
+    detection, the kernel asks PrepareManager whether a prepared
+    artifact dir exists for ``(model, capability='tts')`` — there is no
+    legacy "is staged" path.
     """
     return model_name.lower() in _SHERPA_TTS_MODELS
 
@@ -116,58 +117,14 @@ def is_sherpa_tts_runtime_available(model_name: str) -> bool:
     """Return True when the *engine* is loadable for ``model_name``, even if
     the artifact has not been downloaded yet.
 
-    Distinguishing this from :func:`is_sherpa_tts_model_staged` lets the
-    kernel admit clean-device routing: a planner ``sdk_runtime`` candidate
-    with ``prepare_required=True`` is a valid local route as long as the
-    sherpa-onnx package is importable and the model id is recognized;
-    PrepareManager materializes the bytes before backend load.
+    Pairs with PrepareManager: a planner ``sdk_runtime`` candidate with
+    ``prepare_required=True`` (or a static-recipe fallback with the same
+    shape) is a valid local route as long as sherpa-onnx is importable
+    and the model id is recognized — PrepareManager materializes the
+    bytes before backend load, and the backend reads from the prepared
+    artifact dir threaded in via ``model_dir=``.
     """
     return _has_sherpa_onnx() and is_sherpa_tts_model(model_name)
-
-
-def _resolve_sherpa_model_dir(model_name: str) -> str:
-    """Mirror ``_SherpaTtsBackend._resolve_model_dir`` for pre-flight checks."""
-    override = os.environ.get("OCTOMIL_SHERPA_MODELS_DIR")
-    if override:
-        return os.path.join(override, model_name)
-    return os.path.expanduser(f"~/.octomil/models/sherpa/{model_name}")
-
-
-def is_sherpa_tts_model_staged(model_name: str) -> bool:
-    """Return True if every prerequisite for a local sherpa TTS run is present.
-
-    Required, in conjunction:
-      * ``sherpa_onnx`` is importable.
-      * ``model_name`` is a supported sherpa TTS model id.
-      * The model directory exists (under ``OCTOMIL_SHERPA_MODELS_DIR`` if set,
-        else ``~/.octomil/models/sherpa/<model_name>/``) with the family-correct
-        files. For Kokoro: ``model.onnx`` + ``voices.bin`` + ``tokens.txt`` +
-        ``espeak-ng-data/``. For VITS/Piper: ``model.onnx`` + ``tokens.txt`` +
-        ``espeak-ng-data/``.
-
-    Callers should raise ``local_tts_runtime_unavailable`` when this returns
-    False under a ``local_only`` policy, instead of letting the backend fail
-    deep in ``load_model``.
-    """
-    if not _has_sherpa_onnx():
-        return False
-    if not is_sherpa_tts_model(model_name):
-        return False
-    family = _model_family(model_name)
-    model_dir = _resolve_sherpa_model_dir(model_name)
-    if not os.path.isdir(model_dir):
-        return False
-    required = ["model.onnx", "tokens.txt"]
-    if family == "kokoro":
-        required.append("voices.bin")
-    # espeak-ng-data is a directory bundle; check existence.
-    espeak_dir = os.path.join(model_dir, "espeak-ng-data")
-    if not os.path.isdir(espeak_dir):
-        return False
-    for entry in required:
-        if not os.path.isfile(os.path.join(model_dir, entry)):
-            return False
-    return True
 
 
 class SherpaTtsEngine(EnginePlugin):
@@ -331,18 +288,25 @@ class _SherpaTtsBackend:
     def _resolve_model_dir(self, model_name: str) -> str:
         """Return the on-disk directory for a sherpa-onnx model.
 
-        Resolution order:
-        1. ``model_dir`` kwarg passed to ``create_backend`` (used by
-           PrepareManager to point at the freshly-materialized artifact).
-        2. ``OCTOMIL_SHERPA_MODELS_DIR`` env var if set.
-        3. ``~/.octomil/models/sherpa/<model_name>/``.
+        The only supported source is the ``model_dir`` kwarg passed
+        to ``create_backend`` — i.e. the artifact dir
+        :class:`PrepareManager` materialized for the request. PR D
+        cut over the legacy ``OCTOMIL_SHERPA_MODELS_DIR`` /
+        ``~/.octomil/models/sherpa/<model>/`` resolution; callers
+        who hand-staged bytes in the legacy layout must either run
+        ``client.prepare(model, capability='tts')`` or invoke the
+        kernel through a planner candidate that triggers prepare.
         """
         if self._injected_model_dir:
             return self._injected_model_dir
-        override = os.environ.get("OCTOMIL_SHERPA_MODELS_DIR")
-        if override:
-            return os.path.join(override, model_name)
-        return os.path.expanduser(f"~/.octomil/models/sherpa/{model_name}")
+        raise RuntimeError(
+            f"sherpa-onnx TTS backend for {model_name!r} was constructed without "
+            "a prepared model_dir. Run client.prepare(model, capability='tts') "
+            "(or call the kernel through a planner candidate that triggers "
+            "prepare) before loading the backend; the legacy "
+            "OCTOMIL_SHERPA_MODELS_DIR / ~/.octomil/models/sherpa fallback was "
+            "removed in 4.11.0."
+        )
 
     def synthesize(
         self,
