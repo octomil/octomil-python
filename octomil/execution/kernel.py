@@ -1525,13 +1525,34 @@ class ExecutionKernel:
         selection = _resolve_planner_selection(effective_model, capability, policy_preset)
         candidate = _local_sdk_runtime_candidate(selection)
         if candidate is None:
-            raise OctomilError(
-                code=OctomilErrorCode.RUNTIME_UNAVAILABLE,
-                message=(
-                    f"prepare: planner returned no local sdk_runtime candidate for model={effective_model!r} "
-                    f"capability={capability!r}. The model is either cloud-only or the planner is offline."
-                ),
-            )
+            # PR C: fall back to a static offline recipe for canonical
+            # local models (Kokoro etc.). The recipe produces the same
+            # ``RuntimeCandidatePlan`` shape the planner would emit,
+            # so the rest of the prepare pipeline runs unchanged. This
+            # makes ``octomil prepare kokoro-82m --capability tts``
+            # work without planner / network — the happy path
+            # one-liner the embedded TTS bootstrap needs.
+            #
+            # The recipe table is deliberately narrow (canonical
+            # public bundles only); models that need auth or private
+            # CDNs hit the original "planner unavailable" error so we
+            # never silently substitute a public mirror for a private
+            # artifact.
+            from octomil.runtime.lifecycle.static_recipes import static_recipe_candidate
+
+            candidate = static_recipe_candidate(effective_model, capability)
+            if candidate is None:
+                raise OctomilError(
+                    code=OctomilErrorCode.RUNTIME_UNAVAILABLE,
+                    message=(
+                        f"prepare: planner returned no local sdk_runtime candidate for "
+                        f"model={effective_model!r} capability={capability!r} and the SDK has "
+                        f"no static offline recipe for it. Either the model is cloud-only, "
+                        f"the planner is offline, or this is a private artifact that requires "
+                        f"OCTOMIL_SERVER_KEY auth. Set OCTOMIL_SERVER_KEY or use a model with "
+                        f"a static recipe (e.g. 'kokoro-82m')."
+                    ),
+                )
 
         from octomil.runtime.lifecycle.prepare_manager import PrepareManager, PrepareMode
 
