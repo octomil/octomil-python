@@ -161,6 +161,15 @@ class PrepareManager:
                 ),
             )
 
+        # PR C-followup option 2: when the planner emits
+        # ``source="static_recipe"`` + ``recipe_id``, expand the
+        # candidate from the SDK's built-in recipe table. This lets
+        # the dashboard say "use kokoro-82m" without re-publishing
+        # the canonical URL/digest/required_files in every plan.
+        # Custom-artifact sources (future ``"hf_snapshot"``, etc.)
+        # ride the same discriminator.
+        artifact = self._expand_static_recipe_source(artifact)
+
         descriptor = self._build_descriptor(artifact)
         artifact_dir = self.artifact_dir_for(descriptor.artifact_id)
         artifact_dir.mkdir(parents=True, exist_ok=True)
@@ -204,6 +213,115 @@ class PrepareManager:
                 ),
             )
 
+    def _expand_static_recipe_source(self, artifact):
+        """Resolve ``source="static_recipe"`` artifacts via the recipe
+        table.
+
+        When the planner picks a canonical built-in artifact and
+        emits ``source="static_recipe"`` + ``recipe_id``, the SDK
+        treats the recipe as the source of truth for URL / digest /
+        required_files. Any of these fields the planner *also*
+        emitted is treated as a hint and cross-checked: a mismatch
+        between the planner's declared digest and the recipe's
+        digest is rejected loudly (would otherwise let a compromised
+        planner direct users to forged bytes under a known recipe id).
+
+        Returns the original ``artifact`` unchanged when ``source``
+        is unset / unknown — this preserves the option-1 path
+        (planner-supplied metadata used as-is).
+        """
+        source = getattr(artifact, "source", None)
+        if source is None:
+            return artifact
+        if source != "static_recipe":
+            raise OctomilError(
+                code=ErrorCode.INVALID_INPUT,
+                message=(
+                    f"Artifact source {source!r} is not recognized by this SDK release. "
+                    f"Known sources: 'static_recipe'. Upgrade the SDK or have the "
+                    f"planner omit ``source`` to use planner-supplied metadata directly."
+                ),
+            )
+        recipe_id = getattr(artifact, "recipe_id", None)
+        if not recipe_id:
+            raise OctomilError(
+                code=ErrorCode.INVALID_INPUT,
+                message=(
+                    "Artifact has source='static_recipe' but no recipe_id. " "The planner must name a specific recipe."
+                ),
+            )
+
+        from octomil.runtime.lifecycle.static_recipes import _RECIPES
+
+        recipe = next(
+            (r for (mid, _cap), r in _RECIPES.items() if r.model_id == recipe_id or mid == recipe_id),
+            None,
+        )
+        if recipe is None:
+            raise OctomilError(
+                code=ErrorCode.INVALID_INPUT,
+                message=(
+                    f"Artifact source='static_recipe' but recipe_id {recipe_id!r} is "
+                    f"not in this SDK's built-in recipe table. Either upgrade the SDK "
+                    f"or have the planner switch to ``source=None`` and emit the "
+                    f"artifact metadata directly."
+                ),
+            )
+        if len(recipe.files) != 1:
+            raise OctomilError(
+                code=ErrorCode.INVALID_INPUT,
+                message=(
+                    f"Static recipe {recipe_id!r} has {len(recipe.files)} files; "
+                    f"multi-file recipes need manifest_uri support to expand under "
+                    f"source='static_recipe' (planned)."
+                ),
+            )
+        only = recipe.files[0]
+
+        # Cross-check planner-supplied metadata against the recipe.
+        # Mismatches mean the server is asking us to use a different
+        # artifact under a known recipe id — refuse rather than
+        # silently substitute.
+        if getattr(artifact, "digest", None) and artifact.digest != only.digest:
+            raise OctomilError(
+                code=ErrorCode.CHECKSUM_MISMATCH,
+                message=(
+                    f"Static recipe {recipe_id!r} digest {only.digest!r} does not match "
+                    f"planner-declared digest {artifact.digest!r}. Refusing to substitute "
+                    f"a different artifact under a known recipe id."
+                ),
+            )
+        if artifact.required_files and artifact.required_files != [only.relative_path]:
+            raise OctomilError(
+                code=ErrorCode.INVALID_INPUT,
+                message=(
+                    f"Static recipe {recipe_id!r} ships file {only.relative_path!r}; "
+                    f"planner-declared required_files {artifact.required_files!r} "
+                    f"does not match. Refusing to substitute."
+                ),
+            )
+
+        # Recipe wins. Build a fresh artifact with canonical metadata,
+        # preserving any planner-supplied overrides we don't override
+        # (engine, format, model_id).
+        from dataclasses import replace
+
+        from octomil.runtime.planner.schemas import ArtifactDownloadEndpoint
+
+        return replace(
+            artifact,
+            artifact_id=artifact.artifact_id or recipe.model_id,
+            digest=only.digest,
+            required_files=[only.relative_path],
+            download_urls=[
+                ArtifactDownloadEndpoint(
+                    url=only.url,
+                    headers={"X-Octomil-Recipe-Path": only.relative_path},
+                )
+            ],
+            size_bytes=artifact.size_bytes or only.size_bytes,
+        )
+
     def _build_descriptor(self, artifact) -> ArtifactDescriptor:
         if not artifact.download_urls:
             raise OctomilError(
@@ -227,23 +345,54 @@ class PrepareManager:
             for ep in artifact.download_urls
         ]
 
-        # The current planner schema gives us a single artifact-level digest
-        # and a flat list of required_files. There is no per-file manifest
-        # yet, so a multi-file artifact cannot be verified — every file would
-        # be checked against the same digest and at least one would fail. A
-        # later PR adds manifest_uri parsing; for now, refuse multi-file
-        # artifacts loudly rather than silently broadcast one digest across
-        # files.
+        # PR C-followup: multi-file artifacts go through ``manifest_uri``.
+        # The single artifact-level digest cannot verify multiple files
+        # (every file would be checked against the same hash and at least
+        # one would fail). The manifest body itself is digest-pinned by
+        # ``RuntimeArtifactPlan.digest``, so a tampered manifest is caught
+        # before any per-file URL is fetched. See
+        # ``octomil.runtime.lifecycle.manifest`` for the schema and
+        # validation rules.
         if len(artifact.required_files) > 1:
-            raise OctomilError(
-                code=ErrorCode.INVALID_INPUT,
-                message=(
-                    f"Artifact '{artifact.artifact_id or artifact.model_id}' lists "
-                    f"{len(artifact.required_files)} required_files but the planner "
-                    f"schema in this release only carries a single artifact-level digest. "
-                    f"Multi-file artifacts require a per-file manifest_uri (planned in a "
-                    f"follow-up PR); refusing to prepare without per-file integrity."
-                ),
+            if not artifact.manifest_uri:
+                raise OctomilError(
+                    code=ErrorCode.INVALID_INPUT,
+                    message=(
+                        f"Artifact '{artifact.artifact_id or artifact.model_id}' lists "
+                        f"{len(artifact.required_files)} required_files but the planner "
+                        f"emitted no manifest_uri. The single artifact-level digest cannot "
+                        f"verify multiple files; refusing to prepare without per-file "
+                        f"integrity. Have the planner emit ``manifest_uri`` (manifest.v1)."
+                    ),
+                )
+            from octomil.runtime.lifecycle.manifest import fetch_and_parse_manifest
+
+            manifest = fetch_and_parse_manifest(artifact.manifest_uri, artifact_digest=artifact.digest)
+            # Cross-check: every required_files entry the planner advertises
+            # MUST appear in the manifest. Manifest may be a strict superset
+            # (unused files), but the planner's claimed file set must be
+            # fully covered by per-file digests.
+            manifest_paths = {f.relative_path: f for f in manifest.files}
+            for advertised in artifact.required_files:
+                safe_rel = _validate_relative_path(advertised)
+                if safe_rel not in manifest_paths:
+                    raise OctomilError(
+                        code=ErrorCode.INVALID_INPUT,
+                        message=(
+                            f"Artifact '{artifact.artifact_id or artifact.model_id}' "
+                            f"lists required_file {advertised!r} but the manifest at "
+                            f"{artifact.manifest_uri!r} does not include it. The planner "
+                            f"and the manifest must agree on the file set."
+                        ),
+                    )
+            # Order-preserving: the descriptor walks files in the planner's
+            # ``required_files`` order so dispatch / progress is stable
+            # regardless of manifest ordering.
+            required = [manifest_paths[_validate_relative_path(p)] for p in artifact.required_files]
+            return ArtifactDescriptor(
+                artifact_id=artifact.artifact_id or artifact.model_id,
+                required_files=required,
+                endpoints=endpoints,
             )
 
         if artifact.required_files:
