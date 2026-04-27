@@ -180,12 +180,21 @@ class TestUnload:
 
 
 class TestList:
-    def test_returns_loaded_models(self, ns, mock_client):
+    def test_returns_loaded_models(self, ns, mock_client, tmp_path):
+        # ``ns.list()`` walks ``_OCTOMIL_MODELS_DIR`` (defaults to
+        # ``~/.octomil/models/``) and returns both loaded and cached
+        # entries. Without isolating the disk path, a developer's
+        # cached models leak into the test (also bites under
+        # ``pytest -n auto`` when a sibling test populated the dir
+        # on the shared worker). Pin to an empty ``tmp_path`` so the
+        # assertion ``len(result) == 1`` is about the one *loaded*
+        # model only.
         model = MagicMock()
         model.metadata.version = "2.0.0"
         mock_client._models = {"phi-4-mini": model}
 
-        result = ns.list()
+        with patch("octomil.models_namespace._OCTOMIL_MODELS_DIR", tmp_path):
+            result = ns.list()
         assert len(result) == 1
         assert result[0]["model_id"] == "phi-4-mini"
         assert result[0]["status"] == "loaded"
