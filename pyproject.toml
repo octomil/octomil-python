@@ -29,12 +29,16 @@ dependencies = [
   "psutil>=5.9.0",
   "httpx>=0.24.0",
   "click>=8.0.0",
-  "pandas>=1.5.0",
-  "pyarrow>=10.0.0",
   "segno>=1.6",
   "huggingface_hub>=0.20.0",
   "jsonschema>=4.0.0",
 ]
+# PR C: pandas / pyarrow / numpy moved off the core dependency list
+# because they import heavy native code (and ``sysconfig.get_config_var``
+# in pandas) that crashes Ren'Py / sandboxed CPython / some PyInstaller
+# builds. Thin clients (``pip install octomil`` for chat / tts /
+# embeddings) don't need them. FL / analytics consumers install
+# ``octomil[fl]`` or ``octomil[analytics]`` to pull them in.
 
 [project.optional-dependencies]
 serve = [
@@ -52,6 +56,27 @@ onnx = [
 ]
 whisper = [
   "pywhispercpp>=1.0.0",
+]
+# PR C: TTS extra. ``pip install octomil[tts]`` plus
+# ``octomil prepare kokoro-82m --capability tts`` is the canonical
+# happy-path for embedded local TTS (Ren'Py games, kiosk apps, CLI
+# tools).
+tts = [
+  "sherpa-onnx>=1.12",
+]
+# Analytics + federated learning surfaces. Lazy-loaded from
+# ``octomil/__init__.py`` (see ``_LAZY_SUBMODULES``), so plain
+# ``import octomil`` does NOT touch pandas/pyarrow/torch.
+analytics = [
+  "pandas>=1.5.0",
+  "pyarrow>=10.0.0",
+  "numpy>=1.24.0",
+]
+fl = [
+  "torch>=2.0.0",
+  "numpy>=1.24.0",
+  "pandas>=1.5.0",
+  "pyarrow>=10.0.0",
 ]
 ml = [
   "torch>=2.0.0",

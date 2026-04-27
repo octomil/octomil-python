@@ -1524,19 +1524,74 @@ class ExecutionKernel:
         policy_preset = defaults.policy_preset or "local_first"
         selection = _resolve_planner_selection(effective_model, capability, policy_preset)
         candidate = _local_sdk_runtime_candidate(selection)
+        used_static_recipe = None  # type: Optional[Any]
         if candidate is None:
-            raise OctomilError(
-                code=OctomilErrorCode.RUNTIME_UNAVAILABLE,
-                message=(
-                    f"prepare: planner returned no local sdk_runtime candidate for model={effective_model!r} "
-                    f"capability={capability!r}. The model is either cloud-only or the planner is offline."
-                ),
+            # PR C: fall back to a static offline recipe for canonical
+            # local models (Kokoro etc.). The recipe produces the same
+            # ``RuntimeCandidatePlan`` shape the planner would emit,
+            # so the rest of the prepare pipeline runs unchanged. This
+            # makes ``octomil prepare kokoro-82m --capability tts``
+            # work without planner / network — the happy path
+            # one-liner the embedded TTS bootstrap needs.
+            #
+            # The recipe table is deliberately narrow (canonical
+            # public bundles only); models that need auth or private
+            # CDNs hit the original "planner unavailable" error so we
+            # never silently substitute a public mirror for a private
+            # artifact.
+            from octomil.runtime.lifecycle.static_recipes import (
+                get_static_recipe,
+                static_recipe_candidate,
             )
+
+            used_static_recipe = get_static_recipe(effective_model, capability)
+            if used_static_recipe is None:
+                raise OctomilError(
+                    code=OctomilErrorCode.RUNTIME_UNAVAILABLE,
+                    message=(
+                        f"prepare: planner returned no local sdk_runtime candidate for "
+                        f"model={effective_model!r} capability={capability!r} and the SDK has "
+                        f"no static offline recipe for it. Either the model is cloud-only, "
+                        f"the planner is offline, or this is a private artifact that requires "
+                        f"OCTOMIL_SERVER_KEY auth. Set OCTOMIL_SERVER_KEY or use a model with "
+                        f"a static recipe (e.g. 'kokoro-82m')."
+                    ),
+                )
+            candidate = static_recipe_candidate(effective_model, capability)
+            if candidate is None:
+                # Recipe present but to_runtime_candidate() refused
+                # (multi-file pre-manifest, malformed). Surface the
+                # same actionable error as no-recipe rather than
+                # crashing PrepareManager.prepare with None.
+                raise OctomilError(
+                    code=OctomilErrorCode.RUNTIME_UNAVAILABLE,
+                    message=(
+                        f"prepare: static recipe for model={effective_model!r} "
+                        f"capability={capability!r} could not be materialized as a "
+                        f"single-file candidate. Multi-file recipes need manifest_uri "
+                        f"support in PrepareManager (planned follow-up)."
+                    ),
+                )
 
         from octomil.runtime.lifecycle.prepare_manager import PrepareManager, PrepareMode
 
         manager = self._prepare_manager or PrepareManager()
-        return manager.prepare(candidate, mode=PrepareMode.EXPLICIT)
+        outcome = manager.prepare(candidate, mode=PrepareMode.EXPLICIT)
+
+        # PR C: post-prepare materialization. The kernel does NOT
+        # know archive shapes / extension matchers / Kokoro layouts —
+        # it just hands the recipe's MaterializationPlan to the
+        # generic Materializer, which handles archive extraction,
+        # safety filtering, idempotency, and required-output
+        # verification. ``kind='none'`` plans (single-file backends
+        # like whisper.cpp) are a no-op aside from layout
+        # validation.
+        if used_static_recipe is not None:
+            from octomil.runtime.lifecycle.materialization import Materializer
+
+            Materializer().materialize(outcome.artifact_dir, used_static_recipe.materialization)
+
+        return outcome
 
     def _prepare_local_transcription_artifact(self, selection: Optional[Any]) -> Optional[str]:
         """Run PrepareManager for the local transcription candidate, if any.

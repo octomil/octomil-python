@@ -58,6 +58,7 @@ from octomil.commands import (  # noqa: E402
     benchmark,
     completions,
     deploy,
+    doctor,
     enterprise,
     federation,
     inference,
@@ -84,6 +85,7 @@ for _mod in [
     completions,
     setup,
     agent,
+    doctor,
 ]:
     _mod.register(main)
 

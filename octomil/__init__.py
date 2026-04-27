@@ -92,81 +92,290 @@ from .types import (  # noqa: F401
     RouteReason,
 )
 
-# The inner SDK package has heavy optional deps (torch, cryptography, etc.)
-# that are not bundled in the standalone CLI binary (PyInstaller).
-# Only suppress ImportError when running as a frozen binary.
+# The inner SDK package has heavy optional deps (torch, cryptography,
+# pandas, pyarrow, …) that thin clients (TTS-only embedded callers,
+# Ren'Py games, PyInstaller binaries) don't need and often can't
+# import — pandas in particular calls ``sysconfig.get_config_var``
+# at import time, which crashes inside Ren'Py's bundled CPython.
+#
+# PR C lazy-loads these legacy/FL symbols via module-level
+# ``__getattr__``. Plain ``import octomil`` no longer triggers
+# pandas / pyarrow / torch; only an explicit
+# ``from octomil import FederatedClient`` (or peeking at
+# ``octomil.FederatedClient``) does.
 _FROZEN = getattr(_sys, "frozen", False)
 
-try:
-    from .python.octomil import (
-        HKDF_INFO_PAIRWISE_MASK,
-        HKDF_INFO_SELF_MASK,
-        HKDF_INFO_SHARE_ENCRYPTION,
-        SECAGG_PLUS_MOD_RANGE,
-        DataKind,
-        DeltaFilter,
-        DeviceAuthClient,
-        ECKeyPair,
-        ExperimentsAPI,
-        FederatedAnalyticsAPI,
-        FederatedAnalyticsClient,
-        FederatedClient,
-        Federation,
-        FilterRegistry,
-        FilterResult,
-        ModelRegistry,
-        OctomilClientError,
-        RolloutsAPI,
-        SecAggClient,
-        SecAggConfig,
-        SecAggPlusClient,
-        SecAggPlusConfig,
-        apply_filters,
-        compute_state_dict_delta,
-    )
-    from .python.octomil import (
-        Octomil as LegacyOctomil,
-    )
-except ImportError:
-    if not _FROZEN:
+# Names exported lazily from ``octomil.python.octomil``. The keys are
+# the public names callers see on the ``octomil`` namespace; the
+# lazy loader imports the inner package on first access and re-exposes
+# the attribute at module level so subsequent lookups skip the import.
+_LAZY_LEGACY_EXPORTS = {
+    "HKDF_INFO_PAIRWISE_MASK",
+    "HKDF_INFO_SELF_MASK",
+    "HKDF_INFO_SHARE_ENCRYPTION",
+    "SECAGG_PLUS_MOD_RANGE",
+    "DataKind",
+    "DeltaFilter",
+    "DeviceAuthClient",
+    "ECKeyPair",
+    "ExperimentsAPI",
+    "FederatedAnalyticsAPI",
+    "FederatedAnalyticsClient",
+    "FederatedClient",
+    "Federation",
+    "FilterRegistry",
+    "FilterResult",
+    "ModelRegistry",
+    "OctomilClientError",
+    "RolloutsAPI",
+    "SecAggClient",
+    "SecAggConfig",
+    "SecAggPlusClient",
+    "SecAggPlusConfig",
+    "apply_filters",
+    "compute_state_dict_delta",
+    # ``LegacyOctomil`` is the inner package's ``Octomil`` class; we
+    # surface it under the legacy alias so prior consumers still work.
+    "LegacyOctomil",
+}
+
+
+def __getattr__(name: str):  # noqa: D401 (module-level dunder)
+    """Lazy attribute resolver for legacy / FL exports + submodules.
+
+    Triggered ONLY on first access to one of the symbols in
+    ``_LAZY_LEGACY_EXPORTS`` or one of the lazy submodules (e.g.
+    ``federated_client``). The inner ``octomil.python.octomil``
+    package (and its pandas/pyarrow/torch surface) is imported at
+    that moment, never at top-level ``import octomil``.
+    """
+    # Lazy submodule aliasing: ``octomil.federated_client`` resolves
+    # to ``octomil.python.octomil.federated_client`` on first
+    # access. Subsequent imports go through ``sys.modules`` directly.
+    if name in _LAZY_SUBMODULES:
+        try:
+            return _resolve_lazy_submodule(name)
+        except ImportError:
+            if _FROZEN:
+                raise AttributeError(
+                    f"octomil.{name} is not available in this build (frozen "
+                    "binary without [fl] extras). Install 'octomil[fl]' to use it."
+                ) from None
+            raise
+
+    if name not in _LAZY_LEGACY_EXPORTS:
+        raise AttributeError(f"module 'octomil' has no attribute {name!r}")
+
+    try:
+        from . import python as _python_pkg  # noqa: F401  (forces submodule load)
+        from .python import octomil as _legacy_pkg
+    except ImportError:
+        if _FROZEN:
+            # PyInstaller / frozen binaries deliberately strip the
+            # heavy deps. Re-raise as AttributeError so feature
+            # detection (``hasattr(octomil, 'FederatedClient')``)
+            # works cleanly.
+            raise AttributeError(
+                f"octomil.{name} is not available in this build (frozen binary "
+                "without [fl] extras). Install 'octomil[fl]' to use it."
+            ) from None
         raise
 
-# Alias inner submodules so ``from octomil.secagg import …`` works without
-# requiring users to know about the nested ``octomil.python.octomil`` layout.
-_SUBMODULES = [
-    "api_client",
-    "auth",
-    "control_plane",
-    "data_loader",
-    "edge",
-    "feature_alignment",
-    "feature_alignment.aligner",
-    "federated_client",
-    "federation",
-    "filters",
-    "gradient_cache",
-    "inference",
-    "registry",
-    "resilience",
-    "secagg",
-]
+    if name == "LegacyOctomil":
+        value = getattr(_legacy_pkg, "Octomil")
+    else:
+        value = getattr(_legacy_pkg, name)
+    # Cache at module level so the next lookup skips this function.
+    globals()[name] = value
+    return value
 
-for _name in _SUBMODULES:
-    _fq = f"octomil.python.octomil.{_name}"
-    if _fq not in _sys.modules:
-        try:
-            _importlib.import_module(_fq)
-        except ImportError:
-            continue
-    _mod = _sys.modules[_fq]
-    _sys.modules[f"octomil.{_name}"] = _mod
-    # Also set as attribute on parent module so getattr() works (required by
-    # unittest.mock._dot_lookup on Python <3.12).
-    _parts = _name.split(".")
-    _parent = _sys.modules[__name__]
-    for _part in _parts[:-1]:
-        _parent = getattr(_parent, _part, _parent)
-    setattr(_parent, _parts[-1], _mod)
+
+# Submodule aliases for ``from octomil.secagg import …`` ergonomics.
+#
+# Pre-PR-C, the SDK eagerly imported every entry below at top-level
+# ``import octomil``. The trouble is that even a "lightweight" alias
+# like ``api_client`` triggers
+# ``import octomil.python.octomil.api_client``, which makes Python
+# execute the inner package's ``__init__.py`` first — and that
+# ``__init__`` itself imports ``federated_client`` + ``data_loader``,
+# which import pandas + pyarrow at module load, which crashes Ren'Py
+# / certain PyInstaller builds via ``sysconfig.get_config_var``.
+#
+# Reviewer P1 on PR #455: the eager loop was the residual hop that
+# kept thin-client ``import octomil`` reaching the pandas-tainted
+# legacy package.
+#
+# Fix: every submodule alias is lazy now. The names below register
+# the SDK ergonomic mapping (``octomil.secagg`` →
+# ``octomil.python.octomil.secagg``), but the actual import only
+# fires when a caller writes ``from octomil.secagge import X`` or
+# accesses ``octomil.secagg``. ``__getattr__`` resolves both.
+_LAZY_SUBMODULES = {
+    # name → fully-qualified module path inside the inner package.
+    # Was previously called ``_EAGER_SUBMODULES`` plus the original
+    # lazy set; merged into one table so all aliasing is deferred.
+    #
+    # Note: ``auth`` is intentionally absent — the outer
+    # ``octomil/auth.py`` is the canonical ``octomil.auth`` module
+    # (it defines ``AuthConfig`` / ``DeviceTokenAuth`` /
+    # ``OrgApiKeyAuth`` re-exported from the top of this file).
+    # Aliasing it to the inner package would shadow the canonical
+    # one. Inner ``octomil.python.octomil.auth`` is reachable
+    # explicitly via that path.
+    "api_client": "octomil.python.octomil.api_client",
+    "control_plane": "octomil.python.octomil.control_plane",
+    "edge": "octomil.python.octomil.edge",
+    "federation": "octomil.python.octomil.federation",
+    "filters": "octomil.python.octomil.filters",
+    "gradient_cache": "octomil.python.octomil.gradient_cache",
+    "inference": "octomil.python.octomil.inference",
+    "registry": "octomil.python.octomil.registry",
+    "resilience": "octomil.python.octomil.resilience",
+    "secagg": "octomil.python.octomil.secagg",
+    "data_loader": "octomil.python.octomil.data_loader",
+    "feature_alignment": "octomil.python.octomil.feature_alignment",
+    "feature_alignment.aligner": "octomil.python.octomil.feature_alignment.aligner",
+    "federated_client": "octomil.python.octomil.federated_client",
+}
+# Kept for tests / docs that referenced the historical name.
+# Empty: no submodule is eagerly imported any more.
+_EAGER_SUBMODULES: list[str] = []
+
+
+def _resolve_lazy_submodule(name: str):
+    """Import + alias one of the deferred-load submodules on demand.
+
+    Called from ``__getattr__`` and from the import-hook below when
+    a caller asks for one of the alias names. After this runs once,
+    the submodule is registered under ``octomil.<name>`` in
+    ``sys.modules`` so subsequent ``from octomil.federated_client
+    import …`` lookups go directly through Python's normal import
+    machinery without re-entering ``__getattr__``.
+    """
+    fq = _LAZY_SUBMODULES[name]
+    if fq not in _sys.modules:
+        _importlib.import_module(fq)
+    mod = _sys.modules[fq]
+    _sys.modules[f"octomil.{name}"] = mod
+    parts = name.split(".")
+    parent = _sys.modules[__name__]
+    for part in parts[:-1]:
+        parent = getattr(parent, part, parent)
+    setattr(parent, parts[-1], mod)
+    return mod
+
+
+# ---------------------------------------------------------------------------
+# Import hook: make ``import octomil.secagg`` work without eager imports
+# ---------------------------------------------------------------------------
+#
+# Reviewer P1 on PR #455 (post-9d8452c): module-level
+# ``__getattr__`` only handles attribute access (``from octomil
+# import secagg``); it does NOT make ``import octomil.secagg`` work
+# because Python's import machinery looks for an actual submodule
+# at that path. Pre-PR-C the eager loop above registered each alias
+# in ``sys.modules`` upfront, which kept ``import octomil.secagg``
+# working but also forced the pandas-tainted inner ``__init__`` to
+# run on every ``import octomil``.
+#
+# The fix that satisfies both reviewer asks: install a
+# ``MetaPathFinder`` that intercepts ``octomil.<alias>`` import
+# requests, maps them to ``octomil.python.octomil.<alias>``, and
+# returns the inner module — without running anything at top-level.
+# Because the inner package's ``__init__`` is itself lazy now, the
+# import is genuinely free for thin clients that never touch FL
+# surfaces.
+
+
+class _OctomilAliasLoader:
+    """Loader that aliases ``octomil.<name>`` to the inner module
+    object stored at ``octomil.python.octomil.<name>``.
+
+    Reviewer P1 on PR #455 (post-7873ae7): the previous shape
+    created a fresh spec on every ``find_spec`` call, which let
+    Python create *two* module objects for the same alias when
+    different import shapes hit the hook (``import octomil.secagg``
+    vs ``importlib.import_module('octomil.secagg')``). Class
+    identity then forked: ``m1.OctomilClientError is not
+    m2.OctomilClientError``, so an exception raised under one
+    object couldn't be caught under the other.
+
+    Fix: ``create_module`` returns the canonical inner module
+    object directly. Python binds *that exact object* into
+    ``sys.modules[fullname]``, so every later import shape gets
+    back the same object — there's no second module identity to
+    create.
+    """
+
+    def __init__(self, inner_fq: str) -> None:
+        self._inner_fq = inner_fq
+
+    def create_module(self, spec):
+        # Force-import the inner module if it isn't loaded yet.
+        # This is the ONLY place we touch the inner package, so
+        # there's exactly one canonical module object.
+        if self._inner_fq not in _sys.modules:
+            _importlib.import_module(self._inner_fq)
+        return _sys.modules[self._inner_fq]
+
+    def exec_module(self, module) -> None:
+        # Module is the already-executed inner module; nothing
+        # to do. Python will bind it under the alias name via
+        # ``sys.modules[spec.name] = module`` for us.
+        return None
+
+
+class _OctomilSubmoduleAliasFinder:
+    """``sys.meta_path`` finder that maps ``octomil.<alias>`` ↔
+    ``octomil.python.octomil.<alias>`` without forcing the inner
+    package to eager-import anything.
+
+    Only registers a hit for names in ``_LAZY_SUBMODULES``; every
+    other ``octomil.*`` name falls through to Python's normal
+    finders so this hook is invisible for ``octomil.execution``,
+    ``octomil.runtime``, etc.
+
+    Returns a spec backed by ``_OctomilAliasLoader`` whose
+    ``create_module`` returns the SAME inner module object every
+    time — no duplicate identities, regardless of how the alias
+    is imported.
+    """
+
+    @staticmethod
+    def find_spec(fullname: str, path=None, target=None):
+        if not fullname.startswith("octomil."):
+            return None
+        suffix = fullname[len("octomil.") :]
+        if suffix not in _LAZY_SUBMODULES:
+            return None
+        # Already aliased — let Python's normal lookup return the
+        # cached object directly (no re-execution).
+        if fullname in _sys.modules:
+            return None
+        inner_fq = _LAZY_SUBMODULES[suffix]
+        loader = _OctomilAliasLoader(inner_fq)
+        # ``origin`` left None: the alias has no own source file.
+        return _importlib.util.spec_from_loader(  # type: ignore[union-attr]
+            fullname,
+            loader=loader,  # type: ignore[arg-type]
+            origin=None,
+        )
+
+
+import importlib.util as _importlib_util  # noqa: E402
+
+# Reference held so ``_importlib.util`` resolves under attribute
+# access; otherwise type-checkers complain that
+# ``_importlib.util`` is unknown.
+_importlib.util = _importlib_util  # type: ignore[attr-defined]
+
+# Install the finder on the front of the meta path so it runs
+# before the default file finders. Idempotent: re-importing
+# ``octomil`` (e.g. through reload in tests) won't stack hooks.
+_FINDER_CLASS = _OctomilSubmoduleAliasFinder
+if not any(isinstance(f, _FINDER_CLASS) for f in _sys.meta_path):
+    _sys.meta_path.insert(0, _FINDER_CLASS())
+
 
 # ---------------------------------------------------------------------------
 # Module-level telemetry state

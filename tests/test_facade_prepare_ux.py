@@ -172,10 +172,18 @@ def test_kernel_prepare_accepts_transcription_now(tmp_path):
     assert pm.calls == [("kokoro-en-v0_19", PrepareMode.EXPLICIT)]
 
 
-def test_kernel_prepare_raises_when_no_local_candidate(tmp_path):
+def test_kernel_prepare_raises_when_no_local_candidate_and_no_recipe(tmp_path):
+    """Planner returned nothing local AND the resolved model has no
+    static offline recipe → RUNTIME_UNAVAILABLE. PR C added a static
+    recipe fallback for canonical local models (Kokoro) so the
+    failure mode now requires both no planner candidate AND no
+    matching recipe; using a non-canonical model id keeps that gate
+    visible."""
     selection = _Selection(candidates=[])  # planner returned nothing local
     kernel = ExecutionKernel()
-    _stub_resolve(kernel)
+    # Use a model id NOT in the static recipe table so the fallback
+    # doesn't kick in.
+    _stub_resolve(kernel, model="private-org-only-tts-model")
     with patch("octomil.execution.kernel._resolve_planner_selection", return_value=selection):
         with pytest.raises(OctomilError) as excinfo:
             kernel.prepare(model="@app/eternum/tts")
