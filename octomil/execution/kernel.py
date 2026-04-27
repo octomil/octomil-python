@@ -1292,9 +1292,19 @@ class ExecutionKernel:
         # raise "could not load sherpa backend" instead of cleanly
         # falling back to cloud (PR D P2).
         local_candidate = _local_sdk_runtime_candidate(selection)
+        # PR D round 4: an explicit ``app=`` kwarg is the same
+        # scope as an ``@app/...`` model ref — PR B's
+        # ``_planner_model_for_request`` synthesizes
+        # ``@app/<app>/tts`` for planner resolution either way.
+        # Treating only the model-ref form as app-scoped let
+        # ``speech.create(model='kokoro-82m', app='tts-tester')``
+        # silently fall through to the public static cache when
+        # the planner returned an echo-only candidate, hiding the
+        # same Task #51 server bug the model-ref form refuses.
+        app_scoped = bool(app) or _is_app_ref(requested_model or "")
         prepared_cache_dir: Optional[str] = None
         if self._sherpa_tts_runtime_loadable(runtime_model) and self._prepared_cache_may_short_circuit(
-            local_candidate, runtime_model, CAPABILITY_TTS, requested_model=requested_model
+            local_candidate, runtime_model, CAPABILITY_TTS, app_scoped=app_scoped
         ):
             prepared_cache_dir = self._prepared_local_artifact_dir(CAPABILITY_TTS, runtime_model)
 
@@ -1508,7 +1518,7 @@ class ExecutionKernel:
         model: str,
         capability: str,
         *,
-        requested_model: Optional[str],
+        app_scoped: bool,
     ) -> bool:
         """Decide whether the static-recipe prepared cache may
         short-circuit the planner candidate's ``prepare()`` call.
@@ -1535,9 +1545,9 @@ class ExecutionKernel:
              ``digest`` equal the static recipe's. The planner-
              selected artifact IS the recipe's artifact, already on
              disk. Bit-identical reuse.
-          b) The request is *direct* (model name, NOT ``@app/...``)
-             AND no local candidate was emitted. Planner is offline
-             / returned only cloud. The user typed
+          b) The request is *direct* (``app_scoped=False``) AND no
+             local candidate was emitted. Planner is offline /
+             returned only cloud. The user typed
              ``model='kokoro-82m'`` and we fall back to the public
              static recipe — exactly what they asked for.
           c) The request is *direct* AND the candidate carries no
@@ -1547,14 +1557,19 @@ class ExecutionKernel:
              committing to a specific artifact version; treat as
              silent and fall through to the public cache.
 
+        ``app_scoped`` is True for BOTH ``model='@app/<slug>/<cap>'``
+        and ``model='kokoro-82m', app='<slug>'`` — PR B's
+        ``_planner_model_for_request`` synthesizes the same planner
+        ref in either case, and the user expressed an app-scoped
+        intent both times.
+
         App-scoped requests are deliberately excluded from (b)/(c):
-        a missing or echo-only candidate for ``@app/<slug>/...``
-        means the planner could not resolve the app, and the right
-        behavior is to surface that error (Task #51) rather than
-        substitute the public artifact. Identity match (a) still
-        applies — if the planner explicitly selected the
-        recipe-shaped artifact for an app, the cache is the right
-        bytes.
+        a missing or echo-only candidate for an app ref means the
+        planner could not resolve the app, and the right behavior
+        is to surface that error (Task #51) rather than substitute
+        the public artifact. Identity match (a) still applies —
+        if the planner explicitly selected the recipe-shaped
+        artifact for an app, the cache is the right bytes.
         """
         # (a) Identity match — works for both app-scoped and direct.
         if local_candidate is not None and self._candidate_matches_static_recipe(local_candidate, model, capability):
@@ -1562,7 +1577,11 @@ class ExecutionKernel:
 
         # App-scoped requests: only identity match (a) admits the
         # cache. Anything else surfaces the planner error.
-        if _is_app_ref(requested_model or ""):
+        # ``app_scoped`` is true for BOTH ``model='@app/...'`` and
+        # ``model='kokoro-82m', app='tts-tester'`` — PR B's
+        # ``_planner_model_for_request`` synthesizes the same
+        # ``@app/<slug>/<capability>`` planner ref either way.
+        if app_scoped:
             return False
 
         # Direct request:

@@ -1343,6 +1343,94 @@ def test_synthesize_speech_app_scoped_synthetic_candidate_surfaces_planner_error
     assert excinfo.value.code == OctomilErrorCode.RUNTIME_UNAVAILABLE
 
 
+def test_synthesize_speech_explicit_app_kwarg_does_not_short_circuit_cache(tmp_path, monkeypatch):
+    """Reviewer P1 (round 4 follow-up): the public facade form
+    ``speech.create(model='kokoro-82m', app='tts-tester')`` is
+    *also* app-scoped — PR B's ``_planner_model_for_request``
+    synthesizes ``@app/tts-tester/tts`` for planner resolution
+    either way. Treating only the ``model='@app/...'`` form as
+    app-scoped let the explicit-app path silently substitute the
+    public Kokoro cache when the planner returned an echo-only
+    candidate, hiding the same Task #51 issue the model-ref form
+    refuses.
+
+    Repro: ``model='kokoro-82m', app='tts-tester'`` + echo-only
+    planner candidate (artifact_id == runtime_model, no digest, no
+    urls) + prepared static cache on disk + ``policy='local_only'``.
+    Expected: ``OctomilError(RUNTIME_UNAVAILABLE)``, NOT a
+    successful WAV from the public cache."""
+    import asyncio
+    from contextlib import ExitStack
+    from unittest.mock import patch
+
+    from octomil.errors import OctomilError
+    from octomil.execution.kernel import ExecutionKernel
+    from octomil.runtime.planner.schemas import RuntimeArtifactPlan, RuntimeCandidatePlan
+
+    monkeypatch.setenv("OCTOMIL_CACHE_DIR", str(tmp_path / "cache"))
+    monkeypatch.delenv("OCTOMIL_SERVER_KEY", raising=False)
+    monkeypatch.delenv("OCTOMIL_API_KEY", raising=False)
+    _stage_kokoro_prepared_cache(tmp_path)
+
+    # Echo-only candidate — exactly the synthetic shape that
+    # WOULD admit the cache on a *direct* request. The point of
+    # this test is that ``app=`` flips the gate's app-scoped bit
+    # and refuses the cache substitution anyway.
+    echo_only = RuntimeCandidatePlan(
+        locality="local",
+        priority=0,
+        confidence=0.9,
+        reason="echo-only-from-broken-app-planner",
+        engine="sherpa-onnx",
+        artifact=RuntimeArtifactPlan(model_id="kokoro-82m", artifact_id="kokoro-82m"),
+        delivery_mode="sdk_runtime",
+        prepare_required=True,
+        prepare_policy="lazy",
+    )
+    selection = _selection_with([echo_only])
+
+    backend_calls: list = []
+
+    class _FakeBackend:
+        def __init__(self, model_name, **kwargs):
+            backend_calls.append(kwargs)
+
+        def load_model(self, model_name):
+            return None
+
+        def synthesize(self, *a, **kw):
+            return {"audio_bytes": b"unreachable", "content_type": "audio/wav", "format": "wav"}
+
+    class _FakeEngine:
+        def create_backend(self, model_name, **kwargs):
+            return _FakeBackend(model_name, **kwargs)
+
+    kernel = ExecutionKernel()
+    kernel._resolve = lambda capability, **kw: type(  # type: ignore[method-assign]
+        "_D",
+        (),
+        {
+            "model": "kokoro-82m",
+            "policy_preset": "local_only",
+            "inline_policy": None,
+            "cloud_profile": None,
+        },
+    )()
+
+    with ExitStack() as stack:
+        stack.enter_context(patch("octomil.runtime.engines.sherpa.SherpaTtsEngine", _FakeEngine))
+        stack.enter_context(patch("octomil.runtime.engines.sherpa.is_sherpa_tts_model", return_value=True))
+        stack.enter_context(patch("octomil.runtime.engines.sherpa.is_sherpa_tts_runtime_available", return_value=True))
+        stack.enter_context(patch("octomil.execution.kernel._resolve_planner_selection", return_value=selection))
+        with pytest.raises(OctomilError) as excinfo:
+            asyncio.get_event_loop().run_until_complete(
+                kernel.synthesize_speech(model="kokoro-82m", input="hello", app="tts-tester")
+            )
+
+    assert backend_calls == [], "explicit app= must NOT silently load the public static cache"
+    assert excinfo.value.code == OctomilErrorCode.RUNTIME_UNAVAILABLE
+
+
 def test_synthesize_speech_direct_mismatched_identity_does_not_short_circuit_cache(tmp_path, monkeypatch):
     """Reviewer P1 (round 4) symmetric: a *direct* request with a
     candidate whose artifact_id names a different artifact must
