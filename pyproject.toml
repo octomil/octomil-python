@@ -100,6 +100,12 @@ test = [
   "pytest>=7.0.0",
   "pytest-cov>=4.0.0",
   "pytest-asyncio>=0.21.0",
+  # ``pytest-xdist`` parallelizes the suite across worker processes
+  # (``pytest -n auto`` in CI). With ~5k tests, it cuts CI wall time
+  # 2-4x. Tests must remain isolated across workers — use ``tmp_path``
+  # / ``monkeypatch`` rather than mutating shared filesystem state
+  # (the static-recipe cache tests already do).
+  "pytest-xdist>=3.5.0",
   "torch>=2.0.0",
   "numpy>=1.24.0",
   "pandas>=1.5.0",

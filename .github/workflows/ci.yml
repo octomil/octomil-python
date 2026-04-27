@@ -19,8 +19,13 @@ jobs:
     permissions:
       contents: read
     strategy:
+      # 3.12 dropped from the per-PR matrix to halve runner cost; the
+      # interesting axes today are the lowest supported version (3.9 —
+      # the embedded / Ren'Py / PyInstaller floor) and the most-used
+      # production version (3.11). 3.12 still runs in nightly /
+      # release workflows.
       matrix:
-        python-version: ["3.9", "3.11", "3.12"]
+        python-version: ["3.9", "3.11"]
 
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
@@ -31,7 +36,12 @@ jobs:
         uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
         with:
           python-version: ${{ matrix.python-version }}
+          # Pip cache is keyed off pyproject.toml by default and
+          # survives across runs of the same Python version, so the
+          # ~300 MiB of test-extra wheels (torch CPU, sherpa-onnx,
+          # pandas, etc.) only download on dependency changes.
           cache: 'pip'
+          cache-dependency-path: pyproject.toml
 
       - name: Install dependencies
         run: |
@@ -40,7 +50,13 @@ jobs:
           pip install -e ".[test]"
 
       - name: Run tests with coverage
-        run: pytest --cov=octomil --cov-report=xml --cov-report=term-missing
+        # ``-n auto`` runs the suite across all available CPU cores
+        # via pytest-xdist. ``--dist=loadfile`` keeps a test file's
+        # tests on the same worker so module-level fixtures (notably
+        # ``OCTOMIL_CACHE_DIR`` / monkeypatched env vars) don't
+        # cross-contaminate. ``pytest-cov`` natively combines
+        # per-worker coverage, so the XML report stays accurate.
+        run: pytest -n auto --dist=loadfile --cov=octomil --cov-report=xml --cov-report=term-missing
 
       - name: Verify wheel facade export
         if: matrix.python-version == '3.11'
