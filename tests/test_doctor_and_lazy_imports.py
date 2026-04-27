@@ -210,9 +210,75 @@ def test_pandas_pyarrow_moved_off_core_dependencies():
     assert "fl =" in text
 
 
-# NOTE: a true end-to-end "import octomil does not load pandas"
-# regression is BLOCKED on a follow-up that decouples
-# ``OctomilClient`` (and its eager ``model_ops`` mixin chain) from
-# ``octomil.python.octomil``. The lazy ``__getattr__`` framework
-# wired here is the necessary first step; tracking the remaining
-# eager edge in a dedicated PR.
+# Reviewer P1 follow-up on PR #455: end-to-end thin-client import
+# must not load pandas / pyarrow / torch.
+def test_import_octomil_does_not_load_pandas_pyarrow_or_torch():
+    """The headline reviewer goal: ``import octomil`` in a fresh
+    subprocess must not transitively import pandas / pyarrow / torch
+    so Ren'Py / sandboxed CPython / PyInstaller builds that ship
+    without those (or with broken ``sysconfig.get_config_var``)
+    don't crash on import."""
+    import subprocess
+    import sys as _sys
+
+    code = (
+        "import sys\n"
+        "import octomil  # noqa: F401\n"
+        "print('PANDAS_LOADED' if 'pandas' in sys.modules else 'PANDAS_CLEAN')\n"
+        "print('PYARROW_LOADED' if 'pyarrow' in sys.modules else 'PYARROW_CLEAN')\n"
+        "print('TORCH_LOADED' if 'torch' in sys.modules else 'TORCH_CLEAN')\n"
+    )
+    result = subprocess.run(
+        [_sys.executable, "-c", code],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "PANDAS_CLEAN" in result.stdout, (
+        f"plain `import octomil` triggered pandas import — thin clients "
+        f"will crash on Ren'Py / PyInstaller. stdout={result.stdout!r}"
+    )
+    assert "PYARROW_CLEAN" in result.stdout, result.stdout
+    assert "TORCH_CLEAN" in result.stdout, result.stdout
+
+
+def test_import_octomil_survives_pandas_sysconfig_get_config_var_failure():
+    """Reviewer's reproducer: pandas's ``import`` calls
+    ``sysconfig.get_config_var`` at module load. On Ren'Py /
+    sandboxed CPython that attribute is missing, so ``import pandas``
+    raises ``AttributeError(\"module 'sysconfig' has no attribute
+    'get_config_var'\")``. With pandas no longer on the
+    ``import octomil`` path, that failure mode never fires.
+
+    We simulate by pre-poisoning ``sys.modules['pandas']`` with a
+    stub whose every attribute access raises — if anything in
+    ``import octomil`` actually tries ``import pandas`` it'll
+    surface immediately."""
+    import subprocess
+    import sys as _sys
+
+    code = """
+import sys
+import types
+broken = types.ModuleType('pandas')
+class _Boom:
+    def __getattr__(self, name):
+        raise AttributeError("simulated Ren'Py sysconfig.get_config_var failure")
+broken.__getattr__ = _Boom().__getattr__  # type: ignore[attr-defined]
+sys.modules['pandas'] = broken
+import octomil  # noqa: F401  (must succeed)
+print('IMPORT_OK')
+"""
+    result = subprocess.run(
+        [_sys.executable, "-c", code],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert result.returncode == 0, (
+        f"`import octomil` crashed when pandas was poisoned — "
+        f"thin clients still touch pandas at top-level. "
+        f"stderr={result.stderr!r}"
+    )
+    assert "IMPORT_OK" in result.stdout

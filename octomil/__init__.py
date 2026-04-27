@@ -193,52 +193,46 @@ def __getattr__(name: str):  # noqa: D401 (module-level dunder)
 # Submodule aliases for ``from octomil.secagg import …`` ergonomics.
 #
 # Pre-PR-C, the SDK eagerly imported every entry below at top-level
-# ``import octomil``. ``data_loader`` / ``feature_alignment.aligner``
-# / ``federated_client`` import pandas + pyarrow at module load,
-# which crashes Ren'Py / certain PyInstaller builds via
-# ``sysconfig.get_config_var``.
+# ``import octomil``. The trouble is that even a "lightweight" alias
+# like ``api_client`` triggers
+# ``import octomil.python.octomil.api_client``, which makes Python
+# execute the inner package's ``__init__.py`` first — and that
+# ``__init__`` itself imports ``federated_client`` + ``data_loader``,
+# which import pandas + pyarrow at module load, which crashes Ren'Py
+# / certain PyInstaller builds via ``sysconfig.get_config_var``.
 #
-# Split: the lightweight aliases that have no heavy import side
-# effect (``api_client``, ``auth``, etc.) keep eagerly aliasing —
-# they're effectively free. The pandas/pyarrow/FL-tainted ones move
-# to ``_LAZY_SUBMODULES`` and are wired through ``__getattr__``
-# above so ``from octomil.federated_client import …`` triggers the
-# heavy import on demand instead of on every ``import octomil``.
-_EAGER_SUBMODULES = [
-    "api_client",
-    "auth",
-    "control_plane",
-    "edge",
-    "federation",
-    "filters",
-    "gradient_cache",
-    "inference",
-    "registry",
-    "resilience",
-    "secagg",
-]
+# Reviewer P1 on PR #455: the eager loop was the residual hop that
+# kept thin-client ``import octomil`` reaching the pandas-tainted
+# legacy package.
+#
+# Fix: every submodule alias is lazy now. The names below register
+# the SDK ergonomic mapping (``octomil.secagg`` →
+# ``octomil.python.octomil.secagg``), but the actual import only
+# fires when a caller writes ``from octomil.secagge import X`` or
+# accesses ``octomil.secagg``. ``__getattr__`` resolves both.
 _LAZY_SUBMODULES = {
     # name → fully-qualified module path inside the inner package.
+    # Was previously called ``_EAGER_SUBMODULES`` plus the original
+    # lazy set; merged into one table so all aliasing is deferred.
+    "api_client": "octomil.python.octomil.api_client",
+    "auth": "octomil.python.octomil.auth",
+    "control_plane": "octomil.python.octomil.control_plane",
+    "edge": "octomil.python.octomil.edge",
+    "federation": "octomil.python.octomil.federation",
+    "filters": "octomil.python.octomil.filters",
+    "gradient_cache": "octomil.python.octomil.gradient_cache",
+    "inference": "octomil.python.octomil.inference",
+    "registry": "octomil.python.octomil.registry",
+    "resilience": "octomil.python.octomil.resilience",
+    "secagg": "octomil.python.octomil.secagg",
     "data_loader": "octomil.python.octomil.data_loader",
     "feature_alignment": "octomil.python.octomil.feature_alignment",
     "feature_alignment.aligner": "octomil.python.octomil.feature_alignment.aligner",
     "federated_client": "octomil.python.octomil.federated_client",
 }
-
-for _name in _EAGER_SUBMODULES:
-    _fq = f"octomil.python.octomil.{_name}"
-    if _fq not in _sys.modules:
-        try:
-            _importlib.import_module(_fq)
-        except ImportError:
-            continue
-    _mod = _sys.modules[_fq]
-    _sys.modules[f"octomil.{_name}"] = _mod
-    _parts = _name.split(".")
-    _parent = _sys.modules[__name__]
-    for _part in _parts[:-1]:
-        _parent = getattr(_parent, _part, _parent)
-    setattr(_parent, _parts[-1], _mod)
+# Kept for tests / docs that referenced the historical name.
+# Empty: no submodule is eagerly imported any more.
+_EAGER_SUBMODULES: list[str] = []
 
 
 def _resolve_lazy_submodule(name: str):

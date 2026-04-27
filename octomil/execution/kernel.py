@@ -1524,6 +1524,7 @@ class ExecutionKernel:
         policy_preset = defaults.policy_preset or "local_first"
         selection = _resolve_planner_selection(effective_model, capability, policy_preset)
         candidate = _local_sdk_runtime_candidate(selection)
+        used_static_recipe = None  # type: Optional[Any]
         if candidate is None:
             # PR C: fall back to a static offline recipe for canonical
             # local models (Kokoro etc.). The recipe produces the same
@@ -1538,10 +1539,13 @@ class ExecutionKernel:
             # CDNs hit the original "planner unavailable" error so we
             # never silently substitute a public mirror for a private
             # artifact.
-            from octomil.runtime.lifecycle.static_recipes import static_recipe_candidate
+            from octomil.runtime.lifecycle.static_recipes import (
+                get_static_recipe,
+                static_recipe_candidate,
+            )
 
-            candidate = static_recipe_candidate(effective_model, capability)
-            if candidate is None:
+            used_static_recipe = get_static_recipe(effective_model, capability)
+            if used_static_recipe is None:
                 raise OctomilError(
                     code=OctomilErrorCode.RUNTIME_UNAVAILABLE,
                     message=(
@@ -1553,11 +1557,40 @@ class ExecutionKernel:
                         f"a static recipe (e.g. 'kokoro-82m')."
                     ),
                 )
+            candidate = static_recipe_candidate(effective_model, capability)
+            if candidate is None:
+                # Recipe present but to_runtime_candidate() refused
+                # (multi-file pre-manifest, malformed). Surface the
+                # same actionable error as no-recipe rather than
+                # crashing PrepareManager.prepare with None.
+                raise OctomilError(
+                    code=OctomilErrorCode.RUNTIME_UNAVAILABLE,
+                    message=(
+                        f"prepare: static recipe for model={effective_model!r} "
+                        f"capability={capability!r} could not be materialized as a "
+                        f"single-file candidate. Multi-file recipes need manifest_uri "
+                        f"support in PrepareManager (planned follow-up)."
+                    ),
+                )
 
         from octomil.runtime.lifecycle.prepare_manager import PrepareManager, PrepareMode
 
         manager = self._prepare_manager or PrepareManager()
-        return manager.prepare(candidate, mode=PrepareMode.EXPLICIT)
+        outcome = manager.prepare(candidate, mode=PrepareMode.EXPLICIT)
+
+        # PR C: when the static recipe path provided the candidate AND
+        # any of its files were marked ``extract=True``, materialize
+        # the downloaded archive into the layout the backend expects
+        # (e.g. unpack the Kokoro tarball into ``model.onnx`` +
+        # ``voices.bin`` + ``tokens.txt`` + ``espeak-ng-data/``). The
+        # downloader only writes the archive bytes; the Sherpa
+        # backend reads the unpacked files directly.
+        if used_static_recipe is not None and any(f.extract for f in used_static_recipe.files):
+            from octomil.runtime.lifecycle.static_recipes import materialize_recipe_layout
+
+            materialize_recipe_layout(used_static_recipe, outcome.artifact_dir)
+
+        return outcome
 
     def _prepare_local_transcription_artifact(self, selection: Optional[Any]) -> Optional[str]:
         """Run PrepareManager for the local transcription candidate, if any.

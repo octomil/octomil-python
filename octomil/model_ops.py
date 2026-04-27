@@ -23,14 +23,32 @@ from .models import (
     RollbackResult,
     TrainingSession,
 )
-from .python.octomil.api_client import OctomilClientError
 
+# PR C: ``OctomilClientError`` is a runtime exception class used
+# inside method bodies. Importing it eagerly at module load pulls
+# ``octomil.python.octomil.__init__`` (and therefore pandas /
+# pyarrow / FL surfaces) on every ``import octomil`` even for thin
+# TTS clients that never run an FL request. Switch to a lazy
+# alias: the attribute resolves on first access via
+# ``__getattr__`` so each ``raise OctomilClientError(...)`` site
+# imports the real class on demand.
 if TYPE_CHECKING:
     from .model import Model
-    from .python.octomil.api_client import _ApiClient
+    from .python.octomil.api_client import OctomilClientError, _ApiClient
     from .python.octomil.control_plane import RolloutsAPI
     from .python.octomil.registry import ModelRegistry
     from .telemetry import TelemetryReporter
+
+
+def __getattr__(name: str):  # noqa: D401  (module-level dunder)
+    """Lazy resolver for the inner-package exception class."""
+    if name == "OctomilClientError":
+        from .python.octomil.api_client import OctomilClientError as _err
+
+        globals()[name] = _err
+        return _err
+    raise AttributeError(f"module 'octomil.model_ops' has no attribute {name!r}")
+
 
 _logger = logging.getLogger(__name__)
 

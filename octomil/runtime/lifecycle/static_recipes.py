@@ -43,6 +43,7 @@ expected path. The upstream URL points at the public release tarball.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Optional
 
 from octomil.runtime.planner.schemas import (
@@ -93,28 +94,40 @@ class StaticRecipe:
     def to_runtime_candidate(self) -> RuntimeCandidatePlan:
         """Build a planner-shaped candidate from this recipe.
 
-        Each file becomes one ``ArtifactDownloadEndpoint`` keyed by
-        the file's relative path; ``required_files`` captures the
-        layout. The candidate's top-level ``digest`` is the manifest
-        hash — sha256 of the joined per-file digests, sorted by
-        path — so PrepareManager.can_prepare's structural check
-        accepts the candidate (it requires a non-empty digest on
-        prepare-required candidates).
+        Single-file recipes (today's only shape) wire the artifact's
+        ``digest`` directly to the file's SHA-256 — that's the value
+        ``PrepareManager._build_descriptor()`` will hand to the
+        durable downloader for verification, so a synthetic
+        "manifest hash of joined per-file digests" would NOT
+        actually verify the bytes that hit disk. Reviewer P1 on
+        PR #455.
+
+        Multi-file recipes are structurally rejected at construction
+        time today; a follow-up adds ``manifest_uri`` support to
+        PrepareManager and switches this method to a real manifest
+        hash. Until then, refuse to silently down-rank multi-file
+        recipes to "verify the first file only".
         """
-        import hashlib
-
-        manifest = "|".join(sorted(f"{f.relative_path}={f.digest}" for f in self.files)).encode()
-        manifest_digest = "sha256:" + hashlib.sha256(manifest).hexdigest()
-
+        if len(self.files) != 1:
+            raise ValueError(
+                f"static recipe for {self.model_id!r} has {len(self.files)} files; "
+                "PrepareManager today supports single-file recipes only — "
+                "the planner schema carries one artifact-level digest. "
+                "Multi-file recipes need manifest_uri support (tracked as a follow-up)."
+            )
+        only = self.files[0]
         endpoints = [
             ArtifactDownloadEndpoint(
-                url=f.url,
-                # Sentinel header tells the durable downloader which
-                # required_file slot this URL fills, so multiple URLs
-                # on one candidate land at distinct paths.
-                headers={"X-Octomil-Recipe-Path": f.relative_path},
+                url=only.url,
+                # Sentinel header lets the durable downloader and
+                # post-prepare extraction step recover the
+                # original-file relative path + extract flag from
+                # the recipe without re-querying the catalog.
+                headers={
+                    "X-Octomil-Recipe-Path": only.relative_path,
+                    "X-Octomil-Recipe-Extract": "1" if only.extract else "0",
+                },
             )
-            for f in self.files
         ]
         return RuntimeCandidatePlan(
             locality="local",
@@ -126,8 +139,9 @@ class StaticRecipe:
                 model_id=self.model_id,
                 artifact_id=self.model_id,
                 format="onnx",
-                digest=manifest_digest,
-                required_files=[f.relative_path for f in self.files],
+                digest=only.digest,  # actual file SHA-256, not a manifest synth
+                size_bytes=only.size_bytes,
+                required_files=[only.relative_path],
                 download_urls=endpoints,
             ),
             delivery_mode="sdk_runtime",
@@ -197,6 +211,76 @@ _RECIPES: dict[tuple[str, str], StaticRecipe] = {
     # in lockstep so users who type either id get the same recipe.
     ("kokoro-en-v0_19", "tts"): _KOKORO_82M_RECIPE,
 }
+
+
+def materialize_recipe_layout(recipe: StaticRecipe, artifact_dir: "str | Path") -> None:
+    """Post-prepare hook: turn downloaded files into the layout the
+    backend expects.
+
+    PrepareManager downloads each file into ``<artifact_dir>/<relative_path>``
+    and verifies its digest, but it does not unpack archives — Kokoro
+    ships its full ``model.onnx`` + ``voices.bin`` + ``tokens.txt`` +
+    ``espeak-ng-data/`` layout inside one tarball, so the downloaded
+    bytes alone aren't a runnable backend dir. Reviewer P1 on
+    PR #455.
+
+    For each file marked ``extract=True`` the helper:
+
+      - opens the tarball under ``artifact_dir``;
+      - validates every member's path (no absolute paths, no ``..``,
+        no symlinks) before extraction — never trust a tarball with
+        ``tar.extractall(path)``;
+      - extracts into ``artifact_dir`` so the backend reads the
+        unpacked layout directly;
+      - leaves the source archive in place (idempotent re-runs).
+
+    Idempotent: if the unpacked files already exist (e.g. a second
+    ``prepare()`` against a cached artifact), the helper is a no-op.
+    """
+    import os
+    import tarfile
+
+    artifact_dir = Path(artifact_dir)
+    if not artifact_dir.is_dir():
+        return
+
+    for f in recipe.files:
+        if not f.extract:
+            continue
+        archive_path = artifact_dir / f.relative_path
+        if not archive_path.is_file():
+            # PrepareManager didn't materialize the archive (failed
+            # download, manual cache poke, etc.). Skip silently —
+            # surfacing here would mask the real download failure.
+            continue
+
+        # Idempotency: skip extraction when the recipe's expected
+        # post-extraction artifacts are already present. We use the
+        # presence of ``model.onnx`` + ``voices.bin`` (the canonical
+        # Kokoro outputs) as the marker; a fresh extraction
+        # re-creates them so safety isn't compromised.
+        if (artifact_dir / "model.onnx").exists() and (artifact_dir / "voices.bin").exists():
+            continue
+
+        # Tarball safety: refuse anything that would escape
+        # ``artifact_dir``. ``tarfile.data_filter`` (Python 3.12+)
+        # does this for free; on older runtimes we walk members
+        # ourselves.
+        with tarfile.open(archive_path, "r:*") as tar:
+            members = []
+            for m in tar.getmembers():
+                if m.issym() or m.islnk():
+                    continue
+                if os.path.isabs(m.name) or ".." in Path(m.name).parts:
+                    continue
+                members.append(m)
+            try:
+                # Python 3.12+ honours ``filter='data'`` for the safe
+                # extractor. Fall through to manual filtering on
+                # older runtimes.
+                tar.extractall(path=artifact_dir, members=members, filter="data")  # type: ignore[arg-type]
+            except (TypeError, AttributeError):
+                tar.extractall(path=artifact_dir, members=members)
 
 
 def get_static_recipe(model: str, capability: str) -> Optional[StaticRecipe]:

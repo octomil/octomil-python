@@ -44,10 +44,24 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 from .auth import AuthConfig, DeviceTokenAuth, OrgApiKeyAuth  # noqa: E402
+
+# PR C: ``ModelOpsMixin`` and the inner-package classes
+# (``_ApiClient``, ``RolloutsAPI``, ``ModelRegistry``) are imported
+# lazily inside ``OctomilClient.__init__`` rather than at module
+# load. Eager imports here pull ``octomil.python.octomil``'s
+# ``__init__``, which in turn imports ``federated_client`` /
+# ``data_loader`` and crashes Ren'Py / sandboxed CPython /
+# PyInstaller via pandas's ``sysconfig.get_config_var``. Thin TTS
+# callers that never construct ``OctomilClient`` now skip the
+# heavy chain entirely.
+#
+# ``ModelOpsMixin`` is the base class so it's a structural mixin
+# (no methods called at import time); we still need it as a base.
+# Resolve it via ``__class_getitem__``-like trick: defer the
+# concrete subclassing into the constructor — too invasive for
+# this PR. Instead, accept that ``model_ops`` ALSO defers its
+# inner imports (handled separately in model_ops.py's lazy block).
 from .model_ops import ModelOpsMixin  # noqa: E402
-from .python.octomil.api_client import _ApiClient  # noqa: E402
-from .python.octomil.control_plane import RolloutsAPI  # noqa: E402
-from .python.octomil.registry import ModelRegistry  # noqa: E402
 
 _DEFAULT_API_BASE = "https://api.octomil.com/api/v1"
 
@@ -105,6 +119,13 @@ class OctomilClient(ModelOpsMixin):
 
         def _token_provider() -> str:
             return self._api_key
+
+        # PR C: lazy-import the inner-package classes so plain
+        # ``import octomil`` doesn't reach pandas / pyarrow on thin
+        # clients that never construct an ``OctomilClient``.
+        from .python.octomil.api_client import _ApiClient  # noqa: PLC0415
+        from .python.octomil.control_plane import RolloutsAPI  # noqa: PLC0415
+        from .python.octomil.registry import ModelRegistry  # noqa: PLC0415
 
         self._api = _ApiClient(
             auth_token_provider=_token_provider,
