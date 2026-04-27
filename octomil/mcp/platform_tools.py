@@ -303,7 +303,7 @@ def register_platform_tools(mcp: Any, backend: Any) -> None:
                     model.eval()
                     dummy = torch.randn(*shape)
                     onnx_path = os.path.join(output_dir, f"{model_name}.onnx")
-                    torch.onnx.export(model, dummy, onnx_path, opset_version=13)
+                    torch.onnx.export(model, (dummy,), onnx_path, opset_version=13)
                     size_mb = os.path.getsize(onnx_path) / 1024 / 1024
                     results["onnx"] = {"path": onnx_path, "size_mb": round(size_mb, 2)}
                 except ImportError:

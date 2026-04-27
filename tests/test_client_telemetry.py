@@ -8,9 +8,9 @@ from octomil.auth import OrgApiKeyAuth
 
 # Standard decorator stack for OctomilClient construction — suppresses real
 # _ApiClient / ModelRegistry / RolloutsAPI creation.
-_PATCH_ROLLOUTS = patch("octomil.client.RolloutsAPI")
-_PATCH_REGISTRY = patch("octomil.client.ModelRegistry")
-_PATCH_API = patch("octomil.client._ApiClient")
+_PATCH_ROLLOUTS = patch("octomil.python.octomil.control_plane.RolloutsAPI")
+_PATCH_REGISTRY = patch("octomil.python.octomil.registry.ModelRegistry")
+_PATCH_API = patch("octomil.python.octomil.api_client._ApiClient")
 
 
 class TestClientTelemetryInit:

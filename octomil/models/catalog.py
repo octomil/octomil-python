@@ -520,7 +520,9 @@ def _hydrate_manifest(manifest: dict) -> dict[str, ModelEntry]:
             continue
 
         # Extract task_taxonomy from family level (renamed from legacy "modalities")
-        family_task_taxonomy: list[str] = family_data.get("task_taxonomy", family_data.get("modalities", []))
+        family_task_taxonomy: list[str] = list(
+            family_data.get("task_taxonomy", family_data.get("modalities", [])) or []
+        )
 
         for variant_name, variant_data in family_data["variants"].items():
             packages: list[dict] = []

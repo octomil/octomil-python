@@ -297,9 +297,9 @@ class TestCacheProbes:
 
 
 class TestClientModelsProperty:
-    @patch("octomil.client.RolloutsAPI")
-    @patch("octomil.client.ModelRegistry")
-    @patch("octomil.client._ApiClient")
+    @patch("octomil.python.octomil.control_plane.RolloutsAPI")
+    @patch("octomil.python.octomil.registry.ModelRegistry")
+    @patch("octomil.python.octomil.api_client._ApiClient")
     def test_models_property_returns_namespace(self, mock_api, mock_reg, mock_roll):
         from octomil.client import OctomilClient
 
@@ -307,9 +307,9 @@ class TestClientModelsProperty:
         ns = client.models
         assert isinstance(ns, OctomilModels)
 
-    @patch("octomil.client.RolloutsAPI")
-    @patch("octomil.client.ModelRegistry")
-    @patch("octomil.client._ApiClient")
+    @patch("octomil.python.octomil.control_plane.RolloutsAPI")
+    @patch("octomil.python.octomil.registry.ModelRegistry")
+    @patch("octomil.python.octomil.api_client._ApiClient")
     def test_models_property_is_cached(self, mock_api, mock_reg, mock_roll):
         from octomil.client import OctomilClient
 

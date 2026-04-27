@@ -40,7 +40,7 @@ except ImportError:
             self._path = str(lock_file)
             self._fd: int | None = None
 
-        def __enter__(self) -> "FileLock":
+        def __enter__(self):  # type: ignore[no-untyped-def]
             Path(self._path).parent.mkdir(parents=True, exist_ok=True)
             self._fd = os.open(self._path, os.O_WRONLY | os.O_CREAT)
             fcntl.flock(self._fd, fcntl.LOCK_EX)
