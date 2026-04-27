@@ -308,7 +308,14 @@ class TestSynthesizeSpeechRouting:
             patch.object(kernel, "_resolve", return_value=defaults),
             patch("octomil.execution.kernel._resolve_planner_selection", return_value=None),
             patch("octomil.execution.kernel._resolve_routing_policy"),
-            patch.object(kernel, "_has_local_tts_backend", return_value=True),
+            # Post-PR-D: synthesize_speech inlines its own local-
+            # availability check via _sherpa_tts_runtime_loadable +
+            # _prepared_local_artifact_dir; ``_has_local_tts_backend``
+            # is no longer consulted from the dispatch path. Patch
+            # the lower-level helpers so the route admits local and
+            # we reach the voice-validation failure this test pins.
+            patch.object(kernel, "_prepared_local_artifact_dir", return_value="/fake/cache"),
+            patch.object(kernel, "_sherpa_tts_runtime_loadable", return_value=True),
             patch(
                 "octomil.execution.kernel._select_locality_for_capability",
                 return_value=("on_device", False),
