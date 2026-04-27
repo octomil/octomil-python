@@ -1257,40 +1257,45 @@ class ExecutionKernel:
 
         routing_policy = _resolve_routing_policy(defaults)
         # Local routing is satisfied if a prepared artifact dir is
-        # already on disk AND the runtime can load it, OR the
-        # planner emitted a preparable sdk_runtime candidate the
-        # kernel can materialize.
+        # already on disk AND the runtime can load it AND the
+        # planner did not select a *different* artifact identity, OR
+        # the planner emitted a preparable sdk_runtime candidate
+        # the kernel can materialize.
         #
-        # Order of checks matters:
+        # The prepared cache may short-circuit dispatch in three
+        # well-defined cases — anything else means the planner has
+        # picked an artifact and we must defer to it, even if the
+        # static-recipe cache happens to be on disk for the same
+        # runtime model:
         #
-        #   1. A complete prepared cache (``prepared_cache_dir``)
-        #      AND an importable sherpa-onnx runtime wins
-        #      unconditionally. PR D contract: a verified
-        #      ``client.prepare`` outcome IS local availability —
-        #      even when the planner is currently returning a
-        #      broken/synthetic candidate (server-side bug,
-        #      transient outage). We carry the dir through to
-        #      dispatch so we don't re-call the broken candidate's
-        #      ``prepare()`` (P1: see ``_prepare_local_tts_artifact``
-        #      below — without this, a synthetic candidate's
-        #      missing-download_urls error would surface even
-        #      though the prepared cache was usable).
+        #   a) No local sdk_runtime candidate at all (planner
+        #      offline, returned only cloud, etc.).
+        #   b) Candidate is structurally unpreparable
+        #      (``can_prepare`` rejects it: synthetic, no urls,
+        #      no digest, traversal). The planner's intent cannot
+        #      be honored, but a usable prepared artifact already
+        #      exists; that artifact wins instead of failing closed.
+        #   c) Candidate's artifact identity (artifact_id + digest)
+        #      matches the static recipe's. The planner-selected
+        #      artifact IS the static-recipe artifact, just already
+        #      on disk; no re-download needed.
         #
-        #      Cache-without-runtime is NOT local availability:
-        #      under ``local_first`` we'd otherwise commit to local
-        #      and raise "could not load sherpa backend" instead of
-        #      cleanly falling back to cloud (P2).
-        #   2. Otherwise, the unpreparable-candidate veto fires.
-        #      When the planner says "prepare this artifact" but the
-        #      metadata is structurally rejected by ``can_prepare``
-        #      (synthetic plan), local must be unavailable so
-        #      ``local_first`` falls back to cloud instead of
-        #      crashing in ``prepare()``.
-        #   3. Finally, ``_can_prepare_local_tts`` admits the
-        #      clean-device first-run case (no cache yet, candidate
-        #      is sound, runtime importable).
+        # The new P1 reviewer reproducer: planner emits a
+        # *legitimate* candidate for ``kokoro-82m`` with
+        # ``artifact_id='private-kokoro-v2'``, a real digest, and a
+        # working download_url. None of (a)-(c) hold; we must run
+        # the planner's prepare and load *that* artifact, NOT the
+        # static-recipe cache that happens to share ``runtime_model``.
+        #
+        # Cache-without-runtime is NOT local availability either:
+        # under ``local_first`` we'd otherwise commit to local and
+        # raise "could not load sherpa backend" instead of cleanly
+        # falling back to cloud (PR D P2).
+        local_candidate = _local_sdk_runtime_candidate(selection)
         prepared_cache_dir: Optional[str] = None
-        if self._sherpa_tts_runtime_loadable(runtime_model):
+        if self._sherpa_tts_runtime_loadable(runtime_model) and self._prepared_cache_may_short_circuit(
+            local_candidate, runtime_model, CAPABILITY_TTS, selection=selection
+        ):
             prepared_cache_dir = self._prepared_local_artifact_dir(CAPABILITY_TTS, runtime_model)
 
         if prepared_cache_dir is not None:
@@ -1398,11 +1403,11 @@ class ExecutionKernel:
             prepared_model_dir: Optional[str] = prepared_cache_dir
         else:
             prepared_model_dir = self._prepare_local_tts_artifact(selection)
-        # PR 11 follow-up: thread the planner candidate through so
+        # PR 11 follow-up: thread the planner candidate (already
+        # resolved above for the cache short-circuit decision) so
         # the warmup-cache lookup uses the *current* artifact
         # identity. Without this, a v1 backend cached earlier in the
         # process could shadow a freshly prepared v2 ``model_dir``.
-        local_candidate = _local_sdk_runtime_candidate(selection)
         backend = self._resolve_local_tts_backend(
             runtime_model,
             prepared_model_dir=prepared_model_dir,
@@ -1496,6 +1501,77 @@ class ExecutionKernel:
         if not self._sherpa_tts_runtime_loadable(model):
             return False
         return self._prepared_local_artifact_dir(CAPABILITY_TTS, model) is not None
+
+    def _prepared_cache_may_short_circuit(
+        self,
+        local_candidate: Optional[Any],
+        model: str,
+        capability: str,
+        *,
+        selection: Optional[Any] = None,
+    ) -> bool:
+        """Decide whether the static-recipe prepared cache may
+        short-circuit the planner candidate's ``prepare()`` call.
+
+        Reviewer P1 (round 2): the cache short-circuit was keyed only
+        by ``runtime_model``, so a planner-selected candidate with a
+        *different* artifact identity (e.g. ``artifact_id=
+        'private-kokoro-v2'`` for the same runtime model
+        ``kokoro-82m``) was being shadowed by the static-recipe cache.
+        That swaps in a different artifact than the planner asked for.
+
+        Three (and only three) cases admit the cache:
+
+          a) ``local_candidate is None`` — planner offline / returned
+             only cloud / app rejected. Static-recipe path is the
+             only local route.
+          b) ``can_prepare(candidate)`` rejects the candidate
+             (synthetic plan: no urls/digest, traversal, NUL bytes).
+             The planner's intent cannot be honored, but the cache
+             holds a known-good artifact for the same runtime model.
+          c) Candidate's ``artifact_id`` AND ``digest`` match the
+             static recipe's exactly. The planner-selected artifact
+             IS the static-recipe artifact, just already on disk;
+             reusing the cache is bit-identical to a fresh prepare.
+
+        Anything else means the planner has selected a *different*
+        artifact for the same runtime model and we must defer.
+        """
+        if local_candidate is None:
+            return True
+        if self._local_candidate_is_unpreparable(selection):
+            return True
+        return self._candidate_matches_static_recipe(local_candidate, model, capability)
+
+    @staticmethod
+    def _candidate_matches_static_recipe(candidate: Any, model: str, capability: str) -> bool:
+        """Return True iff ``candidate``'s artifact identity matches
+        the static recipe registered for ``(model, capability)``.
+
+        "Matches" means same ``artifact_id`` AND same ``digest`` —
+        a candidate with the recipe's id but a different digest is
+        a *different* artifact (e.g. a private re-cut) and must not
+        be served from the static-recipe cache.
+        """
+        try:
+            from octomil.runtime.lifecycle.static_recipes import get_static_recipe
+        except Exception:
+            return False
+        recipe = get_static_recipe(model, capability)
+        if recipe is None:
+            return False
+        artifact = getattr(candidate, "artifact", None)
+        if artifact is None:
+            return False
+        candidate_id = getattr(artifact, "artifact_id", None) or getattr(artifact, "model_id", None)
+        candidate_digest = getattr(artifact, "digest", None)
+        if not candidate_id or not candidate_digest:
+            return False
+        if candidate_id != recipe.model_id:
+            return False
+        if not recipe.files:
+            return False
+        return candidate_digest == recipe.files[0].digest
 
     @staticmethod
     def _sherpa_tts_runtime_loadable(model: str) -> bool:
