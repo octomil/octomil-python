@@ -1294,7 +1294,7 @@ class ExecutionKernel:
         local_candidate = _local_sdk_runtime_candidate(selection)
         prepared_cache_dir: Optional[str] = None
         if self._sherpa_tts_runtime_loadable(runtime_model) and self._prepared_cache_may_short_circuit(
-            local_candidate, runtime_model, CAPABILITY_TTS, selection=selection
+            local_candidate, runtime_model, CAPABILITY_TTS, requested_model=requested_model
         ):
             prepared_cache_dir = self._prepared_local_artifact_dir(CAPABILITY_TTS, runtime_model)
 
@@ -1508,40 +1508,100 @@ class ExecutionKernel:
         model: str,
         capability: str,
         *,
-        selection: Optional[Any] = None,
+        requested_model: Optional[str],
     ) -> bool:
         """Decide whether the static-recipe prepared cache may
         short-circuit the planner candidate's ``prepare()`` call.
 
-        Reviewer P1 (round 2): the cache short-circuit was keyed only
-        by ``runtime_model``, so a planner-selected candidate with a
-        *different* artifact identity (e.g. ``artifact_id=
-        'private-kokoro-v2'`` for the same runtime model
-        ``kokoro-82m``) was being shadowed by the static-recipe cache.
-        That swaps in a different artifact than the planner asked for.
+        Reviewer history:
 
-        Three (and only three) cases admit the cache:
+        - Round 2 fixed cache-shadowing of a *preparable* candidate
+          with a different identity by introducing
+          :meth:`_candidate_matches_static_recipe`.
+        - Round 4 (this gate): the previous "candidate is
+          unpreparable → cache wins" escape hatch was too broad. A
+          planner candidate with ``artifact_id='private-kokoro-v2'``
+          and missing ``download_urls`` IS naming a different
+          artifact (a private fork); silently substituting the
+          public Kokoro cache hides the planner/server bug AND
+          serves the wrong bytes. App-scoped requests
+          (``@app/<slug>/...``) are even more dangerous: the user
+          asked for the app's artifact, not the public one.
 
-          a) ``local_candidate is None`` — planner offline / returned
-             only cloud / app rejected. Static-recipe path is the
-             only local route.
-          b) ``can_prepare(candidate)`` rejects the candidate
-             (synthetic plan: no urls/digest, traversal, NUL bytes).
-             The planner's intent cannot be honored, but the cache
-             holds a known-good artifact for the same runtime model.
-          c) Candidate's ``artifact_id`` AND ``digest`` match the
-             static recipe's exactly. The planner-selected artifact
-             IS the static-recipe artifact, just already on disk;
-             reusing the cache is bit-identical to a fresh prepare.
+        After round 4, the cache may short-circuit the planner only
+        in three narrow cases:
 
-        Anything else means the planner has selected a *different*
-        artifact for the same runtime model and we must defer.
+          a) Identity match: candidate's ``artifact_id`` AND
+             ``digest`` equal the static recipe's. The planner-
+             selected artifact IS the recipe's artifact, already on
+             disk. Bit-identical reuse.
+          b) The request is *direct* (model name, NOT ``@app/...``)
+             AND no local candidate was emitted. Planner is offline
+             / returned only cloud. The user typed
+             ``model='kokoro-82m'`` and we fall back to the public
+             static recipe — exactly what they asked for.
+          c) The request is *direct* AND the candidate carries no
+             meaningful artifact identity — i.e. no ``digest`` AND
+             ``artifact_id`` is missing OR equals the runtime model.
+             The planner echoed the model name back without
+             committing to a specific artifact version; treat as
+             silent and fall through to the public cache.
+
+        App-scoped requests are deliberately excluded from (b)/(c):
+        a missing or echo-only candidate for ``@app/<slug>/...``
+        means the planner could not resolve the app, and the right
+        behavior is to surface that error (Task #51) rather than
+        substitute the public artifact. Identity match (a) still
+        applies — if the planner explicitly selected the
+        recipe-shaped artifact for an app, the cache is the right
+        bytes.
         """
+        # (a) Identity match — works for both app-scoped and direct.
+        if local_candidate is not None and self._candidate_matches_static_recipe(local_candidate, model, capability):
+            return True
+
+        # App-scoped requests: only identity match (a) admits the
+        # cache. Anything else surfaces the planner error.
+        if _is_app_ref(requested_model or ""):
+            return False
+
+        # Direct request:
+        # (b) no candidate at all.
         if local_candidate is None:
             return True
-        if self._local_candidate_is_unpreparable(selection):
+        # (c) candidate carries no meaningful artifact identity.
+        if not self._candidate_has_meaningful_identity(local_candidate, model):
             return True
-        return self._candidate_matches_static_recipe(local_candidate, model, capability)
+        return False
+
+    @staticmethod
+    def _candidate_has_meaningful_identity(candidate: Any, runtime_model: str) -> bool:
+        """Return True iff ``candidate`` names a *specific* artifact
+        beyond echoing the runtime model.
+
+        Meaningful when EITHER:
+
+          - ``artifact.digest`` is present (planner committed to a
+            specific bytes version), OR
+          - ``artifact.artifact_id`` is set AND differs from
+            ``runtime_model`` (planner named something other than
+            the model).
+
+        ``artifact_id`` equal to ``runtime_model`` with no digest is
+        treated as "the planner echoed the model name" — not a
+        commitment to a particular artifact. Empty / missing
+        ``artifact_id`` and ``digest`` is the synthetic-no-info case.
+        """
+        artifact = getattr(candidate, "artifact", None)
+        if artifact is None:
+            return False
+        digest = getattr(artifact, "digest", None)
+        if digest:
+            return True
+        artifact_id = getattr(artifact, "artifact_id", None)
+        if not artifact_id:
+            return False
+        return artifact_id != runtime_model
 
     @staticmethod
     def _candidate_matches_static_recipe(candidate: Any, model: str, capability: str) -> bool:
@@ -2845,6 +2905,18 @@ def _enforce_app_ref_routing_policy(
             "OCTOMIL_SERVER_KEY auth."
         ),
     )
+
+
+def _is_app_ref(model: str) -> bool:
+    """Return True for ``@app/<slug>/<capability>`` model refs.
+
+    Used by the prepared-cache short-circuit gate to refuse cache
+    substitution when the request was app-scoped — silently serving
+    the public static-recipe artifact in place of a private app
+    artifact would hide the planner/server config error and could
+    serve the wrong bytes.
+    """
+    return isinstance(model, str) and model.startswith("@app/")
 
 
 def _local_tts_runtime_unavailable(model: str) -> OctomilError:

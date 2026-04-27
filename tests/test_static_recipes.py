@@ -984,21 +984,19 @@ def test_synthesize_speech_local_first_wins_when_prepared_cache_present(tmp_path
     assert str(artifact_dir).startswith(str(tmp_path / "cache" / "artifacts"))
 
 
-def test_synthesize_speech_prepared_cache_short_circuits_synthetic_planner_candidate(tmp_path, monkeypatch):
-    """P1 regression: when the prepared cache made local routing
-    available, the dispatch path must NOT call the planner
-    candidate's ``prepare()`` — the candidate may be synthetic
-    (different ``artifact_id``, no ``download_urls``) and would
-    raise from PrepareManager even though the cached artifact is
-    perfectly usable.
+def test_synthesize_speech_prepared_cache_short_circuits_echo_only_synthetic_candidate(tmp_path, monkeypatch):
+    """The cache short-circuit fires when the planner echoes the
+    runtime model name back without committing to a specific
+    artifact (no digest, no urls, ``artifact_id`` either missing or
+    equal to the runtime model). For a *direct* request — the user
+    typed ``model='kokoro-82m'`` — the public static recipe is
+    exactly what they asked for; using it as the silent fallback is
+    safe.
 
-    Repro: prepared ``kokoro-82m`` cache on disk + planner local
-    candidate with ``artifact_id='private-kokoro-v2'`` and no
-    ``download_urls``. Earlier the route-selection reorder admitted
-    local (correct), but the local branch then called
-    ``_prepare_local_tts_artifact(selection)`` which raised
-    ``no download_urls``. Fix: carry the chosen cache dir from
-    route selection into dispatch and skip planner prepare."""
+    Contrast: a candidate with a *different* artifact_id (e.g.
+    ``'private-kokoro-v2'``) names a specific other artifact and
+    must NOT be substituted by the cache — pinned in
+    ``test_synthesize_speech_app_or_mismatched_identity_does_not_short_circuit_cache``."""
     import asyncio
     from contextlib import ExitStack
     from unittest.mock import patch
@@ -1025,14 +1023,16 @@ def test_synthesize_speech_prepared_cache_short_circuits_synthetic_planner_candi
         def __init__(self, candidates):
             self.candidates = candidates
 
-    # Synthetic planner candidate: different artifact_id, no urls.
+    # Echo-only synthetic candidate: artifact_id == runtime_model,
+    # no digest, no download_urls. The planner gave us the model
+    # name back without naming a specific artifact version.
     synthetic = RuntimeCandidatePlan(
         locality="local",
         priority=0,
         confidence=0.9,
-        reason="synthetic-private-kokoro-v2",
+        reason="echo-only-synthetic",
         engine="sherpa-onnx",
-        artifact=RuntimeArtifactPlan(model_id="kokoro-82m", artifact_id="private-kokoro-v2"),
+        artifact=RuntimeArtifactPlan(model_id="kokoro-82m", artifact_id="kokoro-82m"),
         delivery_mode="sdk_runtime",
         prepare_required=True,
         prepare_policy="lazy",
@@ -1240,6 +1240,222 @@ def test_synthesize_speech_prepared_cache_does_not_shadow_planner_selected_artif
     assert captured["create_backend_kwargs"] == {"model_dir": str(private_dir)}
     assert captured["create_backend_kwargs"]["model_dir"] != str(static_cache_dir)
     assert response.route.locality == "on_device"
+
+
+def _selection_with(candidates):
+    class _Selection:
+        locality = None
+        engine = None
+        artifact = None
+        source = None
+        fallback_allowed = True
+        reason = ""
+        app_resolution = None
+        resolution = None
+
+        def __init__(self, c):
+            self.candidates = c
+
+    return _Selection(candidates)
+
+
+def test_synthesize_speech_app_scoped_synthetic_candidate_surfaces_planner_error(tmp_path, monkeypatch):
+    """Reviewer P1 (round 4): app-scoped requests must NOT silently
+    fall back to the public static-recipe cache when the planner
+    returns a synthetic candidate. The user asked for the app's
+    artifact (``@app/tts-tester/tts``); substituting the public
+    Kokoro hides Task #51 (server bug) and serves the wrong bytes.
+
+    Repro: ``@app/tts-tester/tts`` resolves to runtime model
+    ``kokoro-82m``; planner returns local candidate with
+    ``artifact_id='private-kokoro-v2'`` and no ``download_urls``;
+    static cache present. Expected: ``OctomilError`` from
+    PrepareManager (no download_urls), NOT a successful WAV from
+    the public cache."""
+    import asyncio
+    from contextlib import ExitStack
+    from unittest.mock import patch
+
+    from octomil.errors import OctomilError
+    from octomil.execution.kernel import ExecutionKernel
+    from octomil.runtime.planner.schemas import RuntimeArtifactPlan, RuntimeCandidatePlan
+
+    monkeypatch.setenv("OCTOMIL_CACHE_DIR", str(tmp_path / "cache"))
+    monkeypatch.delenv("OCTOMIL_SERVER_KEY", raising=False)
+    monkeypatch.delenv("OCTOMIL_API_KEY", raising=False)
+    _stage_kokoro_prepared_cache(tmp_path)
+
+    synthetic = RuntimeCandidatePlan(
+        locality="local",
+        priority=0,
+        confidence=0.9,
+        reason="server-bug-synthetic",
+        engine="sherpa-onnx",
+        artifact=RuntimeArtifactPlan(model_id="kokoro-82m", artifact_id="private-kokoro-v2"),
+        delivery_mode="sdk_runtime",
+        prepare_required=True,
+        prepare_policy="lazy",
+    )
+    selection = _selection_with([synthetic])
+
+    backend_calls: list = []
+
+    class _FakeBackend:
+        def __init__(self, model_name, **kwargs):
+            backend_calls.append(kwargs)
+
+        def load_model(self, model_name):
+            return None
+
+        def synthesize(self, *a, **kw):
+            return {"audio_bytes": b"unreachable", "content_type": "audio/wav", "format": "wav"}
+
+    class _FakeEngine:
+        def create_backend(self, model_name, **kwargs):
+            return _FakeBackend(model_name, **kwargs)
+
+    kernel = ExecutionKernel()
+    kernel._resolve = lambda capability, **kw: type(  # type: ignore[method-assign]
+        "_D",
+        (),
+        {
+            "model": "kokoro-82m",
+            "policy_preset": "local_only",
+            "inline_policy": None,
+            "cloud_profile": None,
+        },
+    )()
+
+    with ExitStack() as stack:
+        stack.enter_context(patch("octomil.runtime.engines.sherpa.SherpaTtsEngine", _FakeEngine))
+        stack.enter_context(patch("octomil.runtime.engines.sherpa.is_sherpa_tts_model", return_value=True))
+        stack.enter_context(patch("octomil.runtime.engines.sherpa.is_sherpa_tts_runtime_available", return_value=True))
+        stack.enter_context(patch("octomil.execution.kernel._resolve_planner_selection", return_value=selection))
+        with pytest.raises(OctomilError) as excinfo:
+            asyncio.get_event_loop().run_until_complete(
+                kernel.synthesize_speech(model="@app/tts-tester/tts", input="hello")
+            )
+
+    # The error came from the routing/prepare path, not the cache.
+    # Backend never loaded — the public Kokoro bytes were not
+    # silently substituted for the app's artifact.
+    assert backend_calls == []
+    assert excinfo.value.code == OctomilErrorCode.RUNTIME_UNAVAILABLE
+
+
+def test_synthesize_speech_direct_mismatched_identity_does_not_short_circuit_cache(tmp_path, monkeypatch):
+    """Reviewer P1 (round 4) symmetric: a *direct* request with a
+    candidate whose artifact_id names a different artifact must
+    also surface the planner error, not silently use the public
+    cache. The candidate has a meaningful identity (the planner
+    named ``private-kokoro-v2``); substituting the public Kokoro
+    would serve different bytes than what was selected."""
+    import asyncio
+    from contextlib import ExitStack
+    from unittest.mock import patch
+
+    from octomil.errors import OctomilError
+    from octomil.execution.kernel import ExecutionKernel
+    from octomil.runtime.planner.schemas import RuntimeArtifactPlan, RuntimeCandidatePlan
+
+    monkeypatch.setenv("OCTOMIL_CACHE_DIR", str(tmp_path / "cache"))
+    monkeypatch.delenv("OCTOMIL_SERVER_KEY", raising=False)
+    monkeypatch.delenv("OCTOMIL_API_KEY", raising=False)
+    _stage_kokoro_prepared_cache(tmp_path)
+
+    synthetic = RuntimeCandidatePlan(
+        locality="local",
+        priority=0,
+        confidence=0.9,
+        reason="mismatched-id-no-urls",
+        engine="sherpa-onnx",
+        artifact=RuntimeArtifactPlan(model_id="kokoro-82m", artifact_id="private-kokoro-v2"),
+        delivery_mode="sdk_runtime",
+        prepare_required=True,
+        prepare_policy="lazy",
+    )
+    selection = _selection_with([synthetic])
+
+    backend_calls: list = []
+
+    class _FakeBackend:
+        def __init__(self, model_name, **kwargs):
+            backend_calls.append(kwargs)
+
+        def load_model(self, model_name):
+            return None
+
+        def synthesize(self, *a, **kw):
+            return {"audio_bytes": b"unreachable", "content_type": "audio/wav", "format": "wav"}
+
+    class _FakeEngine:
+        def create_backend(self, model_name, **kwargs):
+            return _FakeBackend(model_name, **kwargs)
+
+    kernel = ExecutionKernel()
+    kernel._resolve = lambda capability, **kw: type(  # type: ignore[method-assign]
+        "_D",
+        (),
+        {
+            "model": "kokoro-82m",
+            "policy_preset": "local_only",
+            "inline_policy": None,
+            "cloud_profile": None,
+        },
+    )()
+
+    with ExitStack() as stack:
+        stack.enter_context(patch("octomil.runtime.engines.sherpa.SherpaTtsEngine", _FakeEngine))
+        stack.enter_context(patch("octomil.runtime.engines.sherpa.is_sherpa_tts_model", return_value=True))
+        stack.enter_context(patch("octomil.runtime.engines.sherpa.is_sherpa_tts_runtime_available", return_value=True))
+        stack.enter_context(patch("octomil.execution.kernel._resolve_planner_selection", return_value=selection))
+        with pytest.raises(OctomilError):
+            asyncio.get_event_loop().run_until_complete(kernel.synthesize_speech(model="kokoro-82m", input="hello"))
+
+    assert backend_calls == [], "backend must not load when the planner candidate's identity is mismatched"
+
+
+def test_synthesize_speech_app_scoped_no_candidate_does_not_short_circuit_cache(tmp_path, monkeypatch):
+    """Reviewer P1 (round 4): an app-scoped request with NO local
+    candidate (planner offline / could not resolve the app) must
+    also refuse the cache substitution. The user asked for the
+    app's artifact; substituting the public static recipe would
+    swallow the planner outage. Identity match (a) does not apply
+    because there is no candidate to match against."""
+    import asyncio
+    from contextlib import ExitStack
+    from unittest.mock import patch
+
+    from octomil.errors import OctomilError
+    from octomil.execution.kernel import ExecutionKernel
+
+    monkeypatch.setenv("OCTOMIL_CACHE_DIR", str(tmp_path / "cache"))
+    monkeypatch.delenv("OCTOMIL_SERVER_KEY", raising=False)
+    monkeypatch.delenv("OCTOMIL_API_KEY", raising=False)
+    _stage_kokoro_prepared_cache(tmp_path)
+
+    selection = _selection_with([])
+
+    kernel = ExecutionKernel()
+    kernel._resolve = lambda capability, **kw: type(  # type: ignore[method-assign]
+        "_D",
+        (),
+        {
+            "model": "kokoro-82m",
+            "policy_preset": "local_only",
+            "inline_policy": None,
+            "cloud_profile": None,
+        },
+    )()
+
+    with ExitStack() as stack:
+        stack.enter_context(patch("octomil.runtime.engines.sherpa.is_sherpa_tts_model", return_value=True))
+        stack.enter_context(patch("octomil.runtime.engines.sherpa.is_sherpa_tts_runtime_available", return_value=True))
+        stack.enter_context(patch("octomil.execution.kernel._resolve_planner_selection", return_value=selection))
+        with pytest.raises(OctomilError):
+            asyncio.get_event_loop().run_until_complete(
+                kernel.synthesize_speech(model="@app/tts-tester/tts", input="hello")
+            )
 
 
 def test_synthesize_speech_prepared_cache_used_when_candidate_matches_static_recipe(tmp_path, monkeypatch):
