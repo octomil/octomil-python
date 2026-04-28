@@ -7,6 +7,7 @@ import logging
 import os
 from dataclasses import asdict
 
+from ._artifact_parser import parse_artifact_dict
 from .app_ref import is_app_ref, parse_app_ref
 from .client import RuntimePlannerClient
 from .device_profile import collect_device_runtime_profile
@@ -563,19 +564,7 @@ def plan_dict_to_app_resolution(data: dict | None) -> AppResolution | None:
     artifact_candidates: list[RuntimeArtifactPlan] = []
     for artifact_data in data.get("artifact_candidates", []):
         if isinstance(artifact_data, dict):
-            artifact_candidates.append(
-                RuntimeArtifactPlan(
-                    model_id=artifact_data.get("model_id", ""),
-                    artifact_id=artifact_data.get("artifact_id"),
-                    model_version=artifact_data.get("model_version"),
-                    format=artifact_data.get("format"),
-                    quantization=artifact_data.get("quantization"),
-                    uri=artifact_data.get("uri"),
-                    digest=artifact_data.get("digest"),
-                    size_bytes=artifact_data.get("size_bytes"),
-                    min_ram_bytes=artifact_data.get("min_ram_bytes"),
-                )
-            )
+            artifact_candidates.append(parse_artifact_dict(artifact_data))
 
     return AppResolution(
         app_id=data.get("app_id", ""),
@@ -618,17 +607,7 @@ def plan_dict_to_candidates(candidates: list[dict]) -> list[RuntimeCandidatePlan
         artifact_data = candidate.get("artifact")
         artifact = None
         if isinstance(artifact_data, dict):
-            artifact = RuntimeArtifactPlan(
-                model_id=artifact_data.get("model_id", ""),
-                artifact_id=artifact_data.get("artifact_id"),
-                model_version=artifact_data.get("model_version"),
-                format=artifact_data.get("format"),
-                quantization=artifact_data.get("quantization"),
-                uri=artifact_data.get("uri"),
-                digest=artifact_data.get("digest"),
-                size_bytes=artifact_data.get("size_bytes"),
-                min_ram_bytes=artifact_data.get("min_ram_bytes"),
-            )
+            artifact = parse_artifact_dict(artifact_data)
 
         gates = []
         for gate in candidate.get("gates", []):
