@@ -97,6 +97,19 @@ class MaterializationPlan:
 
     See module docstring for field semantics. The plan is *data*:
     it carries no behaviour. ``Materializer`` consumes it.
+
+    ``voice_manifest`` is the ordered speaker catalog the runtime
+    must use for this artifact. The materializer writes it as
+    ``voices.txt`` in ``artifact_dir`` so the backend can resolve
+    voices without depending on a global hardcoded catalog. Position
+    in the tuple == sherpa-onnx speaker id. Empty tuple means the
+    artifact does not declare a voice catalog (single-speaker
+    models, or older recipes that predate the manifest).
+
+    ``artifact_version`` is an optional human-readable bundle id
+    (e.g. ``"kokoro-en-v0_19"``) materialized as a ``VERSION`` file
+    under ``artifact_dir``. Used by the engine to disambiguate
+    catalogs from different upstream releases.
     """
 
     kind: Literal["none", "archive"] = "none"
@@ -105,6 +118,8 @@ class MaterializationPlan:
     strip_prefix: Optional[str] = None
     required_outputs: tuple[str, ...] = ()
     safety_policy: MaterializationSafetyPolicy = field(default_factory=MaterializationSafetyPolicy)
+    voice_manifest: tuple[str, ...] = ()
+    artifact_version: Optional[str] = None
 
     def __post_init__(self) -> None:
         if self.kind == "archive" and not self.source:
@@ -167,10 +182,12 @@ class Materializer:
             # malformed download surfaces here instead of inside
             # the backend.
             self._assert_layout_complete(artifact_dir, plan)
+            self._write_voice_manifest(artifact_dir, plan)
             return
 
         if plan.kind == "archive":
             self._materialize_archive(artifact_dir, plan)
+            self._write_voice_manifest(artifact_dir, plan)
             return
 
         # __post_init__ already rejected unknown kinds; defensive.
@@ -445,6 +462,32 @@ class Materializer:
             # be conservative and re-run the extraction.
             return False
         return all((artifact_dir / rel).exists() for rel in plan.required_outputs)
+
+    @staticmethod
+    def _write_voice_manifest(artifact_dir: Path, plan: MaterializationPlan) -> None:
+        """Write ``voices.txt`` from ``plan.voice_manifest`` if declared.
+
+        Always overwrites: the manifest is the single source of
+        truth for speaker ordering and is small enough that a stale
+        manifest from a prior recipe revision is a real correctness
+        risk. ``voices.bin`` is the actual model data; ``voices.txt``
+        is purely a label-to-sid map used by the SDK for validation.
+
+        Atomic tmp + rename so a crash mid-write doesn't leave a
+        truncated file the backend would parse as a shorter catalog.
+        """
+        if not plan.voice_manifest:
+            return
+        voices_path = artifact_dir / "voices.txt"
+        tmp_path = artifact_dir / "voices.txt.tmp"
+        body = "\n".join(plan.voice_manifest) + "\n"
+        tmp_path.write_text(body, encoding="utf-8")
+        os.replace(tmp_path, voices_path)
+        if plan.artifact_version:
+            version_path = artifact_dir / "VERSION"
+            version_tmp = artifact_dir / "VERSION.tmp"
+            version_tmp.write_text(plan.artifact_version + "\n", encoding="utf-8")
+            os.replace(version_tmp, version_path)
 
     @staticmethod
     def _assert_layout_complete(artifact_dir: Path, plan: MaterializationPlan) -> None:

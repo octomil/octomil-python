@@ -19,6 +19,7 @@ import time
 from io import BytesIO
 from typing import Any
 
+from octomil.errors import OctomilError, OctomilErrorCode
 from octomil.runtime.core.base import BenchmarkResult, EnginePlugin
 
 logger = logging.getLogger(__name__)
@@ -47,39 +48,77 @@ def _default_voice(model_name: str) -> str:
     return entry[1] if entry else ""
 
 
-# Kokoro v0.19+ voice catalog. Index == speaker id in the bundled voices.bin.
-# Source: sherpa-onnx scripts/kokoro voice manifest. Operators can override
-# this by dropping a voices.txt sidecar in the model directory.
-_KOKORO_VOICES: tuple[str, ...] = (
-    "af_alloy",
-    "af_aoede",
+# Per-artifact Kokoro voice catalogs. Position in the tuple ==
+# sherpa-onnx speaker id in the corresponding voices.bin.
+#
+# IMPORTANT: voice ordering is bundle-specific. A 28-name "modern"
+# Kokoro catalog (af_heart, am_echo, …) is NOT interchangeable with
+# the 11-name kokoro-en-v0_19 catalog the SDK currently ships —
+# sherpa-onnx clamps out-of-range sids to 0, so a mismatched table
+# silently aliases every "missing" voice to the default speaker.
+#
+# These tables are *legacy fallbacks*. The authoritative source is a
+# ``voices.txt`` sidecar under the prepared artifact directory,
+# materialized from the static recipe's ``voice_manifest`` field.
+# The fallback only fires when a sidecar is absent — e.g. an
+# artifact someone hand-staged before voices.txt materialization
+# shipped — and is keyed by model id rather than a global "kokoro =
+# these N names" assumption.
+
+# kokoro-en-v0_19 — the bundle currently shipped under the
+# ``kokoro-82m`` static recipe.
+_KOKORO_EN_V0_19_VOICES: tuple[str, ...] = (
+    "af",
     "af_bella",
-    "af_heart",
-    "af_jessica",
-    "af_kore",
     "af_nicole",
-    "af_nova",
-    "af_river",
     "af_sarah",
     "af_sky",
     "am_adam",
-    "am_echo",
-    "am_eric",
-    "am_fenrir",
-    "am_liam",
     "am_michael",
-    "am_onyx",
-    "am_puck",
-    "am_santa",
-    "bf_alice",
     "bf_emma",
     "bf_isabella",
-    "bf_lily",
-    "bm_daniel",
-    "bm_fable",
     "bm_george",
     "bm_lewis",
 )
+
+# Per-model legacy fallback catalog. Used ONLY when no voices.txt
+# sidecar is present. Keep tightly scoped: an unknown model id
+# falls through to "fail loudly" so callers can't accidentally
+# inherit some other artifact's catalog.
+_LEGACY_KOKORO_FALLBACK_CATALOGS: dict[str, tuple[str, ...]] = {
+    "kokoro-82m": _KOKORO_EN_V0_19_VOICES,
+    "kokoro-en-v0_19": _KOKORO_EN_V0_19_VOICES,
+}
+
+# Back-compat alias. Old import path
+# ``octomil.runtime.engines.sherpa._KOKORO_VOICES`` resolves to the
+# active artifact's catalog so external callers keep working, but
+# the canonical accessor is ``catalog_for_model(model_name)``.
+_KOKORO_VOICES: tuple[str, ...] = _KOKORO_EN_V0_19_VOICES
+
+
+def catalog_for_model(model_name: str) -> tuple[str, ...]:
+    """Return the legacy fallback voice catalog for ``model_name``.
+
+    Empty tuple when the model has no declared catalog. Callers that
+    need authoritative ordering should read ``voices.txt`` from the
+    prepared artifact directory; this helper is the *fallback* used
+    only when the sidecar is missing.
+    """
+    return _LEGACY_KOKORO_FALLBACK_CATALOGS.get(model_name.lower(), ())
+
+
+def _read_voice_manifest(model_dir: str) -> tuple[str, ...]:
+    """Read ``voices.txt`` from ``model_dir`` and return the ordered
+    list of speaker names. Returns an empty tuple when the sidecar
+    is missing. Trims trailing whitespace and skips blank lines so a
+    crash-truncated final newline doesn't shift speaker ids.
+    """
+    sidecar = os.path.join(model_dir, "voices.txt")
+    if not os.path.exists(sidecar):
+        return ()
+    with open(sidecar, encoding="utf-8") as f:
+        return tuple(line.strip() for line in f if line.strip())
 
 
 def _has_sherpa_onnx() -> bool:
@@ -363,28 +402,58 @@ class _SherpaTtsBackend:
     def _voice_to_sid(self, voice: str) -> int:
         """Map a voice name to a sherpa-onnx speaker id.
 
-        Resolution order:
-        1. ``voices.txt`` sidecar (one voice id per line, position == sid).
-           Lets the operator override the default catalog if the model bundle
-           ships its own voice list.
-        2. Built-in Kokoro catalog (``_KOKORO_VOICES``) for kokoro-* models.
-        3. sid 0 — the model's first/default speaker.
+        Resolution rules:
+
+          - Empty / default voice → ``sid=0`` intentionally. The
+            backend's first speaker is the contracted default.
+          - ``voices.txt`` sidecar in the prepared artifact dir is
+            the authoritative ordered catalog for THIS artifact.
+            Position in the file == speaker id.
+          - When the sidecar is missing, fall back to a per-model
+            legacy catalog (``catalog_for_model``).
+          - When neither produces a hit, raise
+            ``voice_not_supported_for_model`` so the caller gets a
+            clear error instead of sherpa-onnx silently aliasing
+            the request to ``sid=0`` (which the prior implementation
+            did via an except ValueError: return 0 path).
         """
         if not voice:
             return 0
-        sidecar = os.path.join(self._resolve_model_dir(self._model_name), "voices.txt")
-        if os.path.exists(sidecar):
-            with open(sidecar, encoding="utf-8") as f:
-                for idx, line in enumerate(f):
-                    if line.strip().lower() == voice.lower():
-                        return idx
-            return 0
-        if self._family == "kokoro":
-            try:
-                return _KOKORO_VOICES.index(voice.lower())
-            except ValueError:
-                return 0
-        return 0
+
+        model_dir = self._resolve_model_dir(self._model_name)
+        manifest = _read_voice_manifest(model_dir)
+        if not manifest:
+            manifest = catalog_for_model(self._model_name)
+
+        if not manifest:
+            # Single-speaker / unknown-catalog model. Caller passed
+            # an explicit voice we have no way to validate. Refuse
+            # rather than silently alias; the safe-by-default
+            # behaviour for empty voice is sid=0 above.
+            raise OctomilError(
+                code=OctomilErrorCode.INVALID_INPUT,
+                message=(
+                    f"voice_not_supported_for_model: model {self._model_name!r} "
+                    f"has no declared voice catalog (no voices.txt sidecar, no "
+                    f"built-in fallback). Pass voice=None to use the default "
+                    f"speaker, or run client.prepare(model, capability='tts') "
+                    f"to materialize the artifact's voice manifest."
+                ),
+            )
+
+        target = voice.strip().lower()
+        for idx, name in enumerate(manifest):
+            if name.lower() == target:
+                return idx
+
+        raise OctomilError(
+            code=OctomilErrorCode.INVALID_INPUT,
+            message=(
+                f"voice_not_supported_for_model: voice {voice!r} is not in "
+                f"the speaker catalog for model {self._model_name!r}. "
+                f"Supported voices: {', '.join(manifest)}."
+            ),
+        )
 
     def list_models(self) -> list[str]:
         return [self._model_name] if self._model_name else []
