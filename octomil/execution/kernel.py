@@ -1601,7 +1601,12 @@ class ExecutionKernel:
                 ),
             )
 
-        self._validate_local_voice(runtime_model, voice)
+        # Thread the planner candidate so the preflight only enforces
+        # the static-recipe manifest when the request will actually
+        # run that artifact. A planner-selected private/newer
+        # Kokoro candidate is validated post-prepare against its own
+        # voices.txt instead of being pre-rejected here.
+        self._validate_local_voice(runtime_model, voice, planner_candidate=local_candidate)
         # PR D: when a prepared static-recipe cache is what made
         # local routing available, use it directly and SKIP the
         # planner-driven prepare. Otherwise a synthetic / broken
@@ -1819,9 +1824,12 @@ class ExecutionKernel:
 
         # Voice validation must happen before any synthesis kicks off so
         # the consumer never sees a SpeechStreamStarted for a voice the
-        # backend would reject.
+        # backend would reject. Same candidate-gating as the
+        # non-streaming path: a planner-selected private artifact is
+        # validated post-prepare against its own voices.txt rather
+        # than being pre-rejected by the public recipe's manifest.
         if locality == LOCALITY_ON_DEVICE:
-            self._validate_local_voice(runtime_model, voice)
+            self._validate_local_voice(runtime_model, voice, planner_candidate=local_candidate)
 
         if locality == LOCALITY_CLOUD:
             assert defaults.cloud_profile is not None, "cloud locality requires cloud profile"
@@ -3053,19 +3061,34 @@ class ExecutionKernel:
                 load_error.append(f"backend_load: {exc!r}")
             return None
 
-    def _validate_local_voice(self, model: str, voice: Optional[str]) -> None:
+    def _validate_local_voice(
+        self,
+        model: str,
+        voice: Optional[str],
+        *,
+        planner_candidate: Optional[Any] = None,
+    ) -> None:
         """Pre-flight voice check for local TTS.
 
         Resolves the caller-supplied voice against the *artifact-
-        specific* speaker catalog: the static recipe's
-        ``voice_manifest`` field. For Piper/VITS the catalog is
-        per-bundle and not yet declared in recipes, so we skip
-        validation and let the backend surface mismatches.
+        specific* speaker catalog. The check is intentionally narrow:
+        we only enforce the static recipe's ``voice_manifest`` when
+        the request will actually run that recipe's artifact. If the
+        planner emitted a meaningful candidate that does NOT match
+        the static recipe (private re-cut, newer Kokoro, custom
+        bundle), the recipe's manifest is irrelevant — defer to the
+        backend, which reads the artifact's own ``voices.txt`` after
+        :class:`PrepareManager` materializes it.
+
+        For Piper/VITS the catalog is per-bundle and not yet declared
+        in recipes, so we skip validation here and let the backend
+        surface mismatches.
 
         Raises ``OctomilError`` with ``voice_not_supported_for_model``
         (and the model id + supported voices) when the voice is not in
-        the catalog. The legacy ``voice_not_supported_for_locality``
-        tag is preserved in the message for callers that grep for it.
+        the recipe's catalog. The legacy
+        ``voice_not_supported_for_locality`` tag is preserved in the
+        message for callers that grep for it.
 
         For cloud, voice mismatches surface post-dispatch via provider 4xx.
         """
@@ -3075,6 +3098,19 @@ class ExecutionKernel:
         from octomil.runtime.lifecycle.static_recipes import get_static_recipe
 
         if not is_sherpa_tts_model(model):
+            return
+
+        # Gate: only the static recipe's manifest is in scope for this
+        # preflight. A meaningful planner-emitted candidate that
+        # *doesn't* match the recipe must skip preflight — the recipe
+        # describes the public artifact, not whatever bytes the
+        # planner picked. Backend-side validation against the prepared
+        # voices.txt is the authoritative check in that case.
+        if (
+            planner_candidate is not None
+            and self._candidate_has_meaningful_identity(planner_candidate, model)
+            and not self._candidate_matches_static_recipe(planner_candidate, model.lower(), CAPABILITY_TTS)
+        ):
             return
 
         recipe = get_static_recipe(model.lower(), CAPABILITY_TTS)

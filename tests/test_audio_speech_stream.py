@@ -646,3 +646,190 @@ async def test_streaming_voice_validation_uses_static_recipe_manifest():
         assert legacy_only_voice in msg
         # Supported list must be the manifest, so af_bella appears.
         assert "af_bella" in msg
+
+
+# ---------------------------------------------------------------------------
+# P1 follow-ups: catalog-less default voice + planner-artifact preflight bypass
+# ---------------------------------------------------------------------------
+
+
+def test_piper_default_voice_does_not_raise_on_create_or_stream(tmp_path):
+    """Piper has no voices.txt and an empty fallback catalog.
+
+    Pre-fix the backend collapsed ``self._default_voice`` (e.g.
+    ``'amy'``) into the same parameter as the explicit voice, so a
+    caller passing ``voice=None`` still hit
+    ``voice_not_supported_for_model``. The fix distinguishes
+    explicit-voice from default-label: empty/None must map to sid=0
+    silently, only an explicit unknown voice raises.
+    """
+    from octomil.runtime.engines.sherpa.engine import _SherpaTtsBackend
+
+    backend = _SherpaTtsBackend("piper-en-amy", model_dir=str(tmp_path))
+    # Explicit None -> sid=0, no error.
+    assert backend._resolve_sid("") == 0
+    # Backwards-compat alias normalizes None too.
+    assert backend._voice_to_sid("") == 0
+    # Explicit unknown voice on a catalog-less model is rejected with
+    # the structured error, not silently aliased to 0.
+    from octomil.errors import OctomilError, OctomilErrorCode
+
+    with pytest.raises(OctomilError) as ei:
+        backend._resolve_sid("amy")  # explicit, even though it matches the default label
+    assert ei.value.code == OctomilErrorCode.INVALID_INPUT
+    assert "voice_not_supported_for_model" in str(ei.value)
+
+
+def test_kokoro_explicit_unknown_voice_still_raises(tmp_path):
+    """Pinned to make sure the explicit-vs-default refactor didn't
+    regress the catalog enforcement. Kokoro has a sidecar; an
+    explicit name not in it must raise."""
+    from octomil.errors import OctomilError, OctomilErrorCode
+    from octomil.runtime.engines.sherpa.engine import _SherpaTtsBackend
+
+    sidecar = tmp_path / "voices.txt"
+    sidecar.write_text("af_bella\nam_michael\n")
+
+    backend = _SherpaTtsBackend("kokoro-82m", model_dir=str(tmp_path))
+    assert backend._resolve_sid("") == 0  # default still works
+    assert backend._resolve_sid("af_bella") == 0  # name in sidecar
+    assert backend._resolve_sid("am_michael") == 1
+    with pytest.raises(OctomilError) as ei:
+        backend._resolve_sid("alloy")
+    assert ei.value.code == OctomilErrorCode.INVALID_INPUT
+
+
+def _make_planner_candidate(*, artifact_id: str, digest: str):
+    """Build a minimal planner candidate object the kernel's gating
+    logic can introspect.
+
+    The real candidate type carries far more metadata; the kernel
+    helpers we exercise (``_candidate_has_meaningful_identity``,
+    ``_candidate_matches_static_recipe``) only read
+    ``candidate.artifact.artifact_id`` / ``.digest``.
+    """
+
+    class _Artifact:
+        def __init__(self, artifact_id: str, digest: str) -> None:
+            self.artifact_id = artifact_id
+            self.digest = digest
+            self.model_id = artifact_id
+
+    class _Candidate:
+        def __init__(self, artifact_id: str, digest: str) -> None:
+            self.artifact = _Artifact(artifact_id, digest)
+
+    return _Candidate(artifact_id, digest)
+
+
+@pytest.mark.asyncio
+async def test_private_kokoro_artifact_with_am_echo_in_voices_txt_is_accepted(tmp_path):
+    """Reviewer P1#2 reproducer: a planner-selected *private* Kokoro
+    artifact whose own ``voices.txt`` contains ``am_echo`` must be
+    accepted by both ``create()`` and ``stream()`` even though
+    ``am_echo`` is NOT in the public v0_19 static recipe's manifest.
+
+    Pre-fix: the kernel's pre-prepare voice preflight read the static
+    recipe and rejected ``am_echo`` before
+    ``_prepare_local_tts_artifact`` could materialize the planner's
+    artifact. The fix gates the preflight on candidate identity so
+    private artifacts validate against their own sidecar.
+    """
+    from octomil.config.local import ResolvedExecutionDefaults
+    from octomil.execution.kernel import ExecutionKernel
+    from octomil.runtime.lifecycle.static_recipes import get_static_recipe
+
+    # Sanity: am_echo really is absent from the public v0_19 manifest.
+    recipe = get_static_recipe("kokoro-82m", "tts")
+    assert recipe is not None and recipe.materialization.voice_manifest
+    public_manifest = {n.lower() for n in recipe.materialization.voice_manifest}
+    assert "am_echo" not in public_manifest, "test premise broken: am_echo is now in the public recipe manifest"
+
+    # The planner-prepared artifact dir contains a voices.txt that
+    # *does* include am_echo at sid=2. The fake backend reads the dir
+    # the kernel hands it, so this is what the production code would
+    # see post-PrepareManager.
+    voices_txt = tmp_path / "voices.txt"
+    voices_txt.write_text("af_bella\naf_sarah\nam_echo\n")
+
+    # Synthetic planner candidate that is *meaningful* (digest set)
+    # and explicitly does NOT match the static recipe (different
+    # artifact_id, different digest). This is the gating signal the
+    # preflight is supposed to honor.
+    private_candidate = _make_planner_candidate(
+        artifact_id="private-kokoro-v2",
+        digest="sha256:" + "f" * 64,
+    )
+
+    backend = FakeStreamingBackend(num_chunks=2, samples_per_chunk=600, chunk_delay_s=0.001)
+    backend._model_name = "kokoro-82m"
+
+    kernel = ExecutionKernel.__new__(ExecutionKernel)
+    kernel._config_set = MagicMock()
+
+    defaults = ResolvedExecutionDefaults(
+        model="kokoro-82m",
+        policy_preset="local_only",
+        inline_policy=None,
+        cloud_profile=None,
+    )
+
+    # Wire the kernel so the local route lands on our backend without
+    # touching disk for the artifact bytes themselves.
+    common_patches = [
+        patch.object(kernel, "_resolve", return_value=defaults),
+        patch(
+            "octomil.execution.kernel._resolve_planner_selection",
+            return_value=MagicMock(),
+        ),
+        patch(
+            "octomil.execution.kernel._local_sdk_runtime_candidate",
+            return_value=private_candidate,
+        ),
+        patch("octomil.execution.kernel._resolve_routing_policy"),
+        patch.object(kernel, "_sherpa_tts_runtime_loadable", return_value=True),
+        # No prepared static-recipe cache; we want the planner branch
+        # to drive prepare and write the private voices.txt.
+        patch.object(kernel, "_prepared_cache_may_short_circuit", return_value=False),
+        patch.object(kernel, "_local_candidate_is_unpreparable", return_value=False),
+        patch.object(kernel, "_can_prepare_local_tts", return_value=True),
+        patch.object(kernel, "_prepare_local_tts_artifact", return_value=str(tmp_path)),
+        patch.object(kernel, "_resolve_local_tts_backend", return_value=backend),
+        patch(
+            "octomil.execution.kernel._select_locality_for_capability",
+            return_value=("on_device", False),
+        ),
+    ]
+
+    # ---- stream() must accept am_echo for the private candidate. ----
+    with contextlib_ExitStack() as st:
+        for p in common_patches:
+            st.enter_context(p)
+        stream = await kernel.synthesize_speech_stream(
+            model="kokoro-82m",
+            input="hello",
+            voice="am_echo",
+        )
+        started, pcm, completed = await stream.collect()
+        assert started.voice == "am_echo"
+        assert completed.total_samples == 2 * 600
+        assert pcm  # non-empty PCM body
+
+    # ---- create() (non-streaming path) must also accept am_echo. ----
+    with contextlib_ExitStack() as st:
+        for p in common_patches:
+            st.enter_context(p)
+        response = await kernel.synthesize_speech(
+            model="kokoro-82m",
+            input="hello",
+            voice="am_echo",
+        )
+        assert response.audio_bytes
+        assert response.route.locality == "on_device"
+        # The fake backend reports the requested voice.
+        assert response.voice == "am_echo"
+
+
+# Lightweight import — keeps the patch-stack assembly above readable
+# without adding unittest.mock as a top-level import in this file.
+from contextlib import ExitStack as contextlib_ExitStack  # noqa: E402

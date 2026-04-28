@@ -386,8 +386,11 @@ class _SherpaTtsBackend:
             self.load_model(self._model_name)
         assert self._tts is not None
 
-        voice_name = (voice or self._default_voice or "").strip()
-        sid = self._voice_to_sid(voice_name)
+        explicit_voice = (voice or "").strip()
+        sid = self._resolve_sid(explicit_voice)
+        # Reported voice: caller's explicit choice, else the per-model
+        # default label (advisory — sid=0 is the contracted default).
+        reported_voice = explicit_voice or self._default_voice
 
         audio = self._tts.generate(text, sid=sid, speed=speed)
         samples = list(audio.samples)
@@ -402,29 +405,37 @@ class _SherpaTtsBackend:
             "format": "wav",
             "sample_rate": sample_rate,
             "duration_ms": duration_ms,
-            "voice": voice_name,
+            "voice": reported_voice,
             "model": self._model_name,
         }
 
-    def _voice_to_sid(self, voice: str) -> int:
-        """Map a voice name to a sherpa-onnx speaker id.
+    def _resolve_sid(self, explicit_voice: str) -> int:
+        """Map a *caller-supplied* voice name to a sherpa-onnx speaker id.
+
+        ``explicit_voice`` MUST be the empty string when the caller did
+        not specify one — the prior implementation collapsed the
+        per-model default label (``self._default_voice``) into the
+        same parameter as the explicit choice, which made
+        ``Piper -> default 'amy'`` indistinguishable from
+        ``caller passed voice='amy'``. For Piper the default label is
+        not in any voice manifest, so the lookup raised
+        ``voice_not_supported_for_model`` even when the caller passed
+        ``voice=None``.
 
         Resolution rules:
 
-          - Empty / default voice → ``sid=0`` intentionally. The
-            backend's first speaker is the contracted default.
+          - Empty ``explicit_voice`` → ``sid=0``. The backend's first
+            speaker is the contracted default for every model,
+            including catalog-less ones (Piper / single-speaker VITS).
           - ``voices.txt`` sidecar in the prepared artifact dir is
-            the authoritative ordered catalog for THIS artifact.
-            Position in the file == speaker id.
-          - When the sidecar is missing, fall back to a per-model
+            authoritative for THIS artifact. Position == speaker id.
+          - When no sidecar is present, fall back to a per-model
             legacy catalog (``catalog_for_model``).
-          - When neither produces a hit, raise
-            ``voice_not_supported_for_model`` so the caller gets a
-            clear error instead of sherpa-onnx silently aliasing
-            the request to ``sid=0`` (which the prior implementation
-            did via an except ValueError: return 0 path).
+          - When the caller passed an explicit voice the catalog
+            doesn't recognize, raise ``voice_not_supported_for_model``
+            instead of silently aliasing to ``sid=0``.
         """
-        if not voice:
+        if not explicit_voice:
             return 0
 
         model_dir = self._resolve_model_dir(self._model_name)
@@ -433,10 +444,9 @@ class _SherpaTtsBackend:
             manifest = catalog_for_model(self._model_name)
 
         if not manifest:
-            # Single-speaker / unknown-catalog model. Caller passed
-            # an explicit voice we have no way to validate. Refuse
-            # rather than silently alias; the safe-by-default
-            # behaviour for empty voice is sid=0 above.
+            # Single-speaker / unknown-catalog model and the caller
+            # gave an explicit voice. Refuse rather than silently
+            # alias; empty voice is already handled above.
             raise OctomilError(
                 code=OctomilErrorCode.INVALID_INPUT,
                 message=(
@@ -448,7 +458,7 @@ class _SherpaTtsBackend:
                 ),
             )
 
-        target = voice.strip().lower()
+        target = explicit_voice.strip().lower()
         for idx, name in enumerate(manifest):
             if name.lower() == target:
                 return idx
@@ -456,11 +466,19 @@ class _SherpaTtsBackend:
         raise OctomilError(
             code=OctomilErrorCode.INVALID_INPUT,
             message=(
-                f"voice_not_supported_for_model: voice {voice!r} is not in "
+                f"voice_not_supported_for_model: voice {explicit_voice!r} is not in "
                 f"the speaker catalog for model {self._model_name!r}. "
                 f"Supported voices: {', '.join(manifest)}."
             ),
         )
+
+    def _voice_to_sid(self, voice: str) -> int:
+        """Backwards-compatible alias for ``_resolve_sid``.
+
+        Kept for any external callers that imported the older name.
+        Prefer :meth:`_resolve_sid`.
+        """
+        return self._resolve_sid((voice or "").strip())
 
     def list_models(self) -> list[str]:
         return [self._model_name] if self._model_name else []
@@ -516,8 +534,13 @@ class _SherpaTtsBackend:
             self.load_model(self._model_name)
         assert self._tts is not None
 
-        voice_name = (voice or self._default_voice or "").strip()
-        sid = self._voice_to_sid(voice_name)
+        # Caller-supplied vs. default-label distinction matters: empty
+        # voice -> sid=0 (the model's first speaker). Don't promote
+        # self._default_voice into the lookup, because for catalog-less
+        # models (Piper) that label isn't in any manifest and would
+        # raise voice_not_supported_for_model on a default request.
+        explicit_voice = (voice or "").strip()
+        sid = self._resolve_sid(explicit_voice)
 
         bridge = _StreamBridge(maxsize=chunk_max_queue)
         loop = asyncio.get_running_loop()
