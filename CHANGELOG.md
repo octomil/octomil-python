@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 4.12.4 (2026-04-28)
+
+### Fixes
+
+- static-recipe substitution rules in prepare() + warmup() (#471)
+
 ## 4.12.3 (2026-04-28)
 
 ### Fixes
