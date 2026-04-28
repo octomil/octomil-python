@@ -1987,6 +1987,157 @@ class ExecutionKernel:
         manager = self._prepare_manager or PrepareManager()
         return manager.can_prepare(candidate)
 
+    def _select_prepare_candidate(
+        self,
+        *,
+        effective_model: str,
+        capability: str,
+        planner_candidate: Optional[Any],
+        app_scoped: bool,
+    ) -> tuple[Optional[Any], Optional[Any]]:
+        """Decide which candidate ``prepare()`` / ``warmup()`` should
+        hand to :class:`PrepareManager`, and which (if any) static
+        recipe drives post-download materialization.
+
+        Architectural rule:
+
+          - **PrepareManager** prepares exactly the artifact it is
+            handed. It does NOT guess a static recipe by artifact id
+            because it lacks request scope (direct vs app-scoped).
+          - **The kernel** owns the substitution decision because it
+            sees the request shape. It must NOT silently substitute
+            the public static recipe for an app-scoped or
+            mismatched-identity request.
+          - When the *planner* explicitly emits ``source='static_recipe',
+            recipe_id=…`` PrepareManager's
+            :func:`_expand_static_recipe_source` expands it — that is
+            *not* a kernel substitution; it's the planner's
+            explicit choice.
+
+        Substitution gate (returns the planner candidate as-is unless
+        all conditions hold):
+
+          a) The request is **not app-scoped** (``app_scoped=False``).
+          b) The planner candidate is missing OR carries no
+             meaningful artifact identity (echo-only, no digest).
+          c) A static recipe is registered for ``(effective_model,
+             capability)``.
+
+        When all three hold, substitute the static recipe candidate.
+        When the planner candidate's identity *matches* the static
+        recipe (same artifact_id + digest), the planner candidate is
+        already the recipe — return it unchanged.
+
+        Returns ``(candidate, used_static_recipe)``. ``candidate`` is
+        the candidate to hand to PrepareManager. ``used_static_recipe``
+        is the recipe whose ``MaterializationPlan`` should run
+        post-download — set when this kernel performed the
+        substitution, ``None`` otherwise (PrepareManager handles
+        materialization itself when the planner emitted
+        ``source='static_recipe'``).
+        """
+        from octomil.runtime.lifecycle.static_recipes import (
+            get_static_recipe,
+            static_recipe_candidate,
+        )
+
+        # Honor an explicit planner ``source='static_recipe'`` —
+        # PrepareManager expands it. Treat the candidate as
+        # ground truth and let the manager handle materialization.
+        if planner_candidate is not None:
+            artifact = getattr(planner_candidate, "artifact", None)
+            if artifact is not None and getattr(artifact, "source", None) == "static_recipe":
+                return planner_candidate, None
+
+        # App-scoped requests: never substitute the public static
+        # recipe. Hand the planner candidate (or None) through; if
+        # it's unusable, the dispatch chain raises the actionable
+        # planner-config error instead of serving the wrong bytes.
+        if app_scoped:
+            return planner_candidate, None
+
+        # Direct request:
+        if planner_candidate is None:
+            # No candidate → fall back to the static recipe (gate (a)
+            # + (b) + (c) all hold).
+            recipe = get_static_recipe(effective_model, capability)
+            if recipe is None:
+                return None, None
+            return static_recipe_candidate(effective_model, capability), recipe
+
+        # Direct + planner candidate present.
+        if self._candidate_matches_static_recipe(planner_candidate, effective_model, capability):
+            # Identity match — the planner already named the recipe.
+            # Use the planner candidate; the recipe materialization
+            # is conditional on whether the candidate carries the
+            # static_recipe discriminator (handled by PrepareManager
+            # if so, by the dispatch path's static-recipe cache check
+            # otherwise).
+            return planner_candidate, None
+        if not self._candidate_has_meaningful_identity(planner_candidate, effective_model):
+            # Echo-only candidate with no meaningful identity. The
+            # planner echoed the model name without committing to an
+            # artifact (server bug Task #51 / offline / sandboxed).
+            # For *direct* requests this is exactly the case the
+            # static recipe was designed to cover.
+            recipe = get_static_recipe(effective_model, capability)
+            if recipe is None:
+                return planner_candidate, None  # let PrepareManager surface its rejection
+            return static_recipe_candidate(effective_model, capability), recipe
+        # Meaningful identity, but mismatches the static recipe.
+        # That is a different artifact (private re-cut). Honor the
+        # planner candidate and let PrepareManager prepare it (or
+        # reject if the metadata is incomplete).
+        return planner_candidate, None
+
+    @staticmethod
+    def _no_prepare_candidate_error(
+        *,
+        stage: str,
+        effective_model: str,
+        capability: str,
+        planner_candidate: Optional[Any],
+        app_scoped: bool,
+    ) -> OctomilError:
+        """Construct the actionable error for the no-candidate cases
+        ``_select_prepare_candidate`` couldn't resolve. Distinguishes
+        the app-scoped vs. direct paths so users see the right next
+        step (set OCTOMIL_SERVER_KEY for app refs, switch model for
+        direct refs)."""
+        if app_scoped:
+            return OctomilError(
+                code=OctomilErrorCode.RUNTIME_UNAVAILABLE,
+                message=(
+                    f"{stage}: app-scoped request for model={effective_model!r} "
+                    f"capability={capability!r} got no usable planner candidate, and the SDK "
+                    f"refuses to substitute the public static recipe for app/private artifacts. "
+                    f"Set OCTOMIL_SERVER_KEY (the planner needs auth to resolve the app's "
+                    f"intended artifact) or remove the app= scope for a direct public request."
+                ),
+            )
+        if planner_candidate is None:
+            return OctomilError(
+                code=OctomilErrorCode.RUNTIME_UNAVAILABLE,
+                message=(
+                    f"{stage}: planner returned no local sdk_runtime candidate for "
+                    f"model={effective_model!r} capability={capability!r} and the SDK has "
+                    f"no static offline recipe for it. Either the model is cloud-only, "
+                    f"the planner is offline, or this is a private artifact that requires "
+                    f"OCTOMIL_SERVER_KEY auth. Set OCTOMIL_SERVER_KEY or use a model with "
+                    f"a static recipe (e.g. 'kokoro-82m')."
+                ),
+            )
+        # Echo-only / no-recipe direct case: hand back to the
+        # caller to let PrepareManager surface its own error.
+        return OctomilError(
+            code=OctomilErrorCode.RUNTIME_UNAVAILABLE,
+            message=(
+                f"{stage}: planner candidate for model={effective_model!r} capability={capability!r} "
+                f"carries no usable artifact identity and no static recipe is registered. "
+                f"Have the planner emit download_urls + digest, or use a built-in recipe model."
+            ),
+        )
+
     def prepare(
         self,
         *,
@@ -2048,55 +2199,22 @@ class ExecutionKernel:
 
         policy_preset = defaults.policy_preset or "local_first"
         selection = _resolve_planner_selection(effective_model, capability, policy_preset)
-        candidate = _local_sdk_runtime_candidate(selection)
-        used_static_recipe = None  # type: Optional[Any]
+        planner_candidate = _local_sdk_runtime_candidate(selection)
+        app_scoped = bool(app) or _is_app_ref(model or "")
+        candidate, used_static_recipe = self._select_prepare_candidate(
+            effective_model=effective_model,
+            capability=capability,
+            planner_candidate=planner_candidate,
+            app_scoped=app_scoped,
+        )
         if candidate is None:
-            # PR C: fall back to a static offline recipe for canonical
-            # local models (Kokoro etc.). The recipe produces the same
-            # ``RuntimeCandidatePlan`` shape the planner would emit,
-            # so the rest of the prepare pipeline runs unchanged. This
-            # makes ``octomil prepare kokoro-82m --capability tts``
-            # work without planner / network — the happy path
-            # one-liner the embedded TTS bootstrap needs.
-            #
-            # The recipe table is deliberately narrow (canonical
-            # public bundles only); models that need auth or private
-            # CDNs hit the original "planner unavailable" error so we
-            # never silently substitute a public mirror for a private
-            # artifact.
-            from octomil.runtime.lifecycle.static_recipes import (
-                get_static_recipe,
-                static_recipe_candidate,
+            raise self._no_prepare_candidate_error(
+                stage="prepare",
+                effective_model=effective_model,
+                capability=capability,
+                planner_candidate=planner_candidate,
+                app_scoped=app_scoped,
             )
-
-            used_static_recipe = get_static_recipe(effective_model, capability)
-            if used_static_recipe is None:
-                raise OctomilError(
-                    code=OctomilErrorCode.RUNTIME_UNAVAILABLE,
-                    message=(
-                        f"prepare: planner returned no local sdk_runtime candidate for "
-                        f"model={effective_model!r} capability={capability!r} and the SDK has "
-                        f"no static offline recipe for it. Either the model is cloud-only, "
-                        f"the planner is offline, or this is a private artifact that requires "
-                        f"OCTOMIL_SERVER_KEY auth. Set OCTOMIL_SERVER_KEY or use a model with "
-                        f"a static recipe (e.g. 'kokoro-82m')."
-                    ),
-                )
-            candidate = static_recipe_candidate(effective_model, capability)
-            if candidate is None:
-                # Recipe present but to_runtime_candidate() refused
-                # (multi-file pre-manifest, malformed). Surface the
-                # same actionable error as no-recipe rather than
-                # crashing PrepareManager.prepare with None.
-                raise OctomilError(
-                    code=OctomilErrorCode.RUNTIME_UNAVAILABLE,
-                    message=(
-                        f"prepare: static recipe for model={effective_model!r} "
-                        f"capability={capability!r} could not be materialized as a "
-                        f"single-file candidate. Multi-file recipes need manifest_uri "
-                        f"support in PrepareManager (planned follow-up)."
-                    ),
-                )
 
         from octomil.runtime.lifecycle.prepare_manager import PrepareManager, PrepareMode
 
@@ -2181,15 +2299,21 @@ class ExecutionKernel:
         policy_preset = defaults.policy_preset or "local_first"
         selection = _resolve_planner_selection(effective_model, capability, policy_preset)
         runtime_model = _runtime_model_for_selection(selection, effective_model)
-        candidate = _local_sdk_runtime_candidate(selection)
+        planner_candidate = _local_sdk_runtime_candidate(selection)
+        app_scoped = bool(app) or _is_app_ref(model or "")
+        candidate, used_static_recipe = self._select_prepare_candidate(
+            effective_model=effective_model,
+            capability=capability,
+            planner_candidate=planner_candidate,
+            app_scoped=app_scoped,
+        )
         if candidate is None:
-            raise OctomilError(
-                code=OctomilErrorCode.RUNTIME_UNAVAILABLE,
-                message=(
-                    f"warmup: planner returned no local sdk_runtime candidate for "
-                    f"model={effective_model!r} capability={capability!r}. The model is "
-                    f"either cloud-only or the planner is offline."
-                ),
+            raise self._no_prepare_candidate_error(
+                stage="warmup",
+                effective_model=effective_model,
+                capability=capability,
+                planner_candidate=planner_candidate,
+                app_scoped=app_scoped,
             )
 
         # Run prepare via PrepareManager directly (mode=EXPLICIT) so
@@ -2203,6 +2327,14 @@ class ExecutionKernel:
 
         manager = self._prepare_manager or PrepareManager()
         prepare_outcome = manager.prepare(candidate, mode=PrepareMode.EXPLICIT)
+        # Mirror ``prepare()``: when the kernel substituted a static
+        # recipe, run its MaterializationPlan after the download.
+        # When the planner emitted ``source='static_recipe'``,
+        # PrepareManager already ran materialization itself.
+        if used_static_recipe is not None:
+            from octomil.runtime.lifecycle.materialization import Materializer
+
+            Materializer().materialize(prepare_outcome.artifact_dir, used_static_recipe.materialization)
         artifact_dir = str(prepare_outcome.artifact_dir)
         cache_key = self._warmup_cache_key(capability, runtime_model, candidate)
 
