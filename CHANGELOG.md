@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 4.12.2 (2026-04-28)
+
+### Fixes
+
+- split local_tts_runtime_unavailable into 3 specific failure modes + e2e roundtrip pin (#467)
+
 ## 4.12.1 (2026-04-28)
 
 ### Fixes
