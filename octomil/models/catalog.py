@@ -519,8 +519,17 @@ def _hydrate_manifest(manifest: dict) -> dict[str, ModelEntry]:
         if not isinstance(family_data, dict) or "variants" not in family_data:
             continue
 
-        # Extract task_taxonomy from family level (renamed from legacy "modalities")
-        family_task_taxonomy: list[str] = family_data.get("task_taxonomy", family_data.get("modalities", []))
+        # Extract task_taxonomy from family level (renamed from legacy
+        # "modalities"). The new key takes precedence over the legacy alias
+        # even when explicitly empty — an empty ``task_taxonomy: []`` in
+        # the manifest is a deliberate "no taxonomy", not a fallback signal.
+        # Only fall through to ``modalities`` when ``task_taxonomy`` is
+        # entirely absent or null. The non-optional field tolerates ``None``
+        # via the trailing ``or []``.
+        family_task_taxonomy_raw = family_data.get("task_taxonomy")
+        if family_task_taxonomy_raw is None:
+            family_task_taxonomy_raw = family_data.get("modalities")
+        family_task_taxonomy: list[str] = family_task_taxonomy_raw or []
 
         for variant_name, variant_data in family_data["variants"].items():
             packages: list[dict] = []
