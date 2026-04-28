@@ -23,6 +23,76 @@ from dataclasses import dataclass, field
 from typing import Any, Optional
 
 
+@dataclass(frozen=True)
+class VoiceInfo:
+    """A single entry in a TTS model's voice catalog.
+
+    ``sid`` is the sherpa-onnx speaker id for local artifacts;
+    ``None`` for hosted/cloud catalogs whose provider does not
+    expose an integer index. ``default`` flags the voice the
+    backend uses when ``synthesize_speech(voice=None)`` falls back
+    to the model default.
+    """
+
+    id: str
+    sid: Optional[int] = None
+    default: bool = False
+
+
+@dataclass(frozen=True)
+class VoiceCatalog:
+    """Result of :meth:`FacadeVoices.list`.
+
+    Captures *which artifact* would actually serve a synthesis
+    request right now — same code path as the synthesis route, so
+    UI listings and synthesis validation can never disagree about
+    what voices a caller is allowed to use.
+
+    Fields:
+
+      - ``model`` — the canonical runtime model id the kernel
+        resolved (post-app-ref, post-planner).
+      - ``locality`` — ``"on_device"`` or ``"cloud"``.
+      - ``source`` — provenance of the catalog: ``"voices_txt"``
+        when read from the prepared artifact's sidecar,
+        ``"static_recipe"`` when the static recipe's manifest was
+        used (no prepared dir on disk yet), ``"hosted"`` for cloud
+        provider catalogs.
+      - ``artifact_id`` / ``artifact_version`` / ``digest`` —
+        artifact identity. ``artifact_version`` mirrors the
+        ``VERSION`` sidecar materialized from the recipe; ``digest``
+        is the content SHA-256 of the source artifact when known.
+      - ``default_voice`` — convenience pointer to the entry whose
+        ``default=True``. ``None`` for catalogs without a flagged
+        default (single-speaker bundles, hosted providers without
+        a documented default).
+      - ``sample_rate`` — output sample rate in Hz when known.
+      - ``voices`` — ordered list of :class:`VoiceInfo`. Position
+        in the list matches the speaker id for local artifacts.
+    """
+
+    model: str
+    locality: str  # "on_device" | "cloud"
+    source: str  # "voices_txt" | "static_recipe" | "hosted"
+    voices: tuple[VoiceInfo, ...]
+    artifact_id: Optional[str] = None
+    artifact_version: Optional[str] = None
+    digest: Optional[str] = None
+    default_voice: Optional[str] = None
+    sample_rate: Optional[int] = None
+
+    @property
+    def voice_ids(self) -> tuple[str, ...]:
+        return tuple(v.id for v in self.voices)
+
+    def get(self, voice_id: str) -> Optional[VoiceInfo]:
+        target = voice_id.strip().lower()
+        for v in self.voices:
+            if v.id.lower() == target:
+                return v
+        return None
+
+
 @dataclass
 class SpeechRoute:
     """Routing metadata attached to a :class:`SpeechResponse`.
@@ -121,4 +191,55 @@ class FacadeSpeech:
         )
 
 
-__all__ = ["FacadeSpeech", "SpeechResponse", "SpeechRoute"]
+class FacadeVoices:
+    """``client.audio.voices`` namespace.
+
+    Construct via :class:`FacadeAudio`; do not instantiate directly.
+    Delegates to
+    :meth:`octomil.execution.kernel.ExecutionKernel.list_speech_voices`
+    so the *same* artifact-aware resolver powers both UI listing
+    and the synthesis-time voice validation. That is the closure-
+    of-loop guarantee: a voice that ``voices.list`` advertises
+    will never be rejected by ``speech.create`` / ``speech.stream``,
+    and vice versa.
+    """
+
+    def __init__(self, kernel: Any) -> None:
+        self._kernel = kernel
+
+    async def list(
+        self,
+        *,
+        model: str,
+        policy: Optional[str] = None,
+        app: Optional[str] = None,
+    ) -> VoiceCatalog:
+        """Return the ordered voice catalog for ``model`` under
+        the active routing policy.
+
+        :param model: Octomil model ref. Same vocabulary as
+            ``speech.create(model=...)``: ``@app/<slug>/tts``,
+            a hosted provider model id (``tts-1``), or a local
+            model id (``kokoro-82m``).
+        :param policy: Optional routing policy preset override;
+            same values as ``speech.create(policy=...)``.
+        :param app: Optional explicit app slug.
+
+        Returns a :class:`VoiceCatalog` whose ``locality`` mirrors
+        what ``speech.create`` would route to right now.
+        """
+        return await self._kernel.list_speech_voices(
+            model=model,
+            policy=policy,
+            app=app,
+        )
+
+
+__all__ = [
+    "FacadeSpeech",
+    "FacadeVoices",
+    "SpeechResponse",
+    "SpeechRoute",
+    "VoiceCatalog",
+    "VoiceInfo",
+]

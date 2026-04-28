@@ -16,8 +16,9 @@ import logging
 import os
 import struct
 import time
+from dataclasses import dataclass
 from io import BytesIO
-from typing import Any
+from typing import Any, Optional
 
 from octomil.errors import OctomilError, OctomilErrorCode
 from octomil.runtime.core.base import BenchmarkResult, EnginePlugin
@@ -32,6 +33,10 @@ logger = logging.getLogger(__name__)
 # voice the backend uses when the request does not specify one.
 _SHERPA_TTS_MODELS: dict[str, tuple[str, str]] = {
     "kokoro-82m": ("kokoro", "af_bella"),
+    # Legacy v0.19 bundle, retained as an explicit-pin id alongside
+    # ``kokoro-82m``. ``af_bella`` is at sid=1 in v0.19's voices.bin
+    # and is the default for both bundles.
+    "kokoro-en-v0_19": ("kokoro", "af_bella"),
     "piper-en-amy": ("vits", "amy"),
     "piper-en-ryan": ("vits", "ryan"),
 }
@@ -207,6 +212,103 @@ def _read_voice_manifest(model_dir: str) -> tuple[str, ...]:
         return ()
     with open(sidecar, encoding="utf-8") as f:
         return tuple(line.strip() for line in f if line.strip())
+
+
+def _read_artifact_version(model_dir: str) -> str:
+    """Read the ``VERSION`` sidecar (or empty string)."""
+    version_path = os.path.join(model_dir, "VERSION")
+    if not os.path.isfile(version_path):
+        return ""
+    try:
+        with open(version_path, encoding="utf-8") as f:
+            return f.read().strip()
+    except OSError:
+        return ""
+
+
+@dataclass(frozen=True)
+class ResolvedVoiceCatalog:
+    """Engine-side projection of a TTS voice catalog.
+
+    Single-source-of-truth for both the synthesis path
+    (``_voice_to_sid``) and the listing path
+    (``list_speech_voices``). Position in ``voices`` matches
+    sherpa-onnx speaker id; ``source`` is provenance — either
+    ``"voices_txt"`` (read from the prepared artifact's sidecar),
+    ``"static_recipe"`` (no sidecar yet, manifest came from the
+    recipe), or ``""`` (no catalog known).
+    """
+
+    voices: tuple[str, ...]
+    source: str = ""
+    artifact_version: str = ""
+
+
+def resolve_voice_catalog(
+    model_name: str,
+    *,
+    prepared_model_dir: Optional[str] = None,
+    static_recipe_manifest: tuple[str, ...] = (),
+    static_recipe_artifact_version: str = "",
+) -> ResolvedVoiceCatalog:
+    """Single resolver shared by synthesis, validation, and listing.
+
+    Resolution order:
+
+      1. ``voices.txt`` sidecar in ``prepared_model_dir`` —
+         authoritative for the artifact actually on disk.
+      2. ``VERSION`` + layout fallback under ``prepared_model_dir``
+         (handles sidecar-less prepared dirs from before the
+         manifest patch).
+      3. ``static_recipe_manifest`` — used when no prepared dir
+         exists yet (the listing path can preview the catalog
+         without forcing a download).
+      4. Model-id legacy fallback (``catalog_for_model``), only
+         when no other signal is available.
+
+    Returns an empty catalog (``voices=()``) when none of the above
+    yields a result; callers translate that into a strict refusal
+    for the explicit-voice path or a "no catalog known" listing.
+    """
+    if prepared_model_dir:
+        sidecar = _read_voice_manifest(prepared_model_dir)
+        if sidecar:
+            return ResolvedVoiceCatalog(
+                voices=sidecar,
+                source="voices_txt",
+                artifact_version=_read_artifact_version(prepared_model_dir),
+            )
+        layout = fallback_catalog_for_artifact(model_name, prepared_model_dir)
+        if layout:
+            return ResolvedVoiceCatalog(
+                voices=layout,
+                source="voices_txt",  # derived from artifact-on-disk signals
+                artifact_version=_read_artifact_version(prepared_model_dir),
+            )
+        # Prepared dir exists but is ambiguous (layout + model id
+        # disagree, or layout is unrecognized). Refuse to fall
+        # through to the model-id catalog or the recipe manifest:
+        # an old pre-manifest dir under the same model id would
+        # otherwise inherit the WRONG catalog and re-introduce the
+        # silent sid-aliasing bug.
+        return ResolvedVoiceCatalog(voices=(), source="", artifact_version="")
+
+    if static_recipe_manifest:
+        return ResolvedVoiceCatalog(
+            voices=static_recipe_manifest,
+            source="static_recipe",
+            artifact_version=static_recipe_artifact_version,
+        )
+
+    name_fallback = catalog_for_model(model_name)
+    if name_fallback:
+        return ResolvedVoiceCatalog(
+            voices=name_fallback,
+            source="static_recipe",
+            artifact_version="",
+        )
+
+    return ResolvedVoiceCatalog(voices=(), source="", artifact_version="")
 
 
 def _build_kokoro_model_config(sherpa_onnx: Any, model_dir: str) -> Any:
@@ -583,15 +685,13 @@ class _SherpaTtsBackend:
         if not voice:
             return 0
 
+        # Single shared resolver: same path the listing API
+        # (``ExecutionKernel.list_speech_voices``) and the kernel
+        # preflight call. Closes the loop — a voice that listing
+        # advertises will resolve here and vice versa.
         model_dir = self._resolve_model_dir(self._model_name)
-        manifest = _read_voice_manifest(model_dir)
-        if not manifest:
-            # Sidecar is missing. Use VERSION + layout to choose a
-            # catalog that matches the actual artifact, NOT just the
-            # model id — an old pre-manifest dir could otherwise
-            # inherit the wrong catalog and re-introduce the silent
-            # sid-aliasing bug the manifest patch fixes.
-            manifest = fallback_catalog_for_artifact(self._model_name, model_dir)
+        resolved = resolve_voice_catalog(self._model_name, prepared_model_dir=model_dir)
+        manifest = resolved.voices
 
         if not manifest:
             # No catalog available. For an explicit caller-supplied
