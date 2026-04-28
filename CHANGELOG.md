@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+## 4.12.0 (2026-04-28)
+
+### Features
+
+- manifest_uri + source='static_recipe' planner contract (PR C-followup) (#459)
+
+### Fixes
+
+- resolve catalog.py:523 mypy error (#460)
+
 ## 4.11.0 (2026-04-27)
 
 Bundles the prepare-lifecycle / embedded-Python reliability work from PRs #451–457.
