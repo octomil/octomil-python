@@ -386,11 +386,7 @@ class _SherpaTtsBackend:
             self.load_model(self._model_name)
         assert self._tts is not None
 
-        explicit_voice = (voice or "").strip()
-        sid = self._resolve_sid(explicit_voice)
-        # Reported voice: caller's explicit choice, else the per-model
-        # default label (advisory — sid=0 is the contracted default).
-        reported_voice = explicit_voice or self._default_voice
+        sid, reported_voice = self.validate_voice(voice)
 
         audio = self._tts.generate(text, sid=sid, speed=speed)
         samples = list(audio.samples)
@@ -480,6 +476,35 @@ class _SherpaTtsBackend:
         """
         return self._resolve_sid((voice or "").strip())
 
+    def validate_voice(self, voice: str | None) -> tuple[int, str]:
+        """Resolve a caller-supplied voice synchronously.
+
+        Returns ``(sid, resolved_label)``. Raises ``OctomilError`` with
+        ``voice_not_supported_for_model`` when an explicit voice is
+        unsupported. Public surface so the kernel and HTTP route can
+        validate *before* a stream's first event / response status is
+        committed — without this check, the async-generator setup in
+        :meth:`synthesize_stream` only raises after the consumer has
+        already started iterating.
+
+        Default-label resolution: when ``voice`` is empty/None and the
+        model has a manifest, the label returned is ``manifest[0]``
+        (the actual sid=0 speaker). This fixes the Kokoro drift where
+        ``_default_voice='af_bella'`` was reported even though sid=0
+        is ``af``. Catalog-less models (Piper) fall back to
+        ``self._default_voice`` since there's no authoritative source.
+        """
+        explicit = (voice or "").strip()
+        sid = self._resolve_sid(explicit)
+        if explicit:
+            return sid, explicit
+        manifest = _read_voice_manifest(self._resolve_model_dir(self._model_name))
+        if not manifest:
+            manifest = catalog_for_model(self._model_name)
+        if manifest:
+            return 0, manifest[0]
+        return 0, self._default_voice or ""
+
     def list_models(self) -> list[str]:
         return [self._model_name] if self._model_name else []
 
@@ -534,13 +559,11 @@ class _SherpaTtsBackend:
             self.load_model(self._model_name)
         assert self._tts is not None
 
-        # Caller-supplied vs. default-label distinction matters: empty
-        # voice -> sid=0 (the model's first speaker). Don't promote
-        # self._default_voice into the lookup, because for catalog-less
-        # models (Piper) that label isn't in any manifest and would
-        # raise voice_not_supported_for_model on a default request.
-        explicit_voice = (voice or "").strip()
-        sid = self._resolve_sid(explicit_voice)
+        # validate_voice runs before the worker thread spins up, so
+        # voice-not-supported is raised from the synchronous entry to
+        # the async generator (i.e. before any consumer iteration)
+        # rather than emerging as a mid-stream exception.
+        sid, _resolved_label = self.validate_voice(voice)
 
         bridge = _StreamBridge(maxsize=chunk_max_queue)
         loop = asyncio.get_running_loop()

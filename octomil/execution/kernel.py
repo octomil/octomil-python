@@ -267,9 +267,19 @@ def _build_local_realtime_stream(
         StreamingMode,
     )
 
-    inner = backend.synthesize_stream(text, voice, speed)
+    # Voice resolution must run synchronously here so an unsupported
+    # explicit voice raises BEFORE we hand the caller a stream object
+    # whose producer would emit SpeechStreamStarted ahead of the real
+    # error. Backends that don't expose validate_voice (test fakes,
+    # legacy adapters) fall back to advisory metadata only.
     sample_rate = int(getattr(backend, "_sample_rate", 24000) or 24000)
-    resolved_voice = (voice or getattr(backend, "_default_voice", "") or None) or None
+    validate_voice = getattr(backend, "validate_voice", None)
+    if callable(validate_voice):
+        _sid_unused, resolved_voice = validate_voice(voice)
+    else:
+        resolved_voice = (voice or getattr(backend, "_default_voice", "") or None) or None
+
+    inner = backend.synthesize_stream(text, voice, speed)
 
     async def producer():
         t0 = time.monotonic()

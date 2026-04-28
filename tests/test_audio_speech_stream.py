@@ -680,6 +680,163 @@ def test_piper_default_voice_does_not_raise_on_create_or_stream(tmp_path):
     assert "voice_not_supported_for_model" in str(ei.value)
 
 
+def test_kokoro_default_voice_label_resolves_via_manifest(tmp_path):
+    """sid=0's reported label should be the manifest's first entry, not
+    the engine's static ``_default_voice`` string.
+
+    Pre-fix Kokoro reported ``af_bella`` for ``voice=None`` even when
+    the prepared manifest's sid=0 was actually ``af``. validate_voice
+    now reads manifest[0] for the default-label so reports are
+    accurate. Catalog-less models (Piper) keep falling back to
+    ``_default_voice`` since there's no authoritative source.
+    """
+    from octomil.runtime.engines.sherpa.engine import _SherpaTtsBackend
+
+    sidecar = tmp_path / "voices.txt"
+    # First entry intentionally != backend's _default_voice ('af_bella').
+    sidecar.write_text("af\naf_bella\nam_michael\n")
+
+    backend = _SherpaTtsBackend("kokoro-82m", model_dir=str(tmp_path))
+    sid, label = backend.validate_voice(None)
+    assert sid == 0
+    assert label == "af", (
+        f"sid=0 should resolve to manifest[0] ('af'), got {label!r} "
+        f"— this is the Kokoro default-label drift the reviewer flagged"
+    )
+
+    # Explicit name still wins.
+    sid, label = backend.validate_voice("af_bella")
+    assert sid == 1
+    assert label == "af_bella"
+
+
+def test_piper_default_voice_label_falls_back_to_default_string(tmp_path):
+    """Catalog-less Piper has no manifest; default label keeps using
+    ``_default_voice`` rather than failing or returning empty."""
+    from octomil.runtime.engines.sherpa.engine import _SherpaTtsBackend
+
+    backend = _SherpaTtsBackend("piper-en-amy", model_dir=str(tmp_path))
+    sid, label = backend.validate_voice(None)
+    assert sid == 0
+    assert label == "amy"
+
+
+def test_validate_voice_raises_synchronously_for_unsupported_explicit_voice(tmp_path):
+    """The whole point of validate_voice is to raise BEFORE
+    SpeechStreamStarted / 200 OK is committed."""
+    from octomil.errors import OctomilError, OctomilErrorCode
+    from octomil.runtime.engines.sherpa.engine import _SherpaTtsBackend
+
+    sidecar = tmp_path / "voices.txt"
+    sidecar.write_text("af\naf_bella\n")
+
+    backend = _SherpaTtsBackend("kokoro-82m", model_dir=str(tmp_path))
+    with pytest.raises(OctomilError) as ei:
+        backend.validate_voice("alloy")
+    assert ei.value.code == OctomilErrorCode.INVALID_INPUT
+
+
+@pytest.mark.asyncio
+async def test_stream_does_not_emit_started_for_unsupported_voice(tmp_path):
+    """Reviewer P1: validate_voice runs synchronously in
+    _build_local_realtime_stream, so an unsupported explicit voice
+    raises during synthesize_speech_stream's await — the caller never
+    receives a SpeechStream object that would emit a successful
+    SpeechStreamStarted event."""
+    from octomil.errors import OctomilError
+
+    class _UnsupportedVoiceBackend:
+        """Minimal backend that raises in validate_voice."""
+
+        _sample_rate = SAMPLE_RATE
+        _default_voice = "af_bella"
+        _model_name = "kokoro-82m"
+        supports_streaming = True
+        stream_started = False
+
+        def validate_voice(self, voice):
+            raise OctomilError(
+                code=__import__("octomil.errors", fromlist=["OctomilErrorCode"]).OctomilErrorCode.INVALID_INPUT,
+                message="voice_not_supported_for_model: alloy",
+            )
+
+        async def synthesize_stream(self, text, voice=None, speed=1.0):
+            self.stream_started = True
+            yield {"pcm_s16le": b"\x00\x00", "num_samples": 1, "sample_rate": SAMPLE_RATE}
+
+    from octomil.execution.kernel import _build_local_realtime_stream
+
+    backend = _UnsupportedVoiceBackend()
+    with pytest.raises(OctomilError):
+        # Construction itself must raise — no SpeechStream returned.
+        _build_local_realtime_stream(
+            backend=backend,
+            text="hello",
+            voice="alloy",
+            speed=1.0,
+            runtime_model="kokoro-82m",
+            policy_preset="local_only",
+            fallback_used=False,
+        )
+    # The producer was never even constructed, so synthesize_stream
+    # was not consumed.
+    assert backend.stream_started is False
+
+
+@pytest.mark.asyncio
+async def test_http_route_returns_4xx_for_unsupported_voice_before_streaming():
+    """The production /v1/audio/speech/stream route must return a 4xx
+    JSON envelope for unsupported voices, not 200 + binary body that
+    later EOFs with an exception. Binary streaming clients have no
+    way to recover a structured error after status/headers are
+    committed, so pre-validation is mandatory."""
+    pytest.importorskip("fastapi")
+    pytest.importorskip("httpx")
+
+    from octomil.errors import OctomilError, OctomilErrorCode
+
+    class _ValidatingBackend(FakeStreamingBackend):
+        def validate_voice(self, voice):
+            if (voice or "").strip().lower() not in {"af_bella", "am_michael"}:
+                raise OctomilError(
+                    code=OctomilErrorCode.INVALID_INPUT,
+                    message=f"voice_not_supported_for_model: {voice!r} not in catalog",
+                )
+            return 0, voice or "af_bella"
+
+    backend = _ValidatingBackend(num_chunks=1, samples_per_chunk=10, chunk_delay_s=0.001)
+    fake_engine = MagicMock()
+    fake_engine.create_backend.return_value = backend
+
+    from httpx import ASGITransport, AsyncClient
+
+    with (
+        patch("octomil.runtime.engines.sherpa.SherpaTtsEngine", return_value=fake_engine),
+        patch("octomil.serve.app._is_sherpa_tts_model", return_value=True),
+    ):
+        from octomil.serve.app import create_app
+
+        app = create_app("kokoro-82m")
+        await _start_lifespan(app)
+
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            resp = await client.post(
+                "/v1/audio/speech/stream",
+                json={"model": "kokoro-82m", "input": "hello", "voice": "alloy"},
+            )
+            # 4xx before any streaming body is sent — clients see a real
+            # JSON error envelope, not a truncated octet-stream.
+            assert 400 <= resp.status_code < 500, resp.status_code
+            assert resp.headers["content-type"].startswith("application/json"), (
+                f"unsupported voice must return JSON envelope, got {resp.headers['content-type']!r} — "
+                f"streaming clients cannot recover from a 200 octet-stream that EOFs mid-body"
+            )
+            assert "voice_not_supported_for_model" in resp.text
+
+    # Critically: the backend's stream method was never invoked.
+    assert backend.stream_called is False
+
+
 def test_kokoro_explicit_unknown_voice_still_raises(tmp_path):
     """Pinned to make sure the explicit-vs-default refactor didn't
     regress the catalog enforcement. Kokoro has a sidecar; an

@@ -1208,9 +1208,20 @@ def create_app(
                 message="local_tts_streaming_unavailable: backend does not support streaming.",
             )
 
+        # Pre-validate voice synchronously: if we let an unsupported
+        # explicit voice surface mid-stream, the binary client has
+        # already received 200 application/octet-stream and lost the
+        # ability to render a structured 4xx. Run the same backend
+        # voice resolver the SDK uses; OctomilError raised here
+        # bubbles up through the route's exception handler as JSON.
+        validate_voice = getattr(backend, "validate_voice", None)
+        if callable(validate_voice):
+            _sid_unused, resolved_voice = validate_voice(voice)
+        else:
+            resolved_voice = voice or getattr(backend, "_default_voice", "") or ""
+
         state.request_count += 1
         sample_rate = int(getattr(backend, "_sample_rate", 24000) or 24000)
-        resolved_voice = voice or getattr(backend, "_default_voice", "") or ""
         model_name = getattr(backend, "_model_name", "") or ""
 
         async def chunk_iter() -> Any:
