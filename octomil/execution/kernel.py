@@ -1810,12 +1810,32 @@ class ExecutionKernel:
         Pure runtime-availability check — does NOT touch disk. Pairs
         with :meth:`_prepared_local_artifact_dir` to gate
         :meth:`_has_local_tts_backend`.
+
+        Issue E: when ``octomil.runtime.engines.sherpa`` itself fails
+        to import (e.g. stripped CPython 3.9 without ``audioop``,
+        which the stdlib ``wave`` module pulls in), the previous
+        bare ``except Exception: return False`` silently swallowed
+        the real cause and surfaced as a vague
+        ``local_tts_runtime_unavailable``. Log the underlying
+        exception at WARNING so users on embedded interpreters can
+        diagnose without diving into SDK source. Returning False is
+        still correct — the runtime IS unloadable.
         """
         try:
             from octomil.runtime.engines.sherpa import is_sherpa_tts_runtime_available
-
+        except Exception as exc:
+            logger.warning(
+                "Sherpa TTS engine module failed to import (%r). The runtime is unavailable in this Python "
+                "interpreter — most often this is a stripped embedded build (Ren'Py / PyInstaller) missing a "
+                "stdlib transitive dep (e.g. ``audioop`` on CPython 3.9). Install the ``[tts]`` extra or run on "
+                "a Python that ships the missing module.",
+                exc,
+            )
+            return False
+        try:
             return is_sherpa_tts_runtime_available(model)
-        except Exception:
+        except Exception as exc:
+            logger.warning("is_sherpa_tts_runtime_available(%r) raised %r", model, exc)
             return False
 
     def _prepared_local_artifact_dir(self, capability: str, model: str) -> Optional[str]:

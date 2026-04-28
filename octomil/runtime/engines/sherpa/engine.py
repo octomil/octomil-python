@@ -14,8 +14,8 @@ from __future__ import annotations
 
 import logging
 import os
+import struct
 import time
-import wave
 from io import BytesIO
 from typing import Any
 
@@ -391,18 +391,56 @@ class _SherpaTtsBackend:
 
 
 def _samples_to_wav(samples: list[float], sample_rate: int) -> bytes:
-    """Encode float samples in [-1, 1] as a WAV byte string (PCM 16-bit mono)."""
-    import struct
+    """Encode float samples in [-1, 1] as a WAV byte string (PCM 16-bit mono).
 
+    Built by hand with :mod:`struct` rather than the stdlib :mod:`wave`
+    module. ``wave`` transitively imports :mod:`audioop`, which is
+    *removed* in stripped embedded Pythons (Ren'Py, PyInstaller
+    ``--exclude-module audioop``, custom Bazel/Buck toolchains) — and
+    the import is at MODULE LOAD time, so even reaching this function
+    fails before we can touch a single byte. By formatting the
+    RIFF/WAVE/fmt /data chunk headers ourselves we keep the engine
+    importable everywhere ``sherpa_onnx`` itself is.
+
+    Format details (see http://soundfile.sapp.org/doc/WaveFormat/):
+
+      - RIFF header: ``b"RIFF" + <total size - 8> + b"WAVE"``
+      - fmt  chunk:  ``b"fmt " + 16 + PCM(1) + channels + sample_rate
+                       + byte_rate + block_align + bits_per_sample``
+      - data chunk:  ``b"data" + <pcm size> + <pcm bytes>``
+
+    Mono / 16-bit / little-endian — same shape ``wave.open(..., "wb")``
+    used to produce, byte-identical for typical inputs.
+    """
     pcm = bytearray()
     for s in samples:
         clipped = max(-1.0, min(1.0, s))
         pcm += struct.pack("<h", int(clipped * 32767.0))
 
+    n_channels = 1
+    sample_width = 2  # bytes per sample (PCM16)
+    byte_rate = sample_rate * n_channels * sample_width
+    block_align = n_channels * sample_width
+    bits_per_sample = sample_width * 8
+    pcm_size = len(pcm)
+    fmt_chunk = struct.pack(
+        "<4sIHHIIHH",
+        b"fmt ",
+        16,  # subchunk1 size for PCM
+        1,  # AudioFormat = PCM
+        n_channels,
+        sample_rate,
+        byte_rate,
+        block_align,
+        bits_per_sample,
+    )
+    data_header = struct.pack("<4sI", b"data", pcm_size)
+    riff_payload_size = 4 + len(fmt_chunk) + len(data_header) + pcm_size
+    riff_header = struct.pack("<4sI4s", b"RIFF", riff_payload_size, b"WAVE")
+
     buf = BytesIO()
-    with wave.open(buf, "wb") as wf:
-        wf.setnchannels(1)
-        wf.setsampwidth(2)
-        wf.setframerate(sample_rate)
-        wf.writeframes(bytes(pcm))
+    buf.write(riff_header)
+    buf.write(fmt_chunk)
+    buf.write(data_header)
+    buf.write(pcm)
     return buf.getvalue()
