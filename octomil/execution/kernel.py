@@ -2680,25 +2680,38 @@ class ExecutionKernel:
     def _validate_local_voice(self, model: str, voice: Optional[str]) -> None:
         """Pre-flight voice check for local TTS.
 
-        Raises ``OctomilError`` with ``voice_not_supported_for_locality`` when
-        the caller passed a voice that isn't in the local model's catalog.
+        Resolves the caller-supplied voice against the *artifact-
+        specific* speaker catalog: the static recipe's
+        ``voice_manifest`` field. For Piper/VITS the catalog is
+        per-bundle and not yet declared in recipes, so we skip
+        validation and let the backend surface mismatches.
+
+        Raises ``OctomilError`` with ``voice_not_supported_for_model``
+        (and the model id + supported voices) when the voice is not in
+        the catalog. The legacy ``voice_not_supported_for_locality``
+        tag is preserved in the message for callers that grep for it.
         For cloud, voice mismatches surface post-dispatch via provider 4xx.
         """
         if not voice:
             return
-        from octomil.runtime.engines.sherpa import _KOKORO_VOICES, is_sherpa_tts_model
+        from octomil.runtime.engines.sherpa import is_sherpa_tts_model
+        from octomil.runtime.lifecycle.static_recipes import get_static_recipe
 
         if not is_sherpa_tts_model(model):
             return
-        # Kokoro carries a known catalog. For Piper/VITS the catalog is per-bundle;
-        # defer detection to backend until we ship a per-model voices.txt scan.
-        if model.lower().startswith("kokoro-") and voice.lower() not in _KOKORO_VOICES:
+
+        recipe = get_static_recipe(model.lower(), CAPABILITY_TTS)
+        manifest = recipe.materialization.voice_manifest if recipe is not None else ()
+        if not manifest:
+            return
+
+        if voice.strip().lower() not in {name.lower() for name in manifest}:
             raise OctomilError(
                 code=OctomilErrorCode.INVALID_INPUT,
                 message=(
-                    f"voice_not_supported_for_locality: '{voice}' is not in "
-                    f"the Kokoro voice catalog. Cloud voices like 'alloy' "
-                    f"or 'onyx' are not valid for local Kokoro execution."
+                    f"voice_not_supported_for_model: voice {voice!r} is not in the "
+                    f"speaker catalog for model {model!r}. Supported voices: "
+                    f"{', '.join(manifest)}. (voice_not_supported_for_locality)"
                 ),
             )
 

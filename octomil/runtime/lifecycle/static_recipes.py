@@ -147,6 +147,30 @@ class StaticRecipe:
 _KOKORO_82M_TARBALL_SHA256 = "sha256:912804855a04745fa77a30be545b3f9a5d15c4d66db00b88cbcd4921df605ac7"
 
 
+# kokoro-en-v0_19 ships an 11-speaker voices.bin. The order below
+# is the bundle's authoritative speaker table — position ==
+# sherpa-onnx speaker id. The 28-name catalog that used to live in
+# ``sherpa.engine._KOKORO_VOICES`` was for a *different* (newer)
+# Kokoro bundle and silently aliased anything past index 10 to the
+# default speaker because sherpa-onnx clamps out-of-range sids to 0.
+# Treat this tuple as the contract for the kokoro-82m artifact: any
+# change requires re-pinning the tarball digest above and updating
+# the regression tests in tests/test_kokoro_voice_manifest.py.
+KOKORO_EN_V0_19_VOICES: tuple[str, ...] = (
+    "af",
+    "af_bella",
+    "af_nicole",
+    "af_sarah",
+    "af_sky",
+    "am_adam",
+    "am_michael",
+    "bf_emma",
+    "bf_isabella",
+    "bm_george",
+    "bm_lewis",
+)
+
+
 _KOKORO_82M_RECIPE = StaticRecipe(
     model_id="kokoro-82m",
     capability="tts",
@@ -185,6 +209,12 @@ _KOKORO_82M_RECIPE = StaticRecipe(
         # Kokoro's tarball contains no symlinks/hardlinks; default
         # safety policy refuses both, which is what we want.
         safety_policy=MaterializationSafetyPolicy(),
+        # Materialize the bundle's authoritative speaker table as a
+        # voices.txt sidecar so the sherpa engine resolves voices
+        # against THIS artifact's catalog rather than a global
+        # hardcoded list. See KOKORO_EN_V0_19_VOICES for rationale.
+        voice_manifest=KOKORO_EN_V0_19_VOICES,
+        artifact_version="kokoro-en-v0_19",
     ),
     notes=(
         "Kokoro v0.19 multi-speaker English TTS published by "
