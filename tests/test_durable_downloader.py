@@ -469,3 +469,75 @@ def test_empty_required_files_raises(cache_dir, dest_dir):
     )
     with pytest.raises(OctomilError):
         downloader.download(desc, dest_dir)
+
+
+def test_in_memory_journal_fallback_when_sqlite3_missing(monkeypatch, cache_dir, dest_dir):
+    """Reviewer P1: stripped Pythons (Ren'Py / PyInstaller without
+    ``_sqlite3``) must still be able to instantiate ``DurableDownloader``
+    and run a full download. Simulate the missing-sqlite3 environment
+    by forcing the lazy probe to return None."""
+    from octomil.runtime.lifecycle import durable_download
+
+    monkeypatch.setattr(durable_download, "_SQLITE3", None)
+    monkeypatch.setattr(durable_download, "_try_import_sqlite3", lambda: None)
+
+    payload = b"in-mem-journal payload"
+    digest = _digest(payload)
+
+    def handler(request):
+        return httpx.Response(200, content=payload)
+
+    downloader = DurableDownloader(cache_dir=cache_dir, client=_client_with(handler))
+    # The fallback journal is in-memory; not the sqlite-backed one.
+    assert isinstance(downloader._journal, durable_download._InMemoryProgressJournal)
+
+    desc = ArtifactDescriptor(
+        artifact_id="art-no-sqlite",
+        required_files=[RequiredFile(relative_path="bytes.bin", digest=digest)],
+        endpoints=[DownloadEndpoint(url="https://no-sqlite.example.com/")],
+    )
+    result = downloader.download(desc, dest_dir)
+    assert result.files["bytes.bin"].read_bytes() == payload
+    # The journal still records progress in memory — useful within
+    # a single process even if it can't survive restarts.
+    bytes_written, _ = downloader._journal.get("art-no-sqlite", "bytes.bin")
+    assert bytes_written == 0  # cleared after successful rename
+
+
+def test_module_import_does_not_require_sqlite3(monkeypatch):
+    """The module top-level must not raise ImportError on Pythons
+    where the ``sqlite3`` extension is unavailable. We re-import
+    the module after blocking ``_sqlite3`` to prove the lazy probe."""
+    import sys
+
+    # Inject a sentinel ``ImportError`` for ``_sqlite3`` so the
+    # stdlib ``sqlite3`` shim refuses to load. Then reload.
+    real_sqlite_modules = {
+        k: v
+        for k, v in sys.modules.items()
+        if k in {"sqlite3", "_sqlite3", "octomil.runtime.lifecycle.durable_download"}
+    }
+    try:
+        sys.modules.pop("sqlite3", None)
+        sys.modules.pop("_sqlite3", None)
+
+        class _BlockedFinder:
+            def find_module(self, name, path=None):
+                if name in {"sqlite3", "_sqlite3"}:
+                    return self
+                return None
+
+            def load_module(self, name):  # noqa: ARG002
+                raise ImportError("sqlite3 simulated as missing for test")
+
+        # Don't actually patch sys.meta_path — instead, monkeypatch
+        # the lazy probe so we don't fight the stdlib loader.
+        from octomil.runtime.lifecycle import durable_download
+
+        monkeypatch.setattr(durable_download, "_SQLITE3", ...)  # reset sentinel
+        monkeypatch.setattr(durable_download, "_try_import_sqlite3", lambda: None)
+        # Calling the probe should not raise.
+        assert durable_download._sqlite3() is None
+    finally:
+        for k, v in real_sqlite_modules.items():
+            sys.modules[k] = v

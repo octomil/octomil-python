@@ -163,12 +163,16 @@ class PrepareManager:
 
         # PR C-followup option 2: when the planner emits
         # ``source="static_recipe"`` + ``recipe_id``, expand the
-        # candidate from the SDK's built-in recipe table. This lets
-        # the dashboard say "use kokoro-82m" without re-publishing
-        # the canonical URL/digest/required_files in every plan.
-        # Custom-artifact sources (future ``"hf_snapshot"``, etc.)
-        # ride the same discriminator.
-        artifact = self._expand_static_recipe_source(artifact)
+        # candidate from the SDK's built-in recipe table. The
+        # registered ``StaticRecipe`` carries both download metadata
+        # AND a ``MaterializationPlan`` (e.g. Kokoro's tarball
+        # extraction). Capture the recipe so we can run the plan
+        # after the download lands — without this, a server-emitted
+        # ``source='static_recipe'`` candidate would leave Kokoro
+        # as ``kokoro-en-v0_19.tar.bz2`` on disk instead of the
+        # extracted ``model.onnx`` / ``voices.bin`` / ``tokens.txt`` /
+        # ``espeak-ng-data/``.
+        artifact, used_static_recipe = self._expand_static_recipe_source(artifact)
 
         descriptor = self._build_descriptor(artifact)
         artifact_dir = self.artifact_dir_for(descriptor.artifact_id)
@@ -176,6 +180,17 @@ class PrepareManager:
 
         cached_files = self._already_verified(descriptor, artifact_dir)
         if cached_files is not None:
+            # Even on a cache hit, run materialization idempotently
+            # — the marker check inside Materializer makes a
+            # complete layout a no-op, but a partial extraction
+            # (interrupted before ``required_outputs`` all landed)
+            # gets re-extracted from the on-disk archive. Without
+            # this, the cache hit could return ``files`` pointing
+            # only at the tarball.
+            if used_static_recipe is not None:
+                from octomil.runtime.lifecycle.materialization import Materializer
+
+                Materializer().materialize(artifact_dir, used_static_recipe.materialization)
             return PrepareOutcome(
                 artifact_id=descriptor.artifact_id,
                 artifact_dir=artifact_dir,
@@ -187,6 +202,17 @@ class PrepareManager:
             )
 
         result = self._downloader.download(descriptor, artifact_dir)
+        # Post-download materialization. The kernel does NOT know
+        # archive shapes / extension matchers / Kokoro layouts — it
+        # just hands the recipe's ``MaterializationPlan`` to the
+        # generic Materializer (archive extraction, safety filtering,
+        # idempotency, required-output verification). ``kind='none'``
+        # plans (single-file backends like whisper.cpp) are a no-op
+        # aside from layout validation.
+        if used_static_recipe is not None:
+            from octomil.runtime.lifecycle.materialization import Materializer
+
+            Materializer().materialize(artifact_dir, used_static_recipe.materialization)
         return PrepareOutcome(
             artifact_id=descriptor.artifact_id,
             artifact_dir=artifact_dir,
@@ -220,19 +246,26 @@ class PrepareManager:
         When the planner picks a canonical built-in artifact and
         emits ``source="static_recipe"`` + ``recipe_id``, the SDK
         treats the recipe as the source of truth for URL / digest /
-        required_files. Any of these fields the planner *also*
-        emitted is treated as a hint and cross-checked: a mismatch
-        between the planner's declared digest and the recipe's
-        digest is rejected loudly (would otherwise let a compromised
-        planner direct users to forged bytes under a known recipe id).
+        required_files / **MaterializationPlan**. Any of these
+        fields the planner *also* emitted is treated as a hint and
+        cross-checked: a mismatch between the planner's declared
+        digest and the recipe's digest is rejected loudly (would
+        otherwise let a compromised planner direct users to forged
+        bytes under a known recipe id).
 
-        Returns the original ``artifact`` unchanged when ``source``
-        is unset / unknown — this preserves the option-1 path
-        (planner-supplied metadata used as-is).
+        Returns ``(artifact, recipe_or_None)``. ``recipe`` is the
+        registered :class:`StaticRecipe` (or ``None`` when the
+        planner didn't request expansion); the caller threads it
+        through to :class:`Materializer` so the post-download
+        archive layout (Kokoro tarball, etc.) actually gets
+        unpacked. Without this round-trip a planner-emitted
+        ``source='static_recipe'`` would download
+        ``kokoro-en-v0_19.tar.bz2`` and return the tarball path —
+        not ``model.onnx`` / ``voices.bin`` / etc.
         """
         source = getattr(artifact, "source", None)
         if source is None:
-            return artifact
+            return artifact, None
         if source != "static_recipe":
             raise OctomilError(
                 code=ErrorCode.INVALID_INPUT,
@@ -308,7 +341,7 @@ class PrepareManager:
 
         from octomil.runtime.planner.schemas import ArtifactDownloadEndpoint
 
-        return replace(
+        expanded = replace(
             artifact,
             artifact_id=artifact.artifact_id or recipe.model_id,
             digest=only.digest,
@@ -320,7 +353,10 @@ class PrepareManager:
                 )
             ],
             size_bytes=artifact.size_bytes or only.size_bytes,
+            source=None,
+            recipe_id=None,
         )
+        return expanded, recipe
 
     def _build_descriptor(self, artifact) -> ArtifactDescriptor:
         if not artifact.download_urls:
@@ -530,6 +566,46 @@ def _validate_for_prepare(candidate: RuntimeCandidatePlan) -> None:
                 "This is a server contract violation; refusing to prepare."
             ),
         )
+    # PR C-followup option 2: ``source="static_recipe"`` lets the
+    # planner select a canonical built-in artifact by ``recipe_id``
+    # alone — the SDK fills download_urls / digest / required_files
+    # from its registry. Validate by checking the recipe is known
+    # rather than insisting on planner-supplied url/digest. Unknown
+    # ``source`` values are rejected so we don't silently pass
+    # through future shapes the SDK doesn't understand.
+    source = getattr(artifact, "source", None)
+    if source is not None:
+        if source != "static_recipe":
+            raise OctomilError(
+                code=ErrorCode.INVALID_INPUT,
+                message=(
+                    f"Artifact source {source!r} is not recognized by this SDK release. "
+                    f"Known sources: 'static_recipe'."
+                ),
+            )
+        recipe_id = getattr(artifact, "recipe_id", None)
+        if not recipe_id:
+            raise OctomilError(
+                code=ErrorCode.INVALID_INPUT,
+                message=(
+                    "Artifact has source='static_recipe' but no recipe_id. " "The planner must name a specific recipe."
+                ),
+            )
+        from octomil.runtime.lifecycle.static_recipes import _RECIPES
+
+        if not any(r.model_id == recipe_id or mid == recipe_id for (mid, _cap), r in _RECIPES.items()):
+            raise OctomilError(
+                code=ErrorCode.INVALID_INPUT,
+                message=(
+                    f"Artifact source='static_recipe' but recipe_id {recipe_id!r} is "
+                    f"not in this SDK's built-in recipe table."
+                ),
+            )
+        # Static-recipe expansion happens at prepare time (after
+        # this validator runs); the rest of the structural checks
+        # apply to the expanded artifact.
+        return
+
     if not getattr(artifact, "download_urls", None):
         raise OctomilError(
             code=ErrorCode.INVALID_INPUT,
@@ -548,15 +624,19 @@ def _validate_for_prepare(candidate: RuntimeCandidatePlan) -> None:
         )
 
     required_files = getattr(artifact, "required_files", None) or []
-    if len(required_files) > 1:
+    # Multi-file artifacts are now allowed when the planner pairs
+    # them with a ``manifest_uri`` (PR C-followup). The descriptor
+    # builder fetches + verifies the manifest under the artifact-
+    # level digest pin and uses per-file digests from there.
+    if len(required_files) > 1 and not getattr(artifact, "manifest_uri", None):
         raise OctomilError(
             code=ErrorCode.INVALID_INPUT,
             message=(
                 f"Artifact '{artifact.artifact_id or artifact.model_id}' lists "
-                f"{len(required_files)} required_files but the planner schema only carries a "
-                f"single artifact-level digest. Multi-file artifacts require a per-file "
-                f"manifest_uri (planned in a follow-up PR); refusing to prepare without "
-                f"per-file integrity."
+                f"{len(required_files)} required_files but the planner emitted no "
+                f"manifest_uri. The single artifact-level digest cannot verify multiple "
+                f"files; refusing to prepare without per-file integrity. Have the planner "
+                f"emit ``manifest_uri`` (manifest.v1)."
             ),
         )
     if required_files:
