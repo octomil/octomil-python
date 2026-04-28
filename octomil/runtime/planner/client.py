@@ -7,9 +7,9 @@ import logging
 from dataclasses import asdict
 from typing import Any
 
+from ._artifact_parser import parse_artifact_dict
 from .schemas import (
     AppResolution,
-    ArtifactDownloadEndpoint,
     CandidateGate,
     DeviceRuntimeProfile,
     ModelResolution,
@@ -28,33 +28,11 @@ _DEFAULT_DEFAULTS_PATH = "/api/v2/runtime/defaults"
 def _parse_artifact(artifact_data: dict[str, Any]) -> RuntimeArtifactPlan:
     """Parse an artifact dict from the server into a RuntimeArtifactPlan.
 
-    Carries the prepare-lifecycle fields added in PR 1: required_files,
-    download_urls (multi-URL with optional headers/expiry), and manifest_uri.
+    Delegates to :func:`parse_artifact_dict` so the live-HTTP path and
+    the cache-rehydration path in ``planner.py`` cannot drift on which
+    prepare-lifecycle fields they preserve.
     """
-    download_urls = []
-    for ep in artifact_data.get("download_urls", []) or []:
-        if isinstance(ep, dict) and ep.get("url"):
-            download_urls.append(
-                ArtifactDownloadEndpoint(
-                    url=ep["url"],
-                    expires_at=ep.get("expires_at"),
-                    headers=ep.get("headers"),
-                )
-            )
-    return RuntimeArtifactPlan(
-        model_id=artifact_data.get("model_id", ""),
-        artifact_id=artifact_data.get("artifact_id"),
-        model_version=artifact_data.get("model_version"),
-        format=artifact_data.get("format"),
-        quantization=artifact_data.get("quantization"),
-        uri=artifact_data.get("uri"),
-        digest=artifact_data.get("digest"),
-        size_bytes=artifact_data.get("size_bytes"),
-        min_ram_bytes=artifact_data.get("min_ram_bytes"),
-        required_files=list(artifact_data.get("required_files", []) or []),
-        download_urls=download_urls,
-        manifest_uri=artifact_data.get("manifest_uri"),
-    )
+    return parse_artifact_dict(artifact_data)
 
 
 def _parse_candidate(data: dict[str, Any]) -> RuntimeCandidatePlan:
