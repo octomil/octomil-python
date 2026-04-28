@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "octomil"
-version = "4.12.3"
+version = "4.12.4"
 description = "Octomil — serve, deploy, and observe ML models on edge devices"
 readme = "README.md"
 requires-python = ">=3.9"
