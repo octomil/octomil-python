@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 4.12.3 (2026-04-28)
+
+### Fixes
+
+- drop wave/audioop dep; surface engine-import failures (#469)
+
 ## 4.12.2 (2026-04-28)
 
 ### Fixes
