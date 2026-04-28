@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+## 4.13.0 (2026-04-28)
+
+### Features
+
+- bring Python lifecycle parity to 100% (#473)
+- client.audio.voices.list + shared catalog resolver (#476)
+- general-purpose streaming TTS (SDK + sherpa engine + HTTP route) (#477)
+
 ## 4.12.4 (2026-04-28)
 
 ### Fixes
