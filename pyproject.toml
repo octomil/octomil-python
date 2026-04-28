@@ -64,6 +64,14 @@ whisper = [
 tts = [
   "sherpa-onnx>=1.12",
 ]
+# Optional OpenTelemetry sink for the TTS streaming observability
+# collector (``octomil.audio.metrics.OpenTelemetryTtsMetricsSink``).
+# The core SDK never imports ``opentelemetry`` — installing this extra
+# is the opt-in for shipping TTS metrics to OTLP / Prometheus exporters.
+otel = [
+  "opentelemetry-api>=1.20.0",
+  "opentelemetry-sdk>=1.20.0",
+]
 # Analytics + federated learning surfaces. Lazy-loaded from
 # ``octomil/__init__.py`` (see ``_LAZY_SUBMODULES``), so plain
 # ``import octomil`` does NOT touch pandas/pyarrow/torch.

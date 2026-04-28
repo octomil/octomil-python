@@ -20,6 +20,7 @@ headers, raw PCM body, completion via clean EOF.
 
 from __future__ import annotations
 
+import asyncio
 import os
 import struct
 import tempfile
@@ -36,6 +37,7 @@ from typing import (
 )
 
 if TYPE_CHECKING:
+    from octomil.audio.metrics import TtsMetricsCollector
     from octomil.audio.speech import SpeechResponse
 
 
@@ -354,11 +356,19 @@ class SpeechStream:
         producer: SpeechStreamProducer,
         *,
         on_cancel: Optional[Callable[[], Awaitable[None]]] = None,
+        metrics_collector: Optional["TtsMetricsCollector"] = None,
     ) -> None:
         self._producer = producer
         self._on_cancel = on_cancel
         self._closed = False
         self._started_event: Optional[SpeechStreamStarted] = None
+        # Optional observability collector. When provided, every event
+        # is fed into it before being returned to the caller; the
+        # collector emits typed events (started / first_audio_chunk /
+        # completed / cancelled / failed) to its configured sink.
+        # Passing ``None`` keeps the legacy no-op behavior.
+        self._metrics = metrics_collector
+        self._completed_observed = False
 
     def __aiter__(self) -> "SpeechStream":
         return self
@@ -370,9 +380,32 @@ class SpeechStream:
             event = await self._producer.__anext__()
         except StopAsyncIteration:
             self._closed = True
+            # Stream ended cleanly. If we never observed a Completed
+            # event, that's an honest cancellation (consumer broke
+            # mid-iteration). The aclose path handles the reverse.
+            if self._metrics is not None and not self._completed_observed:
+                from octomil.audio.metrics import CancellationSource
+
+                self._metrics.on_cancel(CancellationSource.CLIENT_ACLOSE)
+            raise
+        except BaseException as exc:
+            # Producer raised. Re-route through metrics with the
+            # bounded error_code taxonomy before re-raising.
+            if self._metrics is not None and not self._completed_observed:
+                self._metrics.on_fail(error_code=_map_error_to_taxonomy(exc))
+                # Fall through so the caller still sees the exception.
+            self._closed = True
             raise
         if isinstance(event, SpeechStreamStarted) and self._started_event is None:
             self._started_event = event
+            if self._metrics is not None:
+                self._metrics.on_started(event)
+        elif isinstance(event, SpeechAudioChunk) and self._metrics is not None:
+            self._metrics.on_chunk(event)
+        elif isinstance(event, SpeechStreamCompleted):
+            self._completed_observed = True
+            if self._metrics is not None:
+                self._metrics.on_completed(event)
         return event
 
     async def __aenter__(self) -> "SpeechStream":
@@ -386,6 +419,13 @@ class SpeechStream:
         if self._closed:
             return
         self._closed = True
+        # Fire ``cancelled`` BEFORE we tear down the producer so the
+        # metric reflects the user-initiated abort, not whatever the
+        # producer emits during teardown.
+        if self._metrics is not None and not self._completed_observed:
+            from octomil.audio.metrics import CancellationSource
+
+            self._metrics.on_cancel(CancellationSource.CLIENT_ACLOSE)
         if self._on_cancel is not None:
             try:
                 await self._on_cancel()
@@ -454,6 +494,33 @@ class SpeechStream:
             billed_units=None,
             unit_kind=None,
         )
+
+
+def _map_error_to_taxonomy(exc: BaseException) -> str:
+    """Project an arbitrary exception onto the bounded
+    :class:`octomil.audio.metrics.TtsErrorCode` set. Free-form error
+    strings would explode Prometheus cardinality."""
+    from octomil.audio.metrics import TtsErrorCode  # local import to avoid cycle
+
+    code = getattr(exc, "code", None)
+    code_value = getattr(code, "value", None) or (code if isinstance(code, str) else None)
+    msg = (str(exc) or "").lower()
+    if isinstance(exc, asyncio.CancelledError):
+        return TtsErrorCode.CANCELLED.value
+    if code_value:
+        if "digest" in code_value or "checksum" in code_value:
+            return TtsErrorCode.ARTIFACT_DIGEST_MISMATCH.value
+        if "artifact" in code_value or "missing" in code_value:
+            return TtsErrorCode.ARTIFACT_MISSING.value
+        if "runtime" in code_value or "load" in code_value:
+            return TtsErrorCode.RUNTIME_LOAD_FAILED.value
+        if "engine" in code_value or "unavailable" in code_value:
+            return TtsErrorCode.ENGINE_UNAVAILABLE.value
+        if "deadline" in code_value or "timeout" in code_value:
+            return TtsErrorCode.DEADLINE_EXCEEDED.value
+    if "synthes" in msg:
+        return TtsErrorCode.SYNTHESIS_FAILED.value
+    return TtsErrorCode.UNKNOWN.value
 
 
 __all__ = [
