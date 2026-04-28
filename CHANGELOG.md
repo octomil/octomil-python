@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 4.12.1 (2026-04-28)
+
+### Fixes
+
+- preserve source / recipe_id through both live + cached parse paths (#465)
+
 ## 4.12.0 (2026-04-28)
 
 ### Features
