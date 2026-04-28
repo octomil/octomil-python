@@ -351,6 +351,230 @@ async def test_facade_audio_exposes_voices_namespace():
 
 
 # ---------------------------------------------------------------------------
+# P1 — planner-selected non-static artifacts must NOT inherit the public recipe
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_list_speech_voices_planner_artifact_without_prepared_cache_returns_planner_pending():
+    """P1: planner picked a non-static artifact (e.g. a private
+    Kokoro bundle) for runtime_model=kokoro-82m, but it isn't on
+    disk yet. The SDK has no authoritative catalog source — return
+    locality='on_device', source='planner_pending', empty voices,
+    with the planner artifact's identity (NOT the public static
+    recipe's). Listing must NOT advertise the public v1.0 catalog
+    for what synthesis will run as a private artifact."""
+    from octomil.config.local import ResolvedExecutionDefaults
+
+    kernel = _kernel_with_static_route()
+    defaults = ResolvedExecutionDefaults(
+        model="kokoro-82m",
+        policy_preset="local_only",
+        inline_policy=None,
+        cloud_profile=None,
+    )
+
+    selection = MagicMock()
+    candidate = MagicMock()
+    artifact = MagicMock()
+    artifact.digest = "sha256:" + "a" * 64
+    artifact.artifact_id = "private-kokoro-v2"
+    candidate.artifact = artifact
+
+    import octomil.execution.kernel as kernel_mod
+
+    original = kernel_mod._local_sdk_runtime_candidate
+    kernel_mod._local_sdk_runtime_candidate = lambda _sel: candidate
+    try:
+        with (
+            patch.object(kernel, "_resolve", return_value=defaults),
+            patch("octomil.execution.kernel._resolve_planner_selection", return_value=selection),
+            patch("octomil.execution.kernel._resolve_routing_policy"),
+            patch("octomil.execution.kernel._enforce_app_ref_routing_policy"),
+            patch.object(kernel, "_sherpa_tts_runtime_loadable", return_value=True),
+            patch.object(kernel, "_prepared_cache_may_short_circuit", return_value=False),
+            patch.object(kernel, "_prepared_local_artifact_dir", return_value=None),
+            patch.object(kernel, "_local_candidate_is_unpreparable", return_value=False),
+            patch.object(kernel, "_can_prepare_local_tts", return_value=True),
+            patch(
+                "octomil.execution.kernel._select_locality_for_capability",
+                return_value=("on_device", False),
+            ),
+        ):
+            catalog = await kernel.list_speech_voices(model="kokoro-82m")
+    finally:
+        kernel_mod._local_sdk_runtime_candidate = original
+
+    assert catalog.locality == "on_device"
+    assert catalog.source == "planner_pending"
+    assert catalog.voices == ()
+    # Identity is the planner artifact's, not the public recipe's.
+    assert catalog.artifact_id == "private-kokoro-v2"
+    assert catalog.digest == "sha256:" + "a" * 64
+    # Default voice unset until prepare materializes the artifact.
+    assert catalog.default_voice is None
+    assert catalog.sample_rate is None
+
+
+@pytest.mark.asyncio
+async def test_list_speech_voices_planner_artifact_with_prepared_cache_uses_artifact_voices_txt(tmp_path):
+    """P1: when the planner artifact IS on disk, voices.txt is
+    authoritative — listing returns those voices, plus the planner
+    artifact's identity, never falling through to the public static
+    recipe's manifest/digest."""
+    from octomil.config.local import ResolvedExecutionDefaults
+
+    custom_catalog = ("private_voice_a", "private_voice_b", "private_voice_c")
+    (tmp_path / "voices.txt").write_text("\n".join(custom_catalog) + "\n", encoding="utf-8")
+
+    kernel = _kernel_with_static_route()
+    defaults = ResolvedExecutionDefaults(
+        model="kokoro-82m",
+        policy_preset="local_only",
+        inline_policy=None,
+        cloud_profile=None,
+    )
+
+    selection = MagicMock()
+    candidate = MagicMock()
+    artifact = MagicMock()
+    artifact.digest = "sha256:" + "b" * 64
+    artifact.artifact_id = "private-kokoro-v2"
+    candidate.artifact = artifact
+
+    import octomil.execution.kernel as kernel_mod
+
+    original = kernel_mod._local_sdk_runtime_candidate
+    kernel_mod._local_sdk_runtime_candidate = lambda _sel: candidate
+    try:
+        with (
+            patch.object(kernel, "_resolve", return_value=defaults),
+            patch("octomil.execution.kernel._resolve_planner_selection", return_value=selection),
+            patch("octomil.execution.kernel._resolve_routing_policy"),
+            patch("octomil.execution.kernel._enforce_app_ref_routing_policy"),
+            patch.object(kernel, "_sherpa_tts_runtime_loadable", return_value=True),
+            patch.object(kernel, "_prepared_cache_may_short_circuit", return_value=True),
+            patch.object(kernel, "_prepared_local_artifact_dir", return_value=str(tmp_path)),
+            patch(
+                "octomil.execution.kernel._select_locality_for_capability",
+                return_value=("on_device", False),
+            ),
+        ):
+            catalog = await kernel.list_speech_voices(model="kokoro-82m")
+    finally:
+        kernel_mod._local_sdk_runtime_candidate = original
+
+    # Voices come from the artifact's own voices.txt, not the public recipe.
+    assert catalog.voice_ids == custom_catalog
+    assert catalog.source == "voices_txt"
+    # Identity is the planner artifact's.
+    assert catalog.artifact_id == "private-kokoro-v2"
+    assert catalog.digest == "sha256:" + "b" * 64
+    # P2 invariant: default_voice falls back to the catalog's first
+    # entry because the model-table default (af_bella) isn't in the
+    # private artifact's catalog. The flagged VoiceInfo agrees.
+    assert catalog.default_voice == "private_voice_a"
+    flagged = [v for v in catalog.voices if v.default]
+    assert len(flagged) == 1
+    assert flagged[0].id == "private_voice_a"
+
+
+# ---------------------------------------------------------------------------
+# P2 — default_voice and the flagged VoiceInfo always agree
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_list_speech_voices_default_voice_aligned_with_flagged_entry(tmp_path):
+    """P2 invariant — happy path: when the model-table default IS
+    present in the catalog, default_voice points at it AND the
+    flagged VoiceInfo is exactly that entry."""
+    from octomil.config.local import ResolvedExecutionDefaults
+
+    (tmp_path / "voices.txt").write_text("\n".join(KOKORO_MULTI_LANG_V1_0_VOICES) + "\n", encoding="utf-8")
+
+    kernel = _kernel_with_static_route()
+    defaults = ResolvedExecutionDefaults(
+        model="kokoro-82m",
+        policy_preset="local_only",
+        inline_policy=None,
+        cloud_profile=None,
+    )
+    with (
+        patch.object(kernel, "_resolve", return_value=defaults),
+        patch("octomil.execution.kernel._resolve_planner_selection", return_value=None),
+        patch("octomil.execution.kernel._resolve_routing_policy"),
+        patch("octomil.execution.kernel._enforce_app_ref_routing_policy"),
+        patch.object(kernel, "_sherpa_tts_runtime_loadable", return_value=True),
+        patch.object(kernel, "_prepared_cache_may_short_circuit", return_value=True),
+        patch.object(kernel, "_prepared_local_artifact_dir", return_value=str(tmp_path)),
+        patch(
+            "octomil.execution.kernel._select_locality_for_capability",
+            return_value=("on_device", False),
+        ),
+    ):
+        catalog = await kernel.list_speech_voices(model="kokoro-82m")
+
+    assert catalog.default_voice == "af_bella"
+    flagged = [v for v in catalog.voices if v.default]
+    assert len(flagged) == 1
+    assert flagged[0].id == "af_bella"
+
+
+# ---------------------------------------------------------------------------
+# P2 — routing failures surface as OctomilError, not silent cloud routing
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_list_speech_voices_raises_on_local_route_failure():
+    """P2: a routing RuntimeError that synthesis would surface as
+    local_tts_runtime_unavailable must surface here too. The
+    listing API mirrors synthesis's failure modes — silently
+    routing to cloud would let UIs preview a public hosted catalog
+    for a request synthesis is going to refuse."""
+    from octomil.config.local import ResolvedExecutionDefaults
+    from octomil.errors import OctomilErrorCode
+
+    kernel = _kernel_with_static_route()
+    defaults = ResolvedExecutionDefaults(
+        model="kokoro-82m",
+        policy_preset="local_only",
+        inline_policy=None,
+        cloud_profile=None,
+    )
+
+    def raise_no_route(*args, **kwargs):
+        raise RuntimeError("local TTS is unavailable: no usable route")
+
+    expected = OctomilError(
+        code=OctomilErrorCode.RUNTIME_UNAVAILABLE,
+        message="local_tts_runtime_unavailable: no usable local route",
+    )
+
+    with (
+        patch.object(kernel, "_resolve", return_value=defaults),
+        patch("octomil.execution.kernel._resolve_planner_selection", return_value=None),
+        patch("octomil.execution.kernel._resolve_routing_policy"),
+        patch("octomil.execution.kernel._enforce_app_ref_routing_policy"),
+        patch.object(kernel, "_sherpa_tts_runtime_loadable", return_value=False),
+        patch.object(kernel, "_prepared_cache_may_short_circuit", return_value=False),
+        patch.object(kernel, "_prepared_local_artifact_dir", return_value=None),
+        patch.object(kernel, "_local_candidate_is_unpreparable", return_value=True),
+        patch.object(kernel, "_can_prepare_local_tts", return_value=False),
+        patch(
+            "octomil.execution.kernel._select_locality_for_capability",
+            side_effect=raise_no_route,
+        ),
+        patch.object(kernel, "_tts_local_unavailable_error", return_value=expected),
+    ):
+        with pytest.raises(OctomilError) as ei:
+            await kernel.list_speech_voices(model="kokoro-82m")
+    assert "local_tts_runtime_unavailable" in str(ei.value)
+    assert ei.value.code == OctomilErrorCode.RUNTIME_UNAVAILABLE
+
+
+# ---------------------------------------------------------------------------
 # Closure-of-loop: listing ↔ synthesis agree on the catalog
 # ---------------------------------------------------------------------------
 
