@@ -70,6 +70,11 @@ class FakeStreamingBackend:
     def supports_streaming(self) -> bool:
         return True
 
+    def load_model(self, model_name: str) -> None:
+        # No-op; the production lifespan calls load_model after
+        # create_backend, so the fake mirrors that contract.
+        self._model_name = model_name
+
     async def synthesize_stream(
         self,
         text: str,
@@ -111,6 +116,18 @@ class FakeStreamingBackend:
             "voice": voice or self._default_voice,
             "model": self._model_name,
         }
+
+
+async def _start_lifespan(app) -> None:
+    """Fire a FastAPI app's lifespan startup the way uvicorn would.
+
+    httpx.ASGITransport doesn't trigger lifespan events, so the
+    production-route tests have to do it themselves before the first
+    request — otherwise ``state.sherpa_tts_backend`` is never wired
+    and every call returns 503.
+    """
+    cm = app.router.lifespan_context(app)
+    await cm.__aenter__()
 
 
 def _build_stream(backend: FakeStreamingBackend) -> SpeechStream:
@@ -381,20 +398,22 @@ async def test_unknown_voice_raises_voice_not_supported_for_model():
 
 
 @pytest.mark.asyncio
-async def test_http_speech_stream_route_returns_pcm_with_metadata_headers():
-    """Posting to /v1/audio/speech/stream returns binary chunks with all
-    the metadata callers need in response headers — and the body is
-    non-empty, framed by the HTTP transport."""
+async def test_http_speech_stream_unit_route_shape():
+    """Unit-level wire shape check.
+
+    Builds a minimal FastAPI route that mimics the production response
+    shape so the wire contract (binary chunks + metadata headers) is
+    pinned independently of create_app() wiring. Pair this with
+    test_production_http_speech_stream_route_returns_pcm_with_metadata_headers
+    below — that test calls the *real* handler so regressions in
+    octomil/serve/app.py break the build.
+    """
     pytest.importorskip("fastapi")
     pytest.importorskip("httpx")
 
     from fastapi import FastAPI
     from fastapi.responses import StreamingResponse
 
-    # Minimal app reusing the production handler. We spin up a tiny
-    # surface rather than dragging in the full create_app() because
-    # that wires LLM engines, cache, telemetry, etc. — none of which
-    # are needed to validate the streaming wire shape.
     app = FastAPI()
 
     backend = FakeStreamingBackend(num_chunks=3, samples_per_chunk=1200, chunk_delay_s=0.005)
@@ -454,3 +473,176 @@ async def test_http_speech_stream_route_returns_pcm_with_metadata_headers():
 
     assert chunks >= 1
     assert total == 3 * 1200 * 2  # 3 chunks * 1200 samples * 2 bytes/sample
+
+
+# ---------------------------------------------------------------------------
+# Production HTTP route — exercises octomil.serve.app.create_app
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_production_http_speech_stream_route_returns_pcm_with_metadata_headers():
+    """End-to-end through the real ``create_app`` factory.
+
+    Patches the sherpa engine factory to return a FakeStreamingBackend
+    so we don't need a Kokoro artifact on disk, but every other piece
+    of the server stack (FastAPI app, lifespan, state wiring, route
+    handler) is the production code in ``octomil/serve/app.py``.
+    Regressions in route registration / header naming / error
+    envelope / state plumbing fail this test.
+    """
+    pytest.importorskip("fastapi")
+    pytest.importorskip("httpx")
+
+    backend = FakeStreamingBackend(num_chunks=3, samples_per_chunk=1200, chunk_delay_s=0.005)
+
+    fake_engine = MagicMock()
+    fake_engine.create_backend.return_value = backend
+
+    from httpx import ASGITransport, AsyncClient
+
+    with (
+        patch("octomil.runtime.engines.sherpa.SherpaTtsEngine", return_value=fake_engine),
+        patch("octomil.serve.app._is_sherpa_tts_model", return_value=True),
+    ):
+        from octomil.serve.app import create_app
+
+        app = create_app("kokoro-82m")
+        # httpx ASGITransport doesn't auto-fire lifespan; do it manually
+        # so create_app's startup wires state.sherpa_tts_backend.
+        await _start_lifespan(app)
+
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            async with client.stream(
+                "POST",
+                "/v1/audio/speech/stream",
+                json={"model": "kokoro-82m", "input": "hello", "voice": "af_bella"},
+            ) as resp:
+                assert resp.status_code == 200, await resp.aread()
+                assert resp.headers["content-type"].startswith("application/octet-stream")
+                # All metadata required by the spec must be in headers,
+                # not trailers — clients/proxies routinely drop trailers.
+                assert resp.headers["x-octomil-sample-rate"] == str(SAMPLE_RATE)
+                assert resp.headers["x-octomil-sample-format"] == SAMPLE_FORMAT_PCM_S16LE
+                assert resp.headers["x-octomil-streaming-mode"] == "realtime"
+                assert resp.headers["x-octomil-channels"] == "1"
+                assert resp.headers["x-octomil-model"] == "kokoro-82m"
+                assert resp.headers["x-octomil-voice"] == "af_bella"
+
+                total = 0
+                chunks = 0
+                async for chunk in resp.aiter_bytes():
+                    if chunk:
+                        chunks += 1
+                        total += len(chunk)
+
+    assert chunks >= 1
+    assert total == 3 * 1200 * 2  # 3 chunks * 1200 samples * 2 bytes/sample
+    assert backend.stream_called is True
+
+
+@pytest.mark.asyncio
+async def test_production_http_speech_stream_route_rejects_unsupported_format():
+    """Production route returns a 4xx error for unsupported formats."""
+    pytest.importorskip("fastapi")
+    pytest.importorskip("httpx")
+
+    backend = FakeStreamingBackend(num_chunks=2, chunk_delay_s=0.001)
+    fake_engine = MagicMock()
+    fake_engine.create_backend.return_value = backend
+
+    from httpx import ASGITransport, AsyncClient
+
+    with (
+        patch("octomil.runtime.engines.sherpa.SherpaTtsEngine", return_value=fake_engine),
+        patch("octomil.serve.app._is_sherpa_tts_model", return_value=True),
+    ):
+        from octomil.serve.app import create_app
+
+        app = create_app("kokoro-82m")
+        # httpx ASGITransport doesn't auto-fire lifespan; do it manually
+        # so create_app's startup wires state.sherpa_tts_backend.
+        await _start_lifespan(app)
+
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            resp = await client.post(
+                "/v1/audio/speech/stream",
+                json={"model": "kokoro-82m", "input": "hello", "response_format": "opus"},
+            )
+            assert 400 <= resp.status_code < 500
+            text = resp.text
+            assert "unsupported_stream_format" in text or "server_streaming_format" in text
+
+
+# ---------------------------------------------------------------------------
+# Artifact-specific voice manifest — pins the P1 reviewer concern that
+# the streaming branch must not reintroduce the global-catalog aliasing
+# bug. The kernel must validate the voice against the static recipe's
+# voice_manifest, not a hardcoded tuple.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_streaming_voice_validation_uses_static_recipe_manifest():
+    """Streaming voice validation must agree with the recipe manifest.
+
+    Pre-fix the streaming branch reused the global 28-name Kokoro tuple
+    and silently mapped unknown voices to ``sid=0`` (the bm_george /
+    am_echo aliasing bug). This test pins that the streaming kernel
+    path delegates to ``_validate_local_voice``, which reads the static
+    recipe's ``voice_manifest`` instead of any hardcoded list.
+    """
+    from octomil.config.local import ResolvedExecutionDefaults
+    from octomil.errors import OctomilError, OctomilErrorCode
+    from octomil.execution.kernel import ExecutionKernel
+    from octomil.runtime.lifecycle.static_recipes import get_static_recipe
+
+    # Sanity: the recipe under test actually carries an 11-name v0_19
+    # catalog and *not* the legacy 28-name one. If this regresses, the
+    # rest of the test is meaningless.
+    recipe = get_static_recipe("kokoro-82m", "tts")
+    assert recipe is not None
+    manifest = {n.lower() for n in recipe.materialization.voice_manifest}
+    assert manifest, "kokoro-82m static recipe must declare voice_manifest"
+    assert "af_bella" in manifest, "af_bella must be in the v0_19 catalog"
+    # Pick a name that was in the legacy 28-name tuple but is NOT in the
+    # 11-name v0_19 manifest, so we prove the recipe (not the legacy
+    # tuple) is authoritative.
+    legacy_only_voice = "am_echo"
+    assert legacy_only_voice not in manifest, (
+        f"test premise: {legacy_only_voice} must be absent from v0_19 manifest " f"(found: {sorted(manifest)})"
+    )
+
+    kernel = ExecutionKernel.__new__(ExecutionKernel)
+    kernel._config_set = MagicMock()
+
+    defaults = ResolvedExecutionDefaults(
+        model="kokoro-82m",
+        policy_preset="local_only",
+        inline_policy=None,
+        cloud_profile=None,
+    )
+    with (
+        patch.object(kernel, "_resolve", return_value=defaults),
+        patch("octomil.execution.kernel._resolve_planner_selection", return_value=None),
+        patch("octomil.execution.kernel._resolve_routing_policy"),
+        patch.object(kernel, "_sherpa_tts_runtime_loadable", return_value=True),
+        patch.object(kernel, "_prepared_cache_may_short_circuit", return_value=True),
+        patch.object(kernel, "_prepared_local_artifact_dir", return_value="/tmp/tts-cache"),
+        patch(
+            "octomil.execution.kernel._select_locality_for_capability",
+            return_value=("on_device", False),
+        ),
+    ):
+        with pytest.raises(OctomilError) as ei:
+            await kernel.synthesize_speech_stream(
+                model="kokoro-82m",
+                input="hello",
+                voice=legacy_only_voice,
+            )
+        assert ei.value.code == OctomilErrorCode.INVALID_INPUT
+        msg = str(ei.value)
+        assert "voice_not_supported_for_model" in msg
+        assert legacy_only_voice in msg
+        # Supported list must be the manifest, so af_bella appears.
+        assert "af_bella" in msg
