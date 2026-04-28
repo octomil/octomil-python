@@ -1431,15 +1431,59 @@ class ExecutionKernel:
         # the warmup-cache lookup uses the *current* artifact
         # identity. Without this, a v1 backend cached earlier in the
         # process could shadow a freshly prepared v2 ``model_dir``.
+        load_error: list[str] = []
         backend = self._resolve_local_tts_backend(
             runtime_model,
             prepared_model_dir=prepared_model_dir,
             planner_candidate=local_candidate,
+            load_error=load_error,
         )
         if backend is None:
+            # Three distinct failure modes; the old single message
+            # made debugging Eternum / Ren'Py / sandboxed Python
+            # impossible because all three looked identical.
+            reason = load_error[0] if load_error else "unknown"
+            if reason.startswith("sherpa_import:"):
+                # (1) The sherpa-onnx Python wheel isn't importable
+                # in this interpreter. Most common in stripped
+                # embedded Pythons (Ren'Py, PyInstaller without
+                # the runtime extra).
+                raise OctomilError(
+                    code=OctomilErrorCode.RUNTIME_UNAVAILABLE,
+                    message=(
+                        f"local_tts_runtime_unavailable: sherpa_onnx is not importable in this Python "
+                        f"interpreter ({reason}). Install the ``[tts]`` extra (``pip install octomil[tts]``) "
+                        f"OR run on a Python that has ``_sherpa_onnx`` available — embedded interpreters "
+                        f"(Ren'Py, stripped PyInstaller bundles) often ship without it."
+                    ),
+                )
+            if not prepared_model_dir:
+                # (2) Sherpa imported, but no prepared artifact dir
+                # was found. Caller never ran ``client.prepare(...)``
+                # and the planner emitted no preparable candidate.
+                raise OctomilError(
+                    code=OctomilErrorCode.RUNTIME_UNAVAILABLE,
+                    message=(
+                        f"local_tts_runtime_unavailable: no prepared artifact dir on disk for model "
+                        f"{runtime_model!r}. Call ``client.prepare(model={runtime_model!r}, capability='tts')`` "
+                        f"first (it downloads + extracts the canonical Kokoro layout), or pass a "
+                        f"planner-emitted candidate carrying download_urls + digest."
+                    ),
+                )
+            # (3) Sherpa imports AND a prepared dir exists, but the
+            # backend rejected it — likely a missing required file,
+            # corrupted extraction, or a model the runtime doesn't
+            # support yet. Surface the actual exception so the user
+            # can see what's wrong.
             raise OctomilError(
                 code=OctomilErrorCode.RUNTIME_UNAVAILABLE,
-                message=(f"local_tts_runtime_unavailable: could not load sherpa backend for model '{runtime_model}'."),
+                message=(
+                    f"local_tts_runtime_unavailable: prepared artifact dir {prepared_model_dir!r} "
+                    f"exists but the sherpa backend failed to load model {runtime_model!r} from it "
+                    f"({reason}). The directory may be missing required files (model.onnx / "
+                    f"voices.bin / tokens.txt / espeak-ng-data/), corrupted, or the runtime version "
+                    f"may not support this model. Check the directory layout and the underlying error."
+                ),
             )
 
         t0 = time.monotonic()
@@ -2417,7 +2461,17 @@ class ExecutionKernel:
         *,
         prepared_model_dir: Optional[str] = None,
         planner_candidate: Optional[Any] = None,
+        load_error: Optional[list[str]] = None,
     ) -> Optional[Any]:
+        """Resolve a local Sherpa TTS backend; ``None`` on any failure.
+
+        ``load_error`` is an optional out-list the caller can pass in;
+        when the backend fails to instantiate / load, the helper
+        appends the underlying exception's repr so the dispatch path
+        can surface a specific failure mode (sherpa import vs.
+        backend load) rather than the old vague
+        ``local_tts_runtime_unavailable``.
+        """
         # PR 11: prefer the warmup cache. When the caller invoked
         # ``client.warmup(model, capability='tts')`` earlier in this
         # session, the loaded SherpaTts backend is already in
@@ -2436,9 +2490,24 @@ class ExecutionKernel:
         cached = self._lookup_warmed_backend(CAPABILITY_TTS, model, candidate=planner_candidate)
         if cached is not None:
             return cached
+        # Two failure surfaces to distinguish:
+        #   1. ``import SherpaTtsEngine`` raises — the runtime extra
+        #      isn't installed (or ``_sherpa_onnx`` is missing on
+        #      stripped embedded Pythons).
+        #   2. The engine instantiates but ``create_backend`` /
+        #      ``load_model`` fails — the prepared dir is broken
+        #      (wrong layout, missing files) or the runtime can't
+        #      load the bytes.
+        # Both used to raise a single vague
+        # ``local_tts_runtime_unavailable`` error; the dispatch
+        # path now keys on ``load_error`` to pick a specific message.
         try:
             from octomil.runtime.engines.sherpa import SherpaTtsEngine
-
+        except Exception as exc:
+            if load_error is not None:
+                load_error.append(f"sherpa_import: {exc!r}")
+            return None
+        try:
             engine = SherpaTtsEngine()
             backend_kwargs: dict[str, Any] = {}
             if prepared_model_dir:
@@ -2451,7 +2520,9 @@ class ExecutionKernel:
             backend = engine.create_backend(model, **backend_kwargs)
             backend.load_model(model)
             return backend
-        except Exception:
+        except Exception as exc:
+            if load_error is not None:
+                load_error.append(f"backend_load: {exc!r}")
             return None
 
     def _validate_local_voice(self, model: str, voice: Optional[str]) -> None:
