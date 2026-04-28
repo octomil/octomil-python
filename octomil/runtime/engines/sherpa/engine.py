@@ -6,18 +6,25 @@ with the octomil engine registry under the canonical ``sherpa-onnx``
 executor id.
 
 Unlike LLM engines, TTS does NOT use ``generate()`` / ``generate_stream()``.
-Instead, the backend exposes a ``synthesize()`` method and the serve layer
-adds an OpenAI-compatible ``/v1/audio/speech`` endpoint.
+Instead, the backend exposes :meth:`_SherpaTtsBackend.synthesize` for
+non-streaming requests and :meth:`_SherpaTtsBackend.synthesize_stream`
+for the typed PCM event stream consumed by
+``client.audio.speech.stream(...)``. Both flow through the same
+:class:`OfflineTts` instance; the streaming path uses sherpa's
+``callback`` argument which is invoked on each generated audio chunk.
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import struct
+import threading
 import time
+from collections import deque
 from io import BytesIO
-from typing import Any
+from typing import Any, AsyncIterator
 
 from octomil.errors import OctomilError, OctomilErrorCode
 from octomil.runtime.core.base import BenchmarkResult, EnginePlugin
@@ -457,6 +464,219 @@ class _SherpaTtsBackend:
 
     def list_models(self) -> list[str]:
         return [self._model_name] if self._model_name else []
+
+    # ------------------------------------------------------------------
+    # Streaming
+    # ------------------------------------------------------------------
+
+    @property
+    def supports_streaming(self) -> bool:
+        """sherpa-onnx OfflineTts.generate exposes a per-chunk callback."""
+        return True
+
+    async def synthesize_stream(
+        self,
+        text: str,
+        voice: str | None = None,
+        speed: float = 1.0,
+        *,
+        chunk_max_queue: int = 16,
+    ) -> AsyncIterator[dict[str, Any]]:
+        """Yield PCM s16le chunk dicts as samples are produced.
+
+        Each yielded chunk has shape::
+
+            {"pcm_s16le": <bytes>, "num_samples": <int>}
+
+        The synthesis runs on a worker thread; sherpa-onnx's ``generate``
+        callback pushes chunks into a bounded sync->async bridge so the
+        event loop stays responsive and an unresponsive consumer applies
+        real backpressure to the producer (the worker thread blocks
+        when the bridge is full).
+
+        Stopping iteration (``async generator .aclose()``, exception in
+        consumer, etc.) sets a cancellation flag that causes the next
+        callback invocation to return ``0`` — sherpa-onnx interprets
+        that as "stop synthesis" — and the worker thread exits cleanly.
+
+        Args:
+            text: utterance to synthesize
+            voice: voice id (catalog-validated by the caller; here we
+                just translate name->sid)
+            speed: 1.0 = natural pace
+            chunk_max_queue: max number of audio chunks held in the
+                bridge before the producer thread blocks (backpressure).
+        """
+        if not text.strip():
+            raise ValueError("text must not be empty")
+        if speed <= 0:
+            raise ValueError("speed must be positive")
+
+        if self._tts is None:
+            self.load_model(self._model_name)
+        assert self._tts is not None
+
+        voice_name = (voice or self._default_voice or "").strip()
+        sid = self._voice_to_sid(voice_name)
+
+        bridge = _StreamBridge(maxsize=chunk_max_queue)
+        loop = asyncio.get_running_loop()
+        sample_rate = self._tts.sample_rate or self._sample_rate
+
+        def _worker() -> None:
+            """Run sherpa generate on a thread; push chunks to bridge."""
+            try:
+
+                def _callback(samples_f32: Any, _progress: float) -> int:
+                    # samples_f32 is a numpy.ndarray[float32] of length n.
+                    # Convert to PCM int16 LE bytes inline so the GIL is
+                    # released before re-entering sherpa.
+                    if bridge.is_cancelled():
+                        return 0
+                    pcm = _float32_to_pcm_s16le_bytes(samples_f32)
+                    n = int(getattr(samples_f32, "size", len(samples_f32)))
+                    # Blocks if the bridge is full; cancellation breaks
+                    # out and returns 0 so sherpa stops synthesis.
+                    accepted = bridge.put(pcm, n)
+                    return 1 if accepted else 0
+
+                self._tts.generate(text, sid=sid, speed=speed, callback=_callback)
+                bridge.close(error=None)
+            except BaseException as exc:  # noqa: BLE001 — re-raised on consumer side
+                bridge.close(error=exc)
+
+        worker = threading.Thread(
+            target=_worker,
+            name=f"sherpa-tts-stream-{self._model_name}",
+            daemon=True,
+        )
+        worker.start()
+
+        try:
+            while True:
+                # run_in_executor on a small helper so the asyncio loop
+                # is never blocked waiting for the worker.
+                item = await loop.run_in_executor(None, bridge.get)
+                if item is _STREAM_SENTINEL_DONE:
+                    bridge.raise_if_error()
+                    return
+                pcm_bytes, num_samples = item
+                yield {
+                    "pcm_s16le": pcm_bytes,
+                    "num_samples": num_samples,
+                    "sample_rate": sample_rate,
+                }
+        finally:
+            # Whether we exited cleanly, by exception, or by the consumer
+            # closing the generator: cancel + drain so the worker thread
+            # never leaks. join() is bounded because the worker checks
+            # cancel between callback invocations.
+            bridge.cancel()
+            worker.join(timeout=5.0)
+
+
+_STREAM_SENTINEL_DONE = object()
+
+
+class _StreamBridge:
+    """Bounded thread-safe bridge between the sherpa worker thread and
+    the asyncio consumer.
+
+    Why hand-rolled instead of :class:`queue.Queue` /
+    ``loop.call_soon_threadsafe(queue.put_nowait, ...)``:
+
+    * Real backpressure: ``put`` blocks the worker thread when the
+      bridge is full so the producer cannot outrun a slow consumer
+      and grow memory unboundedly.
+    * Cooperative cancellation: ``put`` returns ``False`` when
+      cancelled so the sherpa callback can return 0 and stop synthesis.
+    * No coupling to a specific event loop from the producer side.
+    """
+
+    def __init__(self, maxsize: int) -> None:
+        self._maxsize = max(1, int(maxsize))
+        self._lock = threading.Lock()
+        self._not_full = threading.Condition(self._lock)
+        self._not_empty = threading.Condition(self._lock)
+        self._buf: deque[tuple[bytes, int]] = deque()
+        self._closed = False
+        self._cancelled = False
+        self._error: BaseException | None = None
+
+    def is_cancelled(self) -> bool:
+        with self._lock:
+            return self._cancelled
+
+    def put(self, pcm: bytes, num_samples: int) -> bool:
+        """Block until there is room (or we're cancelled). Returns
+        True if the chunk was accepted, False if cancelled."""
+        with self._not_full:
+            while len(self._buf) >= self._maxsize and not self._cancelled and not self._closed:
+                self._not_full.wait(timeout=0.5)
+            if self._cancelled or self._closed:
+                return False
+            self._buf.append((pcm, num_samples))
+            self._not_empty.notify()
+            return True
+
+    def get(self) -> Any:
+        """Block until a chunk is available or the stream is done.
+
+        Returns ``_STREAM_SENTINEL_DONE`` on completion (with optional
+        error preserved for ``raise_if_error``).
+        """
+        with self._not_empty:
+            while not self._buf and not self._closed and not self._cancelled:
+                self._not_empty.wait(timeout=0.5)
+            if self._buf:
+                item = self._buf.popleft()
+                self._not_full.notify()
+                return item
+            return _STREAM_SENTINEL_DONE
+
+    def close(self, error: BaseException | None) -> None:
+        with self._lock:
+            self._closed = True
+            self._error = error
+            self._not_empty.notify_all()
+            self._not_full.notify_all()
+
+    def cancel(self) -> None:
+        with self._lock:
+            self._cancelled = True
+            self._closed = True
+            self._buf.clear()
+            self._not_empty.notify_all()
+            self._not_full.notify_all()
+
+    def raise_if_error(self) -> None:
+        with self._lock:
+            err = self._error
+        if err is not None:
+            raise err
+
+
+def _float32_to_pcm_s16le_bytes(samples: Any) -> bytes:
+    """Convert a numpy.ndarray[float32] of samples in [-1, 1] to PCM int16 LE.
+
+    Uses ``numpy`` when available (sherpa-onnx already imports it) for the
+    vectorized fast path. Falls back to a struct-based loop for the test
+    fakes that pass plain Python iterables.
+    """
+    try:
+        import numpy as np  # type: ignore[import-untyped]
+    except ImportError:  # pragma: no cover — sherpa-onnx requires numpy
+        np = None  # type: ignore[assignment]
+
+    if np is not None and hasattr(samples, "dtype"):
+        clipped = np.clip(samples, -1.0, 1.0)
+        pcm16 = (clipped * 32767.0).astype("<i2", copy=False)
+        return pcm16.tobytes()
+    pcm = bytearray()
+    for s in samples:
+        clipped = max(-1.0, min(1.0, float(s)))
+        pcm += struct.pack("<h", int(clipped * 32767.0))
+    return bytes(pcm)
 
 
 def _samples_to_wav(samples: list[float], sample_rate: int) -> bytes:
