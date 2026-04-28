@@ -1124,6 +1124,123 @@ def create_app(
             if os.path.exists(tmp_path):
                 os.unlink(tmp_path)
 
+    @app.post("/v1/audio/speech/stream")
+    async def synthesize_speech_stream(body: dict[str, Any]) -> Any:
+        """Streaming TTS endpoint.
+
+        Returns ``application/octet-stream`` with raw PCM int16 LE chunks.
+        Metadata is in response headers; clients should NOT depend on
+        HTTP trailers (many proxies drop them). Completion is signalled
+        by clean EOF.
+
+        Body shape::
+
+            {
+              "model": "kokoro-82m",
+              "input": "text to synthesize",
+              "voice": "af_bella",
+              "speed": 1.0,
+              "response_format": "pcm_s16le"   # only pcm_s16le today
+            }
+
+        Response headers::
+
+            Content-Type: application/octet-stream
+            X-Octomil-Sample-Rate: 24000
+            X-Octomil-Channels: 1
+            X-Octomil-Sample-Format: pcm_s16le
+            X-Octomil-Streaming-Mode: realtime
+            X-Octomil-Model: kokoro-82m
+            X-Octomil-Voice: af_bella
+        """
+        if state.sherpa_tts_backend is None:
+            raise OctomilError(
+                code=OctomilErrorCode.MODEL_LOAD_FAILED,
+                message="No TTS model loaded. Start server with a sherpa-onnx TTS model: octomil serve kokoro-82m",
+            )
+
+        text = (body.get("input") or "").strip()
+        if not text:
+            raise OctomilError(
+                code=OctomilErrorCode.INVALID_INPUT,
+                message="`input` must be a non-empty string.",
+            )
+
+        voice = body.get("voice")
+        speed_raw = body.get("speed", 1.0)
+        try:
+            speed = float(speed_raw)
+        except (TypeError, ValueError) as exc:
+            raise OctomilError(
+                code=OctomilErrorCode.INVALID_INPUT,
+                message=f"`speed` must be a number, got {speed_raw!r}",
+            ) from exc
+
+        from octomil.audio.streaming import SAMPLE_FORMAT_PCM_S16LE, SUPPORTED_STREAM_FORMATS
+
+        response_format = (body.get("response_format") or SAMPLE_FORMAT_PCM_S16LE).lower()
+        if response_format not in SUPPORTED_STREAM_FORMATS:
+            raise OctomilError(
+                code=OctomilErrorCode.INVALID_INPUT,
+                message=(
+                    f"unsupported_stream_format: '{response_format}'. "
+                    f"Use one of: {', '.join(SUPPORTED_STREAM_FORMATS)}."
+                ),
+            )
+        # The serve layer is intentionally narrower than the SDK
+        # streaming API: a single non-streaming engine wraps the
+        # process today, so wav-streaming would just be the local
+        # final-chunk shape. Keep the wire simple and refuse anything
+        # but pcm_s16le here; the SDK still exposes both formats.
+        if response_format != SAMPLE_FORMAT_PCM_S16LE:
+            raise OctomilError(
+                code=OctomilErrorCode.INVALID_INPUT,
+                message=(
+                    f"server_streaming_format: only '{SAMPLE_FORMAT_PCM_S16LE}' is supported on "
+                    f"the streaming endpoint; use /v1/audio/speech for full WAV."
+                ),
+            )
+
+        backend = state.sherpa_tts_backend
+        if not getattr(backend, "supports_streaming", False):
+            raise OctomilError(
+                code=OctomilErrorCode.RUNTIME_UNAVAILABLE,
+                message="local_tts_streaming_unavailable: backend does not support streaming.",
+            )
+
+        state.request_count += 1
+        sample_rate = int(getattr(backend, "_sample_rate", 24000) or 24000)
+        resolved_voice = voice or getattr(backend, "_default_voice", "") or ""
+        model_name = getattr(backend, "_model_name", "") or ""
+
+        async def chunk_iter() -> Any:
+            inner = backend.synthesize_stream(text, voice, speed)
+            try:
+                async for raw in inner:
+                    pcm: bytes = raw["pcm_s16le"]
+                    if pcm:
+                        yield pcm
+            finally:
+                close = getattr(inner, "aclose", None)
+                if close is not None:
+                    try:
+                        await close()
+                    except Exception:
+                        pass
+
+        return StreamingResponse(
+            chunk_iter(),
+            media_type="application/octet-stream",
+            headers={
+                "X-Octomil-Sample-Rate": str(sample_rate),
+                "X-Octomil-Channels": "1",
+                "X-Octomil-Sample-Format": SAMPLE_FORMAT_PCM_S16LE,
+                "X-Octomil-Streaming-Mode": "realtime",
+                "X-Octomil-Model": str(model_name),
+                "X-Octomil-Voice": str(resolved_voice),
+            },
+        )
+
     @app.post("/v1/audio/speech")
     async def synthesize_speech(body: dict[str, Any]) -> Any:
         """OpenAI ``audio.speech.create``-compatible synthesis endpoint.
