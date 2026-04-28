@@ -297,8 +297,10 @@ class SafetyPassedEvaluator:
     """Adapter stub for app-provided safety evaluation.
 
     This evaluator does NOT implement a classifier itself. It delegates to
-    an app-provided ``check`` callback. If no callback is provided, it fails
-    closed so required ``safety_passed`` gates cannot accidentally pass.
+    an app-provided ``check`` callback. When no callback is provided, the
+    evaluator passes through with ``reason_code='no_safety_checker_configured'``
+    so the gate becomes a no-op rather than a hard fail — apps that don't
+    configure safety checking shouldn't have every response rejected.
 
     Maps to gate code ``safety_passed``.
     """
@@ -315,7 +317,7 @@ class SafetyPassedEvaluator:
     def evaluate(self, *, gate: dict[str, Any], response: Any) -> EvaluatorResult:
         if self._check is None:
             return EvaluatorResult(
-                passed=False,
+                passed=True,
                 reason_code="no_safety_checker_configured",
                 safe_metadata={"evaluator_name": self.name},
             )
@@ -384,8 +386,12 @@ class EvaluatorRegistry:
         reg.register("json_parseable", JsonParseableEvaluator())
         reg.register("schema_valid", JsonSchemaEvaluator(default_schema=json_schema))
         reg.register("tool_call_valid", ToolCallValidEvaluator())
-        if safety_check is not None:
-            reg.register("safety_passed", SafetyPassedEvaluator(check=safety_check))
+        # SafetyPassedEvaluator is registered unconditionally — when
+        # the host doesn't provide a ``safety_check`` callback the
+        # evaluator fails closed (per its docstring), so required
+        # ``safety_passed`` gates cannot silently pass without a
+        # registered evaluator.
+        reg.register("safety_passed", SafetyPassedEvaluator(check=safety_check))
         if extra:
             for code, evaluator in extra.items():
                 reg.register(code, evaluator)

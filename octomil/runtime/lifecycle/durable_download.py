@@ -18,14 +18,13 @@ from __future__ import annotations
 
 import hashlib
 import logging
-import sqlite3
 import threading
 import time
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
-from typing import Callable, Iterator
+from typing import Any, Callable, Iterator
 
 import httpx
 
@@ -34,6 +33,33 @@ from octomil.errors import OctomilError
 from octomil.runtime.lifecycle.file_lock import FileLock
 
 logger = logging.getLogger(__name__)
+
+
+# Reviewer P1: ``sqlite3`` is a stdlib extension module, but
+# stripped embedded Pythons (Ren'Py, PyInstaller --exclude-module
+# _sqlite3, custom Buck/Bazel toolchains) ship without it. Hard-
+# importing it at module load made ``import octomil`` itself crash
+# in those runtimes, killing the static-recipe / Kokoro hot path
+# before ``PrepareManager`` had a chance to run. Probe lazily and
+# fall back to an in-memory journal when ``_sqlite3`` is missing.
+def _try_import_sqlite3():
+    try:
+        import sqlite3 as _sqlite_mod  # noqa: PLC0415
+
+        return _sqlite_mod
+    except ImportError:
+        return None
+
+
+_SQLITE3: Any = ...  # sentinel: not yet probed
+
+
+def _sqlite3():
+    global _SQLITE3
+    if _SQLITE3 is ...:
+        _SQLITE3 = _try_import_sqlite3()
+    return _SQLITE3
+
 
 _CHUNK_BYTES = 1 << 16  # 64 KiB
 _DEFAULT_TIMEOUT = 600.0
@@ -200,8 +226,14 @@ class _ProgressJournal:
             conn.commit()
 
     @contextmanager
-    def _connect(self) -> Iterator[sqlite3.Connection]:
-        conn = sqlite3.connect(str(self._db_path), timeout=10.0, isolation_level=None)
+    def _connect(self) -> Iterator[Any]:
+        sqlite_mod = _sqlite3()
+        if sqlite_mod is None:
+            # Should not happen — DurableDownloader picks the
+            # in-memory journal when sqlite3 is missing, so this
+            # class only instantiates when sqlite3 is available.
+            raise RuntimeError("_ProgressJournal requires sqlite3, which is unavailable in this runtime.")
+        conn = sqlite_mod.connect(str(self._db_path), timeout=10.0, isolation_level=None)
         try:
             conn.execute("PRAGMA journal_mode=WAL")
             yield conn
@@ -246,6 +278,40 @@ class _ProgressJournal:
             )
 
 
+class _InMemoryProgressJournal:
+    """In-process fallback when ``sqlite3`` is unavailable.
+
+    Same interface as :class:`_ProgressJournal` but state lives in
+    a dict and disappears at process exit. The downloader's main
+    job — write bytes + verify digest atomically before rename —
+    still works; the loss is multi-process resume across restarts.
+    For runtimes that lack ``_sqlite3`` (Ren'Py, stripped PyInstaller
+    builds), this is the only reasonable choice short of crashing.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._entries: dict[tuple[str, str], tuple[int, int]] = {}
+
+    def get(self, artifact_id: str, relative_path: str) -> tuple[int, int]:
+        with self._lock:
+            return self._entries.get((artifact_id, relative_path), (0, 0))
+
+    def record(
+        self,
+        artifact_id: str,
+        relative_path: str,
+        bytes_written: int,
+        endpoint_index: int,
+    ) -> None:
+        with self._lock:
+            self._entries[(artifact_id, relative_path)] = (bytes_written, endpoint_index)
+
+    def clear(self, artifact_id: str, relative_path: str) -> None:
+        with self._lock:
+            self._entries.pop((artifact_id, relative_path), None)
+
+
 class DurableDownloader:
     """Resumable multi-URL multi-file artifact downloader.
 
@@ -266,7 +332,19 @@ class DurableDownloader:
         self._client = client
         self._clock = clock or (lambda: datetime.now(timezone.utc))
         cache_dir.mkdir(parents=True, exist_ok=True)
-        self._journal = _ProgressJournal(cache_dir / ".progress.sqlite")
+        # Reviewer P1: stripped Pythons (Ren'Py, PyInstaller without
+        # _sqlite3) can't import sqlite3. Probe lazily and fall back
+        # to an in-memory journal so the downloader works at all in
+        # those runtimes — the static-recipe / Kokoro hot path no
+        # longer dies at module import time.
+        if _sqlite3() is None:
+            logger.warning(
+                "Python build lacks sqlite3; falling back to in-memory progress journal. "
+                "Multi-process resume across restarts is disabled, but downloads still verify."
+            )
+            self._journal: _ProgressJournal | _InMemoryProgressJournal = _InMemoryProgressJournal()
+        else:
+            self._journal = _ProgressJournal(cache_dir / ".progress.sqlite")
 
     def download(self, descriptor: ArtifactDescriptor, dest_dir: Path) -> DownloadResult:
         """Download every file in the descriptor; return resolved paths.

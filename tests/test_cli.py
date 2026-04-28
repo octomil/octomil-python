@@ -68,7 +68,11 @@ class TestMainGroup:
         runner = CliRunner()
         result = runner.invoke(main, ["--version"])
         assert result.exit_code == 0
-        assert "4.7.0" in result.output
+        # Version follows whatever ``octomil.__version__`` resolves to;
+        # pyproject release commits advance this so the test must too.
+        from octomil import __version__
+
+        assert __version__ in result.output
 
     def test_no_args_shows_quickstart(self):
         """Bare `octomil` with no args shows focused onboarding screen."""

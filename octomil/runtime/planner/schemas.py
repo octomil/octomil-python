@@ -66,6 +66,17 @@ class RuntimeArtifactPlan:
     required_files: list[str] = field(default_factory=list)
     download_urls: list[ArtifactDownloadEndpoint] = field(default_factory=list)
     manifest_uri: str | None = None
+    # PR C-followup: option 2 — first-class static-recipe contract.
+    # When the planner selects a canonical built-in artifact, it can
+    # set ``source="static_recipe"`` plus ``recipe_id`` and the SDK
+    # maps that to its built-in recipe table without requiring the
+    # planner to embed the URL/digest/required_files redundantly.
+    # Future custom-artifact source values (``"hf_snapshot"``,
+    # ``"oci_layer"``, ...) ride the same discriminator. ``None`` /
+    # absent ``source`` means "use the planner-supplied artifact
+    # metadata as-is" (option 1, the existing path).
+    source: Literal["static_recipe"] | None = None
+    recipe_id: str | None = None
 
 
 @dataclass

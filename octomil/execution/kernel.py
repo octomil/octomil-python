@@ -1253,6 +1253,7 @@ class ExecutionKernel:
             selection=selection,
             explicit_policy=policy,
             explicit_app=app,
+            resolved_policy_preset=defaults.policy_preset,
         )
 
         routing_policy = _resolve_routing_policy(defaults)
@@ -2971,6 +2972,7 @@ def _enforce_app_ref_routing_policy(
     selection: Optional[Any],
     explicit_policy: Optional[str],
     explicit_app: Optional[str] = None,
+    resolved_policy_preset: Optional[str] = None,
 ) -> None:
     """Refuse to silently cloud-route an ``@app/...`` ref on planner outage.
 
@@ -3006,6 +3008,15 @@ def _enforce_app_ref_routing_policy(
     they want and there's no app-side policy to consult.
     """
     if explicit_policy is not None:
+        return
+    # A locally-resolved policy preset (e.g. from ``OctomilConfig``
+    # or octomil.toml) carries the same caller intent as an explicit
+    # ``policy=`` argument — a developer who set ``local_only`` in
+    # config has expressed the hard local requirement just as
+    # firmly. Without this short-circuit, app refs blow up with
+    # "Could not resolve app routing policy" even when the local
+    # config plainly says local-only.
+    if resolved_policy_preset and resolved_policy_preset != "local_first":
         return
     is_app_scoped = (isinstance(requested_model, str) and requested_model.startswith("@app/")) or bool(explicit_app)
     if not is_app_scoped:

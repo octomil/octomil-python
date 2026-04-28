@@ -123,20 +123,22 @@ class OctomilClient(ModelOpsMixin):
         # PR C: lazy-import the inner-package classes so plain
         # ``import octomil`` doesn't reach pandas / pyarrow on thin
         # clients that never construct an ``OctomilClient``.
-        from .python.octomil.api_client import _ApiClient  # noqa: PLC0415
-        from .python.octomil.control_plane import RolloutsAPI  # noqa: PLC0415
-        from .python.octomil.registry import ModelRegistry  # noqa: PLC0415
+        # Resolve through the module's own ``__getattr__`` so test
+        # suites that ``patch("octomil.client.RolloutsAPI", ...)``
+        # actually intercept construction. Direct ``from … import``
+        # statements bypass module-attribute lookup, breaking patches.
+        import octomil.client as _self  # noqa: PLC0415
 
-        self._api = _ApiClient(
+        self._api = _self._ApiClient(
             auth_token_provider=_token_provider,
             api_base=self._api_base,
         )
-        self._registry = ModelRegistry(
+        self._registry = _self.ModelRegistry(
             auth_token_provider=_token_provider,
             org_id=self._org_id,
             api_base=self._api_base,
         )
-        self._rollouts = RolloutsAPI(self._api)
+        self._rollouts = _self.RolloutsAPI(self._api)
 
         # Per-deployment routing policies from desired state (set automatically via control sync)
         self._routing_policies: dict[str, "RoutingPolicy"] = {}
@@ -777,3 +779,25 @@ class OctomilClient(ModelOpsMixin):
             stacklevel=2,
         )
         self.close()
+
+
+# Module-level lazy attribute access for the inner-package classes.
+# Pairs with the lazy ``import octomil.client as _self`` inside
+# ``OctomilClient.__init__`` so test suites can
+# ``patch("octomil.client.RolloutsAPI")`` and have the patch
+# actually intercept construction. Imports are deferred so plain
+# ``import octomil`` still skips pandas / pyarrow on thin clients.
+def __getattr__(name: str):
+    if name == "RolloutsAPI":
+        from .python.octomil.control_plane import RolloutsAPI
+
+        return RolloutsAPI
+    if name == "ModelRegistry":
+        from .python.octomil.registry import ModelRegistry
+
+        return ModelRegistry
+    if name == "_ApiClient":
+        from .python.octomil.api_client import _ApiClient
+
+        return _ApiClient
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
