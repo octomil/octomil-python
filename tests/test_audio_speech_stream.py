@@ -131,27 +131,22 @@ async def _start_lifespan(app) -> None:
 
 
 def _stub_kernel_warmup_for_tts(monkeypatch_or_path):
-    """Return a context manager that patches ``ExecutionKernel.warmup``
-    so it returns a fake :class:`WarmupOutcome` pointing at
-    ``monkeypatch_or_path`` as the artifact dir.
+    """Patch ``ExecutionKernel.prepare`` so it returns a fake
+    PrepareOutcome with ``artifact_dir = monkeypatch_or_path``.
 
-    Lets the production-route tests exercise the new lifespan path
-    (which now calls ``kernel.warmup`` to materialize the artifact)
-    without spinning the real PrepareManager / planner / network.
-    Pass any directory; the test fakes don't read it.
+    The lifespan deliberately calls ``prepare`` (not ``warmup``) to
+    avoid the double-load P2: ``warmup`` also constructs and caches a
+    backend, but the lifespan needs to own the canonical backend on
+    ``state.sherpa_tts_backend``. This stub mirrors the production
+    path so tests don't depend on a real PrepareManager / planner /
+    network or a cached artifact on the dev box.
     """
-    from octomil.execution.kernel import WarmupOutcome
-
     fake_prepare_outcome = MagicMock()
     fake_prepare_outcome.artifact_dir = str(monkeypatch_or_path)
-    fake_outcome = WarmupOutcome(
-        capability="tts",
-        model="kokoro-82m",
-        prepare_outcome=fake_prepare_outcome,
-        backend_loaded=True,
-        latency_ms=1.0,
+    return patch(
+        "octomil.execution.kernel.ExecutionKernel.prepare",
+        return_value=fake_prepare_outcome,
     )
-    return patch("octomil.execution.kernel.ExecutionKernel.warmup", return_value=fake_outcome)
 
 
 def _build_stream(backend: FakeStreamingBackend) -> SpeechStream:
@@ -858,9 +853,66 @@ async def test_tts_server_lifespan_passes_prepared_model_dir_to_sherpa_backend(t
     # called create_backend(model_name) with no kwargs and immediately
     # raised in load_model.
     assert "model_dir" in captured_kwargs, (
-        "TTS lifespan must inject prepared model_dir from kernel.warmup() — " f"captured kwargs: {captured_kwargs}"
+        "TTS lifespan must inject prepared model_dir from kernel.prepare() — " f"captured kwargs: {captured_kwargs}"
     )
     assert captured_kwargs["model_dir"] == str(tmp_path)
+
+
+@pytest.mark.asyncio
+async def test_tts_server_lifespan_uses_prepare_not_warmup(tmp_path):
+    """P2: lifespan must call ``kernel.prepare()`` (artifact-only),
+    not ``kernel.warmup()`` (which also loads + caches a second
+    backend in ``kernel._warmed_backends``). Calling warmup would
+    double startup time and resident memory because the lifespan
+    already owns the canonical backend on
+    ``state.sherpa_tts_backend``.
+    """
+    pytest.importorskip("fastapi")
+
+    class _RecordingBackend:
+        supports_streaming = True
+        _sample_rate = SAMPLE_RATE
+        _default_voice = "af"
+        _model_name = "kokoro-82m"
+
+        def load_model(self, model_name: str) -> None:
+            self._model_name = model_name
+
+    class _RecordingEngine:
+        def create_backend(self, model_name, **kwargs):
+            return _RecordingBackend()
+
+    fake_prepare_outcome = MagicMock()
+    fake_prepare_outcome.artifact_dir = str(tmp_path)
+
+    with (
+        patch(
+            "octomil.runtime.engines.sherpa.SherpaTtsEngine",
+            return_value=_RecordingEngine(),
+        ),
+        patch("octomil.serve.app._is_sherpa_tts_model", return_value=True),
+        patch(
+            "octomil.execution.kernel.ExecutionKernel.prepare",
+            return_value=fake_prepare_outcome,
+        ) as prepare_mock,
+        patch(
+            "octomil.execution.kernel.ExecutionKernel.warmup",
+            side_effect=AssertionError("lifespan called warmup() — should call prepare() to avoid double load"),
+        ) as warmup_mock,
+    ):
+        from octomil.serve.app import create_app
+
+        app = create_app("kokoro-82m")
+        await _start_lifespan(app)
+
+    assert prepare_mock.called, "lifespan must call kernel.prepare() to materialize the artifact"
+    assert not warmup_mock.called, (
+        "lifespan must NOT call kernel.warmup() — that double-loads the model and "
+        "doubles resident memory while the kernel-cached backend sits unused"
+    )
+    call_kwargs = prepare_mock.call_args.kwargs
+    assert call_kwargs.get("model") == "kokoro-82m"
+    assert call_kwargs.get("capability") == "tts"
 
 
 @pytest.mark.asyncio

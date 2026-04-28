@@ -365,27 +365,25 @@ def create_app(
             # ``_SherpaTtsBackend._resolve_model_dir`` requires an
             # injected prepared ``model_dir=`` (the PR D cutover
             # removed the legacy ``~/.octomil/models/sherpa`` and env
-            # fallback). Route TTS startup through the kernel's
-            # ``warmup()`` so PrepareManager materializes the
-            # artifact, then construct the backend with the resulting
-            # ``artifact_dir``. Without this, ``octomil serve
-            # kokoro-82m`` raises ``sherpa-onnx TTS backend was
-            # constructed without a prepared model_dir`` before any
-            # route is reachable — the new HTTP streaming tests
-            # patched the engine factory and so didn't notice.
+            # fallback). Route TTS startup through ``kernel.prepare``
+            # so PrepareManager materializes the artifact, then
+            # construct + load the backend ONCE against that
+            # ``artifact_dir``.
+            #
+            # We deliberately call ``prepare`` instead of ``warmup``:
+            # warmup also loads + caches a backend in
+            # ``kernel._warmed_backends``, but the lifespan owns the
+            # canonical backend on ``state.sherpa_tts_backend``.
+            # Going through warmup would double model load time and
+            # resident memory while the kernel-cached copy sat
+            # unused for the lifetime of the server.
             from ..execution.kernel import ExecutionKernel
             from ..runtime.engines.sherpa import SherpaTtsEngine
 
             tts_kernel = state.kernel or ExecutionKernel(config_set=state.config_set)
             try:
-                outcome = await asyncio.to_thread(tts_kernel.warmup, model=model_name, capability="tts")
-                artifact_dir = str(outcome.prepare_outcome.artifact_dir)
-                # warmup() loads + caches the backend keyed by
-                # planner-candidate identity; we don't have that
-                # candidate here, so construct an explicit backend
-                # against the prepared artifact_dir. Same model_dir,
-                # same identity — sherpa-onnx loads from disk only
-                # once and the OS file cache is hot.
+                prepare_outcome = await asyncio.to_thread(tts_kernel.prepare, model=model_name, capability="tts")
+                artifact_dir = str(prepare_outcome.artifact_dir)
                 sherpa_backend = SherpaTtsEngine().create_backend(
                     model_name,
                     model_dir=artifact_dir,
