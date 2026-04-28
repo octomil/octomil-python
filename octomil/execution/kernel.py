@@ -1411,7 +1411,12 @@ class ExecutionKernel:
                 ),
             )
 
-        self._validate_local_voice(runtime_model, voice)
+        self._validate_local_voice(
+            runtime_model,
+            voice,
+            selection=selection,
+            prepared_cache_dir=prepared_cache_dir,
+        )
         # PR D: when a prepared static-recipe cache is what made
         # local routing available, use it directly and SKIP the
         # planner-driven prepare. Otherwise a synthetic / broken
@@ -2677,19 +2682,48 @@ class ExecutionKernel:
                 load_error.append(f"backend_load: {exc!r}")
             return None
 
-    def _validate_local_voice(self, model: str, voice: Optional[str]) -> None:
+    def _validate_local_voice(
+        self,
+        model: str,
+        voice: Optional[str],
+        *,
+        selection: Optional[Any] = None,
+        prepared_cache_dir: Optional[str] = None,
+    ) -> None:
         """Pre-flight voice check for local TTS.
 
-        Resolves the caller-supplied voice against the *artifact-
-        specific* speaker catalog: the static recipe's
-        ``voice_manifest`` field. For Piper/VITS the catalog is
-        per-bundle and not yet declared in recipes, so we skip
-        validation and let the backend surface mismatches.
+        Two artifact-identity-aware code paths:
 
-        Raises ``OctomilError`` with ``voice_not_supported_for_model``
-        (and the model id + supported voices) when the voice is not in
-        the catalog. The legacy ``voice_not_supported_for_locality``
-        tag is preserved in the message for callers that grep for it.
+          1. **Static-recipe artifact** — the same bundle the SDK
+             would download for this model id. ``voice_manifest`` on
+             the recipe is the authoritative catalog; reject unknown
+             voices BEFORE prepare so callers don't pay for a
+             download just to learn the voice was wrong.
+
+          2. **Planner-selected (non-static) artifact** — the
+             planner picked something the SDK doesn't know the
+             catalog of (a private app's custom Kokoro bundle, a
+             newer release, etc.). Skip preflight and let the
+             backend's own ``voices.txt``-based check surface
+             mismatches after prepare. The cost: a ~megabytes-to-
+             gigabytes download before the error appears, but
+             that's the only safe choice because the SDK's static
+             manifest WOULD reject voices the planner artifact
+             actually supports.
+
+        The static path is taken when the kernel is going to use
+        the static recipe for this request:
+
+          - ``prepared_cache_dir`` is set (static cache short-circuit
+            already on disk), OR
+          - ``selection`` is None (no planner candidate; static
+            recipe is the only fallback), OR
+          - ``selection``'s artifact identity matches the static
+            recipe (planner returned the same bundle).
+
+        Errors carry both ``voice_not_supported_for_model`` (the new,
+        model-id-aware tag) and ``voice_not_supported_for_locality``
+        (legacy substring) so existing string assertions still match.
         For cloud, voice mismatches surface post-dispatch via provider 4xx.
         """
         if not voice:
@@ -2705,6 +2739,12 @@ class ExecutionKernel:
         if not manifest:
             return
 
+        if not self._static_recipe_is_active(recipe, selection, prepared_cache_dir):
+            # Planner-selected artifact with a different identity.
+            # Defer to the backend, which reads voices.txt from the
+            # actually-prepared artifact directory.
+            return
+
         if voice.strip().lower() not in {name.lower() for name in manifest}:
             raise OctomilError(
                 code=OctomilErrorCode.INVALID_INPUT,
@@ -2714,6 +2754,39 @@ class ExecutionKernel:
                     f"{', '.join(manifest)}. (voice_not_supported_for_locality)"
                 ),
             )
+
+    @staticmethod
+    def _static_recipe_is_active(
+        recipe: Any,
+        selection: Any,
+        prepared_cache_dir: Optional[str],
+    ) -> bool:
+        """Decide whether the static recipe will actually serve this
+        request. See ``_validate_local_voice`` for the rationale.
+        """
+        if recipe is None:
+            return False
+        if prepared_cache_dir is not None:
+            # Static cache short-circuit already on disk.
+            return True
+        if selection is None:
+            # No planner candidate; static recipe is the fallback.
+            return True
+        # Planner returned a candidate. Compare artifact identity
+        # (digest is the strongest signal; falls back to artifact_id).
+        candidate = _local_sdk_runtime_candidate(selection)
+        if candidate is None:
+            return True
+        cand_artifact = getattr(candidate, "artifact", None)
+        if cand_artifact is None:
+            return True
+        recipe_digest = recipe.files[0].digest if recipe.files else None
+        cand_digest = getattr(cand_artifact, "digest", None)
+        if recipe_digest and cand_digest:
+            return recipe_digest == cand_digest
+        recipe_id = recipe.model_id
+        cand_id = getattr(cand_artifact, "artifact_id", None)
+        return cand_id == recipe_id
 
     # ------------------------------------------------------------------
     # Internal helpers
