@@ -130,6 +130,30 @@ async def _start_lifespan(app) -> None:
     await cm.__aenter__()
 
 
+def _stub_kernel_warmup_for_tts(monkeypatch_or_path):
+    """Return a context manager that patches ``ExecutionKernel.warmup``
+    so it returns a fake :class:`WarmupOutcome` pointing at
+    ``monkeypatch_or_path`` as the artifact dir.
+
+    Lets the production-route tests exercise the new lifespan path
+    (which now calls ``kernel.warmup`` to materialize the artifact)
+    without spinning the real PrepareManager / planner / network.
+    Pass any directory; the test fakes don't read it.
+    """
+    from octomil.execution.kernel import WarmupOutcome
+
+    fake_prepare_outcome = MagicMock()
+    fake_prepare_outcome.artifact_dir = str(monkeypatch_or_path)
+    fake_outcome = WarmupOutcome(
+        capability="tts",
+        model="kokoro-82m",
+        prepare_outcome=fake_prepare_outcome,
+        backend_loaded=True,
+        latency_ms=1.0,
+    )
+    return patch("octomil.execution.kernel.ExecutionKernel.warmup", return_value=fake_outcome)
+
+
 def _build_stream(backend: FakeStreamingBackend) -> SpeechStream:
     """Thin wrapper around the kernel's local realtime stream builder.
 
@@ -481,7 +505,7 @@ async def test_http_speech_stream_unit_route_shape():
 
 
 @pytest.mark.asyncio
-async def test_production_http_speech_stream_route_returns_pcm_with_metadata_headers():
+async def test_production_http_speech_stream_route_returns_pcm_with_metadata_headers(tmp_path):
     """End-to-end through the real ``create_app`` factory.
 
     Patches the sherpa engine factory to return a FakeStreamingBackend
@@ -504,6 +528,7 @@ async def test_production_http_speech_stream_route_returns_pcm_with_metadata_hea
     with (
         patch("octomil.runtime.engines.sherpa.SherpaTtsEngine", return_value=fake_engine),
         patch("octomil.serve.app._is_sherpa_tts_model", return_value=True),
+        _stub_kernel_warmup_for_tts(tmp_path),
     ):
         from octomil.serve.app import create_app
 
@@ -542,7 +567,7 @@ async def test_production_http_speech_stream_route_returns_pcm_with_metadata_hea
 
 
 @pytest.mark.asyncio
-async def test_production_http_speech_stream_route_rejects_unsupported_format():
+async def test_production_http_speech_stream_route_rejects_unsupported_format(tmp_path):
     """Production route returns a 4xx error for unsupported formats."""
     pytest.importorskip("fastapi")
     pytest.importorskip("httpx")
@@ -556,6 +581,7 @@ async def test_production_http_speech_stream_route_rejects_unsupported_format():
     with (
         patch("octomil.runtime.engines.sherpa.SherpaTtsEngine", return_value=fake_engine),
         patch("octomil.serve.app._is_sherpa_tts_model", return_value=True),
+        _stub_kernel_warmup_for_tts(tmp_path),
     ):
         from octomil.serve.app import create_app
 
@@ -784,7 +810,61 @@ async def test_stream_does_not_emit_started_for_unsupported_voice(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_http_route_returns_4xx_for_unsupported_voice_before_streaming():
+async def test_tts_server_lifespan_passes_prepared_model_dir_to_sherpa_backend(tmp_path):
+    """The TTS lifespan must inject the prepared ``model_dir`` into
+    ``SherpaTtsEngine.create_backend`` — otherwise
+    ``_SherpaTtsBackend._resolve_model_dir`` raises and ``octomil
+    serve kokoro-82m`` fails before any route is reachable.
+
+    The earlier production-route tests patched the engine factory to
+    return a fake, masking this regression. This test patches at the
+    *engine class* level so we can capture the kwargs the production
+    lifespan uses, AND patches ``kernel.warmup`` so the test doesn't
+    require a real PrepareManager / planner.
+    """
+    pytest.importorskip("fastapi")
+
+    captured_kwargs: dict = {}
+
+    class _RecordingBackend:
+        supports_streaming = True
+        _sample_rate = SAMPLE_RATE
+        _default_voice = "af"
+        _model_name = "kokoro-82m"
+
+        def load_model(self, model_name: str) -> None:
+            self._model_name = model_name
+
+    class _RecordingEngine:
+        def create_backend(self, model_name, **kwargs):
+            captured_kwargs.update(kwargs)
+            return _RecordingBackend()
+
+    with (
+        patch(
+            "octomil.runtime.engines.sherpa.SherpaTtsEngine",
+            return_value=_RecordingEngine(),
+        ),
+        patch("octomil.serve.app._is_sherpa_tts_model", return_value=True),
+        _stub_kernel_warmup_for_tts(tmp_path),
+    ):
+        from octomil.serve.app import create_app
+
+        app = create_app("kokoro-82m")
+        await _start_lifespan(app)
+
+    # The lifespan MUST pass model_dir=<artifact_dir> so the sherpa
+    # backend can resolve the prepared layout. Pre-fix the lifespan
+    # called create_backend(model_name) with no kwargs and immediately
+    # raised in load_model.
+    assert "model_dir" in captured_kwargs, (
+        "TTS lifespan must inject prepared model_dir from kernel.warmup() — " f"captured kwargs: {captured_kwargs}"
+    )
+    assert captured_kwargs["model_dir"] == str(tmp_path)
+
+
+@pytest.mark.asyncio
+async def test_http_route_returns_4xx_for_unsupported_voice_before_streaming(tmp_path):
     """The production /v1/audio/speech/stream route must return a 4xx
     JSON envelope for unsupported voices, not 200 + binary body that
     later EOFs with an exception. Binary streaming clients have no
@@ -813,6 +893,7 @@ async def test_http_route_returns_4xx_for_unsupported_voice_before_streaming():
     with (
         patch("octomil.runtime.engines.sherpa.SherpaTtsEngine", return_value=fake_engine),
         patch("octomil.serve.app._is_sherpa_tts_model", return_value=True),
+        _stub_kernel_warmup_for_tts(tmp_path),
     ):
         from octomil.serve.app import create_app
 

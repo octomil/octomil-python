@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -361,16 +362,40 @@ def create_app(
             state.whisper_backend = whisper_backend
             state.engine_name = "whisper.cpp"
         elif _is_sherpa_tts_model(model_name):
+            # ``_SherpaTtsBackend._resolve_model_dir`` requires an
+            # injected prepared ``model_dir=`` (the PR D cutover
+            # removed the legacy ``~/.octomil/models/sherpa`` and env
+            # fallback). Route TTS startup through the kernel's
+            # ``warmup()`` so PrepareManager materializes the
+            # artifact, then construct the backend with the resulting
+            # ``artifact_dir``. Without this, ``octomil serve
+            # kokoro-82m`` raises ``sherpa-onnx TTS backend was
+            # constructed without a prepared model_dir`` before any
+            # route is reachable — the new HTTP streaming tests
+            # patched the engine factory and so didn't notice.
+            from ..execution.kernel import ExecutionKernel
             from ..runtime.engines.sherpa import SherpaTtsEngine
 
-            sherpa_engine = SherpaTtsEngine()
-            sherpa_backend = sherpa_engine.create_backend(model_name)
+            tts_kernel = state.kernel or ExecutionKernel(config_set=state.config_set)
             try:
+                outcome = await asyncio.to_thread(tts_kernel.warmup, model=model_name, capability="tts")
+                artifact_dir = str(outcome.prepare_outcome.artifact_dir)
+                # warmup() loads + caches the backend keyed by
+                # planner-candidate identity; we don't have that
+                # candidate here, so construct an explicit backend
+                # against the prepared artifact_dir. Same model_dir,
+                # same identity — sherpa-onnx loads from disk only
+                # once and the OS file cache is hot.
+                sherpa_backend = SherpaTtsEngine().create_backend(
+                    model_name,
+                    model_dir=artifact_dir,
+                )
                 sherpa_backend.load_model(model_name)
             except Exception as exc:
                 _log_startup_error(model_name, exc)
                 raise
             state.sherpa_tts_backend = sherpa_backend
+            state.kernel = tts_kernel
             state.engine_name = "sherpa-onnx"
         elif state.kernel is not None:
             # --- Config-driven startup: use kernel routing to decide backends ---
