@@ -1411,7 +1411,12 @@ class ExecutionKernel:
                 ),
             )
 
-        self._validate_local_voice(runtime_model, voice)
+        self._validate_local_voice(
+            runtime_model,
+            voice,
+            selection=selection,
+            prepared_cache_dir=prepared_cache_dir,
+        )
         # PR D: when a prepared static-recipe cache is what made
         # local routing available, use it directly and SKIP the
         # planner-driven prepare. Otherwise a synthetic / broken
@@ -1505,6 +1510,242 @@ class ExecutionKernel:
             route=speech_route,
             billed_units=None,
             unit_kind=None,
+        )
+
+    async def list_speech_voices(
+        self,
+        *,
+        model: str,
+        policy: Optional[str] = None,
+        app: Optional[str] = None,
+    ) -> Any:
+        """Return the ordered voice catalog for ``model`` under the
+        active routing policy.
+
+        Powers ``client.audio.voices.list``. Walks the same routing
+        pipeline as :meth:`synthesize_speech` so the locality
+        decision matches what synthesis would do; the returned
+        catalog is therefore the *exact* set of voices a caller can
+        legally pass to ``speech.create`` / ``speech.stream`` right
+        now.
+
+        Resolution order (local locality):
+
+          - Prepared artifact dir on disk → read ``voices.txt``
+            from the prepared dir (authoritative). This wins for
+            both static-recipe and planner-selected artifacts.
+          - Planner-selected non-static candidate, not yet on disk
+            → defer: artifact identity is owned by the planner, the
+            SDK's static-recipe preview would advertise the wrong
+            catalog. Return ``locality='on_device', source='planner_pending'``
+            with empty voices so callers know to ``client.prepare(...)``
+            and re-list.
+          - Static recipe IS the chosen artifact → preview the
+            recipe's ``voice_manifest`` so the UI can list voices
+            without forcing a download.
+
+        Cloud locality returns ``locality='cloud', source='hosted'``
+        with an empty list — provider catalogs are out of SDK scope.
+
+        Policy / routing errors propagate as ``OctomilError`` so the
+        listing API surfaces the same failures synthesis would.
+        """
+        from octomil.audio.speech import VoiceCatalog, VoiceInfo
+        from octomil.runtime.engines.sherpa import is_sherpa_tts_model, resolve_voice_catalog
+        from octomil.runtime.lifecycle.static_recipes import get_static_recipe
+
+        requested_model = model
+        defaults = self._resolve(CAPABILITY_TTS, model=requested_model, policy=policy, app=app)
+        effective_model = defaults.model or requested_model
+        if not effective_model:
+            raise _no_model_error(CAPABILITY_TTS)
+
+        policy_preset = defaults.policy_preset or "local_first"
+        planner_model = _planner_model_for_request(effective_model=effective_model, app=app, capability=CAPABILITY_TTS)
+        selection = _resolve_planner_selection(planner_model, CAPABILITY_TTS, policy_preset)
+        runtime_model = _runtime_model_for_selection(selection, effective_model)
+
+        planner_policy = _tts_policy_from_selection(selection)
+        if planner_policy:
+            policy_preset = planner_policy
+            defaults.policy_preset = planner_policy
+            defaults.inline_policy = None
+
+        # Same app-ref policy gate ``synthesize_speech`` uses — a
+        # listing API that hides this would let UIs preview a public
+        # catalog for a request synthesis would refuse.
+        _enforce_app_ref_routing_policy(
+            requested_model=requested_model,
+            selection=selection,
+            explicit_policy=policy,
+            explicit_app=app,
+            resolved_policy_preset=defaults.policy_preset,
+        )
+
+        local_candidate = _local_sdk_runtime_candidate(selection)
+        app_scoped = bool(app) or _is_app_ref(requested_model or "")
+        prepared_cache_dir: Optional[str] = None
+        if self._sherpa_tts_runtime_loadable(runtime_model) and self._prepared_cache_may_short_circuit(
+            local_candidate, runtime_model, CAPABILITY_TTS, app_scoped=app_scoped
+        ):
+            prepared_cache_dir = self._prepared_local_artifact_dir(CAPABILITY_TTS, runtime_model)
+
+        if prepared_cache_dir is not None:
+            local_available = True
+        elif self._local_candidate_is_unpreparable(selection):
+            local_available = False
+        else:
+            local_available = self._can_prepare_local_tts(runtime_model, selection)
+
+        cloud_available = _cloud_available(defaults)
+        if _is_local_only_policy(policy):
+            cloud_available = False
+
+        # Locality decision: surface RuntimeError as the SAME
+        # OctomilError synthesize_speech raises, so the two APIs
+        # cannot disagree about whether the request is routable.
+        try:
+            routing_policy = _resolve_routing_policy(defaults)
+            locality, _is_fallback = _select_locality_for_capability(
+                routing_policy,
+                local_available=local_available,
+                cloud_available=cloud_available,
+                capability=CAPABILITY_TTS,
+            )
+        except RuntimeError as exc:
+            if "local" in str(exc).lower():
+                raise self._tts_local_unavailable_error(
+                    runtime_model,
+                    requested_model=requested_model,
+                    app=app,
+                    local_candidate=local_candidate,
+                    app_scoped=app_scoped,
+                ) from exc
+            raise OctomilError(
+                code=OctomilErrorCode.RUNTIME_UNAVAILABLE,
+                message=str(exc),
+            ) from exc
+
+        if locality == LOCALITY_ON_DEVICE and not local_available:
+            raise self._tts_local_unavailable_error(
+                runtime_model,
+                requested_model=requested_model,
+                app=app,
+                local_candidate=local_candidate,
+                app_scoped=app_scoped,
+            )
+
+        if locality == LOCALITY_ON_DEVICE:
+            recipe = (
+                get_static_recipe(runtime_model.lower(), CAPABILITY_TTS) if is_sherpa_tts_model(runtime_model) else None
+            )
+
+            # P1 fix: only feed the SDK's static recipe manifest to
+            # the resolver when the static recipe IS the chosen
+            # artifact. For a planner-selected non-static artifact
+            # (e.g. private-kokoro-v2 under runtime_model
+            # kokoro-82m), advertising the public v1.0 catalog +
+            # public digest would lie about what synthesis is going
+            # to use.
+            static_recipe_active = self._static_recipe_is_active(recipe, selection, prepared_cache_dir)
+            static_manifest = (
+                recipe.materialization.voice_manifest if (recipe is not None and static_recipe_active) else ()
+            )
+            static_version = (
+                recipe.materialization.artifact_version if (recipe is not None and static_recipe_active) else ""
+            )
+
+            resolved = resolve_voice_catalog(
+                runtime_model.lower(),
+                prepared_model_dir=prepared_cache_dir,
+                static_recipe_manifest=static_manifest,
+                static_recipe_artifact_version=static_version or "",
+            )
+
+            # P1 fix: when the planner picked a non-static artifact
+            # AND it isn't on disk yet, the SDK has no authoritative
+            # source for the catalog. Tell the caller to prepare —
+            # do NOT advertise the public recipe.
+            if not resolved.voices and not static_recipe_active and prepared_cache_dir is None:
+                return VoiceCatalog(
+                    model=runtime_model,
+                    locality="on_device",
+                    source="planner_pending",
+                    voices=(),
+                    artifact_id=getattr(getattr(local_candidate, "artifact", None), "artifact_id", None),
+                    artifact_version=None,
+                    digest=getattr(getattr(local_candidate, "artifact", None), "digest", None),
+                    default_voice=None,
+                    sample_rate=None,
+                )
+
+            from octomil.runtime.engines.sherpa.engine import _default_voice as _engine_default_voice
+
+            # P2 fix: only mark a default when it's actually present
+            # in the resolved catalog. Otherwise fall back to the
+            # bundle's first speaker so default_voice and the flagged
+            # VoiceInfo always agree — synthesis with voice=None will
+            # use that exact id.
+            model_default = (_engine_default_voice(runtime_model) or "").strip()
+            resolved_lower = {name.lower() for name in resolved.voices}
+            if model_default and model_default.lower() in resolved_lower:
+                effective_default = model_default
+            elif resolved.voices:
+                effective_default = resolved.voices[0]
+            else:
+                effective_default = ""
+
+            voices = tuple(
+                VoiceInfo(
+                    id=name,
+                    sid=idx,
+                    default=bool(effective_default) and name.lower() == effective_default.lower(),
+                )
+                for idx, name in enumerate(resolved.voices)
+            )
+
+            # Identity comes from the actually-chosen artifact, NOT
+            # the static recipe, when those differ.
+            cand_artifact = getattr(local_candidate, "artifact", None) if local_candidate is not None else None
+            artifact_id: Optional[str]
+            digest: Optional[str]
+            if static_recipe_active and recipe is not None:
+                artifact_id = recipe.model_id
+                digest = recipe.files[0].digest if recipe.files else None
+            else:
+                artifact_id = getattr(cand_artifact, "artifact_id", None) if cand_artifact is not None else None
+                digest = getattr(cand_artifact, "digest", None) if cand_artifact is not None else None
+
+            artifact_version = resolved.artifact_version or static_version or None
+
+            return VoiceCatalog(
+                model=runtime_model,
+                locality="on_device",
+                source=resolved.source or ("static_recipe" if static_recipe_active else "planner_pending"),
+                voices=voices,
+                artifact_id=artifact_id,
+                artifact_version=artifact_version,
+                digest=digest,
+                default_voice=effective_default or None,
+                sample_rate=24000 if voices else None,
+            )
+
+        # Cloud locality. The SDK doesn't ship a curated hosted
+        # catalog table — return an empty list with provenance so
+        # the UI can render "ask the provider" rather than a stale
+        # hardcoded set. Callers wanting the full hosted catalog
+        # should hit the provider's own endpoint or wait for the
+        # server-side ``/v1/audio/voices`` route.
+        return VoiceCatalog(
+            model=runtime_model,
+            locality="cloud",
+            source="hosted",
+            voices=(),
+            artifact_id=None,
+            artifact_version=None,
+            digest=None,
+            default_voice=None,
+            sample_rate=None,
         )
 
     async def _cloud_synthesize_speech(
@@ -2677,30 +2918,126 @@ class ExecutionKernel:
                 load_error.append(f"backend_load: {exc!r}")
             return None
 
-    def _validate_local_voice(self, model: str, voice: Optional[str]) -> None:
+    def _validate_local_voice(
+        self,
+        model: str,
+        voice: Optional[str],
+        *,
+        selection: Optional[Any] = None,
+        prepared_cache_dir: Optional[str] = None,
+    ) -> None:
         """Pre-flight voice check for local TTS.
 
-        Raises ``OctomilError`` with ``voice_not_supported_for_locality`` when
-        the caller passed a voice that isn't in the local model's catalog.
+        Two artifact-identity-aware code paths:
+
+          1. **Static-recipe artifact** — the same bundle the SDK
+             would download for this model id. ``voice_manifest`` on
+             the recipe is the authoritative catalog; reject unknown
+             voices BEFORE prepare so callers don't pay for a
+             download just to learn the voice was wrong.
+
+          2. **Planner-selected (non-static) artifact** — the
+             planner picked something the SDK doesn't know the
+             catalog of (a private app's custom Kokoro bundle, a
+             newer release, etc.). Skip preflight and let the
+             backend's own ``voices.txt``-based check surface
+             mismatches after prepare. The cost: a ~megabytes-to-
+             gigabytes download before the error appears, but
+             that's the only safe choice because the SDK's static
+             manifest WOULD reject voices the planner artifact
+             actually supports.
+
+        The static path is taken when the kernel is going to use
+        the static recipe for this request:
+
+          - ``prepared_cache_dir`` is set (static cache short-circuit
+            already on disk), OR
+          - ``selection`` is None (no planner candidate; static
+            recipe is the only fallback), OR
+          - ``selection``'s artifact identity matches the static
+            recipe (planner returned the same bundle).
+
+        Errors carry both ``voice_not_supported_for_model`` (the new,
+        model-id-aware tag) and ``voice_not_supported_for_locality``
+        (legacy substring) so existing string assertions still match.
         For cloud, voice mismatches surface post-dispatch via provider 4xx.
         """
         if not voice:
             return
-        from octomil.runtime.engines.sherpa import _KOKORO_VOICES, is_sherpa_tts_model
+        from octomil.runtime.engines.sherpa import is_sherpa_tts_model, resolve_voice_catalog
+        from octomil.runtime.lifecycle.static_recipes import get_static_recipe
 
         if not is_sherpa_tts_model(model):
             return
-        # Kokoro carries a known catalog. For Piper/VITS the catalog is per-bundle;
-        # defer detection to backend until we ship a per-model voices.txt scan.
-        if model.lower().startswith("kokoro-") and voice.lower() not in _KOKORO_VOICES:
+
+        recipe = get_static_recipe(model.lower(), CAPABILITY_TTS)
+        if recipe is None:
+            return
+        manifest = recipe.materialization.voice_manifest
+        if not manifest:
+            return
+
+        if not self._static_recipe_is_active(recipe, selection, prepared_cache_dir):
+            # Planner-selected artifact with a different identity.
+            # Defer to the backend, which reads voices.txt from the
+            # actually-prepared artifact directory.
+            return
+
+        # Use the shared resolver so this preflight, the engine's
+        # ``_voice_to_sid``, and ``list_speech_voices`` all walk the
+        # same code path. ``prepared_cache_dir`` is preferred when
+        # set so a stale recipe-time manifest can't reject voices
+        # the on-disk artifact actually supports.
+        resolved = resolve_voice_catalog(
+            model.lower(),
+            prepared_model_dir=prepared_cache_dir,
+            static_recipe_manifest=manifest,
+            static_recipe_artifact_version=recipe.materialization.artifact_version or "",
+        )
+        catalog_voices = resolved.voices or manifest
+
+        if voice.strip().lower() not in {name.lower() for name in catalog_voices}:
             raise OctomilError(
                 code=OctomilErrorCode.INVALID_INPUT,
                 message=(
-                    f"voice_not_supported_for_locality: '{voice}' is not in "
-                    f"the Kokoro voice catalog. Cloud voices like 'alloy' "
-                    f"or 'onyx' are not valid for local Kokoro execution."
+                    f"voice_not_supported_for_model: voice {voice!r} is not in the "
+                    f"speaker catalog for model {model!r}. Supported voices: "
+                    f"{', '.join(catalog_voices)}. (voice_not_supported_for_locality)"
                 ),
             )
+
+    @staticmethod
+    def _static_recipe_is_active(
+        recipe: Any,
+        selection: Any,
+        prepared_cache_dir: Optional[str],
+    ) -> bool:
+        """Decide whether the static recipe will actually serve this
+        request. See ``_validate_local_voice`` for the rationale.
+        """
+        if recipe is None:
+            return False
+        if prepared_cache_dir is not None:
+            # Static cache short-circuit already on disk.
+            return True
+        if selection is None:
+            # No planner candidate; static recipe is the fallback.
+            return True
+        # Planner returned a candidate. Compare artifact identity
+        # (digest is the strongest signal; falls back to artifact_id).
+        candidate = _local_sdk_runtime_candidate(selection)
+        if candidate is None:
+            return True
+        cand_artifact = getattr(candidate, "artifact", None)
+        if cand_artifact is None:
+            return True
+        recipe_digest = recipe.files[0].digest if recipe.files else None
+        cand_digest = getattr(cand_artifact, "digest", None)
+        if recipe_digest and cand_digest:
+            return recipe_digest == cand_digest
+        recipe_id = recipe.model_id
+        cand_id = getattr(cand_artifact, "artifact_id", None)
+        return cand_id == recipe_id
 
     # ------------------------------------------------------------------
     # Internal helpers

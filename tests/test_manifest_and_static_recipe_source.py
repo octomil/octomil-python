@@ -248,9 +248,9 @@ def test_static_recipe_source_expands_from_table(tmp_path):
         recipe_id="kokoro-82m",
     )
     expanded, recipe = pm._expand_static_recipe_source(artifact)
-    # Canonical Kokoro digest from static_recipes.py
-    assert expanded.digest == "sha256:912804855a04745fa77a30be545b3f9a5d15c4d66db00b88cbcd4921df605ac7"
-    assert expanded.required_files == ["kokoro-en-v0_19.tar.bz2"]
+    # Post-cutover, kokoro-82m resolves to the v1.0 multi-lang bundle.
+    assert expanded.digest == "sha256:c133d26353d776da730870dac7da07dbfc9a5e3bc80cc5e8e83ab6e823be7046"
+    assert expanded.required_files == ["kokoro-multi-lang-v1_0.tar.bz2"]
     assert len(expanded.download_urls) == 1
     assert expanded.download_urls[0].url == "https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models"
 
@@ -346,9 +346,9 @@ def test_static_recipe_source_full_prepare_pipeline(tmp_path, monkeypatch):
     descriptor = pm._build_descriptor(expanded)
     assert descriptor.artifact_id == "kokoro-82m"
     assert len(descriptor.required_files) == 1
-    assert descriptor.required_files[0].relative_path == "kokoro-en-v0_19.tar.bz2"
+    assert descriptor.required_files[0].relative_path == "kokoro-multi-lang-v1_0.tar.bz2"
     assert (
-        descriptor.required_files[0].digest == "sha256:912804855a04745fa77a30be545b3f9a5d15c4d66db00b88cbcd4921df605ac7"
+        descriptor.required_files[0].digest == "sha256:c133d26353d776da730870dac7da07dbfc9a5e3bc80cc5e8e83ab6e823be7046"
     )
 
 

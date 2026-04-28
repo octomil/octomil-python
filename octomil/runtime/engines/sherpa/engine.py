@@ -16,9 +16,11 @@ import logging
 import os
 import struct
 import time
+from dataclasses import dataclass
 from io import BytesIO
-from typing import Any
+from typing import Any, Optional
 
+from octomil.errors import OctomilError, OctomilErrorCode
 from octomil.runtime.core.base import BenchmarkResult, EnginePlugin
 
 logger = logging.getLogger(__name__)
@@ -31,6 +33,10 @@ logger = logging.getLogger(__name__)
 # voice the backend uses when the request does not specify one.
 _SHERPA_TTS_MODELS: dict[str, tuple[str, str]] = {
     "kokoro-82m": ("kokoro", "af_bella"),
+    # Legacy v0.19 bundle, retained as an explicit-pin id alongside
+    # ``kokoro-82m``. ``af_bella`` is at sid=1 in v0.19's voices.bin
+    # and is the default for both bundles.
+    "kokoro-en-v0_19": ("kokoro", "af_bella"),
     "piper-en-amy": ("vits", "amy"),
     "piper-en-ryan": ("vits", "ryan"),
 }
@@ -47,39 +53,322 @@ def _default_voice(model_name: str) -> str:
     return entry[1] if entry else ""
 
 
-# Kokoro v0.19+ voice catalog. Index == speaker id in the bundled voices.bin.
-# Source: sherpa-onnx scripts/kokoro voice manifest. Operators can override
-# this by dropping a voices.txt sidecar in the model directory.
-_KOKORO_VOICES: tuple[str, ...] = (
-    "af_alloy",
-    "af_aoede",
+# Per-artifact Kokoro voice catalogs. Position in the tuple ==
+# sherpa-onnx speaker id in the corresponding voices.bin.
+#
+# IMPORTANT: voice ordering is bundle-specific. A 28-name "modern"
+# Kokoro catalog (af_heart, am_echo, …) is NOT interchangeable with
+# the 11-name kokoro-en-v0_19 catalog the SDK currently ships —
+# sherpa-onnx clamps out-of-range sids to 0, so a mismatched table
+# silently aliases every "missing" voice to the default speaker.
+#
+# These tables are *legacy fallbacks*. The authoritative source is a
+# ``voices.txt`` sidecar under the prepared artifact directory,
+# materialized from the static recipe's ``voice_manifest`` field.
+# The fallback only fires when a sidecar is absent — e.g. an
+# artifact someone hand-staged before voices.txt materialization
+# shipped — and is keyed by model id rather than a global "kokoro =
+# these N names" assumption.
+
+# kokoro-en-v0_19 — the legacy English-only bundle, still resolvable
+# under the explicit ``kokoro-en-v0_19`` model id.
+_KOKORO_EN_V0_19_VOICES: tuple[str, ...] = (
+    "af",
     "af_bella",
-    "af_heart",
-    "af_jessica",
-    "af_kore",
     "af_nicole",
-    "af_nova",
-    "af_river",
     "af_sarah",
     "af_sky",
     "am_adam",
-    "am_echo",
-    "am_eric",
-    "am_fenrir",
-    "am_liam",
     "am_michael",
-    "am_onyx",
-    "am_puck",
-    "am_santa",
-    "bf_alice",
     "bf_emma",
     "bf_isabella",
-    "bf_lily",
-    "bm_daniel",
-    "bm_fable",
     "bm_george",
     "bm_lewis",
 )
+
+# kokoro-multi-lang-v1_0 — the bundle ``kokoro-82m`` resolves to as
+# of the v1.0 cutover. 53 speakers across 8 languages; ordering is
+# pinned to upstream's ``scripts/kokoro/v1.0/generate_voices_bin.py``
+# so the fallback can never silently drift from voices.bin.
+_KOKORO_MULTI_LANG_V1_0_VOICES: tuple[str, ...] = (
+    "af_alloy", "af_aoede", "af_bella", "af_heart", "af_jessica",
+    "af_kore", "af_nicole", "af_nova", "af_river", "af_sarah",
+    "af_sky", "am_adam", "am_echo", "am_eric", "am_fenrir",
+    "am_liam", "am_michael", "am_onyx", "am_puck", "am_santa",
+    "bf_alice", "bf_emma", "bf_isabella", "bf_lily", "bm_daniel",
+    "bm_fable", "bm_george", "bm_lewis",
+    "ef_dora", "em_alex",
+    "ff_siwis",
+    "hf_alpha", "hf_beta", "hm_omega", "hm_psi",
+    "if_sara", "im_nicola",
+    "jf_alpha", "jf_gongitsune", "jf_nezumi", "jf_tebukuro", "jm_kumo",
+    "pf_dora", "pm_alex", "pm_santa",
+    "zf_xiaobei", "zf_xiaoni", "zf_xiaoxiao", "zf_xiaoyi",
+    "zm_yunjian", "zm_yunxi", "zm_yunxia", "zm_yunyang",
+)  # fmt: skip
+
+# Per-model legacy fallback catalog. Used ONLY when no voices.txt
+# sidecar is present. Keep tightly scoped: an unknown model id
+# falls through to "fail loudly" so callers can't accidentally
+# inherit some other artifact's catalog.
+_LEGACY_KOKORO_FALLBACK_CATALOGS: dict[str, tuple[str, ...]] = {
+    "kokoro-82m": _KOKORO_MULTI_LANG_V1_0_VOICES,
+    "kokoro-en-v0_19": _KOKORO_EN_V0_19_VOICES,
+}
+
+# Back-compat alias. Old import path
+# ``octomil.runtime.engines.sherpa._KOKORO_VOICES`` resolves to the
+# active default artifact's catalog so external callers keep working,
+# but the canonical accessor is ``catalog_for_model(model_name)``.
+_KOKORO_VOICES: tuple[str, ...] = _KOKORO_MULTI_LANG_V1_0_VOICES
+
+
+def catalog_for_model(model_name: str) -> tuple[str, ...]:
+    """Return the legacy fallback voice catalog for ``model_name``.
+
+    Empty tuple when the model has no declared catalog. Callers that
+    need authoritative ordering should read ``voices.txt`` from the
+    prepared artifact directory; this helper is the *fallback* used
+    only when the sidecar is missing.
+
+    Keying solely on ``model_name`` is unsafe when an old prepared
+    dir from a previous artifact identity is still on disk (e.g. a
+    pre-cutover ``kokoro-82m`` v0.19 dir whose voices.txt sidecar
+    predates the manifest patch). The richer
+    :func:`fallback_catalog_for_artifact` resolves this by reading
+    the materialized ``VERSION`` sidecar / layout signals.
+    """
+    return _LEGACY_KOKORO_FALLBACK_CATALOGS.get(model_name.lower(), ())
+
+
+def fallback_catalog_for_artifact(model_name: str, model_dir: str) -> tuple[str, ...]:
+    """Pick a legacy fallback catalog using artifact-on-disk signals.
+
+    Resolution order:
+
+      1. ``VERSION`` sidecar materialized by the static recipe.
+         ``kokoro-en-v0_19`` → 11-speaker catalog;
+         ``kokoro-multi-lang-v1_0`` → 53-speaker catalog.
+      2. Directory-shape inference. If neither layout signal is
+         present (artifact looks neither v0.19 nor v1.0), or the
+         artifact's identity contradicts the model id (e.g. a
+         pre-cutover v0.19 artifact still parked under
+         ``kokoro-82m``), return an empty tuple — the engine then
+         refuses the explicit voice path rather than silently
+         aliasing names like ``bm_george`` to the wrong sid.
+      3. As a last resort for sidecar-less artifacts whose layout
+         IS clearly recognizable, fall back to the model-id catalog
+         only when it agrees with the layout signal.
+    """
+    version_path = os.path.join(model_dir, "VERSION")
+    declared_version = ""
+    if os.path.isfile(version_path):
+        try:
+            with open(version_path, encoding="utf-8") as f:
+                declared_version = f.read().strip()
+        except OSError:
+            declared_version = ""
+
+    if declared_version == "kokoro-en-v0_19":
+        return _KOKORO_EN_V0_19_VOICES
+    if declared_version == "kokoro-multi-lang-v1_0":
+        return _KOKORO_MULTI_LANG_V1_0_VOICES
+
+    # No VERSION sidecar — infer from layout. v1.0 uniquely ships
+    # dict/jieba.dict.utf8; v0.19 uniquely ships espeak-ng-data
+    # WITHOUT the lexicon files (v1.0 ships both).
+    has_dict = os.path.isfile(os.path.join(model_dir, "dict", "jieba.dict.utf8"))
+    has_lexicon_us = os.path.isfile(os.path.join(model_dir, "lexicon-us-en.txt"))
+    has_espeak = os.path.isfile(os.path.join(model_dir, "espeak-ng-data", "phontab"))
+
+    if has_dict and has_lexicon_us:
+        layout_catalog: tuple[str, ...] = _KOKORO_MULTI_LANG_V1_0_VOICES
+    elif has_espeak and not has_dict and not has_lexicon_us:
+        layout_catalog = _KOKORO_EN_V0_19_VOICES
+    else:
+        # Layout is ambiguous (or unrecognized). Refuse to guess —
+        # an old pre-manifest dir under ``kokoro-82m`` could
+        # otherwise inherit the v1.0 catalog and re-introduce the
+        # silent aliasing bug.
+        return ()
+
+    # Cross-check against the model-id catalog. If they disagree,
+    # treat the dir as ambiguous (operator-staged bytes that don't
+    # match the canonical recipe).
+    name_catalog = catalog_for_model(model_name)
+    if name_catalog and name_catalog is not layout_catalog:
+        return ()
+    return layout_catalog
+
+
+def _read_voice_manifest(model_dir: str) -> tuple[str, ...]:
+    """Read ``voices.txt`` from ``model_dir`` and return the ordered
+    list of speaker names. Returns an empty tuple when the sidecar
+    is missing. Trims trailing whitespace and skips blank lines so a
+    crash-truncated final newline doesn't shift speaker ids.
+    """
+    sidecar = os.path.join(model_dir, "voices.txt")
+    if not os.path.exists(sidecar):
+        return ()
+    with open(sidecar, encoding="utf-8") as f:
+        return tuple(line.strip() for line in f if line.strip())
+
+
+def _read_artifact_version(model_dir: str) -> str:
+    """Read the ``VERSION`` sidecar (or empty string)."""
+    version_path = os.path.join(model_dir, "VERSION")
+    if not os.path.isfile(version_path):
+        return ""
+    try:
+        with open(version_path, encoding="utf-8") as f:
+            return f.read().strip()
+    except OSError:
+        return ""
+
+
+@dataclass(frozen=True)
+class ResolvedVoiceCatalog:
+    """Engine-side projection of a TTS voice catalog.
+
+    Single-source-of-truth for both the synthesis path
+    (``_voice_to_sid``) and the listing path
+    (``list_speech_voices``). Position in ``voices`` matches
+    sherpa-onnx speaker id; ``source`` is provenance — either
+    ``"voices_txt"`` (read from the prepared artifact's sidecar),
+    ``"static_recipe"`` (no sidecar yet, manifest came from the
+    recipe), or ``""`` (no catalog known).
+    """
+
+    voices: tuple[str, ...]
+    source: str = ""
+    artifact_version: str = ""
+
+
+def resolve_voice_catalog(
+    model_name: str,
+    *,
+    prepared_model_dir: Optional[str] = None,
+    static_recipe_manifest: tuple[str, ...] = (),
+    static_recipe_artifact_version: str = "",
+) -> ResolvedVoiceCatalog:
+    """Single resolver shared by synthesis, validation, and listing.
+
+    Resolution order:
+
+      1. ``voices.txt`` sidecar in ``prepared_model_dir`` —
+         authoritative for the artifact actually on disk.
+      2. ``VERSION`` + layout fallback under ``prepared_model_dir``
+         (handles sidecar-less prepared dirs from before the
+         manifest patch).
+      3. ``static_recipe_manifest`` — used when no prepared dir
+         exists yet (the listing path can preview the catalog
+         without forcing a download).
+      4. Model-id legacy fallback (``catalog_for_model``), only
+         when no other signal is available.
+
+    Returns an empty catalog (``voices=()``) when none of the above
+    yields a result; callers translate that into a strict refusal
+    for the explicit-voice path or a "no catalog known" listing.
+    """
+    if prepared_model_dir:
+        sidecar = _read_voice_manifest(prepared_model_dir)
+        if sidecar:
+            return ResolvedVoiceCatalog(
+                voices=sidecar,
+                source="voices_txt",
+                artifact_version=_read_artifact_version(prepared_model_dir),
+            )
+        layout = fallback_catalog_for_artifact(model_name, prepared_model_dir)
+        if layout:
+            return ResolvedVoiceCatalog(
+                voices=layout,
+                source="voices_txt",  # derived from artifact-on-disk signals
+                artifact_version=_read_artifact_version(prepared_model_dir),
+            )
+        # Prepared dir exists but is ambiguous (layout + model id
+        # disagree, or layout is unrecognized). Refuse to fall
+        # through to the model-id catalog or the recipe manifest:
+        # an old pre-manifest dir under the same model id would
+        # otherwise inherit the WRONG catalog and re-introduce the
+        # silent sid-aliasing bug.
+        return ResolvedVoiceCatalog(voices=(), source="", artifact_version="")
+
+    if static_recipe_manifest:
+        return ResolvedVoiceCatalog(
+            voices=static_recipe_manifest,
+            source="static_recipe",
+            artifact_version=static_recipe_artifact_version,
+        )
+
+    name_fallback = catalog_for_model(model_name)
+    if name_fallback:
+        return ResolvedVoiceCatalog(
+            voices=name_fallback,
+            source="static_recipe",
+            artifact_version="",
+        )
+
+    return ResolvedVoiceCatalog(voices=(), source="", artifact_version="")
+
+
+def _build_kokoro_model_config(sherpa_onnx: Any, model_dir: str) -> Any:
+    """Construct ``OfflineTtsKokoroModelConfig`` for a Kokoro artifact.
+
+    Wires three shape-dependent knobs:
+
+      - ``data_dir``: espeak-ng phoneme tables. Required keyword on
+        sherpa-onnx 1.13.0's config (omitting it raises TypeError),
+        and required *value* whenever the bundle ships
+        ``espeak-ng-data/`` — both v0.19 AND v1.0 do, and upstream's
+        own ``--kokoro-data-dir`` invocation passes it for v1.0
+        alongside the lexicon files. Leaving it empty when the
+        directory exists risks broken / OOV phonemization for any
+        language whose phoneme set isn't covered by the lexicon.
+      - ``lexicon`` + ``dict_dir``: v1.0+ adds Chinese segmentation
+        (jieba dict) and per-language lexicons that replace espeak
+        for English/Chinese specifically. These are additive on top
+        of espeak rather than a replacement for the binary itself.
+
+    Detection is by directory contents, not model id, so a future
+    v1.1/v2 bundle with the same shape works without code changes.
+    """
+    espeak_dir = os.path.join(model_dir, "espeak-ng-data")
+    dict_dir = os.path.join(model_dir, "dict")
+    lexicon_files = [
+        os.path.join(model_dir, name)
+        for name in ("lexicon-us-en.txt", "lexicon-gb-en.txt", "lexicon-zh.txt")
+        if os.path.isfile(os.path.join(model_dir, name))
+    ]
+    has_v1_layout = os.path.isdir(dict_dir) and bool(lexicon_files)
+    has_espeak = os.path.isdir(espeak_dir)
+
+    if not has_v1_layout and not has_espeak:
+        raise OctomilError(
+            code=OctomilErrorCode.RUNTIME_UNAVAILABLE,
+            message=(
+                f"sherpa-onnx Kokoro artifact at {model_dir!r} has neither an "
+                f"espeak-ng-data/ directory (v0.19 layout) nor dict/ + "
+                f"lexicon-*.txt files (v1.0+ layout). The bundle is incomplete "
+                f"or from an unsupported Kokoro release."
+            ),
+        )
+
+    # ``data_dir`` MUST be present on the config kwargs (sherpa-onnx
+    # 1.13.0 raises TypeError otherwise). Set the espeak path
+    # whenever it exists, regardless of whether the v1.0 lexicon
+    # path is also active — they coexist in upstream's invocation.
+    base_kwargs: dict[str, Any] = {
+        "model": os.path.join(model_dir, "model.onnx"),
+        "voices": os.path.join(model_dir, "voices.bin"),
+        "tokens": os.path.join(model_dir, "tokens.txt"),
+        "data_dir": espeak_dir if has_espeak else "",
+    }
+
+    if has_v1_layout:
+        base_kwargs["lexicon"] = ",".join(lexicon_files)
+        base_kwargs["dict_dir"] = dict_dir
+
+    return sherpa_onnx.OfflineTtsKokoroModelConfig(**base_kwargs)
 
 
 def _has_sherpa_onnx() -> bool:
@@ -232,8 +521,18 @@ class _SherpaTtsBackend:
 
         Branches on model family because Kokoro and VITS/Piper expect
         different OfflineTtsModelConfig shapes:
-          - kokoro: OfflineTtsKokoroModelConfig(model, voices, tokens, data_dir)
+          - kokoro: OfflineTtsKokoroModelConfig(model, voices, tokens,
+            data_dir, [lexicon, dict_dir])
           - vits:   OfflineTtsVitsModelConfig(model, tokens, data_dir)
+
+        See :func:`_build_kokoro_model_config` for the Kokoro
+        sub-branching: ``data_dir`` is wired to ``espeak-ng-data/``
+        whenever that directory exists (both v0.19 and v1.0 ship it
+        and upstream's invocation passes it for both), and v1.0+
+        additionally wires ``lexicon`` + ``dict_dir`` for Chinese
+        segmentation. Detection is by directory contents, NOT model
+        id, so a future v1.1/v2 with the same shape works without
+        code changes.
         """
         self._model_name = model_name
         if not is_sherpa_tts_model(model_name):
@@ -250,12 +549,7 @@ class _SherpaTtsBackend:
 
         if family == "kokoro":
             inner_model_config = sherpa_onnx.OfflineTtsModelConfig(
-                kokoro=sherpa_onnx.OfflineTtsKokoroModelConfig(
-                    model=os.path.join(model_dir, "model.onnx"),
-                    voices=os.path.join(model_dir, "voices.bin"),
-                    tokens=os.path.join(model_dir, "tokens.txt"),
-                    data_dir=os.path.join(model_dir, "espeak-ng-data"),
-                ),
+                kokoro=_build_kokoro_model_config(sherpa_onnx, model_dir),
                 num_threads=num_threads,
                 provider=provider,
             )
@@ -340,8 +634,14 @@ class _SherpaTtsBackend:
             self.load_model(self._model_name)
         assert self._tts is not None
 
-        voice_name = (voice or self._default_voice or "").strip()
-        sid = self._voice_to_sid(voice_name)
+        # Distinguish "caller passed an explicit voice" from "fall
+        # back to the model's documented default": the latter is a
+        # safe ``sid=0`` for catalog-less models (single-speaker
+        # Piper bundles), the former must enforce the catalog.
+        caller_voice = (voice or "").strip()
+        explicit = bool(caller_voice)
+        voice_name = caller_voice or (self._default_voice or "").strip()
+        sid = self._voice_to_sid(voice_name, explicit=explicit)
 
         audio = self._tts.generate(text, sid=sid, speed=speed)
         samples = list(audio.samples)
@@ -360,31 +660,76 @@ class _SherpaTtsBackend:
             "model": self._model_name,
         }
 
-    def _voice_to_sid(self, voice: str) -> int:
+    def _voice_to_sid(self, voice: str, *, explicit: bool = True) -> int:
         """Map a voice name to a sherpa-onnx speaker id.
 
-        Resolution order:
-        1. ``voices.txt`` sidecar (one voice id per line, position == sid).
-           Lets the operator override the default catalog if the model bundle
-           ships its own voice list.
-        2. Built-in Kokoro catalog (``_KOKORO_VOICES``) for kokoro-* models.
-        3. sid 0 — the model's first/default speaker.
+        Resolution rules:
+
+          - Empty voice string → ``sid=0`` intentionally. The
+            backend's first speaker is the contracted default.
+          - ``voices.txt`` sidecar in the prepared artifact dir is
+            the authoritative ordered catalog for THIS artifact.
+            Position in the file == speaker id.
+          - When the sidecar is missing, fall back to a per-model
+            legacy catalog (``catalog_for_model``).
+          - On a miss:
+              * ``explicit=True`` (caller supplied a voice string)
+                raises ``voice_not_supported_for_model`` so they get
+                a clear error instead of sherpa-onnx silently
+                aliasing the request to ``sid=0``.
+              * ``explicit=False`` (we resolved the default voice
+                because the caller passed nothing) returns ``sid=0``.
+                Single-speaker bundles like Piper have no catalog
+                and shouldn't reject the default voice path.
         """
         if not voice:
             return 0
-        sidecar = os.path.join(self._resolve_model_dir(self._model_name), "voices.txt")
-        if os.path.exists(sidecar):
-            with open(sidecar, encoding="utf-8") as f:
-                for idx, line in enumerate(f):
-                    if line.strip().lower() == voice.lower():
-                        return idx
+
+        # Single shared resolver: same path the listing API
+        # (``ExecutionKernel.list_speech_voices``) and the kernel
+        # preflight call. Closes the loop — a voice that listing
+        # advertises will resolve here and vice versa.
+        model_dir = self._resolve_model_dir(self._model_name)
+        resolved = resolve_voice_catalog(self._model_name, prepared_model_dir=model_dir)
+        manifest = resolved.voices
+
+        if not manifest:
+            # No catalog available. For an explicit caller-supplied
+            # voice, refuse loudly; for a defaulted lookup, fall
+            # back to the bundle's first speaker.
+            if explicit:
+                raise OctomilError(
+                    code=OctomilErrorCode.INVALID_INPUT,
+                    message=(
+                        f"voice_not_supported_for_model: model {self._model_name!r} "
+                        f"has no declared voice catalog (no voices.txt sidecar, no "
+                        f"built-in fallback). Pass voice=None to use the default "
+                        f"speaker, or run client.prepare(model, capability='tts') "
+                        f"to materialize the artifact's voice manifest."
+                    ),
+                )
             return 0
-        if self._family == "kokoro":
-            try:
-                return _KOKORO_VOICES.index(voice.lower())
-            except ValueError:
-                return 0
-        return 0
+
+        target = voice.strip().lower()
+        for idx, name in enumerate(manifest):
+            if name.lower() == target:
+                return idx
+
+        if not explicit:
+            # The model's documented default voice isn't in the
+            # artifact's catalog. Don't crash an otherwise-valid
+            # request; the bundle's first speaker is the safe
+            # default and the explicit-voice path stays strict.
+            return 0
+
+        raise OctomilError(
+            code=OctomilErrorCode.INVALID_INPUT,
+            message=(
+                f"voice_not_supported_for_model: voice {voice!r} is not in "
+                f"the speaker catalog for model {self._model_name!r}. "
+                f"Supported voices: {', '.join(manifest)}."
+            ),
+        )
 
     def list_models(self) -> list[str]:
         return [self._model_name] if self._model_name else []

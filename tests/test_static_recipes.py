@@ -58,11 +58,18 @@ from octomil.runtime.lifecycle.static_recipes import (
 
 
 def test_kokoro_recipes_registered_under_canonical_ids():
+    """Both ids are registered, but post-cutover they point at
+    DIFFERENT bundles: kokoro-82m → v1.0 multi-lang (53 speakers),
+    kokoro-en-v0_19 → legacy v0.19 English-only (11 speakers).
+    The two recipes carry their own digests, layouts, and voice
+    manifests so they can't drift through aliasing."""
     from octomil.runtime.lifecycle.static_recipes import _RECIPES
 
     assert ("kokoro-82m", "tts") in _RECIPES
     assert ("kokoro-en-v0_19", "tts") in _RECIPES
-    assert get_static_recipe("kokoro-82m", "tts") is get_static_recipe("kokoro-en-v0_19", "tts")
+    assert get_static_recipe("kokoro-82m", "tts") is not get_static_recipe("kokoro-en-v0_19", "tts")
+    assert get_static_recipe("kokoro-82m", "tts").materialization.artifact_version == "kokoro-multi-lang-v1_0"
+    assert get_static_recipe("kokoro-en-v0_19", "tts").materialization.artifact_version == "kokoro-en-v0_19"
 
 
 def test_unknown_model_returns_no_recipe():
@@ -101,17 +108,21 @@ def test_kokoro_recipe_digest_is_not_the_all_zero_placeholder():
             assert len(f.digest) == len("sha256:") + 64
 
 
-def test_kokoro_recipe_digest_matches_upstream_release_asset():
-    """The Kokoro digest pinned in the recipe MUST equal the SHA-256
-    GitHub publishes for the release asset. Reviewer flagged a prior
-    drift; this test catches it.
-
-    Verified value comes from
+def test_kokoro_recipe_digests_match_upstream_release_assets():
+    """The Kokoro digests pinned in the recipes MUST equal the
+    SHA-256 GitHub publishes for the corresponding release assets.
+    Verified values come from
     ``GET /repos/k2-fsa/sherpa-onnx/releases/tags/tts-models``
-    → ``assets[?name=='kokoro-en-v0_19.tar.bz2'].digest``."""
-    from octomil.runtime.lifecycle.static_recipes import _KOKORO_82M_TARBALL_SHA256
+    → ``assets[].digest``."""
+    from octomil.runtime.lifecycle.static_recipes import (
+        _KOKORO_82M_TARBALL_SHA256,
+        _KOKORO_EN_V0_19_TARBALL_SHA256,
+    )
 
-    assert _KOKORO_82M_TARBALL_SHA256 == "sha256:912804855a04745fa77a30be545b3f9a5d15c4d66db00b88cbcd4921df605ac7"
+    # kokoro-multi-lang-v1_0.tar.bz2 — 53-speaker multi-lang bundle.
+    assert _KOKORO_82M_TARBALL_SHA256 == "sha256:c133d26353d776da730870dac7da07dbfc9a5e3bc80cc5e8e83ab6e823be7046"
+    # kokoro-en-v0_19.tar.bz2 — legacy 11-speaker English bundle.
+    assert _KOKORO_EN_V0_19_TARBALL_SHA256 == "sha256:912804855a04745fa77a30be545b3f9a5d15c4d66db00b88cbcd4921df605ac7"
 
 
 def test_recipe_module_import_rejects_placeholder_digest_at_construction():
@@ -184,10 +195,43 @@ def test_recipe_synthesizes_planner_shaped_candidate():
 # ---------------------------------------------------------------------------
 
 
+def _make_kokoro_v1_0_layout_tarball(tmp_path):
+    """Produce a tarball that mimics the upstream Kokoro v1.0
+    multi-language layout: members live under
+    ``kokoro-multi-lang-v1_0/...`` and include the lexicon + jieba
+    dict files PLUS the espeak-ng-data directory (v1.0 ships espeak
+    alongside the lexicon, not as a replacement for it)."""
+    archive_dir = tmp_path / "_archive_src_v1_0"
+    archive_dir.mkdir(exist_ok=True)
+    layout = {
+        "kokoro-multi-lang-v1_0/model.onnx": b"fake-onnx",
+        "kokoro-multi-lang-v1_0/voices.bin": b"fake-voices",
+        "kokoro-multi-lang-v1_0/tokens.txt": b"fake-tokens",
+        "kokoro-multi-lang-v1_0/lexicon-us-en.txt": b"a a\n",
+        "kokoro-multi-lang-v1_0/lexicon-gb-en.txt": b"a a\n",
+        "kokoro-multi-lang-v1_0/lexicon-zh.txt": b"a a\n",
+        "kokoro-multi-lang-v1_0/dict/jieba.dict.utf8": b"\x00\x00",
+        "kokoro-multi-lang-v1_0/espeak-ng-data/phontab": b"fake-phontab",
+    }
+    paths_to_pack = []
+    for relpath, data in layout.items():
+        p = archive_dir / relpath
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_bytes(data)
+        paths_to_pack.append((p, relpath))
+    tarball = tmp_path / "kokoro-multi-lang-v1_0.tar.bz2"
+    with tarfile.open(tarball, "w:bz2") as tar:
+        for p, name in paths_to_pack:
+            tar.add(p, arcname=name)
+    return tarball
+
+
 def _make_kokoro_layout_tarball(tmp_path):
-    """Produce a tarball that mimics the upstream Kokoro layout:
-    members live under ``kokoro-en-v0_19/...`` so the recipe's
-    ``strip_prefix`` is exercised."""
+    """Produce a tarball that mimics the upstream Kokoro v0.19
+    layout: members live under ``kokoro-en-v0_19/...``. Used by
+    materializer-only tests that pass an inline v0_19-shaped
+    MaterializationPlan; the recipe-driven tests use
+    ``_make_kokoro_v1_0_layout_tarball`` instead."""
     archive_dir = tmp_path / "_archive_src"
     archive_dir.mkdir()
     layout = {
@@ -621,11 +665,12 @@ def test_kernel_prepare_falls_back_to_static_recipe(tmp_path, monkeypatch):
     monkeypatch.delenv("OCTOMIL_API_KEY", raising=False)
 
     # Stub PrepareManager so the test doesn't hit the network. Drop
-    # a tarball where the materializer expects to find it.
+    # a tarball where the materializer expects to find it. Recipe
+    # cut over to v1.0 multi-lang, so the layout follows that shape.
     artifact_dir = tmp_path / "kokoro"
     artifact_dir.mkdir()
-    tarball = _make_kokoro_layout_tarball(tmp_path)
-    (artifact_dir / "kokoro-en-v0_19.tar.bz2").write_bytes(tarball.read_bytes())
+    tarball = _make_kokoro_v1_0_layout_tarball(tmp_path)
+    (artifact_dir / "kokoro-multi-lang-v1_0.tar.bz2").write_bytes(tarball.read_bytes())
 
     kernel = ExecutionKernel()
     kernel._resolve = lambda capability, **kw: type(  # type: ignore[method-assign]
@@ -667,8 +712,14 @@ def test_kernel_prepare_falls_back_to_static_recipe(tmp_path, monkeypatch):
     assert (artifact_dir / "model.onnx").is_file()
     assert (artifact_dir / "voices.bin").is_file()
     assert (artifact_dir / "tokens.txt").is_file()
+    assert (artifact_dir / "lexicon-us-en.txt").is_file()
+    assert (artifact_dir / "lexicon-zh.txt").is_file()
+    assert (artifact_dir / "dict" / "jieba.dict.utf8").is_file()
     assert (artifact_dir / "espeak-ng-data" / "phontab").is_file()
     assert (artifact_dir / EXTRACTION_MARKER).is_file()
+    # voices.txt + VERSION sidecars materialized.
+    assert (artifact_dir / "voices.txt").is_file()
+    assert (artifact_dir / "VERSION").read_text(encoding="utf-8").strip() == "kokoro-multi-lang-v1_0"
 
 
 def test_kernel_prepare_unknown_model_without_planner_surfaces_actionable_error(monkeypatch):
@@ -734,8 +785,8 @@ def _stage_kokoro_prepared_cache(tmp_path):
     artifact_dir = manager.artifact_dir_for(recipe.model_id)
     artifact_dir.mkdir(parents=True, exist_ok=True)
 
-    tarball = _make_kokoro_layout_tarball(tmp_path)
-    (artifact_dir / "kokoro-en-v0_19.tar.bz2").write_bytes(tarball.read_bytes())
+    tarball = _make_kokoro_v1_0_layout_tarball(tmp_path)
+    (artifact_dir / "kokoro-multi-lang-v1_0.tar.bz2").write_bytes(tarball.read_bytes())
     Materializer().materialize(artifact_dir, recipe.materialization)
     return artifact_dir
 
@@ -760,8 +811,10 @@ def test_has_local_tts_backend_counts_prepared_static_recipe_cache(tmp_path, mon
     # (covered by the symmetric test below).
     with patch("octomil.runtime.engines.sherpa.is_sherpa_tts_runtime_available", return_value=True):
         assert kernel._has_local_tts_backend("kokoro-82m") is True
-        # Aliases registered against the same recipe also count.
-        assert kernel._has_local_tts_backend("kokoro-en-v0_19") is True
+        # Post-cutover the legacy ``kokoro-en-v0_19`` id resolves to a
+        # SEPARATE recipe with a different cache dir. Staging the
+        # kokoro-82m cache does NOT make the legacy id available.
+        assert kernel._has_local_tts_backend("kokoro-en-v0_19") is False
 
 
 def test_has_local_tts_backend_false_without_prepared_cache(tmp_path, monkeypatch):

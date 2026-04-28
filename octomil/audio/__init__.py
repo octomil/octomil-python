@@ -14,7 +14,14 @@ from __future__ import annotations
 
 from typing import Any, Callable, Optional
 
-from octomil.audio.speech import FacadeSpeech, SpeechResponse, SpeechRoute
+from octomil.audio.speech import (
+    FacadeSpeech,
+    FacadeVoices,
+    SpeechResponse,
+    SpeechRoute,
+    VoiceCatalog,
+    VoiceInfo,
+)
 from octomil.audio.transcriptions import AudioTranscriptions
 from octomil.audio.types import TranscriptionResult, TranscriptionSegment
 from octomil.model_ref import ModelRef
@@ -129,6 +136,7 @@ class FacadeAudio:
     def __init__(self, kernel: Any) -> None:
         self._speech = FacadeSpeech(kernel)
         self._transcriptions = FacadeTranscriptions(kernel)
+        self._voices = FacadeVoices(kernel)
 
     @property
     def speech(self) -> FacadeSpeech:
@@ -138,14 +146,21 @@ class FacadeAudio:
     def transcriptions(self) -> "FacadeTranscriptions":
         return self._transcriptions
 
+    @property
+    def voices(self) -> FacadeVoices:
+        return self._voices
+
 
 __all__ = [
     "OctomilAudio",
     "FacadeAudio",
     "FacadeSpeech",
     "FacadeTranscriptions",
+    "FacadeVoices",
     "SpeechResponse",
     "SpeechRoute",
+    "VoiceCatalog",
+    "VoiceInfo",
     "AudioTranscriptions",
     "TranscriptionResult",
     "TranscriptionSegment",
