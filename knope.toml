@@ -4,7 +4,9 @@ versioned_files = [
     "octomil/python/pyproject.toml",
     { path = "octomil/__init__.py", regex = '__version__ = "(?<version>\d+\.\d+\.\d+)"' },
     { path = "packaging/homebrew/octomil.rb", regex = 'version "(?<version>\d+\.\d+\.\d+)"' },
-    { path = "tests/test_cli.py", regex = '"(?<version>\d+\.\d+\.\d+)" in result' },
+    # tests/test_cli.py used to hard-pin a literal "X.Y.Z" string;
+    # it now reads ``octomil.__version__`` dynamically (see PR
+    # alignment commit), so knope no longer needs to rewrite it.
     { path = "sonar-project.properties", regex = 'sonar.projectVersion=(?<version>\d+\.\d+\.\d+)' },
 ]
 changelog = "CHANGELOG.md"
