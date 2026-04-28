@@ -519,8 +519,10 @@ def _hydrate_manifest(manifest: dict) -> dict[str, ModelEntry]:
         if not isinstance(family_data, dict) or "variants" not in family_data:
             continue
 
-        # Extract task_taxonomy from family level (renamed from legacy "modalities")
-        family_task_taxonomy: list[str] = family_data.get("task_taxonomy", family_data.get("modalities", []))
+        # Extract task_taxonomy from family level (renamed from legacy "modalities").
+        # Use ``or []`` so an explicit ``null`` in the manifest is treated the
+        # same as a missing key (the field is non-optional ``list[str]``).
+        family_task_taxonomy: list[str] = family_data.get("task_taxonomy") or family_data.get("modalities") or []
 
         for variant_name, variant_data in family_data["variants"].items():
             packages: list[dict] = []
