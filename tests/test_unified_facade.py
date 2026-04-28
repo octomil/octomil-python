@@ -181,7 +181,7 @@ class TestSynthesizeSpeechRouting:
             routing.return_value = MagicMock()
             with pytest.raises(OctomilError) as ei:
                 await kernel.synthesize_speech(
-                    model="@app/tts-tester/tts",
+                    model="kokoro-82m",
                     input="hello",
                 )
             assert ei.value.code == OctomilErrorCode.RUNTIME_UNAVAILABLE
@@ -217,6 +217,9 @@ class TestSynthesizeSpeechRouting:
             patch.object(kernel, "_resolve", return_value=defaults),
             patch("octomil.execution.kernel._resolve_planner_selection", return_value=None),
             patch("octomil.execution.kernel._resolve_routing_policy"),
+            patch.object(kernel, "_sherpa_tts_runtime_loadable", return_value=True),
+            patch.object(kernel, "_prepared_cache_may_short_circuit", return_value=True),
+            patch.object(kernel, "_prepared_local_artifact_dir", return_value="/tmp/tts-cache"),
             patch.object(kernel, "_has_local_tts_backend", return_value=True),
             patch(
                 "octomil.execution.kernel._select_locality_for_capability",
@@ -226,7 +229,7 @@ class TestSynthesizeSpeechRouting:
             patch.object(kernel, "_cloud_synthesize_speech", new=cloud_spy),
         ):
             response = await kernel.synthesize_speech(
-                model="@app/tts-tester/tts",
+                model="kokoro-82m",
                 input="hello",
                 voice="af_bella",
             )
@@ -260,6 +263,9 @@ class TestSynthesizeSpeechRouting:
             patch.object(kernel, "_resolve", return_value=defaults),
             patch("octomil.execution.kernel._resolve_planner_selection", return_value=None),
             patch("octomil.execution.kernel._resolve_routing_policy"),
+            patch.object(kernel, "_sherpa_tts_runtime_loadable", return_value=True),
+            patch.object(kernel, "_prepared_cache_may_short_circuit", return_value=True),
+            patch.object(kernel, "_prepared_local_artifact_dir", return_value="/tmp/tts-cache"),
             patch.object(kernel, "_has_local_tts_backend", return_value=True),
             patch(
                 "octomil.execution.kernel._select_locality_for_capability",
@@ -309,7 +315,9 @@ class TestSynthesizeSpeechRouting:
         with (
             patch.object(kernel, "_resolve", return_value=defaults),
             patch("octomil.execution.kernel._resolve_planner_selection", return_value=selection),
-            patch.object(kernel, "_has_local_tts_backend", return_value=True) as has_local,
+            patch.object(kernel, "_sherpa_tts_runtime_loadable", return_value=True) as runtime_loadable,
+            patch.object(kernel, "_prepared_cache_may_short_circuit", return_value=True),
+            patch.object(kernel, "_prepared_local_artifact_dir", return_value="/tmp/tts-cache"),
             patch.object(kernel, "_resolve_local_tts_backend", return_value=fake_backend),
             patch.object(kernel, "_cloud_synthesize_speech", new=cloud_spy),
         ):
@@ -318,7 +326,11 @@ class TestSynthesizeSpeechRouting:
                 input="hello",
             )
 
-        has_local.assert_called_once_with("kokoro-82m")
+        # The kernel checks local availability against the runtime
+        # model selected by the planner ("kokoro-82m"), not against
+        # the original ``@app/...`` ref. Verify by inspecting the
+        # underlying loadable check the kernel actually calls.
+        runtime_loadable.assert_any_call("kokoro-82m")
         assert response.model == "kokoro-82m"
         assert response.route.locality == "on_device"
         cloud_spy.assert_not_called()

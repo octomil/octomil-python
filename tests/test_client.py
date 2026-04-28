@@ -9,9 +9,9 @@ from octomil.auth import OrgApiKeyAuth
 
 
 class TestClientInit:
-    @patch("octomil.client.RolloutsAPI")
-    @patch("octomil.client.ModelRegistry")
-    @patch("octomil.client._ApiClient")
+    @patch("octomil.client.RolloutsAPI", create=True)
+    @patch("octomil.client.ModelRegistry", create=True)
+    @patch("octomil.client._ApiClient", create=True)
     def test_init_with_explicit_args(self, mock_api, mock_registry, mock_rollouts):
         from octomil.client import OctomilClient
 
@@ -20,9 +20,9 @@ class TestClientInit:
         assert c._org_id == "org1"
         assert c._api_base == "https://custom.api"
 
-    @patch("octomil.client.RolloutsAPI")
-    @patch("octomil.client.ModelRegistry")
-    @patch("octomil.client._ApiClient")
+    @patch("octomil.client.RolloutsAPI", create=True)
+    @patch("octomil.client.ModelRegistry", create=True)
+    @patch("octomil.client._ApiClient", create=True)
     def test_init_from_env_vars(self, mock_api, mock_registry, mock_rollouts, monkeypatch):
         from octomil.client import OctomilClient
 
@@ -35,9 +35,9 @@ class TestClientInit:
         assert c._org_id == "env_org"
         assert c._api_base == "https://env.api"
 
-    @patch("octomil.client.RolloutsAPI")
-    @patch("octomil.client.ModelRegistry")
-    @patch("octomil.client._ApiClient")
+    @patch("octomil.client.RolloutsAPI", create=True)
+    @patch("octomil.client.ModelRegistry", create=True)
+    @patch("octomil.client._ApiClient", create=True)
     def test_init_defaults(self, mock_api, mock_registry, mock_rollouts, monkeypatch):
         from octomil.client import OctomilClient
 
@@ -50,9 +50,9 @@ class TestClientInit:
         assert c._org_id == "default"
         assert c._api_base == "https://api.octomil.com/api/v1"
 
-    @patch("octomil.client.RolloutsAPI")
-    @patch("octomil.client.ModelRegistry")
-    @patch("octomil.client._ApiClient")
+    @patch("octomil.client.RolloutsAPI", create=True)
+    @patch("octomil.client.ModelRegistry", create=True)
+    @patch("octomil.client._ApiClient", create=True)
     def test_explicit_args_override_env(self, mock_api, mock_registry, mock_rollouts, monkeypatch):
         from octomil.client import OctomilClient
 
@@ -62,9 +62,9 @@ class TestClientInit:
 
 
 class TestClientPush:
-    @patch("octomil.client.RolloutsAPI")
-    @patch("octomil.client.ModelRegistry")
-    @patch("octomil.client._ApiClient")
+    @patch("octomil.client.RolloutsAPI", create=True)
+    @patch("octomil.client.ModelRegistry", create=True)
+    @patch("octomil.client._ApiClient", create=True)
     def test_push_calls_registry(self, mock_api, mock_registry_cls, mock_rollouts):
         """push() uploads via v2 flow: model name passed directly as model_id."""
         from octomil.client import OctomilClient
@@ -90,9 +90,9 @@ class TestClientPush:
         )
         assert result["version"] == "1.0.0"
 
-    @patch("octomil.client.RolloutsAPI")
-    @patch("octomil.client.ModelRegistry")
-    @patch("octomil.client._ApiClient")
+    @patch("octomil.client.RolloutsAPI", create=True)
+    @patch("octomil.client.ModelRegistry", create=True)
+    @patch("octomil.client._ApiClient", create=True)
     def test_push_with_all_options(self, mock_api, mock_registry_cls, mock_rollouts):
         """push() forwards description and formats to upload_version_from_path."""
         from octomil.client import OctomilClient
@@ -123,9 +123,9 @@ class TestClientPush:
 
 
 class TestClientPull:
-    @patch("octomil.client.RolloutsAPI")
-    @patch("octomil.client.ModelRegistry")
-    @patch("octomil.client._ApiClient")
+    @patch("octomil.client.RolloutsAPI", create=True)
+    @patch("octomil.client.ModelRegistry", create=True)
+    @patch("octomil.client._ApiClient", create=True)
     def test_pull_with_version(self, mock_api, mock_registry_cls, mock_rollouts):
         from octomil.client import OctomilClient
 
@@ -145,9 +145,9 @@ class TestClientPull:
         )
         assert result["model_path"] == "/tmp/model.onnx"
 
-    @patch("octomil.client.RolloutsAPI")
-    @patch("octomil.client.ModelRegistry")
-    @patch("octomil.client._ApiClient")
+    @patch("octomil.client.RolloutsAPI", create=True)
+    @patch("octomil.client.ModelRegistry", create=True)
+    @patch("octomil.client._ApiClient", create=True)
     def test_pull_latest_version(self, mock_api, mock_registry_cls, mock_rollouts):
         from octomil.client import OctomilClient
 
@@ -169,9 +169,9 @@ class TestClientPull:
 
 
 class TestClientDeploy:
-    @patch("octomil.client.RolloutsAPI")
-    @patch("octomil.client.ModelRegistry")
-    @patch("octomil.client._ApiClient")
+    @patch("octomil.client.RolloutsAPI", create=True)
+    @patch("octomil.client.ModelRegistry", create=True)
+    @patch("octomil.client._ApiClient", create=True)
     def test_deploy_with_version(self, mock_api, mock_registry_cls, mock_rollouts):
         from octomil.client import OctomilClient
 
@@ -195,9 +195,9 @@ class TestClientDeploy:
         )
         assert result["status"] == "created"
 
-    @patch("octomil.client.RolloutsAPI")
-    @patch("octomil.client.ModelRegistry")
-    @patch("octomil.client._ApiClient")
+    @patch("octomil.client.RolloutsAPI", create=True)
+    @patch("octomil.client.ModelRegistry", create=True)
+    @patch("octomil.client._ApiClient", create=True)
     def test_deploy_immediate_strategy(self, mock_api, mock_registry_cls, mock_rollouts):
         from octomil.client import OctomilClient
 
@@ -220,9 +220,9 @@ class TestClientDeploy:
 
 
 class TestClientStatus:
-    @patch("octomil.client.RolloutsAPI")
-    @patch("octomil.client.ModelRegistry")
-    @patch("octomil.client._ApiClient")
+    @patch("octomil.client.RolloutsAPI", create=True)
+    @patch("octomil.client.ModelRegistry", create=True)
+    @patch("octomil.client._ApiClient", create=True)
     def test_status(self, mock_api, mock_registry_cls, mock_rollouts_cls):
         from octomil.client import OctomilClient
 
@@ -240,9 +240,9 @@ class TestClientStatus:
 
 
 class TestClientTrain:
-    @patch("octomil.client.RolloutsAPI")
-    @patch("octomil.client.ModelRegistry")
-    @patch("octomil.client._ApiClient")
+    @patch("octomil.client.RolloutsAPI", create=True)
+    @patch("octomil.client.ModelRegistry", create=True)
+    @patch("octomil.client._ApiClient", create=True)
     def test_train_basic(self, mock_api_cls, mock_registry_cls, mock_rollouts):
         from octomil.client import OctomilClient
         from octomil.models import TrainingSession
@@ -274,9 +274,9 @@ class TestClientTrain:
         assert result.group == "default"
         assert result.status == "created"
 
-    @patch("octomil.client.RolloutsAPI")
-    @patch("octomil.client.ModelRegistry")
-    @patch("octomil.client._ApiClient")
+    @patch("octomil.client.RolloutsAPI", create=True)
+    @patch("octomil.client.ModelRegistry", create=True)
+    @patch("octomil.client._ApiClient", create=True)
     def test_train_with_all_options(self, mock_api_cls, mock_registry_cls, mock_rollouts):
         from octomil.client import OctomilClient
         from octomil.models import TrainingSession
@@ -318,9 +318,9 @@ class TestClientTrain:
 
 
 class TestClientTrainStatus:
-    @patch("octomil.client.RolloutsAPI")
-    @patch("octomil.client.ModelRegistry")
-    @patch("octomil.client._ApiClient")
+    @patch("octomil.client.RolloutsAPI", create=True)
+    @patch("octomil.client.ModelRegistry", create=True)
+    @patch("octomil.client._ApiClient", create=True)
     def test_train_status(self, mock_api_cls, mock_registry_cls, mock_rollouts):
         from octomil.client import OctomilClient
 
@@ -346,9 +346,9 @@ class TestClientTrainStatus:
 
 
 class TestClientTrainStop:
-    @patch("octomil.client.RolloutsAPI")
-    @patch("octomil.client.ModelRegistry")
-    @patch("octomil.client._ApiClient")
+    @patch("octomil.client.RolloutsAPI", create=True)
+    @patch("octomil.client.ModelRegistry", create=True)
+    @patch("octomil.client._ApiClient", create=True)
     def test_train_stop(self, mock_api_cls, mock_registry_cls, mock_rollouts):
         from octomil.client import OctomilClient
 
@@ -366,9 +366,9 @@ class TestClientTrainStop:
 
 
 class TestClientListModels:
-    @patch("octomil.client.RolloutsAPI")
-    @patch("octomil.client.ModelRegistry")
-    @patch("octomil.client._ApiClient")
+    @patch("octomil.client.RolloutsAPI", create=True)
+    @patch("octomil.client.ModelRegistry", create=True)
+    @patch("octomil.client._ApiClient", create=True)
     def test_list_models(self, mock_api, mock_registry_cls, mock_rollouts):
         from octomil.client import OctomilClient
 
@@ -383,9 +383,9 @@ class TestClientListModels:
 class TestClientDesiredStateRouting:
     """OctomilClient automatically applies routing policy from desired state."""
 
-    @patch("octomil.client.RolloutsAPI")
-    @patch("octomil.client.ModelRegistry")
-    @patch("octomil.client._ApiClient")
+    @patch("octomil.client.RolloutsAPI", create=True)
+    @patch("octomil.client.ModelRegistry", create=True)
+    @patch("octomil.client._ApiClient", create=True)
     def test_desired_state_sets_routing_policy_on_responses(self, mock_api_cls, mock_registry, mock_rollouts):
         from octomil.client import OctomilClient
 
@@ -435,9 +435,9 @@ class TestClientDesiredStateRouting:
         assert responses._default_routing_policy is not None
         assert "dep_1" in responses._routing_policies
 
-    @patch("octomil.client.RolloutsAPI")
-    @patch("octomil.client.ModelRegistry")
-    @patch("octomil.client._ApiClient")
+    @patch("octomil.client.RolloutsAPI", create=True)
+    @patch("octomil.client.ModelRegistry", create=True)
+    @patch("octomil.client._ApiClient", create=True)
     def test_multi_deployment_desired_state_stores_per_deployment_policies(
         self, mock_api_cls, mock_registry, mock_rollouts
     ):
@@ -489,9 +489,9 @@ class TestClientDesiredStateRouting:
         responses = c.responses
         assert responses._model_deployment_map == {"m1": "dep_local", "m2": "dep_cloud"}
 
-    @patch("octomil.client.RolloutsAPI")
-    @patch("octomil.client.ModelRegistry")
-    @patch("octomil.client._ApiClient")
+    @patch("octomil.client.RolloutsAPI", create=True)
+    @patch("octomil.client.ModelRegistry", create=True)
+    @patch("octomil.client._ApiClient", create=True)
     def test_same_model_multiple_deployments_excluded_from_model_map(self, mock_api_cls, mock_registry, mock_rollouts):
         """Same model_id under two deployments with different routing is ambiguous."""
         from octomil.client import OctomilClient
@@ -549,9 +549,9 @@ class TestClientDesiredStateRouting:
         assert c._routing_policies["dep_a"].mode == "local_only"
         assert c._routing_policies["dep_b"].prefer_local is False
 
-    @patch("octomil.client.RolloutsAPI")
-    @patch("octomil.client.ModelRegistry")
-    @patch("octomil.client._ApiClient")
+    @patch("octomil.client.RolloutsAPI", create=True)
+    @patch("octomil.client.ModelRegistry", create=True)
+    @patch("octomil.client._ApiClient", create=True)
     def test_same_model_same_routing_stays_in_model_map(self, mock_api_cls, mock_registry, mock_rollouts):
         """Same model_id under two deployments with identical routing is NOT ambiguous."""
         from octomil.client import OctomilClient
@@ -585,9 +585,9 @@ class TestClientDesiredStateRouting:
         assert "shared-model" in c._model_deployment_map
         assert c._model_deployment_map["shared-model"] == "dep_a"
 
-    @patch("octomil.client.RolloutsAPI")
-    @patch("octomil.client.ModelRegistry")
-    @patch("octomil.client._ApiClient")
+    @patch("octomil.client.RolloutsAPI", create=True)
+    @patch("octomil.client.ModelRegistry", create=True)
+    @patch("octomil.client._ApiClient", create=True)
     def test_desired_state_without_routing_fields_leaves_policy_none(self, mock_api_cls, mock_registry, mock_rollouts):
         from octomil.client import OctomilClient
 
@@ -617,9 +617,9 @@ class TestClientProductionPaths:
     """End-to-end tests proving client.chat.create / client.chat.stream
     get correct routing from desired state through to OctomilResponses."""
 
-    @patch("octomil.client.RolloutsAPI")
-    @patch("octomil.client.ModelRegistry")
-    @patch("octomil.client._ApiClient")
+    @patch("octomil.client.RolloutsAPI", create=True)
+    @patch("octomil.client.ModelRegistry", create=True)
+    @patch("octomil.client._ApiClient", create=True)
     def test_chat_create_uses_desired_state_routing(self, mock_api_cls, mock_registry, mock_rollouts):
         """client.chat.create() delegates to responses.create() with correct routing policies."""
         from octomil.client import OctomilClient
@@ -689,9 +689,9 @@ class TestClientProductionPaths:
         finally:
             c.responses.create = original_create
 
-    @patch("octomil.client.RolloutsAPI")
-    @patch("octomil.client.ModelRegistry")
-    @patch("octomil.client._ApiClient")
+    @patch("octomil.client.RolloutsAPI", create=True)
+    @patch("octomil.client.ModelRegistry", create=True)
+    @patch("octomil.client._ApiClient", create=True)
     def test_chat_stream_uses_desired_state_routing(self, mock_api_cls, mock_registry, mock_rollouts):
         """client.chat.stream() delegates to responses.stream() with correct routing policies."""
         from octomil.client import OctomilClient
@@ -779,9 +779,9 @@ class TestClientProductionPaths:
         # Restore
         responses_instance.stream = original_stream
 
-    @patch("octomil.client.RolloutsAPI")
-    @patch("octomil.client.ModelRegistry")
-    @patch("octomil.client._ApiClient")
+    @patch("octomil.client.RolloutsAPI", create=True)
+    @patch("octomil.client.ModelRegistry", create=True)
+    @patch("octomil.client._ApiClient", create=True)
     def test_duplicate_model_identical_policy_auto_resolves(self, mock_api_cls, mock_registry, mock_rollouts):
         """Two deployments, same model_id, both local_only -> model stays in model_deployment_map."""
         from octomil.client import OctomilClient
@@ -829,9 +829,9 @@ class TestClientProductionPaths:
         assert c._routing_policies["dep_x"].mode.value == "local_only"
         assert c._routing_policies["dep_y"].mode.value == "local_only"
 
-    @patch("octomil.client.RolloutsAPI")
-    @patch("octomil.client.ModelRegistry")
-    @patch("octomil.client._ApiClient")
+    @patch("octomil.client.RolloutsAPI", create=True)
+    @patch("octomil.client.ModelRegistry", create=True)
+    @patch("octomil.client._ApiClient", create=True)
     def test_duplicate_model_conflicting_policy_requires_explicit_deployment_id(
         self, mock_api_cls, mock_registry, mock_rollouts
     ):
@@ -888,9 +888,9 @@ class TestClientProductionPaths:
         assert "dep_local" in responses._routing_policies
         assert "dep_quality" in responses._routing_policies
 
-    @patch("octomil.client.RolloutsAPI")
-    @patch("octomil.client.ModelRegistry")
-    @patch("octomil.client._ApiClient")
+    @patch("octomil.client.RolloutsAPI", create=True)
+    @patch("octomil.client.ModelRegistry", create=True)
+    @patch("octomil.client._ApiClient", create=True)
     def test_agent_session_inherits_routing(self, mock_api_cls, mock_registry, mock_rollouts):
         """client.agent_session() returns a session with the client's routing."""
         from octomil.client import OctomilClient

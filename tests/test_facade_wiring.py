@@ -20,9 +20,9 @@ from octomil.serve import GenerationRequest, InferenceMetrics
 def _make_client(**overrides: Any):
     """Create a mock-patched OctomilClient."""
     with (
-        patch("octomil.client.RolloutsAPI"),
-        patch("octomil.client.ModelRegistry"),
-        patch("octomil.client._ApiClient"),
+        patch("octomil.client.RolloutsAPI", create=True),
+        patch("octomil.client.ModelRegistry", create=True),
+        patch("octomil.client._ApiClient", create=True),
     ):
         from octomil.client import OctomilClient
 

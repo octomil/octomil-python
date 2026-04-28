@@ -34,7 +34,7 @@ def _make_engine(backend: MagicMock | None = None) -> MagicMock:
 
 
 def _make_request(**overrides: Any) -> GenerationRequest:
-    defaults = {
+    defaults: dict[str, Any] = {
         "model": "test-model",
         "messages": [{"role": "user", "content": "hello"}],
     }
@@ -256,9 +256,9 @@ class TestPredictStream:
 
 
 class TestClientLoadModel:
-    @patch("octomil.client.RolloutsAPI")
-    @patch("octomil.client.ModelRegistry")
-    @patch("octomil.client._ApiClient")
+    @patch("octomil.client.RolloutsAPI", create=True)
+    @patch("octomil.client.ModelRegistry", create=True)
+    @patch("octomil.client._ApiClient", create=True)
     def test_load_model_basic(self, mock_api, mock_registry_cls, mock_rollouts):
         from octomil.client import OctomilClient
 
@@ -283,9 +283,9 @@ class TestClientLoadModel:
         assert model.metadata.name == "my-model"
         assert model.metadata.version == "2.0.0"
 
-    @patch("octomil.client.RolloutsAPI")
-    @patch("octomil.client.ModelRegistry")
-    @patch("octomil.client._ApiClient")
+    @patch("octomil.client.RolloutsAPI", create=True)
+    @patch("octomil.client.ModelRegistry", create=True)
+    @patch("octomil.client._ApiClient", create=True)
     def test_load_model_with_version(self, mock_api, mock_registry_cls, mock_rollouts):
         from octomil.client import OctomilClient
 
@@ -312,9 +312,9 @@ class TestClientLoadModel:
 
         mock_reg_instance.auto_select.assert_called_once_with("my-model", engine_override="llama.cpp")
 
-    @patch("octomil.client.RolloutsAPI")
-    @patch("octomil.client.ModelRegistry")
-    @patch("octomil.client._ApiClient")
+    @patch("octomil.client.RolloutsAPI", create=True)
+    @patch("octomil.client.ModelRegistry", create=True)
+    @patch("octomil.client._ApiClient", create=True)
     def test_load_model_calls_pull(self, mock_api, mock_registry_cls, mock_rollouts):
         from octomil.client import OctomilClient
 
@@ -347,9 +347,9 @@ class TestClientLoadModel:
 
 
 class TestClientPredict:
-    @patch("octomil.client.RolloutsAPI")
-    @patch("octomil.client.ModelRegistry")
-    @patch("octomil.client._ApiClient")
+    @patch("octomil.client.RolloutsAPI", create=True)
+    @patch("octomil.client.ModelRegistry", create=True)
+    @patch("octomil.client._ApiClient", create=True)
     def test_predict_one_call(self, mock_api, mock_registry_cls, mock_rollouts):
         from octomil.client import OctomilClient
 
@@ -378,9 +378,9 @@ class TestClientPredict:
         assert result.text == "Four."
         assert result.metrics.tokens_per_second == 99.0
 
-    @patch("octomil.client.RolloutsAPI")
-    @patch("octomil.client.ModelRegistry")
-    @patch("octomil.client._ApiClient")
+    @patch("octomil.client.RolloutsAPI", create=True)
+    @patch("octomil.client.ModelRegistry", create=True)
+    @patch("octomil.client._ApiClient", create=True)
     def test_predict_caches_model(self, mock_api, mock_registry_cls, mock_rollouts):
         from octomil.client import OctomilClient
 
@@ -406,9 +406,9 @@ class TestClientPredict:
         mock_registry.download.assert_called_once()
         assert backend.generate.call_count == 2
 
-    @patch("octomil.client.RolloutsAPI")
-    @patch("octomil.client.ModelRegistry")
-    @patch("octomil.client._ApiClient")
+    @patch("octomil.client.RolloutsAPI", create=True)
+    @patch("octomil.client.ModelRegistry", create=True)
+    @patch("octomil.client._ApiClient", create=True)
     def test_predict_passes_params(self, mock_api, mock_registry_cls, mock_rollouts):
         from octomil.client import OctomilClient
 
@@ -438,9 +438,9 @@ class TestClientPredict:
         assert request.max_tokens == 128
         assert request.temperature == 0.3
 
-    @patch("octomil.client.RolloutsAPI")
-    @patch("octomil.client.ModelRegistry")
-    @patch("octomil.client._ApiClient")
+    @patch("octomil.client.RolloutsAPI", create=True)
+    @patch("octomil.client.ModelRegistry", create=True)
+    @patch("octomil.client._ApiClient", create=True)
     def test_dispose_clears_models(self, mock_api, mock_registry_cls, mock_rollouts):
         from octomil.client import OctomilClient
 
