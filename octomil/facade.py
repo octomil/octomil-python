@@ -58,10 +58,19 @@ class FacadeResponses:
 
 
 class FacadeEmbeddings:
-    """Embeddings namespace on the unified Octomil facade."""
+    """Embeddings namespace on the unified Octomil facade.
 
-    def __init__(self, client: OctomilClient) -> None:
+    When the caller supplies ``app=`` or ``policy=``, the request is
+    routed through :class:`octomil.execution.kernel.ExecutionKernel`
+    so the same app-ref / policy refusal gates that the audio + chat
+    facades enforce apply to embeddings too. Without those kwargs,
+    the original cloud-only ``client.embed`` path is preserved for
+    backwards compatibility.
+    """
+
+    def __init__(self, client: OctomilClient, kernel: Any | None = None) -> None:
         self._client = client
+        self._kernel = kernel
 
     async def create(
         self,
@@ -69,8 +78,60 @@ class FacadeEmbeddings:
         model: str,
         input: str | list[str],
         timeout: float = 30.0,
+        policy: str | None = None,
+        app: str | None = None,
     ) -> EmbeddingResult:
-        """Create embeddings using the initialized facade auth context."""
+        """Create embeddings using the initialized facade auth context.
+
+        Parameters
+        ----------
+        model:
+            Embedding model identifier or ``@app/<slug>/embeddings`` ref.
+        input:
+            A single string or list of strings to embed.
+        timeout:
+            HTTP timeout in seconds (cloud path only).
+        policy:
+            Optional routing policy preset override. Same vocabulary as
+            ``client.audio.speech.create(policy=...)``: ``"private"``,
+            ``"local_only"``, ``"local_first"``, ``"cloud_first"``,
+            ``"cloud_only"``, ``"performance_first"``. ``"private"`` and
+            ``"local_only"`` force ``cloud_available=False`` so a planner
+            outage cannot leak the request to a hosted backend.
+        app:
+            Optional explicit app slug for ``@app/<slug>/embeddings``
+            resolution. When set together with a planner outage AND no
+            explicit ``policy=``, the kernel raises rather than silently
+            falling back to cloud (mirrors the TTS / chat / transcription
+            refusal gate).
+        """
+        if (policy is not None or app is not None) and self._kernel is not None:
+            # Route through the kernel so the app/policy refusal gates
+            # and planner-app-ref synthesis fire. The cloud path inside
+            # the kernel uses the same OctomilClient credentials as the
+            # legacy direct-embed path.
+            inputs = [input] if isinstance(input, str) else list(input)
+            result = await self._kernel.create_embeddings(
+                inputs,
+                model=model,
+                policy=policy,
+                app=app,
+            )
+            from .embeddings import EmbeddingResult, EmbeddingUsage
+
+            usage_dict = getattr(result, "usage", None) or {}
+            usage = EmbeddingUsage(
+                prompt_tokens=int(usage_dict.get("prompt_tokens", 0) or 0),
+                total_tokens=int(usage_dict.get("total_tokens", 0) or 0),
+            )
+            embeddings = list(getattr(result, "embeddings", None) or [])
+            route = getattr(result, "route", None)
+            return EmbeddingResult(
+                embeddings=embeddings,
+                model=getattr(result, "model", "") or model,
+                usage=usage,
+                route=route,
+            )
         import asyncio
 
         loop = asyncio.get_running_loop()
@@ -268,10 +329,11 @@ class Octomil:
         )
         responses = self._build_hosted_responses() if self._force_hosted else self._client.responses
         self._responses_wrapper = FacadeResponses(responses)
-        self._embeddings_wrapper = FacadeEmbeddings(self._client)
-        # Build the kernel before the audio wrapper so prepare() and
-        # audio.speech.create() share a single planner/PrepareManager pair.
+        # Build the kernel before the audio + embeddings wrappers so
+        # prepare() / audio.speech.create() / embeddings.create(app=,
+        # policy=) all share a single planner/PrepareManager pair.
         self._kernel = self._build_kernel()
+        self._embeddings_wrapper = FacadeEmbeddings(self._client, kernel=self._kernel)
         self._audio_wrapper = self._build_audio_wrapper()
         self._initialized = True
 
