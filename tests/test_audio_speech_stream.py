@@ -618,20 +618,20 @@ async def test_streaming_voice_validation_uses_static_recipe_manifest():
     from octomil.execution.kernel import ExecutionKernel
     from octomil.runtime.lifecycle.static_recipes import get_static_recipe
 
-    # Sanity: the recipe under test actually carries an 11-name v0_19
-    # catalog and *not* the legacy 28-name one. If this regresses, the
-    # rest of the test is meaningless.
+    # Sanity: the recipe under test actually carries the active
+    # Kokoro multi-lang voice catalog. If this regresses, the rest
+    # of the test is meaningless.
     recipe = get_static_recipe("kokoro-82m", "tts")
     assert recipe is not None
     manifest = {n.lower() for n in recipe.materialization.voice_manifest}
     assert manifest, "kokoro-82m static recipe must declare voice_manifest"
-    assert "af_bella" in manifest, "af_bella must be in the v0_19 catalog"
-    # Pick a name that was in the legacy 28-name tuple but is NOT in the
-    # 11-name v0_19 manifest, so we prove the recipe (not the legacy
-    # tuple) is authoritative.
-    legacy_only_voice = "am_echo"
+    assert "af_bella" in manifest, "af_bella must be in the recipe's catalog"
+    # Pick a name guaranteed not to be in any Kokoro manifest so the
+    # rejection is unambiguously about catalog enforcement and not a
+    # voice that happens to be in some future expansion.
+    legacy_only_voice = "octomil_test_unknown_voice"
     assert legacy_only_voice not in manifest, (
-        f"test premise: {legacy_only_voice} must be absent from v0_19 manifest " f"(found: {sorted(manifest)})"
+        f"test premise: {legacy_only_voice} must be absent from manifest " f"(found: {sorted(manifest)})"
     )
 
     kernel = ExecutionKernel.__new__(ExecutionKernel)
@@ -688,15 +688,16 @@ def test_piper_default_voice_does_not_raise_on_create_or_stream(tmp_path):
 
     backend = _SherpaTtsBackend("piper-en-amy", model_dir=str(tmp_path))
     # Explicit None -> sid=0, no error.
-    assert backend._resolve_sid("") == 0
-    # Backwards-compat alias normalizes None too.
-    assert backend._voice_to_sid("") == 0
+    sid, _ = backend.validate_voice(None)
+    assert sid == 0
+    # Empty string also routes to sid=0 (no explicit name).
+    assert backend._voice_to_sid("", explicit=False) == 0
     # Explicit unknown voice on a catalog-less model is rejected with
     # the structured error, not silently aliased to 0.
     from octomil.errors import OctomilError, OctomilErrorCode
 
     with pytest.raises(OctomilError) as ei:
-        backend._resolve_sid("amy")  # explicit, even though it matches the default label
+        backend.validate_voice("amy")  # explicit, even though it matches the default label
     assert ei.value.code == OctomilErrorCode.INVALID_INPUT
     assert "voice_not_supported_for_model" in str(ei.value)
 
@@ -981,11 +982,14 @@ def test_kokoro_explicit_unknown_voice_still_raises(tmp_path):
     sidecar.write_text("af_bella\nam_michael\n")
 
     backend = _SherpaTtsBackend("kokoro-82m", model_dir=str(tmp_path))
-    assert backend._resolve_sid("") == 0  # default still works
-    assert backend._resolve_sid("af_bella") == 0  # name in sidecar
-    assert backend._resolve_sid("am_michael") == 1
+    sid, _ = backend.validate_voice(None)  # default still works
+    assert sid == 0
+    sid, _ = backend.validate_voice("af_bella")  # name in sidecar
+    assert sid == 0
+    sid, _ = backend.validate_voice("am_michael")
+    assert sid == 1
     with pytest.raises(OctomilError) as ei:
-        backend._resolve_sid("alloy")
+        backend.validate_voice("alloy")
     assert ei.value.code == OctomilErrorCode.INVALID_INPUT
 
 
@@ -1013,14 +1017,14 @@ def _make_planner_candidate(*, artifact_id: str, digest: str):
 
 
 @pytest.mark.asyncio
-async def test_private_kokoro_artifact_with_am_echo_in_voices_txt_is_accepted(tmp_path):
+async def test_private_kokoro_artifact_with_private_voice_in_voices_txt_is_accepted(tmp_path):
     """Reviewer P1#2 reproducer: a planner-selected *private* Kokoro
-    artifact whose own ``voices.txt`` contains ``am_echo`` must be
-    accepted by both ``create()`` and ``stream()`` even though
-    ``am_echo`` is NOT in the public v0_19 static recipe's manifest.
+    artifact whose own ``voices.txt`` contains a private voice must
+    be accepted by both ``create()`` and ``stream()`` even though
+    that voice is NOT in the public static recipe's manifest.
 
     Pre-fix: the kernel's pre-prepare voice preflight read the static
-    recipe and rejected ``am_echo`` before
+    recipe and rejected the private voice before
     ``_prepare_local_tts_artifact`` could materialize the planner's
     artifact. The fix gates the preflight on candidate identity so
     private artifacts validate against their own sidecar.
@@ -1029,18 +1033,24 @@ async def test_private_kokoro_artifact_with_am_echo_in_voices_txt_is_accepted(tm
     from octomil.execution.kernel import ExecutionKernel
     from octomil.runtime.lifecycle.static_recipes import get_static_recipe
 
-    # Sanity: am_echo really is absent from the public v0_19 manifest.
+    # Pick a voice that's guaranteed absent from any public manifest
+    # — the test's gating-bypass property only matters when the
+    # private artifact's voice is NOT in the public recipe.
+    private_voice = "octomil_test_private_voice"
+
     recipe = get_static_recipe("kokoro-82m", "tts")
     assert recipe is not None and recipe.materialization.voice_manifest
     public_manifest = {n.lower() for n in recipe.materialization.voice_manifest}
-    assert "am_echo" not in public_manifest, "test premise broken: am_echo is now in the public recipe manifest"
+    assert (
+        private_voice not in public_manifest
+    ), f"test premise broken: {private_voice} is in the public recipe manifest"
 
     # The planner-prepared artifact dir contains a voices.txt that
-    # *does* include am_echo at sid=2. The fake backend reads the dir
-    # the kernel hands it, so this is what the production code would
-    # see post-PrepareManager.
+    # *does* include the private voice. The fake backend reads the
+    # dir the kernel hands it, so this is what the production code
+    # would see post-PrepareManager.
     voices_txt = tmp_path / "voices.txt"
-    voices_txt.write_text("af_bella\naf_sarah\nam_echo\n")
+    voices_txt.write_text(f"af_bella\naf_sarah\n{private_voice}\n")
 
     # Synthetic planner candidate that is *meaningful* (digest set)
     # and explicitly does NOT match the static recipe (different
@@ -1091,33 +1101,33 @@ async def test_private_kokoro_artifact_with_am_echo_in_voices_txt_is_accepted(tm
         ),
     ]
 
-    # ---- stream() must accept am_echo for the private candidate. ----
+    # ---- stream() must accept the private voice for the private candidate. ----
     with contextlib_ExitStack() as st:
         for p in common_patches:
             st.enter_context(p)
         stream = await kernel.synthesize_speech_stream(
             model="kokoro-82m",
             input="hello",
-            voice="am_echo",
+            voice=private_voice,
         )
         started, pcm, completed = await stream.collect()
-        assert started.voice == "am_echo"
+        assert started.voice == private_voice
         assert completed.total_samples == 2 * 600
         assert pcm  # non-empty PCM body
 
-    # ---- create() (non-streaming path) must also accept am_echo. ----
+    # ---- create() (non-streaming path) must also accept the private voice. ----
     with contextlib_ExitStack() as st:
         for p in common_patches:
             st.enter_context(p)
         response = await kernel.synthesize_speech(
             model="kokoro-82m",
             input="hello",
-            voice="am_echo",
+            voice=private_voice,
         )
         assert response.audio_bytes
         assert response.route.locality == "on_device"
         # The fake backend reports the requested voice.
-        assert response.voice == "am_echo"
+        assert response.voice == private_voice
 
 
 # Lightweight import — keeps the patch-stack assembly above readable

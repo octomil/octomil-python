@@ -134,28 +134,45 @@ class StaticRecipe:
 # ---------------------------------------------------------------------------
 
 
-# Kokoro v0.19 single-file tarball.
+# Kokoro v1.0 multi-language single-file tarball.
 #
-# URL pinned to the upstream sherpa-onnx tts-models GitHub release
-# (public, no Octomil auth). Digest is the SHA-256 of the released
-# ``kokoro-en-v0_19.tar.bz2`` asset reported by the GitHub release
-# API for the ``tts-models`` release tag at PR #455 review time.
-# When upstream re-cuts the bundle (rare; the v0_19 tag is frozen),
-# regenerate by downloading the file and running ``shasum -a 256``
-# AND cross-check against
-# ``GET /repos/k2-fsa/sherpa-onnx/releases/tags/tts-models``.
-_KOKORO_82M_TARBALL_SHA256 = "sha256:912804855a04745fa77a30be545b3f9a5d15c4d66db00b88cbcd4921df605ac7"
+# Digest + URL come from the public sherpa-onnx ``tts-models``
+# GitHub release. Cross-check with::
+#
+#     gh api repos/k2-fsa/sherpa-onnx/releases/tags/tts-models \
+#         --jq '.assets[] | select(.name == "kokoro-multi-lang-v1_0.tar.bz2")'
+#
+# v1.0 supersedes v0.19 (which we previously shipped under this
+# same model id). Why cut over rather than introduce a new id:
+#
+#   - v0.19 carried only 11 English speakers, while the SDK's prior
+#     hardcoded catalog advertised 28. Voices like ``am_echo`` /
+#     ``bm_george`` always silently aliased to ``sid=0``. The
+#     long-term fix needs the artifact to actually carry the
+#     advertised voices.
+#   - v1.0 ships the full 53-speaker multilingual catalog
+#     (English af/am/bf/bm + Spanish ef/em + French ff + Hindi
+#     hf/hm + Italian if/im + Japanese jf/jm + Portuguese pf/pm +
+#     Chinese zf/zm) — a strict superset of the names anyone could
+#     have legitimately tried against ``kokoro-82m``.
+#   - The on-disk layout is different (lexicon-*.txt + dict/ in
+#     place of espeak-ng-data/), so reusing the same id with the
+#     new digest forces a clean re-prepare; old prepared dirs
+#     cannot be confused with the new bundle.
+#
+# Authoritative speaker ordering for ``KOKORO_MULTI_LANG_V1_0_VOICES``
+# below comes directly from upstream's
+# ``scripts/kokoro/v1.0/generate_voices_bin.py`` — that script
+# enumerates the speakers in the exact order their float32
+# embeddings are concatenated into ``voices.bin``, which IS the
+# sherpa-onnx speaker-id table for this bundle.
+_KOKORO_82M_TARBALL_SHA256 = "sha256:c133d26353d776da730870dac7da07dbfc9a5e3bc80cc5e8e83ab6e823be7046"
+_KOKORO_82M_TARBALL_SIZE = 349_418_188
 
 
-# kokoro-en-v0_19 ships an 11-speaker voices.bin. The order below
-# is the bundle's authoritative speaker table — position ==
-# sherpa-onnx speaker id. The 28-name catalog that used to live in
-# ``sherpa.engine._KOKORO_VOICES`` was for a *different* (newer)
-# Kokoro bundle and silently aliased anything past index 10 to the
-# default speaker because sherpa-onnx clamps out-of-range sids to 0.
-# Treat this tuple as the contract for the kokoro-82m artifact: any
-# change requires re-pinning the tarball digest above and updating
-# the regression tests in tests/test_kokoro_voice_manifest.py.
+# Frozen, for tests and diagnostic tooling that still need the
+# v0.19 catalog (e.g. snapshot tests of historical artifact dirs).
+# Not used by the active recipe.
 KOKORO_EN_V0_19_VOICES: tuple[str, ...] = (
     "af",
     "af_bella",
@@ -171,56 +188,140 @@ KOKORO_EN_V0_19_VOICES: tuple[str, ...] = (
 )
 
 
+# kokoro-multi-lang-v1_0 — 53 speakers. Position == sherpa-onnx
+# speaker id, transcribed verbatim from upstream's
+# ``generate_voices_bin.py``. Any drift here would re-introduce the
+# silent ``sid=0`` aliasing bug, so the regression tests in
+# ``tests/test_kokoro_voice_manifest.py`` pin every entry.
+KOKORO_MULTI_LANG_V1_0_VOICES: tuple[str, ...] = (
+    # American English — female (af_*) and male (am_*).
+    "af_alloy",
+    "af_aoede",
+    "af_bella",
+    "af_heart",
+    "af_jessica",
+    "af_kore",
+    "af_nicole",
+    "af_nova",
+    "af_river",
+    "af_sarah",
+    "af_sky",
+    "am_adam",
+    "am_echo",
+    "am_eric",
+    "am_fenrir",
+    "am_liam",
+    "am_michael",
+    "am_onyx",
+    "am_puck",
+    "am_santa",
+    # British English — female (bf_*) and male (bm_*).
+    "bf_alice",
+    "bf_emma",
+    "bf_isabella",
+    "bf_lily",
+    "bm_daniel",
+    "bm_fable",
+    "bm_george",
+    "bm_lewis",
+    # Spanish.
+    "ef_dora",
+    "em_alex",
+    # French.
+    "ff_siwis",
+    # Hindi.
+    "hf_alpha",
+    "hf_beta",
+    "hm_omega",
+    "hm_psi",
+    # Italian.
+    "if_sara",
+    "im_nicola",
+    # Japanese.
+    "jf_alpha",
+    "jf_gongitsune",
+    "jf_nezumi",
+    "jf_tebukuro",
+    "jm_kumo",
+    # Portuguese.
+    "pf_dora",
+    "pm_alex",
+    "pm_santa",
+    # Mandarin Chinese.
+    "zf_xiaobei",
+    "zf_xiaoni",
+    "zf_xiaoxiao",
+    "zf_xiaoyi",
+    "zm_yunjian",
+    "zm_yunxi",
+    "zm_yunxia",
+    "zm_yunyang",
+)
+
+
 _KOKORO_82M_RECIPE = StaticRecipe(
     model_id="kokoro-82m",
     capability="tts",
     engine="sherpa-onnx",
     files=[
         _StaticArtifactFile(
-            relative_path="kokoro-en-v0_19.tar.bz2",
+            relative_path="kokoro-multi-lang-v1_0.tar.bz2",
             # ``DurableDownloader._resolve_url`` joins
             # ``endpoint.url`` with ``relative_path`` as
-            # ``f"{base.rstrip('/')}/{rel}"``. The ``url`` here must
-            # therefore be the *parent directory* — the file name
-            # comes from ``relative_path``. Setting ``url`` to the
-            # full file URL produced
-            # ``…/kokoro-en-v0_19.tar.bz2/kokoro-en-v0_19.tar.bz2``
-            # which 404s. Caught by the 4.11.0 release-gate smoke
-            # test against the public GitHub release.
+            # ``f"{base.rstrip('/')}/{rel}"``. The ``url`` here is
+            # the *parent directory* — the file name comes from
+            # ``relative_path``. Setting ``url`` to the full file
+            # URL would produce ``…/kokoro-multi-lang-v1_0.tar.bz2/
+            # kokoro-multi-lang-v1_0.tar.bz2`` which 404s.
             url="https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models",
             digest=_KOKORO_82M_TARBALL_SHA256,
+            size_bytes=_KOKORO_82M_TARBALL_SIZE,
         ),
     ],
     materialization=MaterializationPlan(
         kind="archive",
-        source="kokoro-en-v0_19.tar.bz2",
+        source="kokoro-multi-lang-v1_0.tar.bz2",
         archive_format="tar.bz2",
         # Upstream tar wraps everything in a top-level directory
-        # named ``kokoro-en-v0_19/``. Strip it so the backend reads
-        # ``model.onnx`` directly under ``artifact_dir`` rather
-        # than ``artifact_dir/kokoro-en-v0_19/model.onnx``.
-        strip_prefix="kokoro-en-v0_19/",
+        # named ``kokoro-multi-lang-v1_0/``. Strip it so the
+        # backend reads ``model.onnx`` directly under
+        # ``artifact_dir`` rather than
+        # ``artifact_dir/kokoro-multi-lang-v1_0/model.onnx``.
+        strip_prefix="kokoro-multi-lang-v1_0/",
+        # v1.0 keeps espeak-ng-data/ AND adds lexicon-*.txt + dict/
+        # for Chinese segmentation. Upstream's own invocation passes
+        # all three directories (--kokoro-data-dir + --kokoro-lexicon
+        # + --kokoro-dict-dir), so we require them all here — a
+        # partial extraction that drops espeak would silently degrade
+        # phonemization at runtime instead of failing at prepare.
         required_outputs=(
             "model.onnx",
             "voices.bin",
             "tokens.txt",
             "espeak-ng-data/phontab",
+            "lexicon-us-en.txt",
+            "lexicon-gb-en.txt",
+            "lexicon-zh.txt",
+            "dict/jieba.dict.utf8",
         ),
         # Kokoro's tarball contains no symlinks/hardlinks; default
         # safety policy refuses both, which is what we want.
         safety_policy=MaterializationSafetyPolicy(),
-        # Materialize the bundle's authoritative speaker table as a
-        # voices.txt sidecar so the sherpa engine resolves voices
-        # against THIS artifact's catalog rather than a global
-        # hardcoded list. See KOKORO_EN_V0_19_VOICES for rationale.
-        voice_manifest=KOKORO_EN_V0_19_VOICES,
-        artifact_version="kokoro-en-v0_19",
+        # Materialize the bundle's authoritative 53-speaker table
+        # as a voices.txt sidecar so the sherpa engine resolves
+        # voices against THIS artifact's catalog rather than a
+        # global hardcoded list. See
+        # ``KOKORO_MULTI_LANG_V1_0_VOICES`` for rationale.
+        voice_manifest=KOKORO_MULTI_LANG_V1_0_VOICES,
+        artifact_version="kokoro-multi-lang-v1_0",
     ),
     notes=(
-        "Kokoro v0.19 multi-speaker English TTS published by "
-        "sherpa-onnx. The MaterializationPlan covers tarball "
-        "extraction so the kernel doesn't have to know about "
-        "archive shapes."
+        "Kokoro v1.0 multi-language TTS published by sherpa-onnx. "
+        "53 speakers across English, Spanish, French, Hindi, "
+        "Italian, Japanese, Portuguese, and Mandarin. The "
+        "MaterializationPlan covers tarball extraction and the "
+        "voices.txt sidecar so the kernel doesn't have to know "
+        "about archive shapes or speaker ordering."
     ),
 )
 
@@ -248,12 +349,58 @@ def _assert_no_placeholder_digest(recipe: StaticRecipe) -> None:
 _assert_no_placeholder_digest(_KOKORO_82M_RECIPE)
 
 
+# Legacy v0.19 single-language English bundle. Kept around so callers
+# who explicitly pin ``kokoro-en-v0_19`` keep the 11-speaker bundle
+# (and its catalog) they were getting before the kokoro-82m cutover
+# to v1.0. The recipe carries its OWN digest, layout, and voice
+# manifest — no aliasing to ``_KOKORO_82M_RECIPE``, because v0.19
+# and v1.0 disagree on every one of those fields.
+_KOKORO_EN_V0_19_TARBALL_SHA256 = "sha256:912804855a04745fa77a30be545b3f9a5d15c4d66db00b88cbcd4921df605ac7"
+_KOKORO_EN_V0_19_TARBALL_SIZE = 319_625_534
+
+
+_KOKORO_EN_V0_19_RECIPE = StaticRecipe(
+    model_id="kokoro-en-v0_19",
+    capability="tts",
+    engine="sherpa-onnx",
+    files=[
+        _StaticArtifactFile(
+            relative_path="kokoro-en-v0_19.tar.bz2",
+            url="https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models",
+            digest=_KOKORO_EN_V0_19_TARBALL_SHA256,
+            size_bytes=_KOKORO_EN_V0_19_TARBALL_SIZE,
+        ),
+    ],
+    materialization=MaterializationPlan(
+        kind="archive",
+        source="kokoro-en-v0_19.tar.bz2",
+        archive_format="tar.bz2",
+        strip_prefix="kokoro-en-v0_19/",
+        required_outputs=(
+            "model.onnx",
+            "voices.bin",
+            "tokens.txt",
+            "espeak-ng-data/phontab",
+        ),
+        safety_policy=MaterializationSafetyPolicy(),
+        voice_manifest=KOKORO_EN_V0_19_VOICES,
+        artifact_version="kokoro-en-v0_19",
+    ),
+    notes=(
+        "Legacy Kokoro v0.19 English-only bundle (11 speakers). "
+        "Retained for callers that explicitly pin this id; the "
+        "default ``kokoro-82m`` resolves to v1.0 multi-lang."
+    ),
+)
+_assert_no_placeholder_digest(_KOKORO_EN_V0_19_RECIPE)
+
+
 _RECIPES: dict[tuple[str, str], StaticRecipe] = {
     # (model_id, capability) → recipe.
     ("kokoro-82m", "tts"): _KOKORO_82M_RECIPE,
-    # Aliases the SDK's existing catalog already understands. Kept
-    # in lockstep so users who type either id get the same recipe.
-    ("kokoro-en-v0_19", "tts"): _KOKORO_82M_RECIPE,
+    # Explicit pin to the legacy v0.19 bundle. Carries its own
+    # digest + voice catalog so it can't drift with kokoro-82m.
+    ("kokoro-en-v0_19", "tts"): _KOKORO_EN_V0_19_RECIPE,
 }
 
 
