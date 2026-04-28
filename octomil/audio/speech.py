@@ -74,6 +74,62 @@ class FacadeSpeech:
     def __init__(self, kernel: Any) -> None:
         self._kernel = kernel
 
+    def stream(
+        self,
+        *,
+        model: str,
+        input: str,
+        voice: Optional[str] = None,
+        response_format: str = "pcm_s16le",
+        speed: float = 1.0,
+        policy: Optional[str] = None,
+        app: Optional[str] = None,
+    ) -> Any:
+        """Stream synthesized speech as typed events.
+
+        Returns a :class:`octomil.audio.streaming.SpeechStream` — an async
+        iterator yielding :class:`SpeechStreamStarted`, zero or more
+        :class:`SpeechAudioChunk`, and a final :class:`SpeechStreamCompleted`.
+        See :mod:`octomil.audio.streaming` for the full event vocabulary.
+
+        Canonical wire format is ``pcm_s16le`` (interleaved PCM int16
+        little-endian). ``wav`` is supported but produces a single final
+        chunk — there is no partial-WAV streaming. ``opus`` is reserved
+        and currently rejected.
+
+        ``streaming_mode=realtime`` indicates true incremental synthesis
+        (local sherpa-onnx Kokoro/Piper today). ``streaming_mode=final_chunk``
+        indicates a non-streaming engine emulating the API; clients should
+        not assume low first-byte latency in that mode.
+
+        Note that this method is *not* async — it returns the stream
+        object directly so it can be used with ``async with`` and
+        ``async for``::
+
+            async with client.audio.speech.stream(model=..., input=...) as s:
+                async for event in s:
+                    ...
+        """
+
+        # Lazily build the stream so callers can use ``async with`` /
+        # ``async for`` without an extra ``await``.
+        async def _producer():
+            inner = await self._kernel.synthesize_speech_stream(
+                model=model,
+                input=input,
+                voice=voice,
+                response_format=response_format,
+                speed=speed,
+                policy=policy,
+                app=app,
+            )
+            async for event in inner:
+                yield event
+
+        from octomil.audio.streaming import SpeechStream
+
+        return SpeechStream(_producer())
+
     async def create(
         self,
         *,

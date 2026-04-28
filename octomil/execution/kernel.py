@@ -242,6 +242,196 @@ def _internal_locality_for_attempt(attempt: Any) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Streaming TTS helpers — keep the kernel.synthesize_speech_stream body small
+# by factoring locality-specific producers here.
+# ---------------------------------------------------------------------------
+
+
+def _build_local_realtime_stream(
+    *,
+    backend: Any,
+    text: str,
+    voice: Optional[str],
+    speed: float,
+    runtime_model: str,
+    policy_preset: Optional[str],
+    fallback_used: bool,
+) -> Any:
+    """Wrap a sherpa backend's ``synthesize_stream`` in a typed event stream."""
+    from octomil.audio.streaming import (
+        SAMPLE_FORMAT_PCM_S16LE,
+        SpeechAudioChunk,
+        SpeechStream,
+        SpeechStreamCompleted,
+        SpeechStreamStarted,
+        StreamingMode,
+    )
+
+    inner = backend.synthesize_stream(text, voice, speed)
+    sample_rate = int(getattr(backend, "_sample_rate", 24000) or 24000)
+    resolved_voice = (voice or getattr(backend, "_default_voice", "") or None) or None
+
+    async def producer():
+        t0 = time.monotonic()
+        first_chunk_ms: Optional[float] = None
+        sample_index = 0
+        emitted_any = False
+        yield SpeechStreamStarted(
+            model=runtime_model,
+            voice=resolved_voice,
+            sample_rate=sample_rate,
+            channels=1,
+            sample_format=SAMPLE_FORMAT_PCM_S16LE,
+            streaming_mode=StreamingMode.REALTIME,
+            locality="on_device",
+            engine="sherpa-onnx",
+        )
+        try:
+            async for raw in inner:
+                pcm: bytes = raw["pcm_s16le"]
+                n = int(raw.get("num_samples") or (len(pcm) // 2))
+                sample_index += n
+                if first_chunk_ms is None:
+                    first_chunk_ms = (time.monotonic() - t0) * 1000.0
+                emitted_any = True
+                yield SpeechAudioChunk(
+                    data=pcm,
+                    sample_index=sample_index,
+                    timestamp_ms=int(round(1000 * sample_index / sample_rate)) if sample_rate else 0,
+                    is_final=False,
+                )
+        finally:
+            inner_close = getattr(inner, "aclose", None)
+            if inner_close is not None:
+                try:
+                    await inner_close()
+                except Exception:
+                    pass
+
+        latency_ms = (time.monotonic() - t0) * 1000.0
+        duration_ms = int(round(1000 * sample_index / sample_rate)) if sample_rate else 0
+        yield SpeechStreamCompleted(
+            duration_ms=duration_ms,
+            total_samples=sample_index,
+            sample_rate=sample_rate,
+            channels=1,
+            sample_format=SAMPLE_FORMAT_PCM_S16LE,
+            streaming_mode=StreamingMode.REALTIME,
+            latency_ms=latency_ms,
+            first_chunk_ms=first_chunk_ms if emitted_any else None,
+        )
+
+    async def _on_cancel() -> None:
+        inner_close = getattr(inner, "aclose", None)
+        if inner_close is not None:
+            try:
+                await inner_close()
+            except Exception:
+                pass
+
+    return SpeechStream(producer(), on_cancel=_on_cancel)
+
+
+def _build_cloud_final_chunk_stream(
+    *,
+    kernel: "ExecutionKernel",
+    cloud_model: str,
+    text: str,
+    voice: Optional[str],
+    speed: float,
+    profile: CloudProfile,
+    response_format: str,
+    runtime_model: str,
+    policy_preset: Optional[str],
+    fallback_used: bool,
+) -> Any:
+    """Wrap a non-streaming cloud TTS call as a single-chunk event stream.
+
+    Marked ``streaming_mode=final_chunk`` so callers don't assume low
+    first-byte latency. The hosted endpoint returns WAV; we strip the
+    44-byte RIFF header and emit the PCM body for ``response_format=
+    pcm_s16le`` parity with the local stream.
+    """
+    from octomil.audio.streaming import (
+        SAMPLE_FORMAT_PCM_S16LE,
+        SpeechAudioChunk,
+        SpeechStream,
+        SpeechStreamCompleted,
+        SpeechStreamStarted,
+        StreamingMode,
+    )
+
+    async def producer():
+        t0 = time.monotonic()
+        cloud_result = await kernel._cloud_synthesize_speech(cloud_model, text, voice, "wav", speed, profile)
+        wav_bytes = cloud_result["audio_bytes"]
+        sample_rate = int(cloud_result.get("sample_rate") or 24000)
+        # Hosted cloud responses are WAV; isolate the PCM body for
+        # pcm_s16le streaming consumers. Falls back to the full WAV
+        # if the header isn't recognized.
+        pcm_body = _strip_wav_header(wav_bytes)
+        if response_format == "wav":
+            data = wav_bytes
+        else:
+            data = pcm_body
+        total_samples = len(pcm_body) // 2 if pcm_body else 0
+        duration_ms = int(cloud_result.get("duration_ms") or 0) or (
+            int(round(1000 * total_samples / sample_rate)) if sample_rate else 0
+        )
+
+        yield SpeechStreamStarted(
+            model=runtime_model,
+            voice=voice,
+            sample_rate=sample_rate,
+            channels=1,
+            sample_format=SAMPLE_FORMAT_PCM_S16LE if response_format != "wav" else "wav",
+            streaming_mode=StreamingMode.FINAL_CHUNK,
+            locality="cloud",
+            engine=None,
+        )
+        if data:
+            yield SpeechAudioChunk(
+                data=data,
+                sample_index=total_samples,
+                timestamp_ms=duration_ms,
+                is_final=True,
+            )
+        latency_ms = (time.monotonic() - t0) * 1000.0
+        yield SpeechStreamCompleted(
+            duration_ms=duration_ms,
+            total_samples=total_samples,
+            sample_rate=sample_rate,
+            channels=1,
+            sample_format=SAMPLE_FORMAT_PCM_S16LE if response_format != "wav" else "wav",
+            streaming_mode=StreamingMode.FINAL_CHUNK,
+            latency_ms=latency_ms,
+            first_chunk_ms=latency_ms,  # first chunk == completion in this mode
+        )
+
+    return SpeechStream(producer())
+
+
+def _strip_wav_header(wav_bytes: bytes) -> bytes:
+    """Return PCM body of a RIFF/WAVE byte string, or the input unchanged
+    if it doesn't start with a parseable RIFF header.
+
+    Cheap shim — avoids depending on :mod:`wave` for the same reason
+    :func:`octomil.audio.streaming.pcm_s16le_to_wav_bytes` is hand-rolled.
+    """
+    if len(wav_bytes) < 44 or wav_bytes[:4] != b"RIFF" or wav_bytes[8:12] != b"WAVE":
+        return wav_bytes
+    # Walk the chunks until we find ``data``.
+    idx = 12
+    while idx + 8 <= len(wav_bytes):
+        chunk_id = wav_bytes[idx : idx + 4]
+        chunk_size = int.from_bytes(wav_bytes[idx + 4 : idx + 8], "little")
+        if chunk_id == b"data":
+            return wav_bytes[idx + 8 : idx + 8 + chunk_size]
+        idx += 8 + chunk_size
+    return wav_bytes
+
+
+# ---------------------------------------------------------------------------
 # Execution Kernel
 # ---------------------------------------------------------------------------
 
@@ -1507,6 +1697,192 @@ class ExecutionKernel:
             unit_kind=None,
         )
 
+    async def synthesize_speech_stream(
+        self,
+        *,
+        model: str,
+        input: str,
+        voice: Optional[str] = None,
+        response_format: str = "pcm_s16le",
+        speed: float = 1.0,
+        app: Optional[str] = None,
+        policy: Optional[str] = None,
+    ) -> Any:
+        """Streaming TTS. Returns a :class:`SpeechStream`.
+
+        Resolution / routing / voice validation mirror
+        :meth:`synthesize_speech`. The local branch produces a
+        ``streaming_mode=realtime`` stream by driving the sherpa-onnx
+        callback. The cloud branch consumes the existing non-streaming
+        hosted endpoint and emits a single ``streaming_mode=final_chunk``
+        compatibility event so callers can write engine-agnostic code,
+        but should NOT assume low first-byte latency.
+
+        ``response_format`` accepts ``pcm_s16le`` (canonical low-latency)
+        or ``wav`` (final-only WAV bytes). ``opus`` is reserved and
+        currently raises ``invalid_input``.
+        """
+        from octomil.audio.streaming import (
+            SAMPLE_FORMAT_PCM_S16LE,
+            SUPPORTED_STREAM_FORMATS,
+        )
+
+        if not input or not input.strip():
+            raise OctomilError(
+                code=OctomilErrorCode.INVALID_INPUT,
+                message="`input` must be a non-empty string.",
+            )
+        normalized_format = (response_format or SAMPLE_FORMAT_PCM_S16LE).lower()
+        if normalized_format not in SUPPORTED_STREAM_FORMATS:
+            raise OctomilError(
+                code=OctomilErrorCode.INVALID_INPUT,
+                message=(
+                    f"unsupported_stream_format: '{response_format}' is not a supported "
+                    f"streaming response_format. Use one of: {', '.join(SUPPORTED_STREAM_FORMATS)}."
+                ),
+            )
+
+        # Resolve route the same way the non-streaming path does.
+        requested_model = model
+        defaults = self._resolve(CAPABILITY_TTS, model=requested_model, policy=policy, app=app)
+        effective_model = defaults.model or requested_model
+        if not effective_model:
+            raise _no_model_error(CAPABILITY_TTS)
+
+        policy_preset = defaults.policy_preset or "local_first"
+        planner_model = _planner_model_for_request(effective_model=effective_model, app=app, capability=CAPABILITY_TTS)
+        selection = _resolve_planner_selection(planner_model, CAPABILITY_TTS, policy_preset)
+        runtime_model = _runtime_model_for_selection(selection, effective_model)
+
+        planner_policy = _tts_policy_from_selection(selection)
+        if planner_policy:
+            policy_preset = planner_policy
+            defaults.policy_preset = planner_policy
+            defaults.inline_policy = None
+
+        _enforce_app_ref_routing_policy(
+            requested_model=requested_model,
+            selection=selection,
+            explicit_policy=policy,
+            explicit_app=app,
+            resolved_policy_preset=defaults.policy_preset,
+        )
+
+        routing_policy = _resolve_routing_policy(defaults)
+        local_candidate = _local_sdk_runtime_candidate(selection)
+        app_scoped = bool(app) or _is_app_ref(requested_model or "")
+        prepared_cache_dir: Optional[str] = None
+        if self._sherpa_tts_runtime_loadable(runtime_model) and self._prepared_cache_may_short_circuit(
+            local_candidate, runtime_model, CAPABILITY_TTS, app_scoped=app_scoped
+        ):
+            prepared_cache_dir = self._prepared_local_artifact_dir(CAPABILITY_TTS, runtime_model)
+
+        if prepared_cache_dir is not None:
+            local_available = True
+        elif self._local_candidate_is_unpreparable(selection):
+            local_available = False
+        else:
+            local_available = self._can_prepare_local_tts(runtime_model, selection)
+        cloud_available = _cloud_available(defaults)
+        if _is_local_only_policy(policy):
+            cloud_available = False
+
+        try:
+            locality, is_fallback = _select_locality_for_capability(
+                routing_policy,
+                local_available=local_available,
+                cloud_available=cloud_available,
+                capability=CAPABILITY_TTS,
+            )
+        except RuntimeError as exc:
+            if "local" in str(exc).lower():
+                raise self._tts_local_unavailable_error(
+                    runtime_model,
+                    requested_model=requested_model,
+                    app=app,
+                    local_candidate=local_candidate,
+                    app_scoped=app_scoped,
+                ) from exc
+            raise OctomilError(
+                code=OctomilErrorCode.RUNTIME_UNAVAILABLE,
+                message=str(exc),
+            ) from exc
+
+        if locality == LOCALITY_ON_DEVICE and not local_available:
+            raise self._tts_local_unavailable_error(
+                runtime_model,
+                requested_model=requested_model,
+                app=app,
+                local_candidate=local_candidate,
+                app_scoped=app_scoped,
+            )
+
+        # Voice validation must happen before any synthesis kicks off so
+        # the consumer never sees a SpeechStreamStarted for a voice the
+        # backend would reject.
+        if locality == LOCALITY_ON_DEVICE:
+            self._validate_local_voice(runtime_model, voice)
+
+        if locality == LOCALITY_CLOUD:
+            assert defaults.cloud_profile is not None, "cloud locality requires cloud profile"
+            cloud_profile = defaults.cloud_profile
+            cloud_model = _execution_model_for_cloud_dispatch(
+                requested_model=requested_model,
+                effective_model=runtime_model,
+                planner_model=planner_model,
+                app=app,
+            )
+            return _build_cloud_final_chunk_stream(
+                kernel=self,
+                cloud_model=cloud_model,
+                text=input,
+                voice=voice,
+                speed=speed,
+                profile=cloud_profile,
+                response_format=normalized_format,
+                runtime_model=runtime_model,
+                policy_preset=policy_preset,
+                fallback_used=is_fallback,
+            )
+
+        # Local realtime stream.
+        if prepared_cache_dir is not None:
+            prepared_model_dir: Optional[str] = prepared_cache_dir
+        else:
+            prepared_model_dir = self._prepare_local_tts_artifact(selection)
+
+        load_error: list[str] = []
+        backend = self._resolve_local_tts_backend(
+            runtime_model,
+            prepared_model_dir=prepared_model_dir,
+            planner_candidate=local_candidate,
+            load_error=load_error,
+        )
+        if backend is None or not getattr(backend, "supports_streaming", False):
+            # Fall back through the same unavailable-backend chain the
+            # non-streaming path uses; map "loaded but doesn't stream"
+            # to runtime_unavailable so callers can ask capabilities()
+            # before retrying with create().
+            reason = load_error[0] if load_error else "backend_does_not_support_streaming"
+            raise OctomilError(
+                code=OctomilErrorCode.RUNTIME_UNAVAILABLE,
+                message=(
+                    f"local_tts_streaming_unavailable: backend for {runtime_model!r} "
+                    f"({reason}). Use client.audio.speech.create(...) for non-streaming "
+                    f"output, or check engine capabilities."
+                ),
+            )
+
+        return _build_local_realtime_stream(
+            backend=backend,
+            text=input,
+            voice=voice,
+            speed=speed,
+            runtime_model=runtime_model,
+            policy_preset=policy_preset,
+            fallback_used=is_fallback,
+        )
+
     async def _cloud_synthesize_speech(
         self,
         model: str,
@@ -2690,6 +3066,7 @@ class ExecutionKernel:
         (and the model id + supported voices) when the voice is not in
         the catalog. The legacy ``voice_not_supported_for_locality``
         tag is preserved in the message for callers that grep for it.
+
         For cloud, voice mismatches surface post-dispatch via provider 4xx.
         """
         if not voice:
