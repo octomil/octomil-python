@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 4.14.0 (2026-04-29)
+
+### Features
+
+- make streaming truthful and honest metrics (#480)
+
 ## 4.13.0 (2026-04-28)
 
 ### Features
