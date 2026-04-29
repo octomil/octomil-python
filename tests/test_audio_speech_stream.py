@@ -1294,17 +1294,16 @@ async def test_completion_metrics_measure_their_named_boundaries():
 
 
 @pytest.mark.asyncio
-async def test_setup_ms_includes_sdk_t0_offset_before_started_event():
-    """``setup_ms`` is measured from the SDK call boundary, not from
-    when the producer starts iterating. If the caller spent 50ms
-    between ``stream(...)`` and the first ``async for``, that 50ms must
-    show up in ``setup_ms`` — that's the whole point of threading
-    ``sdk_t0`` through.
+async def test_kernel_honors_sdk_t0_argument_for_setup_ms():
+    """The kernel-level stream builder measures setup_ms from
+    whatever ``sdk_t0`` it's handed — the boundary policy is the
+    *caller's* responsibility (``FacadeSpeech.stream`` captures it
+    on first iteration). Verify the kernel honors the value.
     """
     from octomil.execution.kernel import _build_local_realtime_stream
 
     backend = FakeStreamingBackend(num_chunks=2, chunk_delay_s=0.001)
-    sdk_t0 = time.monotonic() - 0.10  # pretend the SDK call started 100ms ago
+    sdk_t0 = time.monotonic() - 0.10  # pretend SDK work started 100ms ago
 
     stream = _build_local_realtime_stream(
         backend=backend,
@@ -1324,6 +1323,61 @@ async def test_setup_ms_includes_sdk_t0_offset_before_started_event():
     assert completed.e2e_first_chunk_ms is not None
     assert completed.e2e_first_chunk_ms >= 90.0
     assert completed.total_latency_ms >= 90.0
+
+
+@pytest.mark.asyncio
+async def test_idle_time_before_iteration_does_not_count_against_setup_ms():
+    """Caller idle time between ``client.audio.speech.stream(...)`` and
+    the first ``async for`` MUST NOT be charged to setup_ms / e2e /
+    total. The boundary is "iteration begins," not "object constructed."
+
+    Regression for: a caller that creates the stream, awaits something
+    else for 200ms, then iterates would otherwise see 200ms+ of fake
+    setup_ms attributed to SDK work.
+    """
+    from octomil.audio.speech import FacadeSpeech
+
+    backend = FakeStreamingBackend(num_chunks=2, chunk_delay_s=0.001)
+
+    # A fake kernel whose ``synthesize_speech_stream`` returns the
+    # kernel-level builder against the fake backend. We aren't going
+    # through routing; we just need a real ``sdk_t0`` round-trip.
+    class _FakeKernel:
+        async def synthesize_speech_stream(self, **kwargs):
+            from octomil.execution.kernel import _build_local_realtime_stream
+
+            return _build_local_realtime_stream(
+                backend=backend,
+                text=kwargs["input"],
+                voice=kwargs["voice"],
+                speed=kwargs["speed"],
+                runtime_model=kwargs["model"],
+                policy_preset="local_only",
+                fallback_used=False,
+                sdk_t0=kwargs["sdk_t0"],
+            )
+
+    facade = FacadeSpeech(_FakeKernel())
+
+    stream = facade.stream(model="kokoro-82m", input="hello", voice="af_bella")
+    # Caller-side idle time — sleep BEFORE iterating. Under the bug
+    # this 150ms would show up in setup_ms / total_latency_ms.
+    await asyncio.sleep(0.15)
+
+    _started, _pcm, completed = await stream.collect()
+
+    # Generous upper bound: the actual SDK work is microseconds (no
+    # routing, just the fake builder), so total wall-clock should be
+    # well under 50ms even on slow CI. The 150ms idle MUST NOT be in
+    # the metrics.
+    assert completed.setup_ms < 50.0, (
+        f"setup_ms={completed.setup_ms:.1f}ms — caller idle time leaked into "
+        f"the metric. sdk_t0 must be captured on first iteration, not at "
+        f"stream() construction."
+    )
+    assert completed.total_latency_ms < 50.0
+    assert completed.e2e_first_chunk_ms is not None
+    assert completed.e2e_first_chunk_ms < 50.0
 
 
 # ---------------------------------------------------------------------------

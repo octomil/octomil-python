@@ -188,16 +188,18 @@ class FacadeSpeech:
         """
         import time
 
-        # Capture the timestamp at the SDK call boundary BEFORE any
-        # async work. This is the customer-visible "now" for
-        # SpeechStreamCompleted.setup_ms / e2e_first_chunk_ms /
-        # total_latency_ms — without it the kernel's resolution and
-        # backend acquisition time would be invisible to the metrics.
-        sdk_t0 = time.monotonic()
-
         # Lazily build the stream so callers can use ``async with`` /
         # ``async for`` without an extra ``await``.
+        #
+        # ``sdk_t0`` is captured INSIDE the producer, on first iteration —
+        # NOT at construction time. The stream object can be created and
+        # held by a caller for arbitrary idle time before iteration
+        # starts (e.g. they ``await`` something else first); only the
+        # window from "iteration begins" to "completion" is honest SDK
+        # work. Capturing at construction would charge that idle time to
+        # ``setup_ms`` / ``e2e_first_chunk_ms`` / ``total_latency_ms``.
         async def _producer():
+            sdk_t0 = time.monotonic()
             inner = await self._kernel.synthesize_speech_stream(
                 model=model,
                 input=input,
