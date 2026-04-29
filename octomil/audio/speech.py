@@ -167,10 +167,16 @@ class FacadeSpeech:
         chunk — there is no partial-WAV streaming. ``opus`` is reserved
         and currently rejected.
 
-        ``streaming_mode=realtime`` indicates true incremental synthesis
-        (local sherpa-onnx Kokoro/Piper today). ``streaming_mode=final_chunk``
-        indicates a non-streaming engine emulating the API; clients should
-        not assume low first-byte latency in that mode.
+        Honest cadence advertisement is on
+        :attr:`SpeechStreamStarted.streaming_capability`:
+
+          - ``final_chunk`` — one chunk at the end. No TTFB benefit.
+          - ``sentence_chunk`` — one chunk per sentence. Multi-sentence
+            input gets TTFB benefit; single-sentence degrades to
+            ``final_chunk`` and the completion event reports
+            ``capability_verified=False``.
+          - ``progressive`` — sub-sentence streaming. No production
+            engine in-tree advertises this today.
 
         Note that this method is *not* async — it returns the stream
         object directly so it can be used with ``async with`` and
@@ -180,10 +186,20 @@ class FacadeSpeech:
                 async for event in s:
                     ...
         """
+        import time
 
         # Lazily build the stream so callers can use ``async with`` /
         # ``async for`` without an extra ``await``.
+        #
+        # ``sdk_t0`` is captured INSIDE the producer, on first iteration —
+        # NOT at construction time. The stream object can be created and
+        # held by a caller for arbitrary idle time before iteration
+        # starts (e.g. they ``await`` something else first); only the
+        # window from "iteration begins" to "completion" is honest SDK
+        # work. Capturing at construction would charge that idle time to
+        # ``setup_ms`` / ``e2e_first_chunk_ms`` / ``total_latency_ms``.
         async def _producer():
+            sdk_t0 = time.monotonic()
             inner = await self._kernel.synthesize_speech_stream(
                 model=model,
                 input=input,
@@ -192,6 +208,7 @@ class FacadeSpeech:
                 speed=speed,
                 policy=policy,
                 app=app,
+                sdk_t0=sdk_t0,
             )
             async for event in inner:
                 yield event

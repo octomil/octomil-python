@@ -24,7 +24,9 @@ from octomil.audio.streaming import (
     SpeechStream,
     SpeechStreamCompleted,
     SpeechStreamStarted,
-    StreamingMode,
+    TtsStreamingCapability,
+    TtsStreamingGranularity,
+    TtsStreamingMode,
     pcm_s16le_to_wav_bytes,
 )
 
@@ -166,6 +168,7 @@ def _build_stream(backend: FakeStreamingBackend) -> SpeechStream:
         runtime_model="kokoro-82m",
         policy_preset="local_only",
         fallback_used=False,
+        sdk_t0=time.monotonic(),
     )
 
 
@@ -183,7 +186,9 @@ async def test_metadata_event_arrives_before_any_audio_chunk():
         if isinstance(event, SpeechStreamStarted):
             seen_started = True
             assert event.sample_format == SAMPLE_FORMAT_PCM_S16LE
-            assert event.streaming_mode == StreamingMode.REALTIME
+            # The fake backend doesn't implement streaming_capability so
+            # _build_local_realtime_stream falls back to final_only.
+            assert event.streaming_capability.mode == TtsStreamingMode.FINAL_CHUNK
             assert event.sample_rate == SAMPLE_RATE
             assert event.model == "kokoro-82m"
             assert event.locality == "on_device"
@@ -313,13 +318,14 @@ def test_pcm_wav_finalizer_produces_valid_wav_header():
 
 def test_chunk_accumulator_reconstructs_pcm_in_order():
     acc = ChunkAccumulator()
+    cap = TtsStreamingCapability.sentence(verified=True)
     started = SpeechStreamStarted(
         model="kokoro-82m",
         voice="af_bella",
         sample_rate=24000,
         channels=1,
         sample_format=SAMPLE_FORMAT_PCM_S16LE,
-        streaming_mode=StreamingMode.REALTIME,
+        streaming_capability=cap,
         locality="on_device",
         engine="sherpa-onnx",
     )
@@ -333,7 +339,13 @@ def test_chunk_accumulator_reconstructs_pcm_in_order():
             sample_rate=24000,
             channels=1,
             sample_format=SAMPLE_FORMAT_PCM_S16LE,
-            streaming_mode=StreamingMode.REALTIME,
+            streaming_capability=cap,
+            setup_ms=0.0,
+            engine_first_chunk_ms=None,
+            e2e_first_chunk_ms=None,
+            total_latency_ms=0.0,
+            observed_chunks=2,
+            capability_verified=True,
         )
     )
     assert acc.pcm_bytes() == b"\x01\x00\x02\x00"
@@ -462,7 +474,7 @@ async def test_http_speech_stream_unit_route_shape():
                 "X-Octomil-Sample-Rate": str(SAMPLE_RATE),
                 "X-Octomil-Channels": "1",
                 "X-Octomil-Sample-Format": SAMPLE_FORMAT_PCM_S16LE,
-                "X-Octomil-Streaming-Mode": "realtime",
+                "X-Octomil-Streaming-Capability-Mode": "final_chunk",
                 "X-Octomil-Model": "kokoro-82m",
                 "X-Octomil-Voice": "af_bella",
             },
@@ -480,7 +492,7 @@ async def test_http_speech_stream_unit_route_shape():
             assert resp.headers["content-type"].startswith("application/octet-stream")
             assert resp.headers["x-octomil-sample-rate"] == str(SAMPLE_RATE)
             assert resp.headers["x-octomil-sample-format"] == SAMPLE_FORMAT_PCM_S16LE
-            assert resp.headers["x-octomil-streaming-mode"] == "realtime"
+            assert resp.headers["x-octomil-streaming-capability-mode"] == "final_chunk"
             assert resp.headers["x-octomil-channels"] == "1"
 
             total = 0
@@ -544,7 +556,9 @@ async def test_production_http_speech_stream_route_returns_pcm_with_metadata_hea
                 # not trailers — clients/proxies routinely drop trailers.
                 assert resp.headers["x-octomil-sample-rate"] == str(SAMPLE_RATE)
                 assert resp.headers["x-octomil-sample-format"] == SAMPLE_FORMAT_PCM_S16LE
-                assert resp.headers["x-octomil-streaming-mode"] == "realtime"
+                # Single-sentence input "hello" — backend honestly
+                # advertises final_chunk, not the legacy "realtime" lie.
+                assert resp.headers["x-octomil-streaming-capability-mode"] == "final_chunk"
                 assert resp.headers["x-octomil-channels"] == "1"
                 assert resp.headers["x-octomil-model"] == "kokoro-82m"
                 assert resp.headers["x-octomil-voice"] == "af_bella"
@@ -630,9 +644,9 @@ async def test_streaming_voice_validation_uses_static_recipe_manifest():
     # rejection is unambiguously about catalog enforcement and not a
     # voice that happens to be in some future expansion.
     legacy_only_voice = "octomil_test_unknown_voice"
-    assert legacy_only_voice not in manifest, (
-        f"test premise: {legacy_only_voice} must be absent from manifest " f"(found: {sorted(manifest)})"
-    )
+    assert (
+        legacy_only_voice not in manifest
+    ), f"test premise: {legacy_only_voice} must be absent from manifest (found: {sorted(manifest)})"
 
     kernel = ExecutionKernel.__new__(ExecutionKernel)
     kernel._config_set = MagicMock()
@@ -799,6 +813,7 @@ async def test_stream_does_not_emit_started_for_unsupported_voice(tmp_path):
             runtime_model="kokoro-82m",
             policy_preset="local_only",
             fallback_used=False,
+            sdk_t0=time.monotonic(),
         )
     # The producer was never even constructed, so synthesize_stream
     # was not consumed.
@@ -853,9 +868,9 @@ async def test_tts_server_lifespan_passes_prepared_model_dir_to_sherpa_backend(t
     # backend can resolve the prepared layout. Pre-fix the lifespan
     # called create_backend(model_name) with no kwargs and immediately
     # raised in load_model.
-    assert "model_dir" in captured_kwargs, (
-        "TTS lifespan must inject prepared model_dir from kernel.prepare() — " f"captured kwargs: {captured_kwargs}"
-    )
+    assert (
+        "model_dir" in captured_kwargs
+    ), f"TTS lifespan must inject prepared model_dir from kernel.prepare() — captured kwargs: {captured_kwargs}"
     assert captured_kwargs["model_dir"] == str(tmp_path)
 
 
@@ -1133,3 +1148,312 @@ async def test_private_kokoro_artifact_with_private_voice_in_voices_txt_is_accep
 # Lightweight import — keeps the patch-stack assembly above readable
 # without adding unittest.mock as a top-level import in this file.
 from contextlib import ExitStack as contextlib_ExitStack  # noqa: E402
+
+# ---------------------------------------------------------------------------
+# Truthfulness contract — capability advertisement vs. observed cadence
+# ---------------------------------------------------------------------------
+
+
+class CapabilityAdvertisingBackend(FakeStreamingBackend):
+    """FakeStreamingBackend that exposes ``streaming_capability(text)``.
+
+    Lets tests pin the advertised mode explicitly so we can drive
+    every branch of ``_verify_capability``: advertised better than
+    delivered (downgrade), advertised matches delivered (verified
+    True), and advertised final_chunk + single chunk (also verified
+    True because that *is* the truth).
+    """
+
+    def __init__(
+        self,
+        *,
+        advertised: TtsStreamingCapability,
+        **kwargs,
+    ) -> None:
+        super().__init__(**kwargs)
+        self._advertised = advertised
+
+    def streaming_capability(self, text: str) -> TtsStreamingCapability:
+        return self._advertised
+
+
+@pytest.mark.asyncio
+async def test_advertised_final_chunk_with_single_chunk_is_verified_true():
+    backend = CapabilityAdvertisingBackend(
+        advertised=TtsStreamingCapability.final_only(verified=False),
+        num_chunks=1,
+        chunk_delay_s=0.001,
+    )
+    stream = _build_stream(backend)
+    started, _pcm, completed = await stream.collect()
+    assert started.streaming_capability.mode == TtsStreamingMode.FINAL_CHUNK
+    assert completed.observed_chunks == 1
+    assert completed.streaming_capability.mode == TtsStreamingMode.FINAL_CHUNK
+    assert completed.capability_verified is True
+
+
+@pytest.mark.asyncio
+async def test_advertised_sentence_chunk_with_single_chunk_downgrades_to_final_unverified():
+    """The bug that motivated this PR: engine advertises sentence_chunk
+    but only delivers one chunk. The completion event must downgrade to
+    final_chunk with capability_verified=False so callers stop trusting
+    the advertised label for this (model, input) shape."""
+    backend = CapabilityAdvertisingBackend(
+        advertised=TtsStreamingCapability.sentence(verified=False),
+        num_chunks=1,
+        chunk_delay_s=0.001,
+    )
+    stream = _build_stream(backend)
+    started, _pcm, completed = await stream.collect()
+    # Started carries the advertised (unverified) cadence.
+    assert started.streaming_capability.mode == TtsStreamingMode.SENTENCE_CHUNK
+    assert started.streaming_capability.verified is False
+    # Completed carries the observed truth — downgraded.
+    assert completed.observed_chunks == 1
+    assert completed.streaming_capability.mode == TtsStreamingMode.FINAL_CHUNK
+    assert completed.streaming_capability.verified is False
+    assert completed.capability_verified is False
+
+
+@pytest.mark.asyncio
+async def test_advertised_sentence_chunk_with_multiple_chunks_is_verified_true():
+    backend = CapabilityAdvertisingBackend(
+        advertised=TtsStreamingCapability.sentence(verified=False),
+        num_chunks=3,
+        chunk_delay_s=0.001,
+    )
+    stream = _build_stream(backend)
+    started, _pcm, completed = await stream.collect()
+    assert started.streaming_capability.mode == TtsStreamingMode.SENTENCE_CHUNK
+    assert completed.observed_chunks == 3
+    assert completed.streaming_capability.mode == TtsStreamingMode.SENTENCE_CHUNK
+    assert completed.streaming_capability.verified is True
+    assert completed.capability_verified is True
+
+
+@pytest.mark.asyncio
+async def test_advertised_progressive_with_multiple_chunks_is_verified_true():
+    backend = CapabilityAdvertisingBackend(
+        advertised=TtsStreamingCapability.progressive(verified=False),
+        num_chunks=4,
+        chunk_delay_s=0.001,
+    )
+    stream = _build_stream(backend)
+    started, _pcm, completed = await stream.collect()
+    assert started.streaming_capability.mode == TtsStreamingMode.PROGRESSIVE
+    assert started.streaming_capability.granularity == TtsStreamingGranularity.FRAME
+    assert completed.streaming_capability.mode == TtsStreamingMode.PROGRESSIVE
+    assert completed.capability_verified is True
+
+
+# ---------------------------------------------------------------------------
+# Honest metrics — setup_ms / engine_first_chunk_ms / e2e_first_chunk_ms /
+# total_latency_ms must measure the boundaries their names claim.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_completion_metrics_measure_their_named_boundaries():
+    """All four metrics are advertised by name — verify they actually
+    measure those boundaries:
+
+      * setup_ms <= e2e_first_chunk_ms <= total_latency_ms
+      * engine_first_chunk_ms <= e2e_first_chunk_ms (engine TTFB is a
+        subset of customer-visible TTFB by construction)
+      * total_latency_ms is large enough to span all the chunks.
+    """
+    chunk_delay = 0.03
+    num_chunks = 4
+    backend = FakeStreamingBackend(num_chunks=num_chunks, chunk_delay_s=chunk_delay)
+    stream = _build_stream(backend)
+    _started, _pcm, completed = await stream.collect()
+
+    # Every metric must be a non-negative finite float.
+    assert completed.setup_ms >= 0.0
+    assert completed.total_latency_ms >= 0.0
+    assert completed.engine_first_chunk_ms is not None
+    assert completed.e2e_first_chunk_ms is not None
+    assert completed.engine_first_chunk_ms >= 0.0
+    assert completed.e2e_first_chunk_ms >= 0.0
+
+    # Setup happens BEFORE first chunk arrives at the consumer.
+    assert completed.setup_ms <= completed.e2e_first_chunk_ms + 1.0  # slack for clock noise
+
+    # First-chunk arrival is BEFORE total completion.
+    assert completed.e2e_first_chunk_ms <= completed.total_latency_ms
+
+    # Engine TTFB is a subset of e2e TTFB (e2e includes setup).
+    assert completed.engine_first_chunk_ms <= completed.e2e_first_chunk_ms + 1.0
+
+    # Total wall-time must be at least the synthesis budget — fake
+    # backend yields num_chunks chunks at chunk_delay each, so total
+    # synthesis is ~num_chunks * chunk_delay seconds. We expect total
+    # latency to be at least 80% of that (CI clock noise floor).
+    expected_synth_ms = num_chunks * chunk_delay * 1000.0
+    assert completed.total_latency_ms >= expected_synth_ms * 0.8
+
+
+@pytest.mark.asyncio
+async def test_kernel_honors_sdk_t0_argument_for_setup_ms():
+    """The kernel-level stream builder measures setup_ms from
+    whatever ``sdk_t0`` it's handed — the boundary policy is the
+    *caller's* responsibility (``FacadeSpeech.stream`` captures it
+    on first iteration). Verify the kernel honors the value.
+    """
+    from octomil.execution.kernel import _build_local_realtime_stream
+
+    backend = FakeStreamingBackend(num_chunks=2, chunk_delay_s=0.001)
+    sdk_t0 = time.monotonic() - 0.10  # pretend SDK work started 100ms ago
+
+    stream = _build_local_realtime_stream(
+        backend=backend,
+        text="hello world",
+        voice="af_bella",
+        speed=1.0,
+        runtime_model="kokoro-82m",
+        policy_preset="local_only",
+        fallback_used=False,
+        sdk_t0=sdk_t0,
+    )
+    _started, _pcm, completed = await stream.collect()
+
+    # The synthetic 100ms gap must be visible in setup_ms and bound
+    # e2e_first_chunk_ms / total_latency_ms from below.
+    assert completed.setup_ms >= 90.0  # slack
+    assert completed.e2e_first_chunk_ms is not None
+    assert completed.e2e_first_chunk_ms >= 90.0
+    assert completed.total_latency_ms >= 90.0
+
+
+@pytest.mark.asyncio
+async def test_idle_time_before_iteration_does_not_count_against_setup_ms():
+    """Caller idle time between ``client.audio.speech.stream(...)`` and
+    the first ``async for`` MUST NOT be charged to setup_ms / e2e /
+    total. The boundary is "iteration begins," not "object constructed."
+
+    Regression for: a caller that creates the stream, awaits something
+    else for 200ms, then iterates would otherwise see 200ms+ of fake
+    setup_ms attributed to SDK work.
+    """
+    from octomil.audio.speech import FacadeSpeech
+
+    backend = FakeStreamingBackend(num_chunks=2, chunk_delay_s=0.001)
+
+    # A fake kernel whose ``synthesize_speech_stream`` returns the
+    # kernel-level builder against the fake backend. We aren't going
+    # through routing; we just need a real ``sdk_t0`` round-trip.
+    class _FakeKernel:
+        async def synthesize_speech_stream(self, **kwargs):
+            from octomil.execution.kernel import _build_local_realtime_stream
+
+            return _build_local_realtime_stream(
+                backend=backend,
+                text=kwargs["input"],
+                voice=kwargs["voice"],
+                speed=kwargs["speed"],
+                runtime_model=kwargs["model"],
+                policy_preset="local_only",
+                fallback_used=False,
+                sdk_t0=kwargs["sdk_t0"],
+            )
+
+    facade = FacadeSpeech(_FakeKernel())
+
+    stream = facade.stream(model="kokoro-82m", input="hello", voice="af_bella")
+    # Caller-side idle time — sleep BEFORE iterating. Under the bug
+    # this 150ms would show up in setup_ms / total_latency_ms.
+    await asyncio.sleep(0.15)
+
+    _started, _pcm, completed = await stream.collect()
+
+    # Generous upper bound: the actual SDK work is microseconds (no
+    # routing, just the fake builder), so total wall-clock should be
+    # well under 50ms even on slow CI. The 150ms idle MUST NOT be in
+    # the metrics.
+    assert completed.setup_ms < 50.0, (
+        f"setup_ms={completed.setup_ms:.1f}ms — caller idle time leaked into "
+        f"the metric. sdk_t0 must be captured on first iteration, not at "
+        f"stream() construction."
+    )
+    assert completed.total_latency_ms < 50.0
+    assert completed.e2e_first_chunk_ms is not None
+    assert completed.e2e_first_chunk_ms < 50.0
+
+
+# ---------------------------------------------------------------------------
+# _backend_can_stream — replaces the legacy supports_streaming bool
+# ---------------------------------------------------------------------------
+
+
+def test_backend_can_stream_detects_synthesize_stream_method():
+    """A backend is a streaming backend iff it implements
+    ``synthesize_stream``. The legacy ``supports_streaming`` attribute
+    is not consulted any more; this is the contract every test that
+    builds a fake backend depends on."""
+    from octomil.execution.kernel import _backend_can_stream
+
+    streaming = FakeStreamingBackend(num_chunks=1)
+    assert _backend_can_stream(streaming) is True
+
+    class NonStreamingBackend:
+        # Has the legacy bool but NOT the method — must NOT be treated as streaming.
+        supports_streaming = True
+
+        def synthesize(self, text, voice=None, speed=1.0):
+            return {"audio_bytes": b"", "sample_rate": 24000}
+
+    assert _backend_can_stream(NonStreamingBackend()) is False
+
+
+# ---------------------------------------------------------------------------
+# Sherpa engine — _count_sentences + streaming_capability
+# Pure-function unit tests (no sherpa-onnx import required).
+# ---------------------------------------------------------------------------
+
+
+def test_count_sentences_single_sentence_returns_one():
+    from octomil.runtime.engines.sherpa.engine import _count_sentences
+
+    # Single sentence — no terminator inside the body.
+    assert _count_sentences("Hello there.") == 1
+    assert _count_sentences("hello") == 1
+    # Trailing terminator with no following text is still one sentence.
+    assert _count_sentences("Wait!") == 1
+
+
+def test_count_sentences_multi_sentence_matches_kokoro_chunking():
+    """The counter must agree with what sherpa-onnx's
+    ``max_num_sentences=1`` would actually do — split on terminator
+    + whitespace + non-whitespace, which is the same regex sherpa
+    uses internally for sentence boundaries."""
+    from octomil.runtime.engines.sherpa.engine import _count_sentences
+
+    assert _count_sentences("Hello there. How are you?") == 2
+    assert _count_sentences("First. Second. Third.") == 3
+    # Mixed terminators (punctuation + question + exclamation).
+    assert _count_sentences("Welcome! Are you ready? Let's go.") == 3
+    # CJK terminators participate when followed by whitespace + char,
+    # mirroring sherpa-onnx's split-on-boundary behaviour.
+    assert _count_sentences("你好。 今天很好。 再见。") >= 2
+
+
+def test_sherpa_streaming_capability_advertises_sentence_chunk_only_for_multi_sentence():
+    """The engine's per-input capability advertisement must be
+    truthful: single-sentence input gets ``final_chunk`` because
+    Kokoro will only invoke the callback once. The bug this prevents:
+    advertising sentence_chunk for a single-sentence prompt and then
+    delivering one chunk → fake realtime."""
+    # Light-weight construction: skip __init__ so we don't load sherpa.
+    from octomil.runtime.engines.sherpa.engine import _SherpaTtsBackend
+
+    backend = _SherpaTtsBackend.__new__(_SherpaTtsBackend)
+
+    cap_single = backend.streaming_capability("Hello there.")
+    assert cap_single.mode == TtsStreamingMode.FINAL_CHUNK
+    assert cap_single.granularity == TtsStreamingGranularity.UTTERANCE
+    assert cap_single.verified is False
+
+    cap_multi = backend.streaming_capability("Hello there. How are you?")
+    assert cap_multi.mode == TtsStreamingMode.SENTENCE_CHUNK
+    assert cap_multi.granularity == TtsStreamingGranularity.SENTENCE
+    assert cap_multi.verified is False

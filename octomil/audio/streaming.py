@@ -45,26 +45,99 @@ SAMPLE_FORMAT_PCM_S16LE = "pcm_s16le"
 SUPPORTED_STREAM_FORMATS = (SAMPLE_FORMAT_PCM_S16LE, "wav")
 
 
-class StreamingMode(str, Enum):
-    """Whether the producer is actually streaming or faking it."""
+class TtsStreamingMode(str, Enum):
+    """Honest streaming behaviour the engine actually delivers.
 
-    #: Audio chunks arrive incrementally as samples are produced.
-    REALTIME = "realtime"
-    #: A single chunk containing the full audio, emitted at completion.
-    #: Clients should NOT assume low first-byte latency.
+    The mode is *advertised* by :class:`TtsStreamingCapability` and
+    *verified* on completion. If the engine advertises
+    ``sentence_chunk`` but the synthesis run produces only one chunk,
+    the completion event flags ``capability_verified=False`` so callers
+    can stop trusting the advertised label.
+    """
+
+    #: Engine yields the entire utterance in a single audio chunk.
+    #: No first-byte-latency benefit — equivalent to the non-streaming
+    #: ``create()`` path with the streaming wire shape.
     FINAL_CHUNK = "final_chunk"
+
+    #: Engine yields one chunk per sentence. Multi-sentence input gets
+    #: TTFB benefit; single-sentence input degrades to ``final_chunk``
+    #: (the SDK reports the actually-observed mode in completion).
+    SENTENCE_CHUNK = "sentence_chunk"
+
+    #: Engine yields sub-sentence chunks (frame / phoneme / waveform
+    #: rolling buffer). True low-latency streaming. No production engine
+    #: in-tree advertises this today; reserved for future backends
+    #: (XTTS streaming, custom Kokoro patches, etc.).
+    PROGRESSIVE = "progressive"
+
+
+class TtsStreamingGranularity(str, Enum):
+    """The smallest audio unit the engine commits to per chunk."""
+
+    UTTERANCE = "utterance"  # whole input -> one chunk
+    SENTENCE = "sentence"  # per-sentence boundary
+    FRAME = "frame"  # sub-sentence (target for progressive)
+
+
+@dataclass(frozen=True)
+class TtsStreamingCapability:
+    """What the engine *claims* it can do for a given (model, input).
+
+    ``verified`` is ``True`` once the SDK has observed the engine
+    actually delivering the advertised cadence on this model+artifact.
+    Until then it's an unverified declaration; the completion event
+    will flag a downgrade if the run did not match.
+
+    Construct via :func:`TtsStreamingCapability.final_only` /
+    ``.sentence`` / ``.progressive`` for readability.
+    """
+
+    mode: TtsStreamingMode
+    granularity: TtsStreamingGranularity
+    verified: bool = False
+
+    @classmethod
+    def final_only(cls, *, verified: bool = False) -> "TtsStreamingCapability":
+        return cls(
+            mode=TtsStreamingMode.FINAL_CHUNK,
+            granularity=TtsStreamingGranularity.UTTERANCE,
+            verified=verified,
+        )
+
+    @classmethod
+    def sentence(cls, *, verified: bool = False) -> "TtsStreamingCapability":
+        return cls(
+            mode=TtsStreamingMode.SENTENCE_CHUNK,
+            granularity=TtsStreamingGranularity.SENTENCE,
+            verified=verified,
+        )
+
+    @classmethod
+    def progressive(cls, *, verified: bool = False) -> "TtsStreamingCapability":
+        return cls(
+            mode=TtsStreamingMode.PROGRESSIVE,
+            granularity=TtsStreamingGranularity.FRAME,
+            verified=verified,
+        )
 
 
 @dataclass(frozen=True)
 class SpeechStreamStarted:
-    """First event of every stream. Always arrives before audio chunks."""
+    """First event of every stream. Always arrives before audio chunks.
+
+    ``streaming_capability`` is the authoritative source for expected
+    cadence — read ``streaming_capability.mode`` to decide whether to
+    start playback eagerly (``sentence_chunk`` / ``progressive``) or
+    buffer (``final_chunk``).
+    """
 
     model: str
     voice: Optional[str]
     sample_rate: int
     channels: int
     sample_format: str
-    streaming_mode: StreamingMode
+    streaming_capability: TtsStreamingCapability
     locality: str  # "on_device" | "cloud"
     engine: Optional[str] = None
     request_id: Optional[str] = None
@@ -82,16 +155,39 @@ class SpeechAudioChunk:
 
 @dataclass(frozen=True)
 class SpeechStreamCompleted:
-    """Final event of a successful stream."""
+    """Final event of a successful stream.
+
+    Honest metrics — every duration is named for the boundary it
+    measures, so callers can attribute latency without guessing:
+
+    * ``setup_ms`` — SDK call entry (``client.audio.speech.stream``)
+      to ``SpeechStreamStarted`` emitted. Includes routing, voice
+      validation, backend acquisition, scheduler queue time.
+    * ``engine_first_chunk_ms`` — engine synthesis start to first
+      PCM bytes pushed by the engine. The "raw engine TTFB."
+    * ``e2e_first_chunk_ms`` — SDK call entry to first
+      :class:`SpeechAudioChunk` observed by the consumer. The
+      customer-visible TTFB.
+    * ``total_latency_ms`` — SDK call entry to
+      :class:`SpeechStreamCompleted`. Wall time end-to-end.
+
+    ``observed_chunks`` lets callers verify the advertised
+    capability against reality; ``capability_verified`` is False
+    when the engine claimed a finer cadence than it delivered.
+    """
 
     duration_ms: int
     total_samples: int
     sample_rate: int
     channels: int
     sample_format: str
-    streaming_mode: StreamingMode
-    latency_ms: float = 0.0
-    first_chunk_ms: Optional[float] = None  # latency to first audio chunk
+    streaming_capability: TtsStreamingCapability
+    setup_ms: float
+    engine_first_chunk_ms: Optional[float]
+    e2e_first_chunk_ms: Optional[float]
+    total_latency_ms: float
+    observed_chunks: int
+    capability_verified: bool
 
 
 @dataclass(frozen=True)
@@ -444,7 +540,7 @@ class SpeechStream:
             voice=started.voice,
             sample_rate=started.sample_rate,
             duration_ms=completed.duration_ms,
-            latency_ms=completed.latency_ms,
+            latency_ms=completed.total_latency_ms,
             route=SpeechRoute(
                 locality=started.locality,
                 engine=started.engine,
@@ -459,7 +555,9 @@ class SpeechStream:
 __all__ = [
     "SAMPLE_FORMAT_PCM_S16LE",
     "SUPPORTED_STREAM_FORMATS",
-    "StreamingMode",
+    "TtsStreamingMode",
+    "TtsStreamingGranularity",
+    "TtsStreamingCapability",
     "SpeechStreamStarted",
     "SpeechAudioChunk",
     "SpeechStreamCompleted",

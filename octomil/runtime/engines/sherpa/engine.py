@@ -15,16 +15,20 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import re
 import struct
 import threading
 import time
 from collections import deque
 from dataclasses import dataclass
 from io import BytesIO
-from typing import Any, AsyncIterator, Optional
+from typing import TYPE_CHECKING, Any, AsyncIterator, Optional
 
 from octomil.errors import OctomilError, OctomilErrorCode
 from octomil.runtime.core.base import BenchmarkResult, EnginePlugin
+
+if TYPE_CHECKING:
+    from octomil.audio.streaming import TtsStreamingCapability
 
 logger = logging.getLogger(__name__)
 
@@ -569,7 +573,16 @@ class _SherpaTtsBackend:
         else:
             raise ValueError(f"Unsupported sherpa-onnx TTS family '{family}' for model '{model_name}'.")
 
-        config = sherpa_onnx.OfflineTtsConfig(model=inner_model_config)
+        # max_num_sentences=1 forces sherpa-onnx to invoke the
+        # per-chunk callback once per sentence instead of batching the
+        # entire utterance into a single callback. This is what makes
+        # the streaming path actually streaming for multi-sentence
+        # input — without it, Kokoro emits exactly one chunk regardless
+        # of input length and the SDK's "realtime" advertisement is a
+        # lie. Single-sentence input still produces one chunk; the SDK
+        # downgrades the advertised capability to ``final_chunk`` for
+        # those cases.
+        config = sherpa_onnx.OfflineTtsConfig(model=inner_model_config, max_num_sentences=1)
         logger.info("Loading sherpa-onnx %s TTS: %s from %s", family, model_name, model_dir)
         self._tts = sherpa_onnx.OfflineTts(config)
         self._sample_rate = self._tts.sample_rate
@@ -741,10 +754,26 @@ class _SherpaTtsBackend:
     # Streaming
     # ------------------------------------------------------------------
 
-    @property
-    def supports_streaming(self) -> bool:
-        """sherpa-onnx OfflineTts.generate exposes a per-chunk callback."""
-        return True
+    def streaming_capability(self, text: str) -> "TtsStreamingCapability":
+        """Honest streaming capability for *this* input on *this* engine.
+
+        sherpa-onnx Kokoro / Piper invokes the per-chunk callback at
+        sentence boundaries — there is no sub-sentence (frame /
+        phoneme) streaming today. So:
+
+          - Multi-sentence text -> ``sentence_chunk``.
+          - Single-sentence text -> ``final_chunk`` (only one chunk
+            will arrive regardless of what the engine claims).
+
+        ``verified=False`` because the actual chunk count is only
+        known after synthesis runs. The kernel's stream wrapper
+        flips ``verified=True`` on completion if the run matched.
+        """
+        from octomil.audio.streaming import TtsStreamingCapability
+
+        if _count_sentences(text) > 1:
+            return TtsStreamingCapability.sentence(verified=False)
+        return TtsStreamingCapability.final_only(verified=False)
 
     def validate_voice(self, voice: str | None) -> tuple[int, str]:
         """Resolve a caller-supplied voice synchronously.
@@ -930,6 +959,25 @@ class _StreamBridge:
             err = self._error
         if err is not None:
             raise err
+
+
+_SENTENCE_TERMINATORS = re.compile(r"[.!?。！？]+\s+\S")
+
+
+def _count_sentences(text: str) -> int:
+    """Cheap sentence count for streaming-capability advertisement.
+
+    Mirrors what sherpa-onnx's ``max_num_sentences=1`` will actually
+    split on (period / exclamation / question + whitespace). Not a
+    full ICU-grade sentence segmenter — we just need a yes/no on
+    "is multi-sentence." A trailing terminator without following
+    text is still one sentence; the regex requires a non-space
+    character after the whitespace so ``"Hello."`` reports 1, not 2.
+    """
+    if not text or not text.strip():
+        return 0
+    matches = _SENTENCE_TERMINATORS.findall(text)
+    return 1 + len(matches)
 
 
 def _float32_to_pcm_s16le_bytes(samples: Any) -> bytes:

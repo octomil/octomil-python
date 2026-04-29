@@ -256,22 +256,30 @@ def _build_local_realtime_stream(
     runtime_model: str,
     policy_preset: Optional[str],
     fallback_used: bool,
+    sdk_t0: float,
 ) -> Any:
-    """Wrap a sherpa backend's ``synthesize_stream`` in a typed event stream."""
+    """Wrap a backend's ``synthesize_stream`` in a typed event stream.
+
+    ``sdk_t0`` is the monotonic timestamp captured at the SDK call
+    boundary (``FacadeSpeech.stream`` entry). All customer-visible
+    metrics measure FROM that timestamp so callers see the real
+    end-to-end latency they experience, not just the engine's
+    self-reported portion.
+    """
     from octomil.audio.streaming import (
         SAMPLE_FORMAT_PCM_S16LE,
         SpeechAudioChunk,
         SpeechStream,
         SpeechStreamCompleted,
         SpeechStreamStarted,
-        StreamingMode,
+        TtsStreamingCapability,
     )
 
     # Voice resolution must run synchronously here so an unsupported
     # explicit voice raises BEFORE we hand the caller a stream object
     # whose producer would emit SpeechStreamStarted ahead of the real
-    # error. Backends that don't expose validate_voice (test fakes,
-    # legacy adapters) fall back to advisory metadata only.
+    # error. Backends without validate_voice (test fakes) fall back to
+    # advisory metadata only.
     sample_rate = int(getattr(backend, "_sample_rate", 24000) or 24000)
     validate_voice = getattr(backend, "validate_voice", None)
     if callable(validate_voice):
@@ -279,31 +287,57 @@ def _build_local_realtime_stream(
     else:
         resolved_voice = (voice or getattr(backend, "_default_voice", "") or None) or None
 
+    # Honest capability advertisement: ask the backend what it will
+    # actually do for THIS input. Backends without
+    # streaming_capability default to final_chunk so the SDK never
+    # over-promises.
+    streaming_capability_fn = getattr(backend, "streaming_capability", None)
+    if callable(streaming_capability_fn):
+        advertised = streaming_capability_fn(text)
+    else:
+        advertised = TtsStreamingCapability.final_only(verified=False)
+
     inner = backend.synthesize_stream(text, voice, speed)
 
     async def producer():
-        t0 = time.monotonic()
-        first_chunk_ms: Optional[float] = None
+        # Setup window: SDK call entry -> SpeechStreamStarted emitted.
+        # Includes routing, voice validation, backend acquisition, and
+        # any future scheduler-queue time.
+        setup_ms = (time.monotonic() - sdk_t0) * 1000.0
+
+        engine_t0: Optional[float] = None
+        engine_first_chunk_ms: Optional[float] = None
+        e2e_first_chunk_ms: Optional[float] = None
         sample_index = 0
-        emitted_any = False
+        observed_chunks = 0
+
         yield SpeechStreamStarted(
             model=runtime_model,
             voice=resolved_voice,
             sample_rate=sample_rate,
             channels=1,
             sample_format=SAMPLE_FORMAT_PCM_S16LE,
-            streaming_mode=StreamingMode.REALTIME,
+            streaming_capability=advertised,
             locality="on_device",
             engine="sherpa-onnx",
         )
+
+        # Mark engine_t0 immediately AFTER Started is emitted — i.e.
+        # right before we start awaiting backend chunks. This is the
+        # boundary the engine's own TTFB should be measured from, so
+        # callers can attribute the SDK setup cost vs. the engine
+        # synthesis cost separately.
+        engine_t0 = time.monotonic()
         try:
             async for raw in inner:
                 pcm: bytes = raw["pcm_s16le"]
                 n = int(raw.get("num_samples") or (len(pcm) // 2))
                 sample_index += n
-                if first_chunk_ms is None:
-                    first_chunk_ms = (time.monotonic() - t0) * 1000.0
-                emitted_any = True
+                if engine_first_chunk_ms is None:
+                    now = time.monotonic()
+                    engine_first_chunk_ms = (now - engine_t0) * 1000.0
+                    e2e_first_chunk_ms = (now - sdk_t0) * 1000.0
+                observed_chunks += 1
                 yield SpeechAudioChunk(
                     data=pcm,
                     sample_index=sample_index,
@@ -318,17 +352,29 @@ def _build_local_realtime_stream(
                 except Exception:
                     pass
 
-        latency_ms = (time.monotonic() - t0) * 1000.0
+        total_latency_ms = (time.monotonic() - sdk_t0) * 1000.0
         duration_ms = int(round(1000 * sample_index / sample_rate)) if sample_rate else 0
+
+        # Verification: the advertised capability claims a cadence;
+        # confirm the actual run delivered it. ``sentence_chunk`` /
+        # ``progressive`` advertised + only one chunk observed
+        # downgrades to ``final_chunk`` with verified=False so callers
+        # know the engine over-promised on this input.
+        observed_capability = _verify_capability(advertised, observed_chunks=observed_chunks)
+
         yield SpeechStreamCompleted(
             duration_ms=duration_ms,
             total_samples=sample_index,
             sample_rate=sample_rate,
             channels=1,
             sample_format=SAMPLE_FORMAT_PCM_S16LE,
-            streaming_mode=StreamingMode.REALTIME,
-            latency_ms=latency_ms,
-            first_chunk_ms=first_chunk_ms if emitted_any else None,
+            streaming_capability=observed_capability,
+            setup_ms=setup_ms,
+            engine_first_chunk_ms=engine_first_chunk_ms,
+            e2e_first_chunk_ms=e2e_first_chunk_ms,
+            total_latency_ms=total_latency_ms,
+            observed_chunks=observed_chunks,
+            capability_verified=observed_capability.verified,
         )
 
     async def _on_cancel() -> None:
@@ -340,6 +386,44 @@ def _build_local_realtime_stream(
                 pass
 
     return SpeechStream(producer(), on_cancel=_on_cancel)
+
+
+def _backend_can_stream(backend: Any) -> bool:
+    """Return True iff ``backend`` exposes the streaming protocol.
+
+    Replaces the legacy ``backend.supports_streaming: bool`` flag.
+    The contract is now: a streaming backend implements
+    ``synthesize_stream(text, voice, speed)`` and may advertise a
+    :class:`TtsStreamingCapability` via ``streaming_capability(text)``
+    (defaulting to ``final_only`` when absent). Backends that only
+    implement ``synthesize`` are not streaming backends.
+    """
+    return callable(getattr(backend, "synthesize_stream", None))
+
+
+def _verify_capability(advertised: Any, *, observed_chunks: int) -> Any:
+    """Return the actually-observed capability after a stream completes.
+
+    If the engine advertised ``sentence_chunk`` or ``progressive`` but
+    only delivered one chunk, the run was effectively ``final_chunk``;
+    verify=False on the returned capability so callers can stop
+    trusting the advertised label for this (model, input) shape.
+    Single-chunk runs that *advertised* final_chunk pass verification.
+    """
+    from octomil.audio.streaming import TtsStreamingCapability, TtsStreamingMode
+
+    if advertised.mode == TtsStreamingMode.FINAL_CHUNK:
+        # Final-chunk advertised: any chunk count <= 1 is correct.
+        return TtsStreamingCapability.final_only(verified=observed_chunks <= 1)
+    if observed_chunks > 1:
+        # Sub-utterance cadence delivered as advertised.
+        return advertised.__class__(
+            mode=advertised.mode,
+            granularity=advertised.granularity,
+            verified=True,
+        )
+    # Advertised better than delivered → downgrade and flag.
+    return TtsStreamingCapability.final_only(verified=False)
 
 
 def _build_cloud_final_chunk_stream(
@@ -354,13 +438,15 @@ def _build_cloud_final_chunk_stream(
     runtime_model: str,
     policy_preset: Optional[str],
     fallback_used: bool,
+    sdk_t0: float,
 ) -> Any:
     """Wrap a non-streaming cloud TTS call as a single-chunk event stream.
 
-    Marked ``streaming_mode=final_chunk`` so callers don't assume low
-    first-byte latency. The hosted endpoint returns WAV; we strip the
-    44-byte RIFF header and emit the PCM body for ``response_format=
-    pcm_s16le`` parity with the local stream.
+    Always advertises ``final_chunk`` — the hosted endpoint returns
+    one WAV per request, no per-sentence cadence. The SDK strips the
+    RIFF header and emits the PCM body for ``response_format=
+    pcm_s16le`` parity with the local stream. Metrics measure from
+    the SDK call boundary (``sdk_t0``).
     """
     from octomil.audio.streaming import (
         SAMPLE_FORMAT_PCM_S16LE,
@@ -368,17 +454,15 @@ def _build_cloud_final_chunk_stream(
         SpeechStream,
         SpeechStreamCompleted,
         SpeechStreamStarted,
-        StreamingMode,
+        TtsStreamingCapability,
     )
 
+    advertised = TtsStreamingCapability.final_only(verified=False)
+
     async def producer():
-        t0 = time.monotonic()
         cloud_result = await kernel._cloud_synthesize_speech(cloud_model, text, voice, "wav", speed, profile)
         wav_bytes = cloud_result["audio_bytes"]
         sample_rate = int(cloud_result.get("sample_rate") or 24000)
-        # Hosted cloud responses are WAV; isolate the PCM body for
-        # pcm_s16le streaming consumers. Falls back to the full WAV
-        # if the header isn't recognized.
         pcm_body = _strip_wav_header(wav_bytes)
         if response_format == "wav":
             data = wav_bytes
@@ -389,33 +473,52 @@ def _build_cloud_final_chunk_stream(
             int(round(1000 * total_samples / sample_rate)) if sample_rate else 0
         )
 
+        # Setup spans the entire cloud round-trip — by the time we
+        # have audio bytes back from the provider, "Started" emission
+        # is the same instant as "first chunk". That's honest, but
+        # also makes setup_ms ~= total_latency_ms here, which is
+        # exactly the signal callers need to see that final_chunk
+        # mode does NOT give them TTFB benefit.
+        setup_ms = (time.monotonic() - sdk_t0) * 1000.0
+        sample_format = SAMPLE_FORMAT_PCM_S16LE if response_format != "wav" else "wav"
+
         yield SpeechStreamStarted(
             model=runtime_model,
             voice=voice,
             sample_rate=sample_rate,
             channels=1,
-            sample_format=SAMPLE_FORMAT_PCM_S16LE if response_format != "wav" else "wav",
-            streaming_mode=StreamingMode.FINAL_CHUNK,
+            sample_format=sample_format,
+            streaming_capability=advertised,
             locality="cloud",
             engine=None,
         )
+        e2e_first_chunk_ms: Optional[float] = None
+        observed_chunks = 0
         if data:
+            now = time.monotonic()
+            e2e_first_chunk_ms = (now - sdk_t0) * 1000.0
+            observed_chunks = 1
             yield SpeechAudioChunk(
                 data=data,
                 sample_index=total_samples,
                 timestamp_ms=duration_ms,
                 is_final=True,
             )
-        latency_ms = (time.monotonic() - t0) * 1000.0
+        total_latency_ms = (time.monotonic() - sdk_t0) * 1000.0
+        observed_capability = _verify_capability(advertised, observed_chunks=observed_chunks)
         yield SpeechStreamCompleted(
             duration_ms=duration_ms,
             total_samples=total_samples,
             sample_rate=sample_rate,
             channels=1,
-            sample_format=SAMPLE_FORMAT_PCM_S16LE if response_format != "wav" else "wav",
-            streaming_mode=StreamingMode.FINAL_CHUNK,
-            latency_ms=latency_ms,
-            first_chunk_ms=latency_ms,  # first chunk == completion in this mode
+            sample_format=sample_format,
+            streaming_capability=observed_capability,
+            setup_ms=setup_ms,
+            engine_first_chunk_ms=None,  # cloud branch has no in-engine start signal
+            e2e_first_chunk_ms=e2e_first_chunk_ms,
+            total_latency_ms=total_latency_ms,
+            observed_chunks=observed_chunks,
+            capability_verified=observed_capability.verified,
         )
 
     return SpeechStream(producer())
@@ -1958,25 +2061,35 @@ class ExecutionKernel:
         speed: float = 1.0,
         app: Optional[str] = None,
         policy: Optional[str] = None,
+        sdk_t0: Optional[float] = None,
     ) -> Any:
         """Streaming TTS. Returns a :class:`SpeechStream`.
 
         Resolution / routing / voice validation mirror
-        :meth:`synthesize_speech`. The local branch produces a
-        ``streaming_mode=realtime`` stream by driving the sherpa-onnx
-        callback. The cloud branch consumes the existing non-streaming
-        hosted endpoint and emits a single ``streaming_mode=final_chunk``
-        compatibility event so callers can write engine-agnostic code,
-        but should NOT assume low first-byte latency.
+        :meth:`synthesize_speech`. The local branch advertises a
+        :class:`TtsStreamingCapability` (sentence_chunk for
+        multi-sentence input, final_chunk for single-sentence) and
+        the completion event verifies actual cadence vs.
+        advertised. The cloud branch always advertises ``final_chunk``.
 
         ``response_format`` accepts ``pcm_s16le`` (canonical low-latency)
         or ``wav`` (final-only WAV bytes). ``opus`` is reserved and
         currently raises ``invalid_input``.
+
+        ``sdk_t0`` is the monotonic timestamp the caller captured at
+        the SDK call boundary (``FacadeSpeech.stream`` entry).
+        Threaded through so honest end-to-end TTFB metrics can attribute
+        the kernel's resolution / scheduler-queue time to the customer-
+        visible setup window. When omitted, defaults to "now" — useful
+        for tests but loses the e2e attribution.
         """
         from octomil.audio.streaming import (
             SAMPLE_FORMAT_PCM_S16LE,
             SUPPORTED_STREAM_FORMATS,
         )
+
+        if sdk_t0 is None:
+            sdk_t0 = time.monotonic()
 
         if not input or not input.strip():
             raise OctomilError(
@@ -2103,6 +2216,7 @@ class ExecutionKernel:
                 runtime_model=runtime_model,
                 policy_preset=policy_preset,
                 fallback_used=is_fallback,
+                sdk_t0=sdk_t0,
             )
 
         # Local realtime stream.
@@ -2118,11 +2232,13 @@ class ExecutionKernel:
             planner_candidate=local_candidate,
             load_error=load_error,
         )
-        if backend is None or not getattr(backend, "supports_streaming", False):
+        if backend is None or not _backend_can_stream(backend):
             # Fall back through the same unavailable-backend chain the
             # non-streaming path uses; map "loaded but doesn't stream"
             # to runtime_unavailable so callers can ask capabilities()
-            # before retrying with create().
+            # before retrying with create(). A backend "can stream"
+            # iff it exposes synthesize_stream AND advertises a
+            # capability — bool flags are no longer the contract.
             reason = load_error[0] if load_error else "backend_does_not_support_streaming"
             raise OctomilError(
                 code=OctomilErrorCode.RUNTIME_UNAVAILABLE,
@@ -2141,6 +2257,7 @@ class ExecutionKernel:
             runtime_model=runtime_model,
             policy_preset=policy_preset,
             fallback_used=is_fallback,
+            sdk_t0=sdk_t0,
         )
 
     async def _cloud_synthesize_speech(
