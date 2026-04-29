@@ -80,6 +80,41 @@ class RuntimeArtifactPlan:
 
 
 @dataclass
+class TtsSpeakerProfile:
+    """Logical TTS speaker the planner / app config defines.
+
+    Decouples the caller's speaker id (``"madam_ambrose"``) from the
+    runtime's native voice id (``sid=4``) and from any reference-audio
+    artifact a few-shot voice-cloning engine like PocketTTS needs.
+
+    Two engines, two resolution modes:
+
+      - Native-voice engines (Kokoro / Piper). The planner sets
+        ``native_voice`` to the runtime voice label that lives in the
+        artifact's ``voices.txt`` / voices.bin. The kernel hands that
+        label straight to ``backend.synthesize(voice=...)``; no
+        reference audio.
+      - Few-shot voice-cloning engines (PocketTTS). The planner sets
+        ``reference_audio`` (URL or already-prepared local path) plus
+        ``reference_sample_rate`` so the engine has a sample to clone
+        from. ``native_voice`` is typically absent.
+
+    A planner that omits a profile entirely is allowed; the kernel
+    then falls back to native-voice resolution against the model's
+    own catalog (existing behaviour for non-app refs and for app refs
+    that haven't been populated yet).
+    """
+
+    speaker_id: str
+    native_voice: str | None = None
+    reference_audio: str | None = None
+    reference_sample_rate: int | None = None
+    language: str | None = None
+    style: str | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
 class CandidateGate:
     """A planner gate the SDK must evaluate before using a candidate."""
 
@@ -111,6 +146,12 @@ class RuntimeCandidatePlan:
     delivery_mode: Literal["hosted_gateway", "sdk_runtime", "external_endpoint"] | None = None
     prepare_required: bool = False
     prepare_policy: Literal["lazy", "explicit_only", "disabled"] = "lazy"
+    # Per-candidate TTS speaker profiles. Keyed by ``speaker_id``.
+    # Overrides the app-level ``tts_speakers`` map when both are set —
+    # lets a planner attach speaker profiles to a specific candidate
+    # (e.g. only the PocketTTS candidate carries reference-audio
+    # entries; the Kokoro candidate carries native-voice entries).
+    tts_speakers: dict[str, TtsSpeakerProfile] = field(default_factory=dict)
 
 
 @dataclass
@@ -129,6 +170,13 @@ class AppResolution:
     fallback_policy: str | None = None
     plan_ttl_seconds: int = 604800
     public_client_allowed: bool = False
+    # App-scoped TTS speaker profiles. Keyed by ``speaker_id``. When
+    # ``client.audio.speech.stream(model="@app/<slug>/tts",
+    # speaker="madam_ambrose", ...)`` lands, the kernel looks up the
+    # speaker here first (or in the per-candidate ``tts_speakers``)
+    # and the resolved profile feeds the engine — caller never names
+    # the artifact, the policy, or the reference audio.
+    tts_speakers: dict[str, TtsSpeakerProfile] = field(default_factory=dict)
 
 
 @dataclass

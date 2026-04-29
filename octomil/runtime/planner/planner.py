@@ -20,6 +20,7 @@ from .schemas import (
     RuntimeCandidatePlan,
     RuntimePlanResponse,
     RuntimeSelection,
+    TtsSpeakerProfile,
 )
 from .store import (
     RuntimePlannerStoreProtocol,
@@ -556,6 +557,44 @@ def _resolved_model_from_plan(plan: RuntimePlanResponse) -> str | None:
     return None
 
 
+def _parse_tts_speaker_map(data: dict | None) -> dict[str, TtsSpeakerProfile]:
+    """Rehydrate a ``tts_speakers`` dict from a cached/server JSON payload.
+
+    Forward-compatible: extra keys on each profile are ignored, missing
+    speaker_id falls back to the dict key, and a non-dict payload is
+    silently dropped — the kernel falls through to native-voice
+    resolution.
+    """
+    if not isinstance(data, dict):
+        return {}
+    out: dict[str, TtsSpeakerProfile] = {}
+    for key, raw in data.items():
+        if not isinstance(raw, dict):
+            continue
+        # Explicit empty speaker_id is a malformed entry (the server
+        # sent the field but with no value). Treat that differently
+        # from "field absent": absent -> fall back to dict key;
+        # explicit blank -> drop the entry so synthesis can't
+        # accidentally accept a nameless speaker.
+        raw_id = raw.get("speaker_id")
+        if "speaker_id" in raw and not raw_id:
+            continue
+        speaker_id = raw_id or key
+        if not isinstance(speaker_id, str) or not speaker_id:
+            continue
+        metadata = raw.get("metadata")
+        out[key] = TtsSpeakerProfile(
+            speaker_id=speaker_id,
+            native_voice=raw.get("native_voice"),
+            reference_audio=raw.get("reference_audio"),
+            reference_sample_rate=raw.get("reference_sample_rate"),
+            language=raw.get("language"),
+            style=raw.get("style"),
+            metadata=metadata if isinstance(metadata, dict) else {},
+        )
+    return out
+
+
 def plan_dict_to_app_resolution(data: dict | None) -> AppResolution | None:
     """Rehydrate a cached app_resolution dict."""
     if not isinstance(data, dict):
@@ -578,6 +617,7 @@ def plan_dict_to_app_resolution(data: dict | None) -> AppResolution | None:
         preferred_engines=data.get("preferred_engines", []),
         fallback_policy=data.get("fallback_policy"),
         plan_ttl_seconds=data.get("plan_ttl_seconds", 604800),
+        tts_speakers=_parse_tts_speaker_map(data.get("tts_speakers")),
     )
 
 
@@ -634,6 +674,7 @@ def plan_dict_to_candidates(candidates: list[dict]) -> list[RuntimeCandidatePlan
                 artifact=artifact,
                 benchmark_required=candidate.get("benchmark_required", False),
                 gates=gates,
+                tts_speakers=_parse_tts_speaker_map(candidate.get("tts_speakers")),
             )
         )
     return parsed
