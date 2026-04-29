@@ -167,10 +167,16 @@ class FacadeSpeech:
         chunk — there is no partial-WAV streaming. ``opus`` is reserved
         and currently rejected.
 
-        ``streaming_mode=realtime`` indicates true incremental synthesis
-        (local sherpa-onnx Kokoro/Piper today). ``streaming_mode=final_chunk``
-        indicates a non-streaming engine emulating the API; clients should
-        not assume low first-byte latency in that mode.
+        Honest cadence advertisement is on
+        :attr:`SpeechStreamStarted.streaming_capability`:
+
+          - ``final_chunk`` — one chunk at the end. No TTFB benefit.
+          - ``sentence_chunk`` — one chunk per sentence. Multi-sentence
+            input gets TTFB benefit; single-sentence degrades to
+            ``final_chunk`` and the completion event reports
+            ``capability_verified=False``.
+          - ``progressive`` — sub-sentence streaming. No production
+            engine in-tree advertises this today.
 
         Note that this method is *not* async — it returns the stream
         object directly so it can be used with ``async with`` and
@@ -180,6 +186,14 @@ class FacadeSpeech:
                 async for event in s:
                     ...
         """
+        import time
+
+        # Capture the timestamp at the SDK call boundary BEFORE any
+        # async work. This is the customer-visible "now" for
+        # SpeechStreamCompleted.setup_ms / e2e_first_chunk_ms /
+        # total_latency_ms — without it the kernel's resolution and
+        # backend acquisition time would be invisible to the metrics.
+        sdk_t0 = time.monotonic()
 
         # Lazily build the stream so callers can use ``async with`` /
         # ``async for`` without an extra ``await``.
@@ -192,6 +206,7 @@ class FacadeSpeech:
                 speed=speed,
                 policy=policy,
                 app=app,
+                sdk_t0=sdk_t0,
             )
             async for event in inner:
                 yield event

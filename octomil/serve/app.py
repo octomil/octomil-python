@@ -1225,10 +1225,14 @@ def create_app(
             )
 
         backend = state.sherpa_tts_backend
-        if not getattr(backend, "supports_streaming", False):
+        # The contract is: a streaming backend implements
+        # synthesize_stream. supports_streaming as a bool flag was
+        # removed in the cutover — capability is advertised via
+        # streaming_capability(text) instead.
+        if not callable(getattr(backend, "synthesize_stream", None)):
             raise OctomilError(
                 code=OctomilErrorCode.RUNTIME_UNAVAILABLE,
-                message="local_tts_streaming_unavailable: backend does not support streaming.",
+                message="local_tts_streaming_unavailable: backend does not implement synthesize_stream.",
             )
 
         # Pre-validate voice synchronously: if we let an unsupported
@@ -1242,6 +1246,15 @@ def create_app(
             _sid_unused, resolved_voice = validate_voice(voice)
         else:
             resolved_voice = voice or getattr(backend, "_default_voice", "") or ""
+
+        # Honest streaming-mode header: advertise what the backend
+        # actually claims for THIS input, not a static "realtime" lie.
+        capability_fn = getattr(backend, "streaming_capability", None)
+        if callable(capability_fn):
+            advertised = capability_fn(text)
+            advertised_mode = advertised.mode.value
+        else:
+            advertised_mode = "final_chunk"
 
         state.request_count += 1
         sample_rate = int(getattr(backend, "_sample_rate", 24000) or 24000)
@@ -1269,7 +1282,9 @@ def create_app(
                 "X-Octomil-Sample-Rate": str(sample_rate),
                 "X-Octomil-Channels": "1",
                 "X-Octomil-Sample-Format": SAMPLE_FORMAT_PCM_S16LE,
-                "X-Octomil-Streaming-Mode": "realtime",
+                # Replaces the legacy X-Octomil-Streaming-Mode header.
+                # Values: final_chunk | sentence_chunk | progressive.
+                "X-Octomil-Streaming-Capability-Mode": advertised_mode,
                 "X-Octomil-Model": str(model_name),
                 "X-Octomil-Voice": str(resolved_voice),
             },
