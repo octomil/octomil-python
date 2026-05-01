@@ -395,12 +395,86 @@ _KOKORO_EN_V0_19_RECIPE = StaticRecipe(
 _assert_no_placeholder_digest(_KOKORO_EN_V0_19_RECIPE)
 
 
+# PocketTTS — int8-quantized few-shot voice-cloning bundle published
+# by sherpa-onnx (2026-01-26 release). NON-COMMERCIAL: the bundle's
+# README states the underlying model weights are licensed for
+# non-commercial use only. The recipe is registered under
+# ``_NON_DEFAULT_RECIPES`` and the planner / app-config layer is
+# responsible for eligibility gating — the SDK never registers
+# Pocket as a default candidate. Apps that ship Pocket with their
+# own commercial license carry their license check in app config.
+_POCKET_TTS_INT8_TARBALL_SHA256 = "sha256:2f3b88823cbbb9bf0b2477ec8ae7b3fec417b3a87b6bb5f256dba66f2ad967cb"
+_POCKET_TTS_INT8_TARBALL_SIZE = 98_336_520
+
+_POCKET_TTS_INT8_RECIPE = StaticRecipe(
+    model_id="pocket-tts-int8",
+    capability="tts",
+    engine="sherpa-onnx",
+    files=[
+        _StaticArtifactFile(
+            relative_path="sherpa-onnx-pocket-tts-int8-2026-01-26.tar.bz2",
+            url="https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models",
+            digest=_POCKET_TTS_INT8_TARBALL_SHA256,
+            size_bytes=_POCKET_TTS_INT8_TARBALL_SIZE,
+        ),
+    ],
+    materialization=MaterializationPlan(
+        kind="archive",
+        source="sherpa-onnx-pocket-tts-int8-2026-01-26.tar.bz2",
+        archive_format="tar.bz2",
+        # Upstream tar wraps everything in a top-level directory
+        # named ``sherpa-onnx-pocket-tts-int8-2026-01-26/``. Strip
+        # so the engine reads ``encoder.onnx`` directly under
+        # ``artifact_dir/``.
+        strip_prefix="sherpa-onnx-pocket-tts-int8-2026-01-26/",
+        required_outputs=(
+            "text_conditioner.onnx",
+            "encoder.onnx",
+            "lm_flow.int8.onnx",
+            "decoder.int8.onnx",
+            "lm_main.int8.onnx",
+            "vocab.json",
+            "token_scores.json",
+        ),
+        safety_policy=MaterializationSafetyPolicy(),
+        # Pocket has no native voice catalog — its "voices" are
+        # reference profiles owned by the planner. Empty manifest
+        # signals to the engine "look up speakers from the planner
+        # tts_speakers map".
+        voice_manifest=(),
+        artifact_version="sherpa-onnx-pocket-tts-int8-2026-01-26",
+    ),
+    notes=(
+        "PocketTTS int8 (sherpa-onnx 2026-01-26 release). "
+        "Few-shot voice cloning: the engine takes reference audio "
+        "+ optional reference text instead of a sid. "
+        "NON-COMMERCIAL: the upstream bundle README restricts use "
+        "to non-commercial purposes; the SDK does NOT register "
+        "this recipe as a default candidate. Apps must opt in "
+        "via planner/app config and own their license check."
+    ),
+)
+_assert_no_placeholder_digest(_POCKET_TTS_INT8_RECIPE)
+
+
 _RECIPES: dict[tuple[str, str], StaticRecipe] = {
     # (model_id, capability) → recipe.
     ("kokoro-82m", "tts"): _KOKORO_82M_RECIPE,
     # Explicit pin to the legacy v0.19 bundle. Carries its own
     # digest + voice catalog so it can't drift with kokoro-82m.
     ("kokoro-en-v0_19", "tts"): _KOKORO_EN_V0_19_RECIPE,
+}
+
+
+# Recipes that are *available* via explicit lookup but NOT advertised
+# as a default candidate. The planner / app-config layer must opt in
+# explicitly (e.g. ``client.prepare(model='pocket-tts-int8',
+# capability='tts')`` for a dev box that wants to test Pocket
+# locally; an app's planner-side config to expose Pocket for that
+# app). Live in a separate map so a future
+# ``list_default_recipes()`` helper can't accidentally include them.
+_NON_DEFAULT_RECIPES: dict[tuple[str, str], StaticRecipe] = {
+    ("pocket-tts-int8", "tts"): _POCKET_TTS_INT8_RECIPE,
 }
 
 
@@ -412,13 +486,21 @@ _RECIPES: dict[tuple[str, str], StaticRecipe] = {
 def get_static_recipe(model: str, capability: str) -> Optional[StaticRecipe]:
     """Return the recipe for ``(model, capability)``, or ``None``.
 
-    Empty result means the SDK has no offline knowledge of this
-    model; the caller must go through the planner. We do NOT fall
-    through to a generic "guess from model_id" path because that
-    would risk shipping public bytes for what was meant to be a
-    private artifact.
+    Walks the default recipe table first, then the non-default table
+    (Pocket and similar opt-in bundles). Empty result means the SDK
+    has no offline knowledge of this model; the caller must go
+    through the planner. We do NOT fall through to a generic "guess
+    from model_id" path because that would risk shipping public
+    bytes for what was meant to be a private artifact.
+
+    The non-default table is consulted last so a same-key default
+    recipe always wins; today there's no overlap, but the lookup
+    order is explicit so future regressions surface in code review.
     """
-    return _RECIPES.get((model, capability))
+    recipe = _RECIPES.get((model, capability))
+    if recipe is not None:
+        return recipe
+    return _NON_DEFAULT_RECIPES.get((model, capability))
 
 
 def static_recipe_candidate(model: str, capability: str) -> Optional[RuntimeCandidatePlan]:

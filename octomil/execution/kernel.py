@@ -247,16 +247,51 @@ def _internal_locality_for_attempt(attempt: Any) -> str:
 # ---------------------------------------------------------------------------
 
 
+def _backend_synthesize_kwargs(backend: Any, resolved_speaker: Any) -> dict[str, Any]:
+    """Engine-facing kwargs derived from a :class:`ResolvedTtsSpeaker`.
+
+    Backends that opt into speaker-aware synthesis declare a
+    ``speaker_kwargs`` attribute or accept ``speaker_profile=``. We
+    detect that by inspection so the call site can stay uniform across
+    engine families: legacy Kokoro/Piper consume only ``voice``, while
+    Pocket consumes ``speaker_profile``.
+    """
+    accepts_speaker = bool(getattr(backend, "accepts_speaker_profile", False))
+    if accepts_speaker and resolved_speaker is not None:
+        return {"speaker_profile": resolved_speaker}
+    return {}
+
+
+def _call_backend_synthesize(
+    backend: Any,
+    text: str,
+    resolved_speaker: Any,
+    speed: float,
+) -> dict[str, Any]:
+    """Synchronous bridge to ``backend.synthesize`` that respects the resolver.
+
+    Used by ``synthesize_speech`` under ``asyncio.to_thread``. Pulls the
+    native voice off the resolved profile and adds ``speaker_profile``
+    when the backend opts in. Keeps the kernel call site terse.
+    """
+    voice = resolved_speaker.native_voice if resolved_speaker is not None else None
+    extra = _backend_synthesize_kwargs(backend, resolved_speaker)
+    return backend.synthesize(text, voice, speed, **extra)
+
+
 def _build_local_realtime_stream(
     *,
     backend: Any,
     text: str,
-    voice: Optional[str],
+    voice: Optional[str] = None,
+    resolved_speaker: Any = None,
     speed: float,
     runtime_model: str,
     policy_preset: Optional[str],
     fallback_used: bool,
     sdk_t0: float,
+    scheduler: Any = None,
+    priority: Any = None,
 ) -> Any:
     """Wrap a backend's ``synthesize_stream`` in a typed event stream.
 
@@ -281,11 +316,28 @@ def _build_local_realtime_stream(
     # error. Backends without validate_voice (test fakes) fall back to
     # advisory metadata only.
     sample_rate = int(getattr(backend, "_sample_rate", 24000) or 24000)
+    # Effective voice the backend should use for native-voice
+    # validation. Prefer the resolver's native_voice when supplied
+    # (covers logical-speaker -> native_voice planner mappings) and
+    # fall back to the legacy ``voice=`` kwarg for callers that
+    # haven't migrated.
+    effective_voice = (
+        getattr(resolved_speaker, "native_voice", None) if resolved_speaker is not None else None
+    ) or voice
+    # Synchronous speaker-profile validation MUST happen before the
+    # producer yields ``SpeechStreamStarted`` — otherwise a Pocket
+    # call with no reference_audio would only fail mid-stream after
+    # the consumer had already seen Started, which violates the
+    # v4.13 prevalidation contract. Native-voice engines no-op
+    # ``validate_speaker_profile`` so non-Pocket flows are unchanged.
+    validate_speaker_profile = getattr(backend, "validate_speaker_profile", None)
+    if callable(validate_speaker_profile):
+        validate_speaker_profile(resolved_speaker)
     validate_voice = getattr(backend, "validate_voice", None)
     if callable(validate_voice):
-        _sid_unused, resolved_voice = validate_voice(voice)
+        _sid_unused, resolved_voice = validate_voice(effective_voice)
     else:
-        resolved_voice = (voice or getattr(backend, "_default_voice", "") or None) or None
+        resolved_voice = (effective_voice or getattr(backend, "_default_voice", "") or None) or None
 
     # Honest capability advertisement: ask the backend what it will
     # actually do for THIS input. Backends without
@@ -297,13 +349,53 @@ def _build_local_realtime_stream(
     else:
         advertised = TtsStreamingCapability.final_only(verified=False)
 
-    inner = backend.synthesize_stream(text, voice, speed)
+    extra_kwargs = _backend_synthesize_kwargs(backend, resolved_speaker)
+
+    # Scheduler integration is opt-in at the builder level — when
+    # ``scheduler`` is supplied, the producer acquires a slot before
+    # invoking the backend. Tests that exercise the producer in
+    # isolation pass ``scheduler=None`` and skip the scheduling layer.
+    from octomil.audio.scheduler import coerce_priority
+
+    coerced_priority = coerce_priority(priority)
+    priority_value = coerced_priority.value if coerced_priority is not None else None
 
     async def producer():
+        nonlocal effective_voice  # captured for scope clarity below
+        slot_ctx: Any = None
+        slot_obj: Any = None
+        queued_ms = 0.0
+        if scheduler is not None:
+            scheduler_key = f"{runtime_model}:{id(backend)}"
+            slot_ctx = await scheduler.acquire(key=scheduler_key, priority=coerced_priority)
+            slot_obj = await slot_ctx.__aenter__()
+            queued_ms = slot_ctx.queued_ms
+
         # Setup window: SDK call entry -> SpeechStreamStarted emitted.
         # Includes routing, voice validation, backend acquisition, and
-        # any future scheduler-queue time.
+        # scheduler queue time. ``queued_ms`` is split out separately
+        # on the completion event so callers can attribute the wait.
         setup_ms = (time.monotonic() - sdk_t0) * 1000.0
+
+        # Backend dispatch happens AFTER slot acquisition so two
+        # racing requests can't both call synthesize_stream and
+        # crash the ONNX session. Errors here propagate via the
+        # finally block which releases the slot.
+        inner = backend.synthesize_stream(text, effective_voice, speed, **extra_kwargs)
+        if slot_obj is not None:
+            # Register cooperative-cancellation hook so a higher-
+            # priority arrival can flip the cancel flag and have the
+            # next sherpa-onnx callback return 0.
+            inner_close_hook = getattr(inner, "aclose", None)
+
+            async def _on_preempt() -> None:
+                if inner_close_hook is not None:
+                    try:
+                        await inner_close_hook()
+                    except Exception:
+                        pass
+
+            slot_obj.set_cancel(_on_preempt)
 
         engine_t0: Optional[float] = None
         engine_first_chunk_ms: Optional[float] = None
@@ -311,79 +403,92 @@ def _build_local_realtime_stream(
         sample_index = 0
         observed_chunks = 0
 
-        yield SpeechStreamStarted(
-            model=runtime_model,
-            voice=resolved_voice,
-            sample_rate=sample_rate,
-            channels=1,
-            sample_format=SAMPLE_FORMAT_PCM_S16LE,
-            streaming_capability=advertised,
-            locality="on_device",
-            engine="sherpa-onnx",
-        )
-
-        # Mark engine_t0 immediately AFTER Started is emitted — i.e.
-        # right before we start awaiting backend chunks. This is the
-        # boundary the engine's own TTFB should be measured from, so
-        # callers can attribute the SDK setup cost vs. the engine
-        # synthesis cost separately.
-        engine_t0 = time.monotonic()
         try:
-            async for raw in inner:
-                pcm: bytes = raw["pcm_s16le"]
-                n = int(raw.get("num_samples") or (len(pcm) // 2))
-                sample_index += n
-                if engine_first_chunk_ms is None:
-                    now = time.monotonic()
-                    engine_first_chunk_ms = (now - engine_t0) * 1000.0
-                    e2e_first_chunk_ms = (now - sdk_t0) * 1000.0
-                observed_chunks += 1
-                yield SpeechAudioChunk(
-                    data=pcm,
-                    sample_index=sample_index,
-                    timestamp_ms=int(round(1000 * sample_index / sample_rate)) if sample_rate else 0,
-                    is_final=False,
-                )
+            yield SpeechStreamStarted(
+                model=runtime_model,
+                voice=resolved_voice,
+                sample_rate=sample_rate,
+                channels=1,
+                sample_format=SAMPLE_FORMAT_PCM_S16LE,
+                streaming_capability=advertised,
+                locality="on_device",
+                engine="sherpa-onnx",
+                priority=priority_value,
+            )
+
+            # Mark engine_t0 immediately AFTER Started is emitted —
+            # i.e. right before we start awaiting backend chunks.
+            # This is the boundary the engine's own TTFB should be
+            # measured from, so callers can attribute the SDK setup
+            # cost vs. the engine synthesis cost separately.
+            engine_t0 = time.monotonic()
+            try:
+                async for raw in inner:
+                    pcm: bytes = raw["pcm_s16le"]
+                    n = int(raw.get("num_samples") or (len(pcm) // 2))
+                    sample_index += n
+                    if engine_first_chunk_ms is None:
+                        now = time.monotonic()
+                        engine_first_chunk_ms = (now - engine_t0) * 1000.0
+                        e2e_first_chunk_ms = (now - sdk_t0) * 1000.0
+                    observed_chunks += 1
+                    yield SpeechAudioChunk(
+                        data=pcm,
+                        sample_index=sample_index,
+                        timestamp_ms=int(round(1000 * sample_index / sample_rate)) if sample_rate else 0,
+                        is_final=False,
+                    )
+            finally:
+                inner_close = getattr(inner, "aclose", None)
+                if inner_close is not None:
+                    try:
+                        await inner_close()
+                    except Exception:
+                        pass
+
+            total_latency_ms = (time.monotonic() - sdk_t0) * 1000.0
+            duration_ms = int(round(1000 * sample_index / sample_rate)) if sample_rate else 0
+
+            # Verification: the advertised capability claims a cadence;
+            # confirm the actual run delivered it. ``sentence_chunk`` /
+            # ``progressive`` advertised + only one chunk observed
+            # downgrades to ``final_chunk`` with verified=False so
+            # callers know the engine over-promised on this input.
+            observed_capability = _verify_capability(advertised, observed_chunks=observed_chunks)
+
+            yield SpeechStreamCompleted(
+                duration_ms=duration_ms,
+                total_samples=sample_index,
+                sample_rate=sample_rate,
+                channels=1,
+                sample_format=SAMPLE_FORMAT_PCM_S16LE,
+                streaming_capability=observed_capability,
+                setup_ms=setup_ms,
+                engine_first_chunk_ms=engine_first_chunk_ms,
+                e2e_first_chunk_ms=e2e_first_chunk_ms,
+                total_latency_ms=total_latency_ms,
+                observed_chunks=observed_chunks,
+                capability_verified=observed_capability.verified,
+                queued_ms=queued_ms,
+                priority=priority_value,
+            )
         finally:
-            inner_close = getattr(inner, "aclose", None)
-            if inner_close is not None:
+            # Release the scheduler slot whether synthesis finished
+            # cleanly, raised, or was cancelled mid-iteration.
+            # ``slot_ctx`` may be None when the builder ran without a
+            # scheduler (unit tests).
+            if slot_ctx is not None:
                 try:
-                    await inner_close()
+                    await slot_ctx.__aexit__(None, None, None)
                 except Exception:
                     pass
 
-        total_latency_ms = (time.monotonic() - sdk_t0) * 1000.0
-        duration_ms = int(round(1000 * sample_index / sample_rate)) if sample_rate else 0
-
-        # Verification: the advertised capability claims a cadence;
-        # confirm the actual run delivered it. ``sentence_chunk`` /
-        # ``progressive`` advertised + only one chunk observed
-        # downgrades to ``final_chunk`` with verified=False so callers
-        # know the engine over-promised on this input.
-        observed_capability = _verify_capability(advertised, observed_chunks=observed_chunks)
-
-        yield SpeechStreamCompleted(
-            duration_ms=duration_ms,
-            total_samples=sample_index,
-            sample_rate=sample_rate,
-            channels=1,
-            sample_format=SAMPLE_FORMAT_PCM_S16LE,
-            streaming_capability=observed_capability,
-            setup_ms=setup_ms,
-            engine_first_chunk_ms=engine_first_chunk_ms,
-            e2e_first_chunk_ms=e2e_first_chunk_ms,
-            total_latency_ms=total_latency_ms,
-            observed_chunks=observed_chunks,
-            capability_verified=observed_capability.verified,
-        )
-
     async def _on_cancel() -> None:
-        inner_close = getattr(inner, "aclose", None)
-        if inner_close is not None:
-            try:
-                await inner_close()
-            except Exception:
-                pass
+        # SpeechStream.aclose -> _on_cancel: the producer's own
+        # finally block releases the scheduler slot AND closes the
+        # inner stream, so this hook only needs to handle the case
+        # where the consumer cancels before the producer started.
+        pass
 
     return SpeechStream(producer(), on_cancel=_on_cancel)
 
@@ -439,6 +544,7 @@ def _build_cloud_final_chunk_stream(
     policy_preset: Optional[str],
     fallback_used: bool,
     sdk_t0: float,
+    priority: Any = None,
 ) -> Any:
     """Wrap a non-streaming cloud TTS call as a single-chunk event stream.
 
@@ -448,6 +554,7 @@ def _build_cloud_final_chunk_stream(
     pcm_s16le`` parity with the local stream. Metrics measure from
     the SDK call boundary (``sdk_t0``).
     """
+    from octomil.audio.scheduler import coerce_priority
     from octomil.audio.streaming import (
         SAMPLE_FORMAT_PCM_S16LE,
         SpeechAudioChunk,
@@ -458,6 +565,7 @@ def _build_cloud_final_chunk_stream(
     )
 
     advertised = TtsStreamingCapability.final_only(verified=False)
+    priority_value = coerce_priority(priority).value if priority is not None else None
 
     async def producer():
         cloud_result = await kernel._cloud_synthesize_speech(cloud_model, text, voice, "wav", speed, profile)
@@ -491,6 +599,7 @@ def _build_cloud_final_chunk_stream(
             streaming_capability=advertised,
             locality="cloud",
             engine=None,
+            priority=priority_value,
         )
         e2e_first_chunk_ms: Optional[float] = None
         observed_chunks = 0
@@ -519,6 +628,8 @@ def _build_cloud_final_chunk_stream(
             total_latency_ms=total_latency_ms,
             observed_chunks=observed_chunks,
             capability_verified=observed_capability.verified,
+            queued_ms=0.0,  # cloud doesn't queue against the local backend
+            priority=priority_value,
         )
 
     return SpeechStream(producer())
@@ -585,6 +696,35 @@ class ExecutionKernel:
         # against the *current* planner selection. Reset by
         # ``release_warmed_backends`` (test helper).
         self._warmed_backends: dict[tuple, Any] = {}
+        # TTS scheduler — single instance per kernel covers every TTS
+        # backend behind it. Bounded concurrency = 1 per (model,
+        # backend) key; FOREGROUND > PREFETCH > SPECULATIVE
+        # priority. Default-priority FOREGROUND requests on an idle
+        # engine pay zero scheduling overhead (immediate-acquire
+        # fast path). Lazily constructed so non-TTS workloads don't
+        # pay the asyncio.Lock allocation cost.
+        self._tts_scheduler: Optional[Any] = None
+
+    @property
+    def tts_scheduler(self) -> Any:
+        """Return the kernel's :class:`TtsScheduler`, constructing it
+        lazily on first access. Public so tests and observability
+        tooling can read scheduler.stats; the kernel's own TTS code
+        uses it via this same property to keep the lazy construction
+        in one place.
+
+        Defensive against tests that bypass ``__init__`` (e.g. via
+        ``ExecutionKernel.__new__``): the attribute is created on
+        first access if it's missing entirely, not just if it's
+        ``None``.
+        """
+        scheduler = getattr(self, "_tts_scheduler", None)
+        if scheduler is None:
+            from octomil.audio.scheduler import TtsScheduler
+
+            scheduler = TtsScheduler()
+            self._tts_scheduler = scheduler
+        return scheduler
 
     @property
     def config_set(self) -> LoadedConfigSet:
@@ -1502,10 +1642,12 @@ class ExecutionKernel:
         model: str,
         input: str,
         voice: Optional[str] = None,
+        speaker: Optional[str] = None,
         response_format: str = "wav",
         speed: float = 1.0,
         app: Optional[str] = None,
         policy: Optional[str] = None,
+        priority: Any = None,
     ) -> Any:
         """Routed TTS synthesis. Returns a ``SpeechResponse``.
 
@@ -1714,9 +1856,23 @@ class ExecutionKernel:
                 ),
             )
 
+        from octomil.execution.tts_speaker_resolver import resolve_tts_speaker
+
+        resolved_speaker = resolve_tts_speaker(
+            speaker=speaker,
+            voice=voice,
+            selection=selection,
+            is_app_ref=app_scoped,
+            selected_candidate=local_candidate,
+        )
+        # The native_voice on the resolved profile is what voice
+        # validation checks against the engine's catalog. For pure
+        # reference-audio profiles (PocketTTS) ``native_voice`` is
+        # ``None`` and ``_validate_local_voice`` is a no-op — the
+        # backend's reference-validation path takes over later.
         self._validate_local_voice(
             runtime_model,
-            voice,
+            resolved_speaker.native_voice,
             selection=selection,
             prepared_cache_dir=prepared_cache_dir,
         )
@@ -1794,9 +1950,67 @@ class ExecutionKernel:
                 ),
             )
 
-        t0 = time.monotonic()
-        local_result = await asyncio.to_thread(backend.synthesize, input, voice, speed)
-        latency_ms = (time.monotonic() - t0) * 1000.0
+        # Scheduler slot acquisition.
+        #
+        # P1 fix — no priority claim for create().
+        #
+        # The non-streaming ``synthesize`` call runs as a single
+        # ``engine.generate()`` on a worker thread (asyncio.to_thread)
+        # with NO per-chunk callback, so there is no cooperative
+        # cancellation hook the scheduler could fire to preempt
+        # an in-flight create(). Previously create() acquired the
+        # slot at the caller-supplied priority; the scheduler's
+        # preemption check then refused to preempt because the
+        # slot had no cancel hook, but the in-flight SPECULATIVE
+        # / PREFETCH still held the slot — a FOREGROUND create()
+        # would queue behind it instead of jumping the queue.
+        #
+        # That's the worst of both worlds: priority looks like it
+        # matters but only at queue-ordering time, never at
+        # in-flight preemption time. Honest fix: claim FOREGROUND
+        # at the scheduler, regardless of caller-supplied priority.
+        # All create() calls now FIFO at the scheduler — two
+        # creates run in arrival order — and the caller-supplied
+        # ``priority`` kwarg becomes telemetry metadata only.
+        #
+        # Stream callers ARE preemptible (synthesize_stream uses
+        # the per-chunk callback path) and continue to honor the
+        # caller-supplied priority via ``slot.set_cancel``.
+        #
+        # Future work: a backend ``synthesize_with_cancel`` variant
+        # that flips a cancellation flag the worker thread checks
+        # between phonemizer / model-forward / vocoder steps would
+        # let create() honor priority again.
+        from octomil.audio.scheduler import TtsRequestPriority
+
+        # Acquire FOREGROUND regardless of the caller-supplied
+        # ``priority`` kwarg. create() honors priority at the API
+        # surface (the kwarg accepts SPECULATIVE/PREFETCH for
+        # symmetry with stream()), but the scheduler treats every
+        # create() as FOREGROUND because there is no way to
+        # actually preempt an in-flight create(). FIFO ordering at
+        # the scheduler is honest; per-priority ordering would
+        # imply preemption we can't deliver.
+        del priority  # documented telemetry kwarg only — see block above
+        scheduler_priority = TtsRequestPriority.FOREGROUND
+        scheduler_key = f"{runtime_model}:{id(backend)}"
+
+        async with await self.tts_scheduler.acquire(key=scheduler_key, priority=scheduler_priority) as slot:
+            t0 = time.monotonic()
+            # Backends that opt into speaker-aware synthesis accept
+            # ``speaker_profile=``; legacy backends ignore it and
+            # consume only ``voice``. Hand the engine the
+            # native_voice the resolver picked so the call site
+            # stays uniform across engine families.
+            local_result = await asyncio.to_thread(
+                _call_backend_synthesize,
+                backend,
+                input,
+                resolved_speaker,
+                speed,
+            )
+            latency_ms = (time.monotonic() - t0) * 1000.0
+            _ = slot  # acquired-slot lifetime is the synthesis call
 
         # Local execution: never write cloud_usage_logs / increment cloud quotas.
         # Route telemetry only.
@@ -1806,7 +2020,7 @@ class ExecutionKernel:
             format=local_result.get("format", "wav"),
             model=runtime_model,
             provider=None,
-            voice=voice or local_result.get("voice"),
+            voice=resolved_speaker.native_voice or local_result.get("voice"),
             sample_rate=local_result.get("sample_rate"),
             duration_ms=local_result.get("duration_ms"),
             latency_ms=latency_ms,
@@ -1822,6 +2036,13 @@ class ExecutionKernel:
         policy: Optional[str] = None,
         app: Optional[str] = None,
     ) -> Any:
+        # ``speaker=`` is intentionally NOT a parameter here:
+        # ``voices.list`` enumerates the catalog, it does not select
+        # an entry. Callers wanting to validate a speaker should
+        # check ``catalog.get(speaker_id)`` and inspect the returned
+        # :class:`VoiceInfo`. The closure-of-loop guarantee is that
+        # every ``id`` in the returned list is accepted by
+        # ``speech.create(speaker=id)`` / ``speech.stream(speaker=id)``.
         """Return the ordered voice catalog for ``model`` under the
         active routing policy.
 
@@ -1939,9 +2160,18 @@ class ExecutionKernel:
             )
 
         if locality == LOCALITY_ON_DEVICE:
+            from octomil.execution.tts_speaker_resolver import list_logical_speakers
+
             recipe = (
                 get_static_recipe(runtime_model.lower(), CAPABILITY_TTS) if is_sherpa_tts_model(runtime_model) else None
             )
+
+            # Logical speakers from the planner ride alongside the
+            # native catalog. For app refs whose planner publishes a
+            # speaker map, the catalog returned to ``voices.list``
+            # *prepends* logical speakers so the UI can list them as
+            # the canonical speaker ids.
+            logical_speakers = list_logical_speakers(selection, selected_candidate=local_candidate)
 
             # P1 fix: only feed the SDK's static recipe manifest to
             # the resolver when the static recipe IS the chosen
@@ -1998,14 +2228,60 @@ class ExecutionKernel:
             else:
                 effective_default = ""
 
-            voices = tuple(
+            native_source = resolved.source or ("static_recipe" if static_recipe_active else "planner_pending")
+            native_voices = tuple(
                 VoiceInfo(
                     id=name,
                     sid=idx,
                     default=bool(effective_default) and name.lower() == effective_default.lower(),
+                    source=native_source,
+                    speaker=None,
+                    native_voice=name,
+                    requires_reference=False,
                 )
                 for idx, name in enumerate(resolved.voices)
             )
+
+            # Logical speakers from the planner sit at the top of the
+            # catalog when present — they're the canonical caller-
+            # facing ids for app refs. Resolution rule from
+            # tts_speaker_resolver: a speaker with ``reference_audio``
+            # requires reference at synthesis time; one with only
+            # ``native_voice`` is a label alias for the underlying
+            # engine voice.
+            logical_voice_infos: list[VoiceInfo] = []
+            for entry in logical_speakers:
+                speaker_id = entry["speaker_id"]
+                native_voice = entry.get("native_voice")
+                # When a logical speaker maps to a native voice that's
+                # already in the catalog, surface the underlying sid so
+                # callers that want to skip the speaker indirection
+                # have it. Otherwise (pure reference-audio profile)
+                # ``sid`` stays ``None``.
+                sid = None
+                if native_voice:
+                    for idx, native_name in enumerate(resolved.voices):
+                        if native_name.lower() == native_voice.lower():
+                            sid = idx
+                            break
+                logical_voice_infos.append(
+                    VoiceInfo(
+                        id=speaker_id,
+                        sid=sid,
+                        default=False,
+                        source="planner_profile",
+                        speaker=speaker_id,
+                        native_voice=native_voice,
+                        requires_reference=bool(entry.get("reference_audio")),
+                        # Planner profiles can declare per-speaker
+                        # ``language``; thread it through to the
+                        # listing surface so UIs that filter by
+                        # language reflect the planner's data.
+                        language=entry.get("language"),
+                    )
+                )
+
+            voices: tuple[VoiceInfo, ...] = tuple(logical_voice_infos) + native_voices
 
             # Identity comes from the actually-chosen artifact, NOT
             # the static recipe, when those differ.
@@ -2021,10 +2297,19 @@ class ExecutionKernel:
 
             artifact_version = resolved.artifact_version or static_version or None
 
+            # Catalog source reflects what the *primary* entries are.
+            # When the planner publishes logical speakers and the
+            # native catalog is empty (e.g. PocketTTS bundle whose
+            # voice manifest is the speaker list itself), advertise
+            # ``planner_profile`` so the UI doesn't claim
+            # ``voices_txt`` or ``static_recipe`` provenance for
+            # entries that didn't come from there.
+            catalog_source = "planner_profile" if (logical_voice_infos and not native_voices) else native_source
+
             return VoiceCatalog(
                 model=runtime_model,
                 locality="on_device",
-                source=resolved.source or ("static_recipe" if static_recipe_active else "planner_pending"),
+                source=catalog_source,
                 voices=voices,
                 artifact_id=artifact_id,
                 artifact_version=artifact_version,
@@ -2057,11 +2342,13 @@ class ExecutionKernel:
         model: str,
         input: str,
         voice: Optional[str] = None,
+        speaker: Optional[str] = None,
         response_format: str = "pcm_s16le",
         speed: float = 1.0,
         app: Optional[str] = None,
         policy: Optional[str] = None,
         sdk_t0: Optional[float] = None,
+        priority: Any = None,
     ) -> Any:
         """Streaming TTS. Returns a :class:`SpeechStream`.
 
@@ -2181,17 +2468,30 @@ class ExecutionKernel:
                 app_scoped=app_scoped,
             )
 
-        # Voice validation must happen before any synthesis kicks off so
-        # the consumer never sees a SpeechStreamStarted for a voice the
-        # backend would reject. Mirrors the non-streaming path's
-        # signature: ``selection`` + ``prepared_cache_dir`` together
-        # tell the validator whether the request will run the static
-        # recipe (preflight enforces) or a planner-private artifact
-        # (defer to backend's voices.txt check post-prepare).
+        # Voice / speaker resolution and validation must happen before
+        # any synthesis kicks off so the consumer never sees a
+        # SpeechStreamStarted for an unsupported request. Mirrors the
+        # non-streaming path's signature: ``selection`` +
+        # ``prepared_cache_dir`` together tell the validator whether
+        # the request will run the static recipe (preflight enforces)
+        # or a planner-private artifact (defer to backend's voices.txt
+        # check post-prepare).
+        from octomil.execution.tts_speaker_resolver import resolve_tts_speaker
+
+        resolved_speaker = resolve_tts_speaker(
+            speaker=speaker,
+            voice=voice,
+            selection=selection,
+            is_app_ref=app_scoped,
+            selected_candidate=local_candidate,
+        )
         if locality == LOCALITY_ON_DEVICE:
+            # Pure reference-audio profiles (PocketTTS) leave
+            # ``native_voice`` ``None`` and skip the catalog check;
+            # the backend's reference-validation path enforces them.
             self._validate_local_voice(
                 runtime_model,
-                voice,
+                resolved_speaker.native_voice,
                 selection=selection,
                 prepared_cache_dir=prepared_cache_dir,
             )
@@ -2217,6 +2517,7 @@ class ExecutionKernel:
                 policy_preset=policy_preset,
                 fallback_used=is_fallback,
                 sdk_t0=sdk_t0,
+                priority=priority,
             )
 
         # Local realtime stream.
@@ -2253,11 +2554,14 @@ class ExecutionKernel:
             backend=backend,
             text=input,
             voice=voice,
+            resolved_speaker=resolved_speaker,
             speed=speed,
             runtime_model=runtime_model,
             policy_preset=policy_preset,
             fallback_used=is_fallback,
             sdk_t0=sdk_t0,
+            scheduler=self.tts_scheduler,
+            priority=priority,
         )
 
     async def _cloud_synthesize_speech(

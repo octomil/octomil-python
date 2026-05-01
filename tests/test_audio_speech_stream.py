@@ -1457,3 +1457,150 @@ def test_sherpa_streaming_capability_advertises_sentence_chunk_only_for_multi_se
     assert cap_multi.mode == TtsStreamingMode.SENTENCE_CHUNK
     assert cap_multi.granularity == TtsStreamingGranularity.SENTENCE
     assert cap_multi.verified is False
+
+
+@pytest.mark.asyncio
+async def test_pocket_missing_reference_raises_before_started_is_emitted():
+    """P1 regression — pre-fix, ``backend.synthesize_stream()`` was
+    an async generator, so Pocket's missing-reference validation
+    inside the generator body would only run when the consumer
+    started iterating. ``_build_local_realtime_stream`` would
+    yield ``SpeechStreamStarted`` first, so an invalid Pocket
+    speaker profile looked successfully started before failing.
+
+    Post-fix: backends expose ``validate_speaker_profile`` and the
+    builder calls it synchronously BEFORE constructing the
+    producer. A missing-reference profile raises during
+    ``_build_local_realtime_stream`` itself; the consumer never
+    receives a SpeechStream object that would emit Started."""
+    from octomil.errors import OctomilError, OctomilErrorCode
+
+    started_yielded = False
+
+    class _PocketStubBackend:
+        """Minimal Pocket-shaped backend whose
+        ``validate_speaker_profile`` raises for missing
+        reference_audio (mirrors the real engine)."""
+
+        _sample_rate = SAMPLE_RATE
+        _default_voice = ""
+        _model_name = "pocket-tts-int8"
+        supports_streaming = True
+
+        def validate_speaker_profile(self, speaker_profile):
+            if speaker_profile is None or not getattr(speaker_profile, "reference_audio", None):
+                raise OctomilError(
+                    code=OctomilErrorCode.INVALID_INPUT,
+                    message=(
+                        "speaker_profile_missing_reference: PocketTTS requires "
+                        "a planner-supplied speaker profile with reference_audio."
+                    ),
+                )
+
+        def validate_voice(self, voice):
+            return 0, ""
+
+        async def synthesize_stream(self, text, voice=None, speed=1.0, **kw):
+            nonlocal started_yielded
+            started_yielded = True
+            yield {"pcm_s16le": b"\x00\x00", "num_samples": 1, "sample_rate": SAMPLE_RATE}
+
+    from octomil.execution.kernel import _build_local_realtime_stream
+
+    backend = _PocketStubBackend()
+    # No speaker profile passed → Pocket validation must raise
+    # synchronously, before any SpeechStream is constructed.
+    with pytest.raises(OctomilError) as ei:
+        _build_local_realtime_stream(
+            backend=backend,
+            text="hello",
+            voice=None,
+            resolved_speaker=None,
+            speed=1.0,
+            runtime_model="pocket-tts-int8",
+            policy_preset="local_only",
+            fallback_used=False,
+            sdk_t0=time.monotonic(),
+        )
+    assert "speaker_profile_missing_reference" in str(ei.value)
+    # The async generator's body never ran.
+    assert started_yielded is False
+
+
+# ---------------------------------------------------------------------------
+# P1 regression — v4.13 stream API compatibility
+# ---------------------------------------------------------------------------
+
+
+def test_v4_13_streaming_mode_alias_keeps_working():
+    """v4.13 shipped the enum as ``StreamingMode``. Renaming to
+    ``TtsStreamingMode`` was correct, but ``from octomil.audio.streaming
+    import StreamingMode`` was already in customer code. The alias
+    must keep working through the deprecation window."""
+    from octomil.audio.streaming import StreamingMode, TtsStreamingMode
+
+    assert StreamingMode is TtsStreamingMode
+    assert StreamingMode.FINAL_CHUNK == TtsStreamingMode.FINAL_CHUNK
+    assert StreamingMode("sentence_chunk") is TtsStreamingMode.SENTENCE_CHUNK
+
+
+def test_v4_13_started_event_streaming_mode_property():
+    """v4.13 read ``started.streaming_mode`` directly. Post-rename
+    the canonical field is ``started.streaming_capability.mode``;
+    a read-only property forwards the v4.13 spelling so existing
+    code keeps working."""
+    from octomil.audio.streaming import (
+        SpeechStreamStarted,
+        TtsStreamingCapability,
+        TtsStreamingMode,
+    )
+
+    started = SpeechStreamStarted(
+        model="kokoro-82m",
+        voice="af_bella",
+        sample_rate=24000,
+        channels=1,
+        sample_format=SAMPLE_FORMAT_PCM_S16LE,
+        streaming_capability=TtsStreamingCapability.sentence(verified=True),
+        locality="on_device",
+    )
+    assert started.streaming_mode is TtsStreamingMode.SENTENCE_CHUNK
+    # Canonical field still reachable.
+    assert started.streaming_capability.mode is TtsStreamingMode.SENTENCE_CHUNK
+
+
+def test_v4_13_completed_event_compat_properties():
+    """v4.13 read ``completed.streaming_mode`` /
+    ``completed.latency_ms`` / ``completed.first_chunk_ms``.
+    Post-rename the canonical names are ``streaming_capability.mode``
+    / ``total_latency_ms`` / ``e2e_first_chunk_ms``; mapping
+    properties forward the v4.13 spelling so existing code reading
+    the old names keeps working."""
+    from octomil.audio.streaming import (
+        SpeechStreamCompleted,
+        TtsStreamingCapability,
+        TtsStreamingMode,
+    )
+
+    completed = SpeechStreamCompleted(
+        duration_ms=1000,
+        total_samples=24000,
+        sample_rate=24000,
+        channels=1,
+        sample_format=SAMPLE_FORMAT_PCM_S16LE,
+        streaming_capability=TtsStreamingCapability.final_only(verified=True),
+        setup_ms=12.0,
+        engine_first_chunk_ms=5.0,
+        e2e_first_chunk_ms=18.0,
+        total_latency_ms=950.0,
+        observed_chunks=1,
+        capability_verified=True,
+    )
+    # v4.13 compat surface.
+    assert completed.streaming_mode is TtsStreamingMode.FINAL_CHUNK
+    assert completed.latency_ms == 950.0
+    assert completed.first_chunk_ms == 18.0
+    # Canonical fields unchanged.
+    assert completed.streaming_capability.mode is TtsStreamingMode.FINAL_CHUNK
+    assert completed.total_latency_ms == 950.0
+    assert completed.e2e_first_chunk_ms == 18.0

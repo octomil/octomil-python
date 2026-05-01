@@ -27,16 +27,38 @@ from typing import Any, Optional
 class VoiceInfo:
     """A single entry in a TTS model's voice catalog.
 
-    ``sid`` is the sherpa-onnx speaker id for local artifacts;
-    ``None`` for hosted/cloud catalogs whose provider does not
-    expose an integer index. ``default`` flags the voice the
-    backend uses when ``synthesize_speech(voice=None)`` falls back
-    to the model default.
+    Two flavours of entry the catalog can carry:
+
+      * **Native voices** — entries pulled from the engine's own
+        catalog (Kokoro voices.txt, Piper voice manifest). ``sid``
+        is the sherpa-onnx speaker id; ``source="voices_txt"`` or
+        ``"static_recipe"``; ``speaker`` is ``None``.
+      * **Logical speakers** — entries materialized from the planner's
+        ``tts_speakers`` map for an app ref. ``speaker`` is the
+        logical id (``"madam_ambrose"``); ``native_voice`` is the
+        underlying engine voice when the planner mapped one;
+        ``requires_reference=True`` for few-shot voice-cloning
+        engines (PocketTTS) where the engine needs reference audio
+        rather than a sid. ``source="planner_profile"``.
+
+    ``sid`` is the sherpa-onnx speaker id for local native artifacts;
+    ``None`` for hosted/cloud catalogs and for logical speakers whose
+    runtime is a voice-cloning engine. ``default`` flags the voice
+    (or speaker) the backend uses when ``synthesize_speech(voice=None,
+    speaker=None)`` falls back to the model default.
+
+    The richer fields below are additive — older callers that read
+    only ``id`` / ``sid`` / ``default`` keep working.
     """
 
     id: str
     sid: Optional[int] = None
     default: bool = False
+    source: Optional[str] = None  # "voices_txt" | "static_recipe" | "planner_profile" | "hosted"
+    speaker: Optional[str] = None  # logical speaker id; None for native voices
+    native_voice: Optional[str] = None  # engine voice this speaker maps to (when applicable)
+    requires_reference: bool = False  # True when synthesis needs reference audio (Pocket etc.)
+    language: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -150,10 +172,12 @@ class FacadeSpeech:
         model: str,
         input: str,
         voice: Optional[str] = None,
+        speaker: Optional[str] = None,
         response_format: str = "pcm_s16le",
         speed: float = 1.0,
         policy: Optional[str] = None,
         app: Optional[str] = None,
+        priority: Any = None,
     ) -> Any:
         """Stream synthesized speech as typed events.
 
@@ -204,11 +228,13 @@ class FacadeSpeech:
                 model=model,
                 input=input,
                 voice=voice,
+                speaker=speaker,
                 response_format=response_format,
                 speed=speed,
                 policy=policy,
                 app=app,
                 sdk_t0=sdk_t0,
+                priority=priority,
             )
             async for event in inner:
                 yield event
@@ -223,10 +249,12 @@ class FacadeSpeech:
         model: str,
         input: str,
         voice: Optional[str] = None,
+        speaker: Optional[str] = None,
         response_format: str = "wav",
         speed: float = 1.0,
         policy: Optional[str] = None,
         app: Optional[str] = None,
+        priority: Any = None,
     ) -> SpeechResponse:
         """Synthesize speech from text.
 
@@ -257,10 +285,12 @@ class FacadeSpeech:
             model=model,
             input=input,
             voice=voice,
+            speaker=speaker,
             response_format=response_format,
             speed=speed,
             policy=policy,
             app=app,
+            priority=priority,
         )
 
 
