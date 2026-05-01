@@ -1950,35 +1950,52 @@ class ExecutionKernel:
                 ),
             )
 
-        # Scheduler slot acquisition. Bounded concurrency = 1 per
-        # ``(runtime_model, backend identity)``: a second create()
-        # arrival on the same backend queues behind this one. Fast-
-        # path callers (single foreground call on an idle engine)
-        # hit ``acquire`` and get the slot immediately with
-        # ``queued_ms == 0``.
+        # Scheduler slot acquisition.
         #
-        # IMPORTANT — preemption limitation. The scheduler can NOT
-        # preempt an in-flight create(): the synthesis call is a
-        # synchronous engine.generate() running on a worker thread
-        # (asyncio.to_thread), and sherpa-onnx's non-streaming
-        # generate has no per-chunk callback — there's no
-        # cooperative cancellation hook. If a FOREGROUND create()
-        # arrives while a SPECULATIVE create() is mid-synthesis,
-        # the FOREGROUND waits for the SPECULATIVE to finish.
-        # Stream callers DO get preemption because synthesize_stream
-        # uses the per-chunk callback path.
+        # P1 fix — no priority claim for create().
         #
-        # We deliberately do NOT call ``slot.set_cancel`` for
-        # create() — registering a no-op hook would let the
-        # scheduler claim it preempted the call, which it didn't.
-        # Future work: thread a cancellation flag into a backend
-        # ``synthesize_with_cancel`` variant.
-        from octomil.audio.scheduler import coerce_priority
+        # The non-streaming ``synthesize`` call runs as a single
+        # ``engine.generate()`` on a worker thread (asyncio.to_thread)
+        # with NO per-chunk callback, so there is no cooperative
+        # cancellation hook the scheduler could fire to preempt
+        # an in-flight create(). Previously create() acquired the
+        # slot at the caller-supplied priority; the scheduler's
+        # preemption check then refused to preempt because the
+        # slot had no cancel hook, but the in-flight SPECULATIVE
+        # / PREFETCH still held the slot — a FOREGROUND create()
+        # would queue behind it instead of jumping the queue.
+        #
+        # That's the worst of both worlds: priority looks like it
+        # matters but only at queue-ordering time, never at
+        # in-flight preemption time. Honest fix: claim FOREGROUND
+        # at the scheduler, regardless of caller-supplied priority.
+        # All create() calls now FIFO at the scheduler — two
+        # creates run in arrival order — and the caller-supplied
+        # ``priority`` kwarg becomes telemetry metadata only.
+        #
+        # Stream callers ARE preemptible (synthesize_stream uses
+        # the per-chunk callback path) and continue to honor the
+        # caller-supplied priority via ``slot.set_cancel``.
+        #
+        # Future work: a backend ``synthesize_with_cancel`` variant
+        # that flips a cancellation flag the worker thread checks
+        # between phonemizer / model-forward / vocoder steps would
+        # let create() honor priority again.
+        from octomil.audio.scheduler import TtsRequestPriority
 
-        coerced_priority = coerce_priority(priority)
+        # Acquire FOREGROUND regardless of the caller-supplied
+        # ``priority`` kwarg. create() honors priority at the API
+        # surface (the kwarg accepts SPECULATIVE/PREFETCH for
+        # symmetry with stream()), but the scheduler treats every
+        # create() as FOREGROUND because there is no way to
+        # actually preempt an in-flight create(). FIFO ordering at
+        # the scheduler is honest; per-priority ordering would
+        # imply preemption we can't deliver.
+        del priority  # documented telemetry kwarg only — see block above
+        scheduler_priority = TtsRequestPriority.FOREGROUND
         scheduler_key = f"{runtime_model}:{id(backend)}"
 
-        async with await self.tts_scheduler.acquire(key=scheduler_key, priority=coerced_priority) as slot:
+        async with await self.tts_scheduler.acquire(key=scheduler_key, priority=scheduler_priority) as slot:
             t0 = time.monotonic()
             # Backends that opt into speaker-aware synthesis accept
             # ``speaker_profile=``; legacy backends ignore it and

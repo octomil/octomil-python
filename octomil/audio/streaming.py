@@ -72,6 +72,19 @@ class TtsStreamingMode(str, Enum):
     PROGRESSIVE = "progressive"
 
 
+# v4.13 compatibility alias.
+#
+# v4.13 shipped this enum as ``StreamingMode``. Renaming it to
+# ``TtsStreamingMode`` was correct (the SDK's other audio-stream
+# types use the ``Tts`` prefix) but ``StreamingMode`` was already
+# imported by application code. Keep both names exported so
+# ``from octomil.audio.streaming import StreamingMode`` keeps
+# working through the deprecation window. Do NOT remove this
+# alias without bumping the SDK to a major version and recording
+# the removal in the migration guide.
+StreamingMode = TtsStreamingMode
+
+
 class TtsStreamingGranularity(str, Enum):
     """The smallest audio unit the engine commits to per chunk."""
 
@@ -150,6 +163,14 @@ class SpeechStreamStarted:
     request_id: Optional[str] = None
     priority: Optional[str] = None  # TtsRequestPriority.value
 
+    # v4.13 compatibility: applications that read
+    # ``event.streaming_mode`` (the v4.13 spelling) keep working.
+    # The canonical field is ``streaming_capability.mode``; this
+    # property just forwards the underlying enum.
+    @property
+    def streaming_mode(self) -> TtsStreamingMode:
+        return self.streaming_capability.mode
+
 
 @dataclass(frozen=True)
 class SpeechAudioChunk:
@@ -203,6 +224,32 @@ class SpeechStreamCompleted:
     # the headline metric. ``0.0`` for the no-contention fast path.
     queued_ms: float = 0.0
     priority: Optional[str] = None  # TtsRequestPriority.value
+
+    # v4.13 compatibility properties.
+    #
+    # v4.13 named the fields ``streaming_mode`` / ``latency_ms`` /
+    # ``first_chunk_ms``. Renaming was correct — the new names
+    # disambiguate which boundary each metric measures — but
+    # existing code reading the old names would break without
+    # mapping properties. These map onto the canonical fields:
+    #
+    #   - ``streaming_mode`` → ``streaming_capability.mode``
+    #   - ``latency_ms``     → ``total_latency_ms``
+    #   - ``first_chunk_ms`` → ``e2e_first_chunk_ms``
+    #
+    # Do NOT remove without bumping the SDK to a major version
+    # and recording the removal in the migration guide.
+    @property
+    def streaming_mode(self) -> TtsStreamingMode:
+        return self.streaming_capability.mode
+
+    @property
+    def latency_ms(self) -> float:
+        return self.total_latency_ms
+
+    @property
+    def first_chunk_ms(self) -> Optional[float]:
+        return self.e2e_first_chunk_ms
 
 
 @dataclass(frozen=True)
@@ -571,6 +618,7 @@ __all__ = [
     "SAMPLE_FORMAT_PCM_S16LE",
     "SUPPORTED_STREAM_FORMATS",
     "TtsStreamingMode",
+    "StreamingMode",  # v4.13 alias — see TtsStreamingMode docstring
     "TtsStreamingGranularity",
     "TtsStreamingCapability",
     "SpeechStreamStarted",
