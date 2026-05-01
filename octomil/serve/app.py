@@ -1161,9 +1161,10 @@ def create_app(
             {
               "model": "kokoro-82m",
               "input": "text to synthesize",
-              "voice": "af_bella",
+              "voice": "af_bella",            # native voice (back-compat)
+              "speaker": "madam_ambrose",    # logical speaker (preferred)
               "speed": 1.0,
-              "response_format": "pcm_s16le"   # only pcm_s16le today
+              "response_format": "pcm_s16le"  # only pcm_s16le today
             }
 
         Response headers::
@@ -1172,9 +1173,14 @@ def create_app(
             X-Octomil-Sample-Rate: 24000
             X-Octomil-Channels: 1
             X-Octomil-Sample-Format: pcm_s16le
-            X-Octomil-Streaming-Mode: realtime
+            X-Octomil-Streaming-Capability-Mode: sentence_chunk
             X-Octomil-Model: kokoro-82m
             X-Octomil-Voice: af_bella
+            X-Octomil-Speaker: madam_ambrose   # only when resolved
+            X-Octomil-Speaker-Source: planner_profile
+
+        Reference-audio file paths are NEVER exposed in headers, even
+        when the request resolved to a few-shot voice-cloning profile.
         """
         if state.sherpa_tts_backend is None:
             raise OctomilError(
@@ -1190,6 +1196,7 @@ def create_app(
             )
 
         voice = body.get("voice")
+        speaker = body.get("speaker")
         speed_raw = body.get("speed", 1.0)
         try:
             speed = float(speed_raw)
@@ -1235,17 +1242,28 @@ def create_app(
                 message="local_tts_streaming_unavailable: backend does not implement synthesize_stream.",
             )
 
-        # Pre-validate voice synchronously: if we let an unsupported
-        # explicit voice surface mid-stream, the binary client has
+        # Pre-validate the speaker / voice synchronously: if we let an
+        # unsupported request surface mid-stream, the binary client has
         # already received 200 application/octet-stream and lost the
-        # ability to render a structured 4xx. Run the same backend
-        # voice resolver the SDK uses; OctomilError raised here
-        # bubbles up through the route's exception handler as JSON.
+        # ability to render a structured 4xx. The serve layer runs the
+        # same speaker resolver the SDK kernel uses against an empty
+        # planner selection (the in-process server doesn't carry app
+        # context yet) — that's enough to honor speaker= as an alias
+        # for native voices on the loaded engine. OctomilError raised
+        # here bubbles up through the route's exception handler as JSON.
+        from octomil.execution.tts_speaker_resolver import resolve_tts_speaker
+
+        resolved_speaker = resolve_tts_speaker(
+            speaker=speaker,
+            voice=voice,
+            selection=None,
+            is_app_ref=False,
+        )
         validate_voice = getattr(backend, "validate_voice", None)
         if callable(validate_voice):
-            _sid_unused, resolved_voice = validate_voice(voice)
+            _sid_unused, resolved_voice = validate_voice(resolved_speaker.native_voice)
         else:
-            resolved_voice = voice or getattr(backend, "_default_voice", "") or ""
+            resolved_voice = resolved_speaker.native_voice or getattr(backend, "_default_voice", "") or ""
 
         # Honest streaming-mode header: advertise what the backend
         # actually claims for THIS input, not a static "realtime" lie.
@@ -1261,7 +1279,8 @@ def create_app(
         model_name = getattr(backend, "_model_name", "") or ""
 
         async def chunk_iter() -> Any:
-            inner = backend.synthesize_stream(text, voice, speed)
+            extra = {"speaker_profile": resolved_speaker} if getattr(backend, "accepts_speaker_profile", False) else {}
+            inner = backend.synthesize_stream(text, resolved_speaker.native_voice, speed, **extra)
             try:
                 async for raw in inner:
                     pcm: bytes = raw["pcm_s16le"]
@@ -1275,35 +1294,48 @@ def create_app(
                     except Exception:
                         pass
 
+        # Speaker / source headers are only set when there's something
+        # meaningful to publish — avoids a meaningless
+        # ``X-Octomil-Speaker:`` empty-value header for callers using
+        # ``voice=`` only. Reference-audio paths are NEVER published.
+        headers = {
+            "X-Octomil-Sample-Rate": str(sample_rate),
+            "X-Octomil-Channels": "1",
+            "X-Octomil-Sample-Format": SAMPLE_FORMAT_PCM_S16LE,
+            # Replaces the legacy X-Octomil-Streaming-Mode header.
+            # Values: final_chunk | sentence_chunk | progressive.
+            "X-Octomil-Streaming-Capability-Mode": advertised_mode,
+            "X-Octomil-Model": str(model_name),
+            "X-Octomil-Voice": str(resolved_voice),
+            "X-Octomil-Speaker-Source": resolved_speaker.source,
+        }
+        if resolved_speaker.speaker:
+            headers["X-Octomil-Speaker"] = resolved_speaker.speaker
+
         return StreamingResponse(
             chunk_iter(),
             media_type="application/octet-stream",
-            headers={
-                "X-Octomil-Sample-Rate": str(sample_rate),
-                "X-Octomil-Channels": "1",
-                "X-Octomil-Sample-Format": SAMPLE_FORMAT_PCM_S16LE,
-                # Replaces the legacy X-Octomil-Streaming-Mode header.
-                # Values: final_chunk | sentence_chunk | progressive.
-                "X-Octomil-Streaming-Capability-Mode": advertised_mode,
-                "X-Octomil-Model": str(model_name),
-                "X-Octomil-Voice": str(resolved_voice),
-            },
+            headers=headers,
         )
 
     @app.post("/v1/audio/speech")
     async def synthesize_speech(body: dict[str, Any]) -> Any:
         """OpenAI ``audio.speech.create``-compatible synthesis endpoint.
 
-        Body shape (subset of OpenAI):
+        Body shape (subset of OpenAI + ``speaker``):
             {
               "model": "kokoro-82m",
               "input": "text to synthesize",
-              "voice": "af_bella",
-              "response_format": "wav",   # only wav today
+              "voice": "af_bella",            # native voice (back-compat)
+              "speaker": "madam_ambrose",    # logical speaker (preferred)
+              "response_format": "wav",       # only wav today
               "speed": 1.0
             }
 
         Returns raw audio bytes with the correct ``Content-Type``.
+        Resolved speaker / source are surfaced in ``X-Octomil-Speaker``
+        / ``X-Octomil-Speaker-Source`` when applicable; reference-audio
+        file paths are NEVER published.
         """
         from fastapi.responses import Response
 
@@ -1321,6 +1353,7 @@ def create_app(
             )
 
         voice = body.get("voice")
+        speaker = body.get("speaker")
         speed_raw = body.get("speed", 1.0)
         try:
             speed = float(speed_raw)
@@ -1337,17 +1370,39 @@ def create_app(
                 message=f"Unsupported response_format '{response_format}'. Only 'wav' is supported by the local sherpa-onnx engine.",
             )
 
+        # Same resolver the streaming route uses — speaker= takes
+        # precedence; voice= remains for back-compat.
+        from octomil.execution.tts_speaker_resolver import resolve_tts_speaker
+
+        resolved_speaker = resolve_tts_speaker(
+            speaker=speaker,
+            voice=voice,
+            selection=None,
+            is_app_ref=False,
+        )
+        backend = state.sherpa_tts_backend
+        extra = {"speaker_profile": resolved_speaker} if getattr(backend, "accepts_speaker_profile", False) else {}
+
         state.request_count += 1
-        result: dict[str, Any] = state.sherpa_tts_backend.synthesize(text, voice=voice, speed=speed)
+        result: dict[str, Any] = backend.synthesize(
+            text,
+            voice=resolved_speaker.native_voice,
+            speed=speed,
+            **extra,
+        )
+        headers = {
+            "X-Octomil-Sample-Rate": str(result["sample_rate"]),
+            "X-Octomil-Duration-Ms": str(result["duration_ms"]),
+            "X-Octomil-Voice": str(result.get("voice") or ""),
+            "X-Octomil-Model": str(result.get("model") or ""),
+            "X-Octomil-Speaker-Source": resolved_speaker.source,
+        }
+        if resolved_speaker.speaker:
+            headers["X-Octomil-Speaker"] = resolved_speaker.speaker
         return Response(
             content=result["audio_bytes"],
             media_type=result["content_type"],
-            headers={
-                "X-Octomil-Sample-Rate": str(result["sample_rate"]),
-                "X-Octomil-Duration-Ms": str(result["duration_ms"]),
-                "X-Octomil-Voice": str(result.get("voice") or ""),
-                "X-Octomil-Model": str(result.get("model") or ""),
-            },
+            headers=headers,
         )
 
     # Anthropic Messages API translation layer

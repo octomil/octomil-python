@@ -247,11 +247,44 @@ def _internal_locality_for_attempt(attempt: Any) -> str:
 # ---------------------------------------------------------------------------
 
 
+def _backend_synthesize_kwargs(backend: Any, resolved_speaker: Any) -> dict[str, Any]:
+    """Engine-facing kwargs derived from a :class:`ResolvedTtsSpeaker`.
+
+    Backends that opt into speaker-aware synthesis declare a
+    ``speaker_kwargs`` attribute or accept ``speaker_profile=``. We
+    detect that by inspection so the call site can stay uniform across
+    engine families: legacy Kokoro/Piper consume only ``voice``, while
+    Pocket consumes ``speaker_profile``.
+    """
+    accepts_speaker = bool(getattr(backend, "accepts_speaker_profile", False))
+    if accepts_speaker and resolved_speaker is not None:
+        return {"speaker_profile": resolved_speaker}
+    return {}
+
+
+def _call_backend_synthesize(
+    backend: Any,
+    text: str,
+    resolved_speaker: Any,
+    speed: float,
+) -> dict[str, Any]:
+    """Synchronous bridge to ``backend.synthesize`` that respects the resolver.
+
+    Used by ``synthesize_speech`` under ``asyncio.to_thread``. Pulls the
+    native voice off the resolved profile and adds ``speaker_profile``
+    when the backend opts in. Keeps the kernel call site terse.
+    """
+    voice = resolved_speaker.native_voice if resolved_speaker is not None else None
+    extra = _backend_synthesize_kwargs(backend, resolved_speaker)
+    return backend.synthesize(text, voice, speed, **extra)
+
+
 def _build_local_realtime_stream(
     *,
     backend: Any,
     text: str,
-    voice: Optional[str],
+    voice: Optional[str] = None,
+    resolved_speaker: Any = None,
     speed: float,
     runtime_model: str,
     policy_preset: Optional[str],
@@ -281,11 +314,19 @@ def _build_local_realtime_stream(
     # error. Backends without validate_voice (test fakes) fall back to
     # advisory metadata only.
     sample_rate = int(getattr(backend, "_sample_rate", 24000) or 24000)
+    # Effective voice the backend should use for native-voice
+    # validation. Prefer the resolver's native_voice when supplied
+    # (covers logical-speaker -> native_voice planner mappings) and
+    # fall back to the legacy ``voice=`` kwarg for callers that
+    # haven't migrated.
+    effective_voice = (
+        getattr(resolved_speaker, "native_voice", None) if resolved_speaker is not None else None
+    ) or voice
     validate_voice = getattr(backend, "validate_voice", None)
     if callable(validate_voice):
-        _sid_unused, resolved_voice = validate_voice(voice)
+        _sid_unused, resolved_voice = validate_voice(effective_voice)
     else:
-        resolved_voice = (voice or getattr(backend, "_default_voice", "") or None) or None
+        resolved_voice = (effective_voice or getattr(backend, "_default_voice", "") or None) or None
 
     # Honest capability advertisement: ask the backend what it will
     # actually do for THIS input. Backends without
@@ -297,7 +338,8 @@ def _build_local_realtime_stream(
     else:
         advertised = TtsStreamingCapability.final_only(verified=False)
 
-    inner = backend.synthesize_stream(text, voice, speed)
+    extra_kwargs = _backend_synthesize_kwargs(backend, resolved_speaker)
+    inner = backend.synthesize_stream(text, effective_voice, speed, **extra_kwargs)
 
     async def producer():
         # Setup window: SDK call entry -> SpeechStreamStarted emitted.
@@ -1502,6 +1544,7 @@ class ExecutionKernel:
         model: str,
         input: str,
         voice: Optional[str] = None,
+        speaker: Optional[str] = None,
         response_format: str = "wav",
         speed: float = 1.0,
         app: Optional[str] = None,
@@ -1714,9 +1757,22 @@ class ExecutionKernel:
                 ),
             )
 
+        from octomil.execution.tts_speaker_resolver import resolve_tts_speaker
+
+        resolved_speaker = resolve_tts_speaker(
+            speaker=speaker,
+            voice=voice,
+            selection=selection,
+            is_app_ref=app_scoped,
+        )
+        # The native_voice on the resolved profile is what voice
+        # validation checks against the engine's catalog. For pure
+        # reference-audio profiles (PocketTTS) ``native_voice`` is
+        # ``None`` and ``_validate_local_voice`` is a no-op — the
+        # backend's reference-validation path takes over later.
         self._validate_local_voice(
             runtime_model,
-            voice,
+            resolved_speaker.native_voice,
             selection=selection,
             prepared_cache_dir=prepared_cache_dir,
         )
@@ -1795,7 +1851,18 @@ class ExecutionKernel:
             )
 
         t0 = time.monotonic()
-        local_result = await asyncio.to_thread(backend.synthesize, input, voice, speed)
+        # Backends that opt into speaker-aware synthesis accept a
+        # ``speaker_profile=`` kwarg; legacy backends (Kokoro pre-Pocket)
+        # ignore it and consume only ``voice``. Hand the engine the
+        # native_voice the resolver picked so the call site stays
+        # uniform across engine families.
+        local_result = await asyncio.to_thread(
+            _call_backend_synthesize,
+            backend,
+            input,
+            resolved_speaker,
+            speed,
+        )
         latency_ms = (time.monotonic() - t0) * 1000.0
 
         # Local execution: never write cloud_usage_logs / increment cloud quotas.
@@ -1806,7 +1873,7 @@ class ExecutionKernel:
             format=local_result.get("format", "wav"),
             model=runtime_model,
             provider=None,
-            voice=voice or local_result.get("voice"),
+            voice=resolved_speaker.native_voice or local_result.get("voice"),
             sample_rate=local_result.get("sample_rate"),
             duration_ms=local_result.get("duration_ms"),
             latency_ms=latency_ms,
@@ -1822,6 +1889,13 @@ class ExecutionKernel:
         policy: Optional[str] = None,
         app: Optional[str] = None,
     ) -> Any:
+        # ``speaker=`` is intentionally NOT a parameter here:
+        # ``voices.list`` enumerates the catalog, it does not select
+        # an entry. Callers wanting to validate a speaker should
+        # check ``catalog.get(speaker_id)`` and inspect the returned
+        # :class:`VoiceInfo`. The closure-of-loop guarantee is that
+        # every ``id`` in the returned list is accepted by
+        # ``speech.create(speaker=id)`` / ``speech.stream(speaker=id)``.
         """Return the ordered voice catalog for ``model`` under the
         active routing policy.
 
@@ -1939,9 +2013,18 @@ class ExecutionKernel:
             )
 
         if locality == LOCALITY_ON_DEVICE:
+            from octomil.execution.tts_speaker_resolver import list_logical_speakers
+
             recipe = (
                 get_static_recipe(runtime_model.lower(), CAPABILITY_TTS) if is_sherpa_tts_model(runtime_model) else None
             )
+
+            # Logical speakers from the planner ride alongside the
+            # native catalog. For app refs whose planner publishes a
+            # speaker map, the catalog returned to ``voices.list``
+            # *prepends* logical speakers so the UI can list them as
+            # the canonical speaker ids.
+            logical_speakers = list_logical_speakers(selection)
 
             # P1 fix: only feed the SDK's static recipe manifest to
             # the resolver when the static recipe IS the chosen
@@ -1998,14 +2081,55 @@ class ExecutionKernel:
             else:
                 effective_default = ""
 
-            voices = tuple(
+            native_source = resolved.source or ("static_recipe" if static_recipe_active else "planner_pending")
+            native_voices = tuple(
                 VoiceInfo(
                     id=name,
                     sid=idx,
                     default=bool(effective_default) and name.lower() == effective_default.lower(),
+                    source=native_source,
+                    speaker=None,
+                    native_voice=name,
+                    requires_reference=False,
                 )
                 for idx, name in enumerate(resolved.voices)
             )
+
+            # Logical speakers from the planner sit at the top of the
+            # catalog when present — they're the canonical caller-
+            # facing ids for app refs. Resolution rule from
+            # tts_speaker_resolver: a speaker with ``reference_audio``
+            # requires reference at synthesis time; one with only
+            # ``native_voice`` is a label alias for the underlying
+            # engine voice.
+            logical_voice_infos: list[VoiceInfo] = []
+            for entry in logical_speakers:
+                speaker_id = entry["speaker_id"]
+                native_voice = entry.get("native_voice")
+                # When a logical speaker maps to a native voice that's
+                # already in the catalog, surface the underlying sid so
+                # callers that want to skip the speaker indirection
+                # have it. Otherwise (pure reference-audio profile)
+                # ``sid`` stays ``None``.
+                sid = None
+                if native_voice:
+                    for idx, native_name in enumerate(resolved.voices):
+                        if native_name.lower() == native_voice.lower():
+                            sid = idx
+                            break
+                logical_voice_infos.append(
+                    VoiceInfo(
+                        id=speaker_id,
+                        sid=sid,
+                        default=False,
+                        source="planner_profile",
+                        speaker=speaker_id,
+                        native_voice=native_voice,
+                        requires_reference=bool(entry.get("reference_audio")),
+                    )
+                )
+
+            voices: tuple[VoiceInfo, ...] = tuple(logical_voice_infos) + native_voices
 
             # Identity comes from the actually-chosen artifact, NOT
             # the static recipe, when those differ.
@@ -2021,10 +2145,19 @@ class ExecutionKernel:
 
             artifact_version = resolved.artifact_version or static_version or None
 
+            # Catalog source reflects what the *primary* entries are.
+            # When the planner publishes logical speakers and the
+            # native catalog is empty (e.g. PocketTTS bundle whose
+            # voice manifest is the speaker list itself), advertise
+            # ``planner_profile`` so the UI doesn't claim
+            # ``voices_txt`` or ``static_recipe`` provenance for
+            # entries that didn't come from there.
+            catalog_source = "planner_profile" if (logical_voice_infos and not native_voices) else native_source
+
             return VoiceCatalog(
                 model=runtime_model,
                 locality="on_device",
-                source=resolved.source or ("static_recipe" if static_recipe_active else "planner_pending"),
+                source=catalog_source,
                 voices=voices,
                 artifact_id=artifact_id,
                 artifact_version=artifact_version,
@@ -2057,6 +2190,7 @@ class ExecutionKernel:
         model: str,
         input: str,
         voice: Optional[str] = None,
+        speaker: Optional[str] = None,
         response_format: str = "pcm_s16le",
         speed: float = 1.0,
         app: Optional[str] = None,
@@ -2181,17 +2315,29 @@ class ExecutionKernel:
                 app_scoped=app_scoped,
             )
 
-        # Voice validation must happen before any synthesis kicks off so
-        # the consumer never sees a SpeechStreamStarted for a voice the
-        # backend would reject. Mirrors the non-streaming path's
-        # signature: ``selection`` + ``prepared_cache_dir`` together
-        # tell the validator whether the request will run the static
-        # recipe (preflight enforces) or a planner-private artifact
-        # (defer to backend's voices.txt check post-prepare).
+        # Voice / speaker resolution and validation must happen before
+        # any synthesis kicks off so the consumer never sees a
+        # SpeechStreamStarted for an unsupported request. Mirrors the
+        # non-streaming path's signature: ``selection`` +
+        # ``prepared_cache_dir`` together tell the validator whether
+        # the request will run the static recipe (preflight enforces)
+        # or a planner-private artifact (defer to backend's voices.txt
+        # check post-prepare).
+        from octomil.execution.tts_speaker_resolver import resolve_tts_speaker
+
+        resolved_speaker = resolve_tts_speaker(
+            speaker=speaker,
+            voice=voice,
+            selection=selection,
+            is_app_ref=app_scoped,
+        )
         if locality == LOCALITY_ON_DEVICE:
+            # Pure reference-audio profiles (PocketTTS) leave
+            # ``native_voice`` ``None`` and skip the catalog check;
+            # the backend's reference-validation path enforces them.
             self._validate_local_voice(
                 runtime_model,
-                voice,
+                resolved_speaker.native_voice,
                 selection=selection,
                 prepared_cache_dir=prepared_cache_dir,
             )
@@ -2253,6 +2399,7 @@ class ExecutionKernel:
             backend=backend,
             text=input,
             voice=voice,
+            resolved_speaker=resolved_speaker,
             speed=speed,
             runtime_model=runtime_model,
             policy_preset=policy_preset,
