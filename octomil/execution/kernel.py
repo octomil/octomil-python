@@ -290,6 +290,8 @@ def _build_local_realtime_stream(
     policy_preset: Optional[str],
     fallback_used: bool,
     sdk_t0: float,
+    scheduler: Any = None,
+    priority: Any = None,
 ) -> Any:
     """Wrap a backend's ``synthesize_stream`` in a typed event stream.
 
@@ -339,13 +341,52 @@ def _build_local_realtime_stream(
         advertised = TtsStreamingCapability.final_only(verified=False)
 
     extra_kwargs = _backend_synthesize_kwargs(backend, resolved_speaker)
-    inner = backend.synthesize_stream(text, effective_voice, speed, **extra_kwargs)
+
+    # Scheduler integration is opt-in at the builder level — when
+    # ``scheduler`` is supplied, the producer acquires a slot before
+    # invoking the backend. Tests that exercise the producer in
+    # isolation pass ``scheduler=None`` and skip the scheduling layer.
+    from octomil.audio.scheduler import coerce_priority
+
+    coerced_priority = coerce_priority(priority)
+    priority_value = coerced_priority.value if coerced_priority is not None else None
 
     async def producer():
+        nonlocal effective_voice  # captured for scope clarity below
+        slot_ctx: Any = None
+        slot_obj: Any = None
+        queued_ms = 0.0
+        if scheduler is not None:
+            scheduler_key = f"{runtime_model}:{id(backend)}"
+            slot_ctx = await scheduler.acquire(key=scheduler_key, priority=coerced_priority)
+            slot_obj = await slot_ctx.__aenter__()
+            queued_ms = slot_ctx.queued_ms
+
         # Setup window: SDK call entry -> SpeechStreamStarted emitted.
         # Includes routing, voice validation, backend acquisition, and
-        # any future scheduler-queue time.
+        # scheduler queue time. ``queued_ms`` is split out separately
+        # on the completion event so callers can attribute the wait.
         setup_ms = (time.monotonic() - sdk_t0) * 1000.0
+
+        # Backend dispatch happens AFTER slot acquisition so two
+        # racing requests can't both call synthesize_stream and
+        # crash the ONNX session. Errors here propagate via the
+        # finally block which releases the slot.
+        inner = backend.synthesize_stream(text, effective_voice, speed, **extra_kwargs)
+        if slot_obj is not None:
+            # Register cooperative-cancellation hook so a higher-
+            # priority arrival can flip the cancel flag and have the
+            # next sherpa-onnx callback return 0.
+            inner_close_hook = getattr(inner, "aclose", None)
+
+            async def _on_preempt() -> None:
+                if inner_close_hook is not None:
+                    try:
+                        await inner_close_hook()
+                    except Exception:
+                        pass
+
+            slot_obj.set_cancel(_on_preempt)
 
         engine_t0: Optional[float] = None
         engine_first_chunk_ms: Optional[float] = None
@@ -353,79 +394,92 @@ def _build_local_realtime_stream(
         sample_index = 0
         observed_chunks = 0
 
-        yield SpeechStreamStarted(
-            model=runtime_model,
-            voice=resolved_voice,
-            sample_rate=sample_rate,
-            channels=1,
-            sample_format=SAMPLE_FORMAT_PCM_S16LE,
-            streaming_capability=advertised,
-            locality="on_device",
-            engine="sherpa-onnx",
-        )
-
-        # Mark engine_t0 immediately AFTER Started is emitted — i.e.
-        # right before we start awaiting backend chunks. This is the
-        # boundary the engine's own TTFB should be measured from, so
-        # callers can attribute the SDK setup cost vs. the engine
-        # synthesis cost separately.
-        engine_t0 = time.monotonic()
         try:
-            async for raw in inner:
-                pcm: bytes = raw["pcm_s16le"]
-                n = int(raw.get("num_samples") or (len(pcm) // 2))
-                sample_index += n
-                if engine_first_chunk_ms is None:
-                    now = time.monotonic()
-                    engine_first_chunk_ms = (now - engine_t0) * 1000.0
-                    e2e_first_chunk_ms = (now - sdk_t0) * 1000.0
-                observed_chunks += 1
-                yield SpeechAudioChunk(
-                    data=pcm,
-                    sample_index=sample_index,
-                    timestamp_ms=int(round(1000 * sample_index / sample_rate)) if sample_rate else 0,
-                    is_final=False,
-                )
+            yield SpeechStreamStarted(
+                model=runtime_model,
+                voice=resolved_voice,
+                sample_rate=sample_rate,
+                channels=1,
+                sample_format=SAMPLE_FORMAT_PCM_S16LE,
+                streaming_capability=advertised,
+                locality="on_device",
+                engine="sherpa-onnx",
+                priority=priority_value,
+            )
+
+            # Mark engine_t0 immediately AFTER Started is emitted —
+            # i.e. right before we start awaiting backend chunks.
+            # This is the boundary the engine's own TTFB should be
+            # measured from, so callers can attribute the SDK setup
+            # cost vs. the engine synthesis cost separately.
+            engine_t0 = time.monotonic()
+            try:
+                async for raw in inner:
+                    pcm: bytes = raw["pcm_s16le"]
+                    n = int(raw.get("num_samples") or (len(pcm) // 2))
+                    sample_index += n
+                    if engine_first_chunk_ms is None:
+                        now = time.monotonic()
+                        engine_first_chunk_ms = (now - engine_t0) * 1000.0
+                        e2e_first_chunk_ms = (now - sdk_t0) * 1000.0
+                    observed_chunks += 1
+                    yield SpeechAudioChunk(
+                        data=pcm,
+                        sample_index=sample_index,
+                        timestamp_ms=int(round(1000 * sample_index / sample_rate)) if sample_rate else 0,
+                        is_final=False,
+                    )
+            finally:
+                inner_close = getattr(inner, "aclose", None)
+                if inner_close is not None:
+                    try:
+                        await inner_close()
+                    except Exception:
+                        pass
+
+            total_latency_ms = (time.monotonic() - sdk_t0) * 1000.0
+            duration_ms = int(round(1000 * sample_index / sample_rate)) if sample_rate else 0
+
+            # Verification: the advertised capability claims a cadence;
+            # confirm the actual run delivered it. ``sentence_chunk`` /
+            # ``progressive`` advertised + only one chunk observed
+            # downgrades to ``final_chunk`` with verified=False so
+            # callers know the engine over-promised on this input.
+            observed_capability = _verify_capability(advertised, observed_chunks=observed_chunks)
+
+            yield SpeechStreamCompleted(
+                duration_ms=duration_ms,
+                total_samples=sample_index,
+                sample_rate=sample_rate,
+                channels=1,
+                sample_format=SAMPLE_FORMAT_PCM_S16LE,
+                streaming_capability=observed_capability,
+                setup_ms=setup_ms,
+                engine_first_chunk_ms=engine_first_chunk_ms,
+                e2e_first_chunk_ms=e2e_first_chunk_ms,
+                total_latency_ms=total_latency_ms,
+                observed_chunks=observed_chunks,
+                capability_verified=observed_capability.verified,
+                queued_ms=queued_ms,
+                priority=priority_value,
+            )
         finally:
-            inner_close = getattr(inner, "aclose", None)
-            if inner_close is not None:
+            # Release the scheduler slot whether synthesis finished
+            # cleanly, raised, or was cancelled mid-iteration.
+            # ``slot_ctx`` may be None when the builder ran without a
+            # scheduler (unit tests).
+            if slot_ctx is not None:
                 try:
-                    await inner_close()
+                    await slot_ctx.__aexit__(None, None, None)
                 except Exception:
                     pass
 
-        total_latency_ms = (time.monotonic() - sdk_t0) * 1000.0
-        duration_ms = int(round(1000 * sample_index / sample_rate)) if sample_rate else 0
-
-        # Verification: the advertised capability claims a cadence;
-        # confirm the actual run delivered it. ``sentence_chunk`` /
-        # ``progressive`` advertised + only one chunk observed
-        # downgrades to ``final_chunk`` with verified=False so callers
-        # know the engine over-promised on this input.
-        observed_capability = _verify_capability(advertised, observed_chunks=observed_chunks)
-
-        yield SpeechStreamCompleted(
-            duration_ms=duration_ms,
-            total_samples=sample_index,
-            sample_rate=sample_rate,
-            channels=1,
-            sample_format=SAMPLE_FORMAT_PCM_S16LE,
-            streaming_capability=observed_capability,
-            setup_ms=setup_ms,
-            engine_first_chunk_ms=engine_first_chunk_ms,
-            e2e_first_chunk_ms=e2e_first_chunk_ms,
-            total_latency_ms=total_latency_ms,
-            observed_chunks=observed_chunks,
-            capability_verified=observed_capability.verified,
-        )
-
     async def _on_cancel() -> None:
-        inner_close = getattr(inner, "aclose", None)
-        if inner_close is not None:
-            try:
-                await inner_close()
-            except Exception:
-                pass
+        # SpeechStream.aclose -> _on_cancel: the producer's own
+        # finally block releases the scheduler slot AND closes the
+        # inner stream, so this hook only needs to handle the case
+        # where the consumer cancels before the producer started.
+        pass
 
     return SpeechStream(producer(), on_cancel=_on_cancel)
 
@@ -481,6 +535,7 @@ def _build_cloud_final_chunk_stream(
     policy_preset: Optional[str],
     fallback_used: bool,
     sdk_t0: float,
+    priority: Any = None,
 ) -> Any:
     """Wrap a non-streaming cloud TTS call as a single-chunk event stream.
 
@@ -490,6 +545,7 @@ def _build_cloud_final_chunk_stream(
     pcm_s16le`` parity with the local stream. Metrics measure from
     the SDK call boundary (``sdk_t0``).
     """
+    from octomil.audio.scheduler import coerce_priority
     from octomil.audio.streaming import (
         SAMPLE_FORMAT_PCM_S16LE,
         SpeechAudioChunk,
@@ -500,6 +556,7 @@ def _build_cloud_final_chunk_stream(
     )
 
     advertised = TtsStreamingCapability.final_only(verified=False)
+    priority_value = coerce_priority(priority).value if priority is not None else None
 
     async def producer():
         cloud_result = await kernel._cloud_synthesize_speech(cloud_model, text, voice, "wav", speed, profile)
@@ -533,6 +590,7 @@ def _build_cloud_final_chunk_stream(
             streaming_capability=advertised,
             locality="cloud",
             engine=None,
+            priority=priority_value,
         )
         e2e_first_chunk_ms: Optional[float] = None
         observed_chunks = 0
@@ -561,6 +619,8 @@ def _build_cloud_final_chunk_stream(
             total_latency_ms=total_latency_ms,
             observed_chunks=observed_chunks,
             capability_verified=observed_capability.verified,
+            queued_ms=0.0,  # cloud doesn't queue against the local backend
+            priority=priority_value,
         )
 
     return SpeechStream(producer())
@@ -627,6 +687,35 @@ class ExecutionKernel:
         # against the *current* planner selection. Reset by
         # ``release_warmed_backends`` (test helper).
         self._warmed_backends: dict[tuple, Any] = {}
+        # TTS scheduler — single instance per kernel covers every TTS
+        # backend behind it. Bounded concurrency = 1 per (model,
+        # backend) key; FOREGROUND > PREFETCH > SPECULATIVE
+        # priority. Default-priority FOREGROUND requests on an idle
+        # engine pay zero scheduling overhead (immediate-acquire
+        # fast path). Lazily constructed so non-TTS workloads don't
+        # pay the asyncio.Lock allocation cost.
+        self._tts_scheduler: Optional[Any] = None
+
+    @property
+    def tts_scheduler(self) -> Any:
+        """Return the kernel's :class:`TtsScheduler`, constructing it
+        lazily on first access. Public so tests and observability
+        tooling can read scheduler.stats; the kernel's own TTS code
+        uses it via this same property to keep the lazy construction
+        in one place.
+
+        Defensive against tests that bypass ``__init__`` (e.g. via
+        ``ExecutionKernel.__new__``): the attribute is created on
+        first access if it's missing entirely, not just if it's
+        ``None``.
+        """
+        scheduler = getattr(self, "_tts_scheduler", None)
+        if scheduler is None:
+            from octomil.audio.scheduler import TtsScheduler
+
+            scheduler = TtsScheduler()
+            self._tts_scheduler = scheduler
+        return scheduler
 
     @property
     def config_set(self) -> LoadedConfigSet:
@@ -1549,6 +1638,7 @@ class ExecutionKernel:
         speed: float = 1.0,
         app: Optional[str] = None,
         policy: Optional[str] = None,
+        priority: Any = None,
     ) -> Any:
         """Routed TTS synthesis. Returns a ``SpeechResponse``.
 
@@ -1850,20 +1940,33 @@ class ExecutionKernel:
                 ),
             )
 
-        t0 = time.monotonic()
-        # Backends that opt into speaker-aware synthesis accept a
-        # ``speaker_profile=`` kwarg; legacy backends (Kokoro pre-Pocket)
-        # ignore it and consume only ``voice``. Hand the engine the
-        # native_voice the resolver picked so the call site stays
-        # uniform across engine families.
-        local_result = await asyncio.to_thread(
-            _call_backend_synthesize,
-            backend,
-            input,
-            resolved_speaker,
-            speed,
-        )
-        latency_ms = (time.monotonic() - t0) * 1000.0
+        # Scheduler slot acquisition. Bounded concurrency =1 per
+        # ``(runtime_model, backend identity)``: a busy SPECULATIVE
+        # synthesis on this backend will be preempted by a
+        # FOREGROUND arrival. Fast-path callers (single foreground
+        # call on an idle engine) hit ``acquire`` and get the slot
+        # immediately with ``queued_ms == 0``.
+        from octomil.audio.scheduler import coerce_priority
+
+        coerced_priority = coerce_priority(priority)
+        scheduler_key = f"{runtime_model}:{id(backend)}"
+
+        async with await self.tts_scheduler.acquire(key=scheduler_key, priority=coerced_priority) as slot:
+            t0 = time.monotonic()
+            # Backends that opt into speaker-aware synthesis accept
+            # ``speaker_profile=``; legacy backends ignore it and
+            # consume only ``voice``. Hand the engine the
+            # native_voice the resolver picked so the call site
+            # stays uniform across engine families.
+            local_result = await asyncio.to_thread(
+                _call_backend_synthesize,
+                backend,
+                input,
+                resolved_speaker,
+                speed,
+            )
+            latency_ms = (time.monotonic() - t0) * 1000.0
+            _ = slot  # acquired-slot lifetime is the synthesis call
 
         # Local execution: never write cloud_usage_logs / increment cloud quotas.
         # Route telemetry only.
@@ -2196,6 +2299,7 @@ class ExecutionKernel:
         app: Optional[str] = None,
         policy: Optional[str] = None,
         sdk_t0: Optional[float] = None,
+        priority: Any = None,
     ) -> Any:
         """Streaming TTS. Returns a :class:`SpeechStream`.
 
@@ -2363,6 +2467,7 @@ class ExecutionKernel:
                 policy_preset=policy_preset,
                 fallback_used=is_fallback,
                 sdk_t0=sdk_t0,
+                priority=priority,
             )
 
         # Local realtime stream.
@@ -2405,6 +2510,8 @@ class ExecutionKernel:
             policy_preset=policy_preset,
             fallback_used=is_fallback,
             sdk_t0=sdk_t0,
+            scheduler=self.tts_scheduler,
+            priority=priority,
         )
 
     async def _cloud_synthesize_speech(

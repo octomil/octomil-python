@@ -130,6 +130,13 @@ class SpeechStreamStarted:
     cadence — read ``streaming_capability.mode`` to decide whether to
     start playback eagerly (``sentence_chunk`` / ``progressive``) or
     buffer (``final_chunk``).
+
+    ``priority`` echoes the request's
+    :class:`octomil.audio.scheduler.TtsRequestPriority`. Surfacing
+    it on the started event lets observability tooling correlate
+    setup_ms latency with the priority tier the SDK accepted —
+    "this 850ms setup_ms was a SPECULATIVE call that queued behind
+    a FOREGROUND" is a more useful signal than a raw number.
     """
 
     model: str
@@ -141,6 +148,7 @@ class SpeechStreamStarted:
     locality: str  # "on_device" | "cloud"
     engine: Optional[str] = None
     request_id: Optional[str] = None
+    priority: Optional[str] = None  # TtsRequestPriority.value
 
 
 @dataclass(frozen=True)
@@ -188,6 +196,13 @@ class SpeechStreamCompleted:
     total_latency_ms: float
     observed_chunks: int
     capability_verified: bool
+    # Scheduler queue-wait time, in milliseconds. ``setup_ms``
+    # already *includes* this number — split out so observability
+    # tooling can attribute "this 850ms setup_ms was actually
+    # 800ms queued behind a foreground" without subtracting from
+    # the headline metric. ``0.0`` for the no-contention fast path.
+    queued_ms: float = 0.0
+    priority: Optional[str] = None  # TtsRequestPriority.value
 
 
 @dataclass(frozen=True)
