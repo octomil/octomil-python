@@ -36,8 +36,16 @@ logger = logging.getLogger(__name__)
 # family selects the sherpa-onnx config path:
 #   "kokoro" -> OfflineTtsKokoroModelConfig (model + voices.bin + tokens + data_dir)
 #   "vits"   -> OfflineTtsVitsModelConfig   (Piper-style: model.onnx + tokens + data_dir)
+#   "pocket" -> OfflineTtsPocketModelConfig (lm_flow + lm_main + encoder + decoder
+#               + text_conditioner + vocab.json + token_scores.json). Pocket is a
+#               *few-shot voice-cloning* engine: instead of an integer sid the
+#               generation call wants ``prompt_samples`` (reference audio) and
+#               ``prompt_text``. Resolution flows through the planner-supplied
+#               speaker profile (``ResolvedTtsSpeaker``), NOT a sid catalog.
 # Voice catalogs are model-specific; the second tuple element is the default
-# voice the backend uses when the request does not specify one.
+# voice the backend uses when the request does not specify one. Pocket has no
+# native voice catalog — its "voices" are reference profiles published by the
+# planner — so the default voice for Pocket models is the empty string.
 _SHERPA_TTS_MODELS: dict[str, tuple[str, str]] = {
     "kokoro-82m": ("kokoro", "af_bella"),
     # Legacy v0.19 bundle, retained as an explicit-pin id alongside
@@ -46,6 +54,10 @@ _SHERPA_TTS_MODELS: dict[str, tuple[str, str]] = {
     "kokoro-en-v0_19": ("kokoro", "af_bella"),
     "piper-en-amy": ("vits", "amy"),
     "piper-en-ryan": ("vits", "ryan"),
+    # PocketTTS — int8-quantized few-shot voice-cloning engine. The
+    # planner is responsible for selecting this id; clients should
+    # call ``@app/<slug>/tts`` instead of pinning the runtime model.
+    "pocket-tts-int8": ("pocket", ""),
 }
 
 
@@ -378,6 +390,155 @@ def _build_kokoro_model_config(sherpa_onnx: Any, model_dir: str) -> Any:
     return sherpa_onnx.OfflineTtsKokoroModelConfig(**base_kwargs)
 
 
+# Required files in a prepared PocketTTS artifact directory. Names
+# match upstream's ``sherpa-onnx-pocket-tts-*`` bundles and the
+# ``OfflineTtsPocketModelConfig`` keyword arguments. We validate
+# layout up front so a bad artifact fails *here* with a precise
+# message instead of inside sherpa-onnx with an opaque ONNX error.
+_POCKET_REQUIRED_FILES: tuple[tuple[str, str], ...] = (
+    ("text_conditioner", "text_conditioner.onnx"),
+    ("encoder", "encoder.onnx"),
+    ("lm_flow", "lm_flow.int8.onnx"),
+    ("decoder", "decoder.int8.onnx"),
+    ("lm_main", "lm_main.int8.onnx"),
+    ("vocab_json", "vocab.json"),
+    ("token_scores_json", "token_scores.json"),
+)
+
+
+def _build_pocket_model_config(sherpa_onnx: Any, model_dir: str) -> Any:
+    """Construct ``OfflineTtsPocketModelConfig`` for a PocketTTS artifact.
+
+    Maps the prepared-artifact layout to the seven keyword arguments
+    the sherpa-onnx 1.13 binding exposes::
+
+        OfflineTtsPocketModelConfig(
+            lm_flow=...,           # lm_flow.int8.onnx
+            lm_main=...,           # lm_main.int8.onnx
+            encoder=...,           # encoder.onnx
+            decoder=...,           # decoder.int8.onnx
+            text_conditioner=...,  # text_conditioner.onnx
+            vocab_json=...,        # vocab.json
+            token_scores_json=..., # token_scores.json
+            voice_embedding_cache_capacity=50,  # default
+        )
+
+    Validates each required file exists and raises an actionable
+    ``RUNTIME_UNAVAILABLE`` if not — a partial bundle would otherwise
+    crash inside sherpa-onnx with an opaque ONNX session error.
+    """
+    missing: list[str] = []
+    paths: dict[str, str] = {}
+    for kw, filename in _POCKET_REQUIRED_FILES:
+        path = os.path.join(model_dir, filename)
+        if not os.path.isfile(path):
+            missing.append(filename)
+            continue
+        paths[kw] = path
+
+    if missing:
+        raise OctomilError(
+            code=OctomilErrorCode.RUNTIME_UNAVAILABLE,
+            message=(
+                f"sherpa-onnx PocketTTS artifact at {model_dir!r} is missing "
+                f"required files: {', '.join(missing)}. Re-run "
+                f"client.prepare(model='pocket-tts-int8', capability='tts') "
+                f"or check the artifact tarball."
+            ),
+        )
+
+    return sherpa_onnx.OfflineTtsPocketModelConfig(**paths)
+
+
+def _load_reference_samples(reference_audio: str) -> tuple[Any, int]:
+    """Load reference WAV from a local path; return (samples_float32, sr).
+
+    PocketTTS / ZipVoice need ``prompt_samples`` (float32 in [-1, 1])
+    plus their native ``sample_rate`` for the voice-cloning generate
+    call. The stdlib ``wave`` module covers the common-case path
+    (16-bit PCM mono) without a numpy dependency at the engine
+    boundary; we still import numpy lazily so the conversion is
+    vectorised when available.
+
+    The planner is responsible for materializing the reference audio
+    locally (URL-based references are pre-fetched). Callers receive
+    a precise error when the path doesn't exist or the WAV is
+    malformed.
+    """
+    import struct
+    import wave
+
+    if not reference_audio:
+        raise OctomilError(
+            code=OctomilErrorCode.INVALID_INPUT,
+            message=(
+                "speaker_profile_missing_reference: PocketTTS requires "
+                "reference_audio in the planner profile, but the resolved "
+                "speaker has none. Check the app's tts_speakers map."
+            ),
+        )
+    if not os.path.isfile(reference_audio):
+        raise OctomilError(
+            code=OctomilErrorCode.INVALID_INPUT,
+            message=(
+                f"reference_audio_not_found: {reference_audio!r} does not "
+                f"exist on disk. Planner must materialize reference audio "
+                f"locally before synthesis (URL-based references must be "
+                f"prepared via the standard artifact pipeline)."
+            ),
+        )
+
+    try:
+        with wave.open(reference_audio, "rb") as wf:
+            n_channels = wf.getnchannels()
+            sample_width = wf.getsampwidth()
+            framerate = wf.getframerate()
+            n_frames = wf.getnframes()
+            raw = wf.readframes(n_frames)
+    except wave.Error as exc:
+        raise OctomilError(
+            code=OctomilErrorCode.INVALID_INPUT,
+            message=(
+                f"reference_audio_format_unsupported: {reference_audio!r} is "
+                f"not a valid WAV file ({exc}). PocketTTS reference audio "
+                f"must be PCM WAV (16-bit mono recommended)."
+            ),
+        ) from exc
+
+    if sample_width != 2:
+        raise OctomilError(
+            code=OctomilErrorCode.INVALID_INPUT,
+            message=(
+                f"reference_audio_format_unsupported: {reference_audio!r} has "
+                f"sample_width={sample_width}. PocketTTS reference audio must "
+                f"be 16-bit PCM WAV."
+            ),
+        )
+
+    n_samples = len(raw) // sample_width
+    pcm_int16 = struct.unpack(f"<{n_samples}h", raw)
+    if n_channels > 1:
+        # Downmix interleaved stereo to mono — sherpa-onnx wants a
+        # mono float32 buffer; better to do this here than crash in
+        # the ONNX session.
+        mixed: list[int] = []
+        for i in range(0, n_samples, n_channels):
+            chunk = pcm_int16[i : i + n_channels]
+            mixed.append(sum(chunk) // n_channels)
+        pcm_int16 = tuple(mixed)
+
+    try:
+        import numpy as np  # type: ignore[import-untyped]
+
+        samples = np.asarray(pcm_int16, dtype=np.float32) / 32768.0
+        return samples, framerate
+    except ImportError:
+        # Pure-Python fallback for environments without numpy
+        # (Ren'Py / stripped PyInstaller bundles where Pocket isn't
+        # used anyway, but the load path stays portable).
+        return [s / 32768.0 for s in pcm_int16], framerate
+
+
 def _has_sherpa_onnx() -> bool:
     """Check if the sherpa_onnx package is importable."""
     try:
@@ -509,6 +670,13 @@ class _SherpaTtsBackend:
 
     name = "sherpa-onnx"
 
+    # Opts the kernel into ``speaker_profile=`` kwarg dispatch. The
+    # bridge in ``octomil.execution.kernel._backend_synthesize_kwargs``
+    # only sets this kwarg when the flag is True, so legacy backends
+    # without the flag stay on the original ``(text, voice, speed)``
+    # signature unchanged.
+    accepts_speaker_profile = True
+
     def __init__(self, model_name: str, **kwargs: Any) -> None:
         self._model_name = model_name
         self._kwargs = kwargs
@@ -570,6 +738,12 @@ class _SherpaTtsBackend:
                 num_threads=num_threads,
                 provider=provider,
             )
+        elif family == "pocket":
+            inner_model_config = sherpa_onnx.OfflineTtsModelConfig(
+                pocket=_build_pocket_model_config(sherpa_onnx, model_dir),
+                num_threads=num_threads,
+                provider=provider,
+            )
         else:
             raise ValueError(f"Unsupported sherpa-onnx TTS family '{family}' for model '{model_name}'.")
 
@@ -623,6 +797,8 @@ class _SherpaTtsBackend:
         text: str,
         voice: str | None = None,
         speed: float = 1.0,
+        *,
+        speaker_profile: Any = None,
     ) -> dict[str, Any]:
         """Synthesize speech from text and return audio bytes + metadata.
 
@@ -640,6 +816,12 @@ class _SherpaTtsBackend:
 
         ``voice`` defaults to the model's default if not provided.
         ``speed`` is a multiplier; 1.0 is default, 0.5 half-speed, 2.0 double.
+
+        ``speaker_profile`` (optional) is a
+        :class:`octomil.execution.tts_speaker_resolver.ResolvedTtsSpeaker`.
+        Native-voice engines (Kokoro / Piper) ignore everything except
+        ``native_voice``; PocketTTS uses ``reference_audio`` +
+        ``reference_sample_rate`` to clone, ignoring ``voice`` entirely.
         """
         if not text.strip():
             raise ValueError("text must not be empty")
@@ -650,18 +832,25 @@ class _SherpaTtsBackend:
             self.load_model(self._model_name)
         assert self._tts is not None
 
-        # Distinguish "caller passed an explicit voice" from "fall
-        # back to the model's documented default": the latter is a
-        # safe ``sid=0`` for catalog-less models (single-speaker
-        # Piper bundles), the former must enforce the catalog.
-        caller_voice = (voice or "").strip()
-        explicit = bool(caller_voice)
-        voice_name = caller_voice or (self._default_voice or "").strip()
-        sid = self._voice_to_sid(voice_name, explicit=explicit)
-
-        audio = self._tts.generate(text, sid=sid, speed=speed)
-        samples = list(audio.samples)
-        sample_rate = audio.sample_rate or self._sample_rate
+        if self._family == "pocket":
+            samples, sample_rate, voice_name = self._pocket_generate(
+                text=text,
+                speed=speed,
+                speaker_profile=speaker_profile,
+            )
+        else:
+            # Native-voice engines (Kokoro / Piper). Distinguish
+            # "caller passed an explicit voice" from "fall back to the
+            # model's documented default": the latter is a safe
+            # ``sid=0`` for catalog-less models (single-speaker Piper
+            # bundles), the former must enforce the catalog.
+            caller_voice = (voice or "").strip()
+            explicit = bool(caller_voice)
+            voice_name = caller_voice or (self._default_voice or "").strip()
+            sid = self._voice_to_sid(voice_name, explicit=explicit)
+            audio = self._tts.generate(text, sid=sid, speed=speed)
+            samples = list(audio.samples)
+            sample_rate = audio.sample_rate or self._sample_rate
 
         wav_bytes = _samples_to_wav(samples, sample_rate)
         duration_ms = int(round(1000 * len(samples) / sample_rate)) if sample_rate else 0
@@ -675,6 +864,71 @@ class _SherpaTtsBackend:
             "voice": voice_name,
             "model": self._model_name,
         }
+
+    def _pocket_generate(
+        self,
+        *,
+        text: str,
+        speed: float,
+        speaker_profile: Any,
+    ) -> tuple[list[float], int, str]:
+        """PocketTTS voice-cloning generate path.
+
+        Pocket's ``OfflineTts.generate`` voice-cloning overload is::
+
+            generate(text, prompt_text, prompt_samples, sample_rate,
+                     speed=1.0, num_steps=4, callback=None)
+
+        We pull ``prompt_samples`` and ``sample_rate`` off the
+        :class:`ResolvedTtsSpeaker`'s ``reference_audio`` /
+        ``reference_sample_rate`` (loading the WAV via stdlib), and
+        ``prompt_text`` from the planner profile metadata when
+        present (transcription of the reference clip improves the
+        clone). Returns the same ``(samples, sample_rate,
+        voice_name)`` triple the native-voice path produces so the
+        caller's WAV-wrapping is uniform.
+        """
+        if speaker_profile is None or not getattr(speaker_profile, "reference_audio", None):
+            raise OctomilError(
+                code=OctomilErrorCode.INVALID_INPUT,
+                message=(
+                    "speaker_profile_missing_reference: PocketTTS requires "
+                    "a planner-supplied speaker profile carrying "
+                    "reference_audio. Pass speaker= and ensure the app's "
+                    "tts_speakers map publishes one."
+                ),
+            )
+
+        prompt_samples, file_sr = _load_reference_samples(speaker_profile.reference_audio)
+        # Profile may declare a sample_rate; if it disagrees with the
+        # WAV header, trust the WAV header and surface a warning so
+        # the planner can fix the mismatch.
+        declared_sr = speaker_profile.reference_sample_rate or file_sr
+        if declared_sr != file_sr:
+            logger.warning(
+                "PocketTTS reference sample-rate mismatch: profile=%d, wav=%d. Using wav header.",
+                declared_sr,
+                file_sr,
+            )
+        sample_rate_in = file_sr
+
+        # Optional reference transcription. Pocket accepts an empty
+        # string when one isn't available, so we don't enforce it.
+        metadata = getattr(speaker_profile, "metadata", None) or {}
+        prompt_text = str(metadata.get("reference_text", ""))
+
+        audio = self._tts.generate(
+            text,
+            prompt_text,
+            prompt_samples,
+            sample_rate_in,
+            speed=speed,
+            num_steps=int(metadata.get("num_steps", 4)),
+        )
+        samples = list(audio.samples)
+        out_sr = audio.sample_rate or self._sample_rate
+        speaker_label = getattr(speaker_profile, "speaker", None) or ""
+        return samples, out_sr, speaker_label
 
     def _voice_to_sid(self, voice: str, *, explicit: bool = True) -> int:
         """Map a voice name to a sherpa-onnx speaker id.
@@ -789,7 +1043,23 @@ class _SherpaTtsBackend:
         model has a manifest, the label returned is ``manifest[0]``
         (the actual sid=0 speaker). Catalog-less models (Piper) fall
         back to ``self._default_voice``.
+
+        Pocket has no native voice catalog — its "voices" are
+        reference-audio profiles owned by the planner. The kernel
+        calls this with ``voice=None`` for Pocket requests (the
+        resolver leaves ``native_voice`` ``None`` for reference-audio
+        profiles), and we return ``(0, "")`` so synthesis_stream's
+        synchronous validation step never trips on a missing native
+        catalog. Speaker validation for Pocket happens at the
+        ``speaker_profile`` check inside ``synthesize`` /
+        ``synthesize_stream``.
         """
+        if self._family == "pocket":
+            # No native voice catalog. The kernel hands us ``None``
+            # for Pocket reference-audio profiles; an explicit voice
+            # string isn't meaningful here, so accept it as-is.
+            return 0, (voice or "")
+
         explicit = (voice or "").strip()
         if explicit:
             sid = self._voice_to_sid(explicit, explicit=True)
@@ -812,6 +1082,7 @@ class _SherpaTtsBackend:
         voice: str | None = None,
         speed: float = 1.0,
         *,
+        speaker_profile: Any = None,
         chunk_max_queue: int = 16,
     ) -> AsyncIterator[dict[str, Any]]:
         """Yield PCM s16le chunk dicts as samples are produced.
@@ -840,10 +1111,32 @@ class _SherpaTtsBackend:
             self.load_model(self._model_name)
         assert self._tts is not None
 
-        # validate_voice runs before the worker thread spins up so an
-        # unsupported voice raises from the synchronous entry point
-        # rather than as a mid-stream exception.
-        sid, _resolved_label = self.validate_voice(voice)
+        # Family-specific generate-args resolution. Pocket needs
+        # reference samples; Kokoro/Piper just need a sid. Both
+        # resolution paths are synchronous so an unsupported speaker
+        # / voice raises BEFORE the worker thread spins up.
+        if self._family == "pocket":
+            if speaker_profile is None or not getattr(speaker_profile, "reference_audio", None):
+                raise OctomilError(
+                    code=OctomilErrorCode.INVALID_INPUT,
+                    message=(
+                        "speaker_profile_missing_reference: PocketTTS streaming "
+                        "requires a planner-supplied speaker profile with "
+                        "reference_audio. Pass speaker= and ensure the app's "
+                        "tts_speakers map publishes one."
+                    ),
+                )
+            prompt_samples, prompt_sr = _load_reference_samples(speaker_profile.reference_audio)
+            metadata = getattr(speaker_profile, "metadata", None) or {}
+            prompt_text = str(metadata.get("reference_text", ""))
+            num_steps = int(metadata.get("num_steps", 4))
+            sid = None
+        else:
+            sid, _resolved_label = self.validate_voice(voice)
+            prompt_samples = None
+            prompt_sr = 0
+            prompt_text = ""
+            num_steps = 0
 
         bridge = _StreamBridge(maxsize=chunk_max_queue)
         loop = asyncio.get_running_loop()
@@ -861,7 +1154,18 @@ class _SherpaTtsBackend:
                     accepted = bridge.put(pcm, n)
                     return 1 if accepted else 0
 
-                self._tts.generate(text, sid=sid, speed=speed, callback=_callback)
+                if self._family == "pocket":
+                    self._tts.generate(
+                        text,
+                        prompt_text,
+                        prompt_samples,
+                        prompt_sr,
+                        speed=speed,
+                        num_steps=num_steps,
+                        callback=_callback,
+                    )
+                else:
+                    self._tts.generate(text, sid=sid, speed=speed, callback=_callback)
                 bridge.close(error=None)
             except BaseException as exc:  # noqa: BLE001 — re-raised on consumer side
                 bridge.close(error=exc)
