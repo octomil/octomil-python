@@ -124,6 +124,7 @@ def resolve_tts_speaker(
     voice: Optional[str],
     selection: Any,
     is_app_ref: bool,
+    selected_candidate: Any = None,
 ) -> ResolvedTtsSpeaker:
     """Translate caller-supplied speaker/voice into an engine payload.
 
@@ -154,10 +155,19 @@ def resolve_tts_speaker(
     voices.txt, and does NOT validate that ``native_voice`` exists
     in the engine's catalog. Those checks live in
     ``_validate_local_voice`` / ``backend.validate_voice``.
+
+    ``selected_candidate`` MUST be the candidate the kernel actually
+    chose for this synthesis. Earlier behaviour merged ``tts_speakers``
+    from EVERY candidate in ``selection.candidates``, which let a
+    non-selected candidate's profile silently override the running
+    backend's profile for the same logical speaker id. The kernel
+    now passes the selected candidate so only it (plus the app-level
+    map) contributes to the resolved profile. ``None`` means "no
+    candidate selected" — only the app-level map is consulted.
     """
     from octomil.errors import OctomilError, OctomilErrorCode
 
-    speakers_map = _collect_speakers_map(selection)
+    speakers_map = _collect_speakers_map(selection, selected_candidate=selected_candidate)
 
     if speaker:
         profile = _speaker_lookup(speaker, speakers_map)
@@ -224,40 +234,50 @@ def resolve_tts_speaker(
     )
 
 
-def _collect_speakers_map(selection: Any) -> dict[str, Any]:
-    """Return the merged candidate ⊕ app-level ``tts_speakers`` map.
+def _collect_speakers_map(
+    selection: Any,
+    *,
+    selected_candidate: Any = None,
+) -> dict[str, Any]:
+    """Return the merged ``app_level ⊕ selected_candidate`` ``tts_speakers``
+    map.
 
-    Candidate-level entries override app-level for the same key. The
-    selection object can be ``None`` (planner unavailable) — the
-    kernel still resolves through native-voice matching.
+    Earlier behaviour merged speakers from every candidate in the
+    selection, which is unsafe: candidate B's profile for
+    ``"narrator"`` could silently override candidate A's profile for
+    the same id even when synthesis was actually running on A.
+    Threading the selected candidate makes the resolved profile
+    match the running backend exactly.
+
+    ``selected_candidate=None`` collapses to "app-level only" so the
+    listing and resolution paths stay deterministic when no
+    candidate has been picked yet (e.g. the listing path is asked
+    before the kernel routes the request).
     """
     if selection is None:
         return {}
     app_resolution = getattr(selection, "app_resolution", None)
     app_map = getattr(app_resolution, "tts_speakers", None)
-    candidates = getattr(selection, "candidates", None) or []
-    candidate_map: dict[str, Any] = {}
-    for cand in candidates:
-        cmap = getattr(cand, "tts_speakers", None)
-        if isinstance(cmap, dict):
-            candidate_map.update(cmap)
+    candidate_map: Any = None
+    if selected_candidate is not None:
+        candidate_map = getattr(selected_candidate, "tts_speakers", None)
     return _merge_speaker_maps(app_map, candidate_map)
 
 
-def list_logical_speakers(selection: Any) -> tuple[dict[str, Any], ...]:
+def list_logical_speakers(
+    selection: Any,
+    *,
+    selected_candidate: Any = None,
+) -> tuple[dict[str, Any], ...]:
     """Return the ordered logical-speaker entries for ``voices.list``.
 
     Used by :func:`octomil.execution.kernel.list_speech_voices` to
     build a :class:`VoiceCatalog` for app refs whose planner
     publishes profiles. Entries preserve insertion order (app
-    profiles first, then candidate-level overrides, dedup on key).
-
-    Each element is a plain dict so the caller can assemble
-    :class:`VoiceInfo` without importing this module's resolver
-    types — keeps the dependency direction one-way (kernel → resolver,
-    not the reverse).
+    profiles first, then selected-candidate overrides; non-selected
+    candidates contribute nothing — same constraint as the resolver).
     """
-    merged = _collect_speakers_map(selection)
+    merged = _collect_speakers_map(selection, selected_candidate=selected_candidate)
     out: list[dict[str, Any]] = []
     for key, profile in merged.items():
         coerced = _coerce_profile(profile) or {}

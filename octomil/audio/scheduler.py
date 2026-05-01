@@ -170,15 +170,18 @@ class TtsScheduler:
     def __init__(self, *, max_concurrency: int = 1) -> None:
         self._max_concurrency = max_concurrency
         # Per-key state: list of in-flight Slot objects + an asyncio
-        # condition that the queue waits on. Lazy-created in
-        # ``_state_for`` so a busy SDK doesn't allocate state for
-        # keys it never uses.
+        # Condition that gates BOTH structural mutation AND queue
+        # waiting. Single-lock design so a release ↔ wait race is
+        # impossible: the condition lock the releaser holds when
+        # calling ``notify_all`` is the same lock the waiter holds
+        # while incrementing its waiter counter and entering
+        # ``wait()`` (the wait releases the lock atomically).
+        # Earlier dual-lock design (separate ``_mutex`` for state +
+        # ``state.condition`` for waiting) had a window between
+        # counter-increment-under-mutex and condition-acquire where
+        # a release could notify; the waiter then parked forever.
         self._states: dict[str, _KeyState] = {}
         self._stats = TtsSchedulerStats()
-        # Outer lock: serialises the structural mutations
-        # (preempt + slot insertion) so the preempt-then-acquire
-        # sequence can't race a third arrival.
-        self._mutex = asyncio.Lock()
 
     @property
     def stats(self) -> TtsSchedulerStats:
@@ -240,68 +243,70 @@ class TtsScheduler:
         return _AcquiredSlot(scheduler=self, key=key, slot=slot, queued_ms=queued_ms)
 
     async def _enter_slot(self, key: str, priority: TtsRequestPriority) -> _Slot:
-        async with self._mutex:
-            state = self._state_for(key)
+        state = self._state_for(key)
 
-            # Preempt lower-priority in-flight slots when a higher-
-            # priority arrival shows up. Multiple lower-priority
-            # in-flights all get a cancel signal — the cooperative
-            # cancellation path runs concurrently.
-            preempted: list[_Slot] = []
+        # Phase 1 — preemption. Mark lower-priority in-flight slots
+        # as cancelled and collect their cancel hooks. Done under
+        # the same condition lock the releaser uses, so a release
+        # can not race a structural mutation here.
+        cancel_fns: list[Callable[[], Awaitable[None]]] = []
+        async with state.condition:
             for in_flight in state.slots:
                 if in_flight.priority < priority and in_flight.cancel and not in_flight.cancelled:
                     in_flight.cancelled = True
-                    preempted.append(in_flight)
+                    if in_flight.cancel is not None:
+                        cancel_fns.append(in_flight.cancel)
                     if in_flight.priority == TtsRequestPriority.SPECULATIVE:
                         self._stats.speculative_cancellations += 1
                     elif in_flight.priority == TtsRequestPriority.PREFETCH:
                         self._stats.prefetch_cancellations += 1
 
-            # Fire cancellation outside the mutex — the cancel
-            # coroutine may do real I/O (sherpa-onnx aclose) and
-            # holding the mutex around it would block fresh
-            # arrivals.
-            cancel_fns = [s.cancel for s in preempted if s.cancel is not None]
-
+        # Fire cancellation OUTSIDE the lock — the cancel coroutine
+        # may do real I/O (sherpa-onnx ``aclose``) and holding the
+        # condition lock around it would block both fresh arrivals
+        # and the holder's own release.
         for cancel_fn in cancel_fns:
             try:
                 await cancel_fn()
             except Exception:
                 logger.debug("scheduler: preemption cancel raised; continuing", exc_info=True)
 
-        # Re-acquire the mutex and either grab a slot or wait.
-        # When parking on the condition, we must hold the condition's
-        # OWN lock (separate from ``self._mutex``), so the wait path
-        # is wrapped in ``async with state.condition`` while the
-        # immediate-acquire fast path stays under the mutex.
-        while True:
-            async with self._mutex:
-                state = self._state_for(key)
-                if len(state.slots) < self._max_concurrency and self._is_highest_priority_waiter(state, priority):
-                    slot = _Slot(priority=priority, acquired_at=time.monotonic())
-                    state.slots.append(slot)
-                    return slot
-                # No slot available — park on the condition. Track
-                # this waiter's priority so other waiters can compute
-                # ``_is_highest_priority_waiter`` correctly.
-                if priority == TtsRequestPriority.FOREGROUND:
-                    state.foreground_waiters += 1
-                elif priority == TtsRequestPriority.PREFETCH:
-                    state.prefetch_waiters += 1
-                else:
-                    state.speculative_waiters += 1
+        # Phase 2 — wait for an open slot under the condition lock.
+        # The waiter counter is incremented WHILE holding the
+        # condition lock; ``state.condition.wait()`` then atomically
+        # releases the lock and parks. A release that comes between
+        # the increment and the wait would have to acquire the SAME
+        # lock to call ``notify_all``, so it cannot sneak in.
+        async with state.condition:
+            self._inc_waiter(state, priority)
             try:
-                async with state.condition:
+                while not (
+                    len(state.slots) < self._max_concurrency and self._is_highest_priority_waiter(state, priority)
+                ):
                     await state.condition.wait()
+                slot = _Slot(priority=priority, acquired_at=time.monotonic())
+                state.slots.append(slot)
+                return slot
             finally:
-                async with self._mutex:
-                    if priority == TtsRequestPriority.FOREGROUND:
-                        state.foreground_waiters = max(0, state.foreground_waiters - 1)
-                    elif priority == TtsRequestPriority.PREFETCH:
-                        state.prefetch_waiters = max(0, state.prefetch_waiters - 1)
-                    else:
-                        state.speculative_waiters = max(0, state.speculative_waiters - 1)
-            # Loop back and re-check eligibility.
+                self._dec_waiter(state, priority)
+
+    @staticmethod
+    def _inc_waiter(state: "_KeyState", priority: TtsRequestPriority) -> None:
+        if priority == TtsRequestPriority.FOREGROUND:
+            state.foreground_waiters += 1
+        elif priority == TtsRequestPriority.PREFETCH:
+            state.prefetch_waiters += 1
+        else:
+            state.speculative_waiters += 1
+
+    @staticmethod
+    def _dec_waiter(state: "_KeyState", priority: TtsRequestPriority) -> None:
+        if priority == TtsRequestPriority.FOREGROUND:
+            state.foreground_waiters = max(0, state.foreground_waiters - 1)
+        elif priority == TtsRequestPriority.PREFETCH:
+            state.prefetch_waiters = max(0, state.prefetch_waiters - 1)
+        else:
+            state.speculative_waiters = max(0, state.speculative_waiters - 1)
 
     def _is_highest_priority_waiter(self, state: "_KeyState", priority: TtsRequestPriority) -> bool:
         """Return True iff no other waiter on ``state`` outranks
@@ -319,20 +324,18 @@ class TtsScheduler:
         return state.foreground_waiters == 0 and state.prefetch_waiters == 0
 
     async def _release(self, key: str, slot: _Slot) -> None:
-        async with self._mutex:
-            state = self._states.get(key)
-            if state is None:
-                return
+        state = self._states.get(key)
+        if state is None:
+            return
+        # Single-lock design: structural mutation AND notify under
+        # the same condition lock waiters acquire to enter ``wait()``.
+        # This closes the wakeup race the dual-lock version had.
+        async with state.condition:
             try:
                 state.slots.remove(slot)
             except ValueError:
                 pass
-            # ``notify_all`` requires the condition's own lock to be
-            # held — separate from ``self._mutex`` because
-            # ``Condition.wait()`` releases the condition lock while
-            # parked. Acquire briefly so waiters can be woken.
-            async with state.condition:
-                state.condition.notify_all()
+            state.condition.notify_all()
 
     def _inc_queued(self, priority: TtsRequestPriority) -> None:
         if priority == TtsRequestPriority.FOREGROUND:

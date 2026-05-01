@@ -227,7 +227,18 @@ def test_candidate_level_speaker_overrides_app_level():
     """When both maps name the same speaker, the candidate-level entry
     wins. Use-case: app-level publishes a fallback ``native_voice``,
     the Pocket candidate publishes a ``reference_audio`` for the same
-    logical id."""
+    logical id. The kernel must thread the SELECTED candidate so the
+    override only applies when synthesis is actually running on that
+    candidate's backend."""
+    pocket_candidate = RuntimeCandidatePlan(
+        locality="local",
+        priority=0,
+        confidence=0.9,
+        reason="pocket",
+        tts_speakers={
+            "narrator": _profile(speaker_id="narrator", reference_audio="/r.wav"),
+        },
+    )
     selection = RuntimeSelection(
         locality="local",
         app_resolution=AppResolution(
@@ -239,14 +250,78 @@ def test_candidate_level_speaker_overrides_app_level():
                 "narrator": _profile(speaker_id="narrator", native_voice="af_bella"),
             },
         ),
+        candidates=[pocket_candidate],
+    )
+    resolved = resolve_tts_speaker(
+        speaker="narrator",
+        voice=None,
+        selection=selection,
+        is_app_ref=True,
+        selected_candidate=pocket_candidate,
+    )
+    # Selected candidate's reference_audio wins over app-level native_voice.
+    assert resolved.reference_audio == "/r.wav"
+    assert resolved.native_voice is None
+
+
+def test_non_selected_candidate_speakers_are_NOT_merged():
+    """Regression for P1 #2 — non-selected candidates' tts_speakers
+    must not leak into the resolved profile."""
+    selected = RuntimeCandidatePlan(
+        locality="local",
+        priority=0,
+        confidence=0.9,
+        reason="pocket",
+        tts_speakers={
+            "narrator": _profile(speaker_id="narrator", reference_audio="/r-pocket.wav"),
+        },
+    )
+    other = RuntimeCandidatePlan(
+        locality="local",
+        priority=1,
+        confidence=0.7,
+        reason="kokoro fallback",
+        tts_speakers={
+            # Same logical id, totally different profile. MUST NOT
+            # leak into the resolver result when ``selected`` is
+            # the one running.
+            "narrator": _profile(speaker_id="narrator", native_voice="af_nicole"),
+        },
+    )
+    selection = RuntimeSelection(locality="local", candidates=[selected, other])
+
+    resolved = resolve_tts_speaker(
+        speaker="narrator",
+        voice=None,
+        selection=selection,
+        is_app_ref=True,
+        selected_candidate=selected,
+    )
+    assert resolved.reference_audio == "/r-pocket.wav"
+    assert resolved.native_voice is None
+
+
+def test_no_selected_candidate_collapses_to_app_level_only():
+    """When ``selected_candidate=None`` (early voices.list path
+    before routing decides), the resolver consults only the
+    app-level map. Arbitrary candidate profiles MUST NOT bleed in."""
+    selection = RuntimeSelection(
+        locality="local",
+        app_resolution=AppResolution(
+            app_id="x",
+            capability="tts",
+            routing_policy="private",
+            selected_model="kokoro-82m",
+            tts_speakers={"narrator": _profile(speaker_id="narrator", native_voice="af_bella")},
+        ),
         candidates=[
             RuntimeCandidatePlan(
                 locality="local",
                 priority=0,
                 confidence=0.9,
-                reason="pocket",
+                reason="ghost",
                 tts_speakers={
-                    "narrator": _profile(speaker_id="narrator", reference_audio="/r.wav"),
+                    "narrator": _profile(speaker_id="narrator", reference_audio="/ghost.wav"),
                 },
             ),
         ],
@@ -257,9 +332,8 @@ def test_candidate_level_speaker_overrides_app_level():
         selection=selection,
         is_app_ref=True,
     )
-    # Candidate-level (reference_audio) wins over app-level (native_voice).
-    assert resolved.reference_audio == "/r.wav"
-    assert resolved.native_voice is None
+    assert resolved.native_voice == "af_bella"
+    assert resolved.reference_audio is None
 
 
 # ---------------------------------------------------------------------------
@@ -267,7 +341,21 @@ def test_candidate_level_speaker_overrides_app_level():
 # ---------------------------------------------------------------------------
 
 
-def test_list_logical_speakers_preserves_order_app_then_candidate():
+def test_list_logical_speakers_preserves_order_app_then_selected_candidate():
+    """Order contract: app-level entries first (insertion order),
+    then SELECTED candidate's entries. Non-selected candidates are
+    invisible to the listing path — same constraint the resolver
+    enforces, mirrored on the listing side so ``voices.list`` and
+    ``speech.create`` agree on the catalog."""
+    selected = RuntimeCandidatePlan(
+        locality="local",
+        priority=0,
+        confidence=0.9,
+        reason="pocket",
+        tts_speakers={
+            "gamma": _profile(speaker_id="gamma", reference_audio="/g.wav"),
+        },
+    )
     selection = RuntimeSelection(
         locality="local",
         app_resolution=AppResolution(
@@ -280,20 +368,14 @@ def test_list_logical_speakers_preserves_order_app_then_candidate():
                 "beta": _profile(speaker_id="beta", native_voice="af_nicole"),
             },
         ),
-        candidates=[
-            RuntimeCandidatePlan(
-                locality="local",
-                priority=0,
-                confidence=0.9,
-                reason="pocket",
-                tts_speakers={
-                    "gamma": _profile(speaker_id="gamma", reference_audio="/g.wav"),
-                },
-            ),
-        ],
+        candidates=[selected],
     )
-    speakers = list_logical_speakers(selection)
+    speakers = list_logical_speakers(selection, selected_candidate=selected)
     assert [s["speaker_id"] for s in speakers] == ["alpha", "beta", "gamma"]
+
+    # No selected candidate → app-level only (defensive default).
+    speakers_no_candidate = list_logical_speakers(selection)
+    assert [s["speaker_id"] for s in speakers_no_candidate] == ["alpha", "beta"]
 
 
 def test_list_logical_speakers_returns_empty_when_no_planner():
@@ -320,3 +402,108 @@ def test_resolved_speaker_is_frozen_dataclass():
     )
     with pytest.raises((AttributeError, Exception)):
         resolved.speaker = "y"  # type: ignore[misc]
+
+
+# ---------------------------------------------------------------------------
+# P1 regression — non-selected candidates must NOT influence resolution
+# ---------------------------------------------------------------------------
+
+
+def test_non_selected_candidate_speakers_do_not_override_active_profile():
+    """Pre-fix: ``_collect_speakers_map`` merged ``tts_speakers``
+    from every candidate in the selection. If the planner returned
+    a Pocket candidate AND a Kokoro candidate with different
+    profiles for the same logical speaker id, a non-selected
+    candidate could silently override the active profile —
+    ``voices.list``, ``create``, and ``stream`` would then disagree
+    with the chosen backend.
+
+    Post-fix: only the selected candidate's profiles merge with
+    the app-level profiles. This test pins it: two candidates with
+    conflicting profiles for ``narrator``, only the selected
+    candidate's profile wins."""
+    pocket_profile = _profile(
+        speaker_id="narrator",
+        reference_audio="/cache/pocket/narrator.wav",
+        reference_sample_rate=24000,
+    )
+    kokoro_profile = _profile(speaker_id="narrator", native_voice="af_bella")
+
+    pocket_candidate = RuntimeCandidatePlan(
+        locality="local",
+        priority=0,
+        confidence=0.9,
+        reason="primary",
+        tts_speakers={"narrator": pocket_profile},
+    )
+    kokoro_candidate = RuntimeCandidatePlan(
+        locality="local",
+        priority=1,
+        confidence=0.5,
+        reason="fallback",
+        tts_speakers={"narrator": kokoro_profile},
+    )
+    selection = RuntimeSelection(
+        locality="local",
+        candidates=[pocket_candidate, kokoro_candidate],
+    )
+
+    # Resolution targets pocket_candidate. Kokoro's profile must
+    # NOT bleed into the resolution.
+    resolved_pocket = resolve_tts_speaker(
+        speaker="narrator",
+        voice=None,
+        selection=selection,
+        is_app_ref=True,
+        selected_candidate=pocket_candidate,
+    )
+    assert resolved_pocket.has_reference is True
+    assert resolved_pocket.reference_audio == "/cache/pocket/narrator.wav"
+    assert resolved_pocket.native_voice is None
+
+    # Targeting kokoro_candidate yields the kokoro profile;
+    # pocket's reference audio does NOT leak in.
+    resolved_kokoro = resolve_tts_speaker(
+        speaker="narrator",
+        voice=None,
+        selection=selection,
+        is_app_ref=True,
+        selected_candidate=kokoro_candidate,
+    )
+    assert resolved_kokoro.has_reference is False
+    assert resolved_kokoro.reference_audio is None
+    assert resolved_kokoro.native_voice == "af_bella"
+
+
+def test_list_logical_speakers_excludes_non_selected_candidate_profiles():
+    """Mirror invariant for the listing path: ``voices.list`` must
+    only advertise profiles from the app-level set + the
+    selected candidate. Non-selected candidates contribute nothing,
+    so the catalog UI never shows a voice that synthesis won't
+    actually run."""
+    pocket_only = _profile(speaker_id="pocket_only", native_voice="af_bella")
+    kokoro_only = _profile(speaker_id="kokoro_only", native_voice="am_echo")
+
+    pocket_candidate = RuntimeCandidatePlan(
+        locality="local",
+        priority=0,
+        confidence=0.9,
+        reason="primary",
+        tts_speakers={"pocket_only": pocket_only},
+    )
+    kokoro_candidate = RuntimeCandidatePlan(
+        locality="local",
+        priority=1,
+        confidence=0.5,
+        reason="fallback",
+        tts_speakers={"kokoro_only": kokoro_only},
+    )
+    selection = RuntimeSelection(
+        locality="local",
+        candidates=[pocket_candidate, kokoro_candidate],
+    )
+
+    speakers = list_logical_speakers(selection, selected_candidate=pocket_candidate)
+    advertised = {s["speaker_id"] for s in speakers}
+    assert "pocket_only" in advertised
+    assert "kokoro_only" not in advertised

@@ -1029,6 +1029,39 @@ class _SherpaTtsBackend:
             return TtsStreamingCapability.sentence(verified=False)
         return TtsStreamingCapability.final_only(verified=False)
 
+    def validate_speaker_profile(self, speaker_profile: Any) -> None:
+        """Synchronous pre-stream check for engine families that need
+        more than a native voice.
+
+        Specifically: PocketTTS requires a planner-supplied speaker
+        profile carrying ``reference_audio``. The streaming entry
+        point :meth:`synthesize_stream` is an async generator — its
+        body does NOT execute until ``async for`` iterates, so a
+        validation check inside the generator body runs *after* the
+        kernel has already yielded ``SpeechStreamStarted`` to the
+        consumer. By calling this method synchronously before
+        building the inner stream, the kernel guarantees an invalid
+        speaker raises BEFORE the consumer ever sees a Started
+        event, mirroring the v4.13 voice-prevalidation contract.
+
+        Native-voice engines (Kokoro / Piper) accept any
+        speaker_profile (or none) — their input is a sid the
+        speaker resolver may have populated, but no extra check is
+        needed here.
+        """
+        if self._family != "pocket":
+            return
+        if speaker_profile is None or not getattr(speaker_profile, "reference_audio", None):
+            raise OctomilError(
+                code=OctomilErrorCode.INVALID_INPUT,
+                message=(
+                    "speaker_profile_missing_reference: PocketTTS requires "
+                    "a planner-supplied speaker profile with reference_audio. "
+                    "Pass speaker= and ensure the app's tts_speakers map "
+                    "publishes a profile carrying reference_audio."
+                ),
+            )
+
     def validate_voice(self, voice: str | None) -> tuple[int, str]:
         """Resolve a caller-supplied voice synchronously.
 

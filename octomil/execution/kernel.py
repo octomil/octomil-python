@@ -324,6 +324,15 @@ def _build_local_realtime_stream(
     effective_voice = (
         getattr(resolved_speaker, "native_voice", None) if resolved_speaker is not None else None
     ) or voice
+    # Synchronous speaker-profile validation MUST happen before the
+    # producer yields ``SpeechStreamStarted`` — otherwise a Pocket
+    # call with no reference_audio would only fail mid-stream after
+    # the consumer had already seen Started, which violates the
+    # v4.13 prevalidation contract. Native-voice engines no-op
+    # ``validate_speaker_profile`` so non-Pocket flows are unchanged.
+    validate_speaker_profile = getattr(backend, "validate_speaker_profile", None)
+    if callable(validate_speaker_profile):
+        validate_speaker_profile(resolved_speaker)
     validate_voice = getattr(backend, "validate_voice", None)
     if callable(validate_voice):
         _sid_unused, resolved_voice = validate_voice(effective_voice)
@@ -1854,6 +1863,7 @@ class ExecutionKernel:
             voice=voice,
             selection=selection,
             is_app_ref=app_scoped,
+            selected_candidate=local_candidate,
         )
         # The native_voice on the resolved profile is what voice
         # validation checks against the engine's catalog. For pure
@@ -1940,12 +1950,29 @@ class ExecutionKernel:
                 ),
             )
 
-        # Scheduler slot acquisition. Bounded concurrency =1 per
-        # ``(runtime_model, backend identity)``: a busy SPECULATIVE
-        # synthesis on this backend will be preempted by a
-        # FOREGROUND arrival. Fast-path callers (single foreground
-        # call on an idle engine) hit ``acquire`` and get the slot
-        # immediately with ``queued_ms == 0``.
+        # Scheduler slot acquisition. Bounded concurrency = 1 per
+        # ``(runtime_model, backend identity)``: a second create()
+        # arrival on the same backend queues behind this one. Fast-
+        # path callers (single foreground call on an idle engine)
+        # hit ``acquire`` and get the slot immediately with
+        # ``queued_ms == 0``.
+        #
+        # IMPORTANT — preemption limitation. The scheduler can NOT
+        # preempt an in-flight create(): the synthesis call is a
+        # synchronous engine.generate() running on a worker thread
+        # (asyncio.to_thread), and sherpa-onnx's non-streaming
+        # generate has no per-chunk callback — there's no
+        # cooperative cancellation hook. If a FOREGROUND create()
+        # arrives while a SPECULATIVE create() is mid-synthesis,
+        # the FOREGROUND waits for the SPECULATIVE to finish.
+        # Stream callers DO get preemption because synthesize_stream
+        # uses the per-chunk callback path.
+        #
+        # We deliberately do NOT call ``slot.set_cancel`` for
+        # create() — registering a no-op hook would let the
+        # scheduler claim it preempted the call, which it didn't.
+        # Future work: thread a cancellation flag into a backend
+        # ``synthesize_with_cancel`` variant.
         from octomil.audio.scheduler import coerce_priority
 
         coerced_priority = coerce_priority(priority)
@@ -2127,7 +2154,7 @@ class ExecutionKernel:
             # speaker map, the catalog returned to ``voices.list``
             # *prepends* logical speakers so the UI can list them as
             # the canonical speaker ids.
-            logical_speakers = list_logical_speakers(selection)
+            logical_speakers = list_logical_speakers(selection, selected_candidate=local_candidate)
 
             # P1 fix: only feed the SDK's static recipe manifest to
             # the resolver when the static recipe IS the chosen
@@ -2434,6 +2461,7 @@ class ExecutionKernel:
             voice=voice,
             selection=selection,
             is_app_ref=app_scoped,
+            selected_candidate=local_candidate,
         )
         if locality == LOCALITY_ON_DEVICE:
             # Pure reference-audio profiles (PocketTTS) leave

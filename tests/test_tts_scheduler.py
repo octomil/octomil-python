@@ -281,6 +281,91 @@ async def test_stats_in_flight_count_reflects_active_holders():
 
 
 @pytest.mark.asyncio
+async def test_slot_without_cancel_hook_is_not_preempted():
+    """Regression for P1 #4 — ``synthesize_speech`` (non-streaming
+    create path) acquires a scheduler slot but does NOT register a
+    cancel hook because sherpa-onnx's blocking ``generate()`` has
+    no cooperative-cancellation channel.
+
+    The scheduler must NOT mark the slot cancelled when no hook is
+    registered: doing so would silently demote a FOREGROUND call
+    that's mid-synthesis and the synthesis call has no way to
+    notice. Stream callers register a hook and DO get preempted;
+    this test pins the create-path limitation explicitly.
+    """
+    scheduler = TtsScheduler(max_concurrency=1)
+    speculative_done = asyncio.Event()
+    foreground_done = asyncio.Event()
+
+    async def speculative_create_holder():
+        async with await scheduler.acquire(key="k", priority=TtsRequestPriority.SPECULATIVE) as slot:
+            # Simulating a non-streaming create(): NO set_cancel call.
+            # Hold the slot for a substantial window.
+            for _ in range(20):
+                if slot.cancelled:
+                    raise AssertionError(
+                        "create-path slot must NOT be marked cancelled — no cancel hook means scheduler can't preempt"
+                    )
+                await asyncio.sleep(0.01)
+            speculative_done.set()
+
+    async def foreground_arrival():
+        async with await scheduler.acquire(key="k", priority=TtsRequestPriority.FOREGROUND):
+            foreground_done.set()
+
+    spec_task = asyncio.create_task(speculative_create_holder())
+    await asyncio.sleep(0.01)
+    fg_task = asyncio.create_task(foreground_arrival())
+    await asyncio.wait_for(speculative_done.wait(), timeout=2.0)
+    await asyncio.wait_for(foreground_done.wait(), timeout=2.0)
+    await spec_task
+    await fg_task
+
+    # No cancellation occurred — the FOREGROUND call queued behind
+    # the SPECULATIVE one and ran after.
+    assert scheduler.stats.speculative_cancellations == 0
+
+
+@pytest.mark.asyncio
+async def test_release_during_waiter_publish_does_not_lose_wakeup():
+    """Regression for the dual-lock wakeup race.
+
+    The earlier scheduler held two distinct locks: a process-wide
+    ``_mutex`` for state mutation and a per-key ``state.condition``
+    for waiting. A waiter incremented its counter under ``_mutex``,
+    released, then acquired ``state.condition`` to call ``wait()``.
+    Between those two steps a release could fire ``notify_all`` and
+    the parked waiter would never wake.
+
+    This test schedules many waiter / release races back-to-back
+    against a single key. With the bug present, at least one of the
+    waiters would deadlock and the asyncio.wait_for() would time
+    out. With the single-condition fix, every waiter wakes cleanly
+    even under contention.
+    """
+    scheduler = TtsScheduler(max_concurrency=1)
+    completed = 0
+
+    async def hammer():
+        nonlocal completed
+        for _ in range(20):
+            async with await scheduler.acquire(
+                key="hot",
+                priority=TtsRequestPriority.FOREGROUND,
+            ):
+                # Hand control back so other coros race the release.
+                await asyncio.sleep(0)
+        completed += 1
+
+    # Eight concurrent hammerers: 8 * 20 = 160 acquire/release cycles
+    # with continuous contention on the same key. If any wakeup is
+    # lost the wait_for below trips.
+    tasks = [asyncio.create_task(hammer()) for _ in range(8)]
+    await asyncio.wait_for(asyncio.gather(*tasks), timeout=5.0)
+    assert completed == 8
+
+
+@pytest.mark.asyncio
 async def test_stats_queued_counter_increments_during_wait():
     scheduler = TtsScheduler(max_concurrency=1)
     holder_release = asyncio.Event()
@@ -307,3 +392,76 @@ async def test_stats_queued_counter_increments_during_wait():
     await asyncio.wait_for(asyncio.gather(holder_task, waiter_task), timeout=2.0)
     # Counter decrements after acquisition.
     assert scheduler.stats.prefetch_queued == 0
+
+
+@pytest.mark.asyncio
+async def test_release_between_waiter_state_publish_and_park_is_not_lost():
+    """P1 regression — pre-fix the scheduler had a missed-wakeup
+    race: a waiter incremented the per-priority counter under one
+    lock, released it, and only then entered ``condition.wait()``.
+    A ``_release`` that ran in that window would notify before the
+    waiter parked, leaving the waiter asleep forever with no
+    subsequent notify.
+
+    The fix collapses slot- and waiter-state mutations onto the
+    single per-key condition lock; the waiter's increment and its
+    ``await condition.wait()`` happen inside the same critical
+    section a release acquires before notifying, so the gap is
+    closed by construction.
+
+    This test forces the exact timing: holder acquires, waiter
+    starts, we let the event loop run enough ticks for the waiter
+    to enter ``wait()``, then the holder releases. If the wakeup
+    is missed the test deadlocks past the timeout.
+    """
+    scheduler = TtsScheduler(max_concurrency=1)
+    holder_started = asyncio.Event()
+    holder_release = asyncio.Event()
+    waiter_done = asyncio.Event()
+
+    async def holder():
+        async with await scheduler.acquire(key="race-key", priority=TtsRequestPriority.FOREGROUND):
+            holder_started.set()
+            await holder_release.wait()
+
+    async def waiter():
+        async with await scheduler.acquire(key="race-key", priority=TtsRequestPriority.FOREGROUND):
+            waiter_done.set()
+
+    holder_task = asyncio.create_task(holder())
+    await holder_started.wait()
+    waiter_task = asyncio.create_task(waiter())
+
+    # Yield repeatedly so the waiter is parked in ``condition.wait()``
+    # before the release fires. Pre-fix the increment was published
+    # under a different lock, so the release could slip in here
+    # and notify before the wait — and the waiter would never wake.
+    for _ in range(20):
+        await asyncio.sleep(0)
+
+    holder_release.set()
+
+    # If the wakeup was missed, this hangs past the timeout.
+    await asyncio.wait_for(waiter_done.wait(), timeout=2.0)
+    await asyncio.wait_for(asyncio.gather(holder_task, waiter_task), timeout=2.0)
+
+
+@pytest.mark.asyncio
+async def test_concurrent_releases_do_not_lose_wakeups_under_load():
+    """Stress: 32 tasks contending for 4 slots on one key. Any
+    missed-wakeup race would deadlock at least one task and the
+    test would time out."""
+    scheduler = TtsScheduler(max_concurrency=4)
+    completed = 0
+
+    async def task(i: int):
+        nonlocal completed
+        async with await scheduler.acquire(key="stress", priority=TtsRequestPriority.FOREGROUND):
+            await asyncio.sleep(0)
+        completed += 1
+
+    await asyncio.wait_for(
+        asyncio.gather(*[task(i) for i in range(32)]),
+        timeout=5.0,
+    )
+    assert completed == 32

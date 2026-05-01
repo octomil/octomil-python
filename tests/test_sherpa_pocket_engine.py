@@ -301,6 +301,92 @@ def test_pocket_validate_voice_returns_empty_label(tmp_path: Path):
     assert label == ""
 
 
+def test_pocket_validate_speaker_profile_raises_synchronously(tmp_path: Path):
+    """Regression for P1 #3 — Pocket Started-before-validation.
+
+    ``backend.synthesize_stream`` is an async generator; its body
+    only runs once iteration starts. A reference-audio check
+    inside the generator runs *after* the kernel has yielded
+    ``SpeechStreamStarted``. The kernel must call
+    ``validate_speaker_profile`` synchronously before constructing
+    the stream so a missing reference raises here, not mid-stream.
+    """
+    backend = _make_pocket_backend(tmp_path)
+    profile = ResolvedTtsSpeaker(
+        speaker=None,
+        native_voice=None,
+        reference_audio=None,  # the bad case
+        reference_sample_rate=None,
+        source="default",
+    )
+    with pytest.raises(OctomilError) as exc_info:
+        backend.validate_speaker_profile(profile)
+    assert "speaker_profile_missing_reference" in exc_info.value.error_message
+
+
+def test_pocket_validate_speaker_profile_accepts_valid_reference(tmp_path: Path):
+    backend = _make_pocket_backend(tmp_path)
+    profile = ResolvedTtsSpeaker(
+        speaker="probe",
+        native_voice=None,
+        reference_audio="/some/ref.wav",
+        reference_sample_rate=24000,
+        source="planner_profile",
+    )
+    # Must not raise.
+    backend.validate_speaker_profile(profile)
+
+
+def test_kokoro_validate_speaker_profile_is_noop():
+    """Native-voice engines must not reject calls without a
+    speaker profile — they consume ``voice`` only."""
+    from octomil.runtime.engines.sherpa.engine import _SherpaTtsBackend
+
+    backend = _SherpaTtsBackend.__new__(_SherpaTtsBackend)
+    backend._family = "kokoro"
+    backend.validate_speaker_profile(None)
+    backend.validate_speaker_profile(
+        ResolvedTtsSpeaker(
+            speaker=None,
+            native_voice="af_bella",
+            reference_audio=None,
+            reference_sample_rate=None,
+            source="native_voice",
+        )
+    )
+
+
+@pytest.mark.asyncio
+async def test_pocket_stream_raises_before_speech_stream_started(tmp_path: Path):
+    """End-to-end regression: invoking the kernel's stream builder
+    on a Pocket backend with no reference must raise BEFORE the
+    consumer ever sees a SpeechStreamStarted event."""
+    from octomil.execution.kernel import _build_local_realtime_stream
+
+    backend = _make_pocket_backend(tmp_path)
+    profile = ResolvedTtsSpeaker(
+        speaker=None,
+        native_voice=None,
+        reference_audio=None,
+        reference_sample_rate=None,
+        source="default",
+    )
+
+    with pytest.raises(OctomilError) as exc_info:
+        _build_local_realtime_stream(
+            backend=backend,
+            text="hello",
+            voice=None,
+            resolved_speaker=profile,
+            speed=1.0,
+            runtime_model="pocket-tts-int8",
+            policy_preset="local_only",
+            fallback_used=False,
+            sdk_t0=0.0,
+        )
+    assert "speaker_profile_missing_reference" in exc_info.value.error_message
+
+
 # ---------------------------------------------------------------------------
 # Static recipe — non-default registration
 # ---------------------------------------------------------------------------
