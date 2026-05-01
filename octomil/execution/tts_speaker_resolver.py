@@ -49,6 +49,14 @@ class ResolvedTtsSpeaker:
     reference_audio: Optional[str]
     reference_sample_rate: Optional[int]
     source: str  # "planner_profile" | "native_voice" | "default"
+    # Planner-supplied side-channel fields. Backends that need
+    # additional context per speaker (Pocket reads ``reference_text``
+    # and ``num_steps``; future engines may carry style / language
+    # tags) read them off this dict. Empty when the request resolved
+    # via ``native_voice`` / ``default`` paths.
+    metadata: Optional[dict[str, Any]] = None
+    language: Optional[str] = None
+    style: Optional[str] = None
 
     @property
     def has_reference(self) -> bool:
@@ -77,11 +85,20 @@ def _merge_speaker_maps(
 
 
 def _coerce_profile(profile: Any) -> Optional[dict[str, Any]]:
-    """Pull the four caller-relevant fields off a profile dataclass or dict.
+    """Pull the caller-relevant fields off a profile dataclass or dict.
 
     Defensive: planner schemas dataclass, cached dict, or duck-typed
-    object — all flow into the same ``(native_voice, reference_audio,
-    reference_sample_rate)`` triple.
+    object — all flow into the same field set
+    (``native_voice``, ``reference_audio``, ``reference_sample_rate``,
+    plus the side-channel ``metadata`` / ``language`` / ``style``
+    fields that some engines need to interpret a profile correctly).
+
+    Pocket-specific note: ``metadata`` carries ``reference_text``
+    (the prompt transcription) and ``num_steps`` (synthesis quality
+    knob). Pre-fix the resolver dropped these on the floor, so a
+    real planner profile would synthesize with empty prompt text and
+    the engine's hard-coded ``num_steps=4`` default. Tests had been
+    masking the gap by mutating ``ResolvedTtsSpeaker`` directly.
     """
     if profile is None:
         return None
@@ -90,11 +107,17 @@ def _coerce_profile(profile: Any) -> Optional[dict[str, Any]]:
             "native_voice": profile.get("native_voice"),
             "reference_audio": profile.get("reference_audio"),
             "reference_sample_rate": profile.get("reference_sample_rate"),
+            "metadata": profile.get("metadata"),
+            "language": profile.get("language"),
+            "style": profile.get("style"),
         }
     return {
         "native_voice": getattr(profile, "native_voice", None),
         "reference_audio": getattr(profile, "reference_audio", None),
         "reference_sample_rate": getattr(profile, "reference_sample_rate", None),
+        "metadata": getattr(profile, "metadata", None),
+        "language": getattr(profile, "language", None),
+        "style": getattr(profile, "style", None),
     }
 
 
@@ -178,6 +201,9 @@ def resolve_tts_speaker(
                 reference_audio=profile.get("reference_audio"),
                 reference_sample_rate=profile.get("reference_sample_rate"),
                 source="planner_profile",
+                metadata=profile.get("metadata"),
+                language=profile.get("language"),
+                style=profile.get("style"),
             )
         if is_app_ref:
             raise OctomilError(
@@ -213,6 +239,9 @@ def resolve_tts_speaker(
                     reference_audio=profile.get("reference_audio"),
                     reference_sample_rate=profile.get("reference_sample_rate"),
                     source="planner_profile",
+                    metadata=profile.get("metadata"),
+                    language=profile.get("language"),
+                    style=profile.get("style"),
                 )
         # Pure native-voice path. Backend.validate_voice gates
         # whether it actually exists in the catalog.
@@ -281,12 +310,21 @@ def list_logical_speakers(
     out: list[dict[str, Any]] = []
     for key, profile in merged.items():
         coerced = _coerce_profile(profile) or {}
+        # ``VoiceInfo`` (in octomil/audio/voices.py) exposes
+        # ``language`` / ``style`` / ``metadata`` as public fields.
+        # Pre-fix this loop dropped them, so listing always
+        # advertised ``language=None`` even when the planner
+        # profile carried one. The kernel ``list_speech_voices``
+        # path projects the dict shape directly onto VoiceInfo.
         out.append(
             {
                 "speaker_id": key,
                 "native_voice": coerced.get("native_voice"),
                 "reference_audio": coerced.get("reference_audio"),
                 "reference_sample_rate": coerced.get("reference_sample_rate"),
+                "language": coerced.get("language"),
+                "style": coerced.get("style"),
+                "metadata": coerced.get("metadata"),
             }
         )
     return tuple(out)

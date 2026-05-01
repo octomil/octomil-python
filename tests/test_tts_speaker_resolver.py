@@ -507,3 +507,127 @@ def test_list_logical_speakers_excludes_non_selected_candidate_profiles():
     advertised = {s["speaker_id"] for s in speakers}
     assert "pocket_only" in advertised
     assert "kokoro_only" not in advertised
+
+
+# ---------------------------------------------------------------------------
+# P2 regression — planner-side metadata / language carry through the resolver
+# ---------------------------------------------------------------------------
+
+
+def test_planner_profile_metadata_carries_through_to_resolved_speaker():
+    """Pre-fix the resolver dropped ``TtsSpeakerProfile.metadata`` on
+    the floor. The Pocket backend reads ``speaker_profile.metadata``
+    for ``reference_text`` (the prompt transcription) and
+    ``num_steps`` (synthesis quality knob), so a real planner
+    profile would synthesize with empty prompt text and the engine's
+    hard-coded ``num_steps=4`` default. Tests masked the gap by
+    mutating ``ResolvedTtsSpeaker`` directly; this test pins the
+    real planner → resolver → backend path."""
+    selection = _selection_with_app_speakers(
+        {
+            "narrator": _profile(
+                speaker_id="narrator",
+                reference_audio="/cache/refs/narrator.wav",
+                reference_sample_rate=24000,
+                metadata={"reference_text": "Hello, this is a test", "num_steps": 8},
+                language="en",
+                style="calm",
+            )
+        }
+    )
+    resolved = resolve_tts_speaker(
+        speaker="narrator",
+        voice=None,
+        selection=selection,
+        is_app_ref=True,
+    )
+    assert resolved.metadata == {"reference_text": "Hello, this is a test", "num_steps": 8}
+    assert resolved.metadata["reference_text"] == "Hello, this is a test"
+    assert resolved.metadata["num_steps"] == 8
+    assert resolved.language == "en"
+    assert resolved.style == "calm"
+
+
+def test_voice_path_promoted_to_planner_profile_also_carries_metadata():
+    """Symmetric carry-through for the ``voice=`` → planner-profile
+    promotion path. ``voice="narrator"`` on an app ref looks up
+    the planner profile and promotes to ``speaker`` semantics; the
+    metadata fields must flow the same way as the explicit
+    ``speaker=`` path."""
+    selection = _selection_with_app_speakers(
+        {
+            "narrator": _profile(
+                speaker_id="narrator",
+                reference_audio="/r.wav",
+                metadata={"reference_text": "voice path", "num_steps": 12},
+                language="en-US",
+            )
+        }
+    )
+    resolved = resolve_tts_speaker(
+        speaker=None,
+        voice="narrator",
+        selection=selection,
+        is_app_ref=True,
+    )
+    assert resolved.source == "planner_profile"
+    assert resolved.metadata == {"reference_text": "voice path", "num_steps": 12}
+    assert resolved.language == "en-US"
+
+
+def test_native_voice_and_default_paths_have_empty_metadata():
+    """Native-voice and default-resolution paths produce
+    ``metadata=None`` / ``language=None`` — the planner-side
+    carry-through only applies when a profile actually existed."""
+    # Native-voice path (no planner map).
+    resolved = resolve_tts_speaker(
+        speaker=None,
+        voice="af_bella",
+        selection=None,
+        is_app_ref=False,
+    )
+    assert resolved.source == "native_voice"
+    assert resolved.metadata is None
+    assert resolved.language is None
+    assert resolved.style is None
+
+    # Default path.
+    resolved_default = resolve_tts_speaker(
+        speaker=None,
+        voice=None,
+        selection=None,
+        is_app_ref=False,
+    )
+    assert resolved_default.source == "default"
+    assert resolved_default.metadata is None
+
+
+def test_list_logical_speakers_includes_language_style_and_metadata():
+    """``list_logical_speakers`` feeds ``VoiceInfo``; pre-fix it
+    dropped ``language``/``style``/``metadata`` so the public
+    ``VoiceInfo.language`` field always came out None even when
+    the planner profile carried one."""
+    selected = RuntimeCandidatePlan(
+        locality="local",
+        priority=0,
+        confidence=0.9,
+        reason="pocket",
+        tts_speakers={
+            "fr_voice": _profile(
+                speaker_id="fr_voice",
+                reference_audio="/r.wav",
+                language="fr-FR",
+                style="warm",
+                metadata={"reference_text": "Bonjour"},
+            ),
+        },
+    )
+    selection = RuntimeSelection(locality="local", candidates=[selected])
+
+    speakers = list_logical_speakers(selection, selected_candidate=selected)
+    assert len(speakers) == 1
+    entry = speakers[0]
+    assert entry["speaker_id"] == "fr_voice"
+    assert entry["language"] == "fr-FR"
+    assert entry["style"] == "warm"
+    assert entry["metadata"] == {"reference_text": "Bonjour"}

@@ -2273,6 +2273,11 @@ class ExecutionKernel:
                         speaker=speaker_id,
                         native_voice=native_voice,
                         requires_reference=bool(entry.get("reference_audio")),
+                        # Planner profiles can declare per-speaker
+                        # ``language``; thread it through to the
+                        # listing surface so UIs that filter by
+                        # language reflect the planner's data.
+                        language=entry.get("language"),
                     )
                 )
 
