@@ -40,6 +40,10 @@ torch = ["torch>=2.8.0"]
 dev = [
     "pytest>=8.4.2",
     "pytest-cov>=4.0.0",
+    # See sibling pyproject.toml for rationale. Keeps the SDK package
+    # consistent with the umbrella repo's test deps so a hung test
+    # surfaces as a 60s failure, not a 6h Actions ceiling kill.
+    "pytest-timeout>=2.3.0",
     "mypy>=1.19.1",
     "ruff>=0.1.0",
     "flwr-datasets>=0.5.0",
@@ -76,6 +80,12 @@ testpaths = ["tests"]
 python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
+# ``timeout`` (from ``pytest-timeout``) caps any single test at 60s.
+# ``timeout_method = "thread"`` uses a watchdog thread (works under
+# pytest-xdist worker subprocesses on every platform). Override
+# per-test with ``@pytest.mark.timeout(N)`` when legitimately slow.
+timeout = 60
+timeout_method = "thread"
 addopts = [
     "--cov=octomil",
     "--cov-report=term-missing",

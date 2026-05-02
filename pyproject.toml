@@ -114,6 +114,13 @@ test = [
   # / ``monkeypatch`` rather than mutating shared filesystem state
   # (the static-recipe cache tests already do).
   "pytest-xdist>=3.5.0",
+  # ``pytest-timeout`` enforces the per-test ``timeout`` configured
+  # in ``[tool.pytest.ini_options]``. Without it, a hung test runs
+  # to the GitHub Actions 6-hour job ceiling — observed live in the
+  # 3.9 matrix leg before it was dropped from PR-CI. Keep this in
+  # the ``test`` extra so both PR-CI and the nightly floor pick it
+  # up automatically.
+  "pytest-timeout>=2.3.0",
   "torch>=2.0.0",
   "numpy>=1.24.0",
   "pandas>=1.5.0",
@@ -172,6 +179,13 @@ testpaths = ["tests"]
 python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
+# ``timeout`` (from ``pytest-timeout``) caps any single test at 60s by
+# default. ``timeout_method = "thread"`` uses a watchdog thread instead
+# of SIGALRM so it works under pytest-xdist's worker subprocesses on
+# every supported platform. Override per-test with ``@pytest.mark.timeout(N)``
+# for legitimately slow integration cases.
+timeout = 60
+timeout_method = "thread"
 addopts = [
   "--cov=octomil",
   "--cov-report=term-missing",
