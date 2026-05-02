@@ -69,7 +69,6 @@ def test_empty_text_passes_through():
         ("I owe him $1200.", "I owe him 1200 dollars."),
         ("$50", "50 dollars"),
         ("It costs $1,234.56 total.", "It costs 1234.56 dollars total."),
-        ("€500 euros wasted", "500 euros euros wasted"),
         ("£42 fee", "42 pounds fee"),
         ("¥1000 in change", "1000 yen in change"),
         ("Refunds: -$100", "Refunds: negative 100 dollars"),
@@ -86,6 +85,58 @@ def test_currency_does_not_touch_bare_numbers():
     espeak handles them correctly via its own number expansion."""
     text = "There were 1200 people, and 1.5M attended overall."
     assert for_kokoro(text) == text
+
+
+# ---------------------------------------------------------------------------
+# espeak_compat — currency P2: no unit-word duplication
+# ---------------------------------------------------------------------------
+#
+# When the author already wrote a unit word after the amount, the
+# normalizer must NOT append another. Pre-fix, ``$1200 dollars`` →
+# ``1200 dollars dollars`` and ``€500 euros`` → ``500 euros euros``
+# (the original test even pinned the bug). Reviewer P2 on 4.16.0.
+
+
+@pytest.mark.parametrize(
+    "raw,expected",
+    [
+        # Pluralized — most common author pattern.
+        ("$1200 dollars", "1200 dollars"),
+        ("€500 euros wasted", "500 euros wasted"),
+        ("£42 pounds remaining", "42 pounds remaining"),
+        ("¥1000 yen in change", "1000 yen in change"),
+        # Singular — author wrote unit in singular form.
+        ("$1 dollar", "1 dollar"),
+        ("£1 pound", "1 pound"),
+        # ISO codes — author used the formal form.
+        ("$50 USD", "50 USD"),
+        ("€100 EUR", "100 EUR"),
+        # Negative + already-unit.
+        ("Refunds: -$100 dollars", "Refunds: negative 100 dollars"),
+        # Mixed: one with unit, one without.
+        ("$5 to $50 dollars", "5 dollars to 50 dollars"),
+        # No double-expansion across the whole sentence.
+        ("I have $1200 dollars and $50 in change.", "I have 1200 dollars and 50 dollars in change."),
+    ],
+)
+def test_currency_does_not_duplicate_existing_unit(raw, expected):
+    assert for_kokoro(raw) == expected
+
+
+def test_currency_does_not_swallow_non_unit_words():
+    """The trailing-unit consume must only fire on actual currency
+    unit words. ``$50 worth`` must NOT eat ``worth`` — ``worth`` is
+    not a unit and the regex's alternation must not match it."""
+    assert for_kokoro("$50 worth of gear") == "50 dollars worth of gear"
+    assert for_kokoro("$1200 reasons") == "1200 dollars reasons"
+
+
+def test_currency_unit_match_respects_word_boundary():
+    """``$50 dollarized`` (made-up but plausible) must NOT match
+    ``dollar`` as a trailing unit and leave a stray ``ized`` —
+    the alternation requires a word boundary so partial-word
+    matches don't eat real text."""
+    assert for_kokoro("$50 dollarized") == "50 dollars dollarized"
 
 
 # ---------------------------------------------------------------------------
@@ -148,6 +199,23 @@ def test_bare_degree_symbol_left_alone():
 )
 def test_abbreviation_expansion(raw, expected):
     assert for_kokoro(raw) == expected
+
+
+def test_st_abbreviation_intentionally_left_alone():
+    """``St.`` is ambiguous between Saint and Street. Reviewer P2
+    on 4.16.0: ``"Meet me on St. John St."`` was normalizing to
+    ``"Meet me on Saint John Saint"``. Conservative posture: leave
+    ``St.`` alone entirely. Espeak reads it as "saint" approximately
+    correctly without our help, and prose-wrecking false positives
+    on street addresses are NOT acceptable in an automatic
+    transform.
+
+    A future context-sensitive expansion (``\\bSt\\. [A-Z]`` only at
+    title position) could revisit this safely; until then, no
+    expansion."""
+    assert for_kokoro("Meet me on St. John St.") == "Meet me on St. John St."
+    assert for_kokoro("St. Nicholas Day") == "St. Nicholas Day"
+    assert for_kokoro("123 Main St.") == "123 Main St."
 
 
 # ---------------------------------------------------------------------------
