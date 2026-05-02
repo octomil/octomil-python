@@ -9,7 +9,7 @@ optional-OTel ImportError path get a dedicated test.
 from __future__ import annotations
 
 import json
-from typing import Any
+from typing import Any, Optional
 
 import pytest
 
@@ -29,8 +29,55 @@ from octomil.audio.streaming import (
     SpeechStream,
     SpeechStreamCompleted,
     SpeechStreamStarted,
-    StreamingMode,
+    TtsStreamingCapability,
 )
+
+
+# Hard cutover: the v4.13 ``StreamingMode.REALTIME`` enum member is
+# gone. Tests construct events with the ``TtsStreamingCapability``
+# factories that match the engine cadence the test is exercising.
+def _capability_progressive() -> TtsStreamingCapability:
+    """Equivalent to v4.13's ``StreamingMode.REALTIME`` for the
+    metrics path: progressive cadence projects to contract
+    ``realtime``."""
+    return TtsStreamingCapability.progressive(verified=False)
+
+
+def _capability_final_chunk() -> TtsStreamingCapability:
+    return TtsStreamingCapability.final_only(verified=False)
+
+
+def _completed(
+    *,
+    duration_ms: int,
+    total_samples: int,
+    sample_rate: int = 24000,
+    capability: Optional[TtsStreamingCapability] = None,
+    total_latency_ms: float = 0.0,
+    e2e_first_chunk_ms: Optional[float] = None,
+    setup_ms: float = 0.0,
+    engine_first_chunk_ms: Optional[float] = None,
+    observed_chunks: int = 1,
+    capability_verified: bool = True,
+) -> SpeechStreamCompleted:
+    """Build a ``SpeechStreamCompleted`` with the new field shape.
+    Defaults match what the metrics tests exercised under the
+    v4.13 shape so the call sites stay readable."""
+    return SpeechStreamCompleted(
+        duration_ms=duration_ms,
+        total_samples=total_samples,
+        sample_rate=sample_rate,
+        channels=1,
+        sample_format="pcm_s16le",
+        streaming_capability=capability or _capability_progressive(),
+        setup_ms=setup_ms,
+        engine_first_chunk_ms=engine_first_chunk_ms,
+        e2e_first_chunk_ms=e2e_first_chunk_ms,
+        total_latency_ms=total_latency_ms,
+        observed_chunks=observed_chunks,
+        capability_verified=capability_verified,
+    )
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -90,7 +137,7 @@ def _started(model: str = "kokoro-82m") -> SpeechStreamStarted:
         sample_rate=24000,
         channels=1,
         sample_format="pcm_s16le",
-        streaming_mode=StreamingMode.REALTIME,
+        streaming_capability=_capability_progressive(),
         locality="on_device",
         engine="sherpa-onnx",
     )
@@ -138,15 +185,11 @@ def test_collector_computes_ttfb_and_rtf_correctly():
     collector.on_started(_started())
     collector.on_chunk(_chunk(b"\x00\x01" * 240, sample_index=240, timestamp_ms=10))
     collector.on_completed(
-        SpeechStreamCompleted(
+        _completed(
             duration_ms=2000,
             total_samples=48000,
-            sample_rate=24000,
-            channels=1,
-            sample_format="pcm_s16le",
-            streaming_mode=StreamingMode.REALTIME,
-            latency_ms=1000.0,
-            first_chunk_ms=50.0,
+            total_latency_ms=1000.0,
+            e2e_first_chunk_ms=50.0,
         )
     )
 
@@ -178,14 +221,10 @@ def test_collector_warns_on_sample_rate_inconsistency(caplog):
 
     with caplog.at_level(_logging.WARNING, logger="octomil.audio.metrics"):
         collector.on_completed(
-            SpeechStreamCompleted(
+            _completed(
                 duration_ms=5000,  # wrong — should be ~1000ms for 24000 samples @ 24kHz
                 total_samples=24000,
-                sample_rate=24000,
-                channels=1,
-                sample_format="pcm_s16le",
-                streaming_mode=StreamingMode.REALTIME,
-                latency_ms=1000.0,
+                total_latency_ms=1000.0,
             )
         )
     msgs = [r.getMessage() for r in caplog.records]
@@ -209,14 +248,10 @@ def test_streaming_mode_maps_to_contract_realtime():
     collector.on_started(_started())
     collector.on_chunk(_chunk(b"\x00", sample_index=1, timestamp_ms=0))
     collector.on_completed(
-        SpeechStreamCompleted(
+        _completed(
             duration_ms=10,
             total_samples=240,
-            sample_rate=24000,
-            channels=1,
-            sample_format="pcm_s16le",
-            streaming_mode=StreamingMode.REALTIME,
-            latency_ms=1000.0,
+            total_latency_ms=1000.0,
         )
     )
     started = next(p for ev, p in sink.events if ev == "tts.stream.started")
@@ -224,9 +259,10 @@ def test_streaming_mode_maps_to_contract_realtime():
 
 
 def test_streaming_mode_maps_final_chunk_to_coalesced():
-    """SDK's ``StreamingMode.FINAL_CHUNK`` projects to the contract
-    label ``coalesced_final_chunk``. The contract uses the longer
-    name to make it impossible to misread as real streaming."""
+    """SDK's ``TtsStreamingMode.FINAL_CHUNK`` projects to the
+    contract label ``coalesced_final_chunk``. The contract uses
+    the longer name to make it impossible to misread as real
+    streaming."""
     sink = _RecordingSink()
     collector = TtsMetricsCollector(
         sink=sink,
@@ -239,21 +275,18 @@ def test_streaming_mode_maps_final_chunk_to_coalesced():
         sample_rate=24000,
         channels=1,
         sample_format="pcm_s16le",
-        streaming_mode=StreamingMode.FINAL_CHUNK,
+        streaming_capability=_capability_final_chunk(),
         locality="on_device",
         engine="sherpa-onnx",
     )
     collector.on_started(started_event)
     collector.on_chunk(_chunk(b"\x00", sample_index=1, timestamp_ms=0))
     collector.on_completed(
-        SpeechStreamCompleted(
+        _completed(
             duration_ms=10,
             total_samples=240,
-            sample_rate=24000,
-            channels=1,
-            sample_format="pcm_s16le",
-            streaming_mode=StreamingMode.FINAL_CHUNK,
-            latency_ms=1000.0,
+            capability=_capability_final_chunk(),
+            total_latency_ms=1000.0,
         )
     )
     started = next(p for ev, p in sink.events if ev == "tts.stream.started")
@@ -362,15 +395,11 @@ async def test_speechstream_emits_started_then_first_chunk_then_completed():
     async def producer():
         yield _started()
         yield _chunk(b"\x00\x01", sample_index=2, timestamp_ms=0)
-        yield SpeechStreamCompleted(
+        yield _completed(
             duration_ms=10,
             total_samples=240,
-            sample_rate=24000,
-            channels=1,
-            sample_format="pcm_s16le",
-            streaming_mode=StreamingMode.REALTIME,
-            latency_ms=1000.0,
-            first_chunk_ms=50.0,
+            total_latency_ms=1000.0,
+            e2e_first_chunk_ms=50.0,
         )
 
     stream = SpeechStream(producer(), metrics_collector=collector)
@@ -475,15 +504,11 @@ async def test_no_input_text_or_audio_bytes_in_emitted_events():
             timestamp_ms=10,
             is_final=False,
         )
-        yield SpeechStreamCompleted(
+        yield _completed(
             duration_ms=10,
             total_samples=240,
-            sample_rate=24000,
-            channels=1,
-            sample_format="pcm_s16le",
-            streaming_mode=StreamingMode.REALTIME,
-            latency_ms=1000.0,
-            first_chunk_ms=50.0,
+            total_latency_ms=1000.0,
+            e2e_first_chunk_ms=50.0,
         )
 
     stream = SpeechStream(producer(), metrics_collector=collector)

@@ -101,14 +101,31 @@ class RejectionReason(str, Enum):
     MODEL_UNKNOWN = "model_unknown"
 
 
-# Mapping from the streaming module's StreamingMode enum to the
-# contract-canonical string. The contract uses
-# ``coalesced_final_chunk`` to make it impossible to misread
-# the label as "real streaming"; the SDK enum predates the
-# contract and uses ``final_chunk`` for back-compat.
+# Mapping from the streaming module's TtsStreamingMode enum values
+# to the contract's wire vocabulary
+# (``octomil-contracts/conformance/tts_observability.yaml::field_semantics.streaming_mode.enum``).
+#
+# Contract vocabulary (only two values):
+#   - ``realtime`` — engine emits PCM as it synthesizes (any
+#     progressive cadence: per-sentence chunks, per-frame chunks,
+#     or anything finer than a single coalesced final chunk).
+#   - ``coalesced_final_chunk`` — engine batched and the SDK wraps
+#     the completed buffer as a single trailing chunk.
+#
+# SDK ``TtsStreamingMode`` is a richer taxonomy than the contract:
+#   - ``final_chunk``     → ``coalesced_final_chunk``
+#   - ``sentence_chunk``  → ``realtime`` (per-sentence boundary IS
+#     progressive — the consumer gets TTFB benefit on multi-
+#     sentence input).
+#   - ``progressive``     → ``realtime`` (sub-sentence cadence —
+#     the engine streams PCM as samples are produced).
+#
+# Anything not listed here projects to ``coalesced_final_chunk``
+# (the safe default — never claim realtime cadence we can't prove).
 _STREAMING_MODE_TO_CONTRACT: dict[str, str] = {
-    "realtime": "realtime",
     "final_chunk": "coalesced_final_chunk",
+    "sentence_chunk": "realtime",
+    "progressive": "realtime",
 }
 
 
@@ -517,7 +534,10 @@ class TtsMetricsCollector:
         self._sample_rate = event.sample_rate
         self._sample_format = event.sample_format
         # Map the SDK enum to the contract-canonical label.
-        sm = getattr(event.streaming_mode, "value", str(event.streaming_mode))
+        # ``streaming_capability.mode`` is the canonical field; the
+        # v4.13 ``streaming_mode`` shim is gone, so read the new
+        # path directly.
+        sm = event.streaming_capability.mode.value
         self._state.streaming_mode_label = _STREAMING_MODE_TO_CONTRACT.get(sm, "coalesced_final_chunk")
         # Locality / engine on the started event override the
         # collector's defaults (the kernel knows the resolved values).
@@ -555,11 +575,11 @@ class TtsMetricsCollector:
             self._state.total_samples = event.total_samples
         if event.duration_ms:
             self._state.audio_duration_ms = event.duration_ms
-        if event.first_chunk_ms is not None:
-            self._state.first_chunk_at_perf = self._state.started_at_perf + event.first_chunk_ms / 1000.0
+        if event.e2e_first_chunk_ms is not None:
+            self._state.first_chunk_at_perf = self._state.started_at_perf + event.e2e_first_chunk_ms / 1000.0
         # streaming_mode might be revised on completion if the engine
         # adapter only knew the answer post-hoc.
-        sm = getattr(event.streaming_mode, "value", str(event.streaming_mode))
+        sm = event.streaming_capability.mode.value
         self._state.streaming_mode_label = _STREAMING_MODE_TO_CONTRACT.get(sm, self._state.streaming_mode_label)
         snapshot = self._snapshot(status="ok")
         # Sample-rate sanity assertion: total_samples / sample_rate * 1000
