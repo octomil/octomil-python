@@ -3420,9 +3420,24 @@ class ExecutionKernel:
         # candidates with ``prepare_policy='explicit_only'`` succeed,
         # mirroring ``self.prepare``. Doing it here (instead of
         # delegating to ``self.prepare``) lets us reuse the same
-        # ``selection`` / ``candidate`` for both prepare and the cache
-        # key — no second planner round-trip, no risk of resolving a
-        # different artifact for the cache than the one prepare ran on.
+        # ``selection`` for prepare and for cache-key derivation
+        # without a second planner round-trip.
+        #
+        # Two intentionally-different identities flow out of that one
+        # selection:
+        #   - **prepare** uses ``candidate`` (the
+        #     ``_select_prepare_candidate`` output, possibly the
+        #     static-recipe substitution) — bytes-on-disk identity.
+        #   - **cache key** uses ``planner_candidate`` (the planner-
+        #     original from ``_local_sdk_runtime_candidate(selection)``)
+        #     so it matches the shape ``_lookup_warmed_backend`` will
+        #     re-derive at dispatch time.
+        #
+        # Do NOT "fix" the cache to reuse ``candidate``: the dispatch
+        # path doesn't see the substitution, so keying on the
+        # substituted candidate makes the entry unreachable. (Eternum
+        # 4.15.0 cold-load regression — see the regression test
+        # ``test_warmup_cache_key_uses_planner_candidate_not_substituted_candidate``.)
         from octomil.runtime.lifecycle.prepare_manager import PrepareManager, PrepareMode
 
         manager = self._prepare_manager or PrepareManager()
@@ -3436,7 +3451,21 @@ class ExecutionKernel:
 
             Materializer().materialize(prepare_outcome.artifact_dir, used_static_recipe.materialization)
         artifact_dir = str(prepare_outcome.artifact_dir)
-        cache_key = self._warmup_cache_key(capability, runtime_model, candidate)
+        # Cache MUST be keyed under the planner candidate, not the
+        # prepare-substituted candidate. The dispatch path's
+        # ``_lookup_warmed_backend`` re-derives ``planner_candidate``
+        # from ``_local_sdk_runtime_candidate(selection)`` and looks
+        # up under that artifact identity. If we keyed under the
+        # static-recipe-substituted ``candidate`` here, every dispatch
+        # would miss because the dispatch's planner candidate carries
+        # different artifact metadata (or echo-only None metadata)
+        # vs. the recipe's. Symptom: ``warmup`` reports ``loaded=True``
+        # but every stream still pays full ``setup_ms`` for cold load.
+        # Static-recipe substitution is for what gets PREPARED on
+        # disk; cache identity is for what the request will RESOLVE
+        # to at dispatch time. Two different concerns, two different
+        # shapes.
+        cache_key = self._warmup_cache_key(capability, runtime_model, planner_candidate)
 
         backend_loaded = False
         if capability == CAPABILITY_TTS:
