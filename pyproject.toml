@@ -136,6 +136,11 @@ dev = [
   "pytest>=7.0.0",
   "pytest-cov>=4.0.0",
   "pytest-asyncio>=0.21.0",
+  # make install runs uv pip install -e ".[dev]"; mirror the
+  # test extra's pytest-timeout pin so local make test enforces
+  # the same per-test cap as CI. Without this, local dev runs the
+  # suite uncapped and a hung test wedges the dev loop indefinitely.
+  "pytest-timeout>=2.3.0",
   "torch>=2.0.0",
   "numpy>=1.24.0",
   "pandas>=1.5.0",
