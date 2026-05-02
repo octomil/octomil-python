@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 4.16.1 (2026-05-02)
+
+### Fixes
+
+- two text-normalize false positives in espeak_compat profile (#495). Currency normalization no longer duplicates an existing unit (`$1200 dollars` stays `1200 dollars`, not `1200 dollars dollars`); `St.` is dropped from the default abbreviation safe set so street addresses (`Meet me on St. John St.`) are not rewritten to `Saint John Saint`.
+
 ## 4.16.0 (2026-05-02)
 
 ### Features
