@@ -40,7 +40,7 @@ torch = ["torch>=2.8.0"]
 dev = [
     "pytest>=8.4.2",
     "pytest-cov>=4.0.0",
-    "mypy>=1.0.0",
+    "mypy>=1.19.1",
     "ruff>=0.1.0",
     "flwr-datasets>=0.3.0",
     "cryptography>=41.0.0",
