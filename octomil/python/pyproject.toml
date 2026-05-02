@@ -30,11 +30,11 @@ dependencies = [
 [project.optional-dependencies]
 s3 = ["s3fs>=2023.1.0"]
 gcs = ["gcsfs>=2023.1.0"]
-azure = ["adlfs>=2023.1.0"]
+azure = ["adlfs>=2025.8.0"]
 all = [
     "s3fs>=2023.1.0",
     "gcsfs>=2023.1.0",
-    "adlfs>=2023.1.0",
+    "adlfs>=2025.8.0",
 ]
 torch = ["torch>=2.8.0"]
 dev = [
