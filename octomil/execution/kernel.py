@@ -3420,9 +3420,24 @@ class ExecutionKernel:
         # candidates with ``prepare_policy='explicit_only'`` succeed,
         # mirroring ``self.prepare``. Doing it here (instead of
         # delegating to ``self.prepare``) lets us reuse the same
-        # ``selection`` / ``candidate`` for both prepare and the cache
-        # key — no second planner round-trip, no risk of resolving a
-        # different artifact for the cache than the one prepare ran on.
+        # ``selection`` for prepare and for cache-key derivation
+        # without a second planner round-trip.
+        #
+        # Two intentionally-different identities flow out of that one
+        # selection:
+        #   - **prepare** uses ``candidate`` (the
+        #     ``_select_prepare_candidate`` output, possibly the
+        #     static-recipe substitution) — bytes-on-disk identity.
+        #   - **cache key** uses ``planner_candidate`` (the planner-
+        #     original from ``_local_sdk_runtime_candidate(selection)``)
+        #     so it matches the shape ``_lookup_warmed_backend`` will
+        #     re-derive at dispatch time.
+        #
+        # Do NOT "fix" the cache to reuse ``candidate``: the dispatch
+        # path doesn't see the substitution, so keying on the
+        # substituted candidate makes the entry unreachable. (Eternum
+        # 4.15.0 cold-load regression — see the regression test
+        # ``test_warmup_cache_key_uses_planner_candidate_not_substituted_candidate``.)
         from octomil.runtime.lifecycle.prepare_manager import PrepareManager, PrepareMode
 
         manager = self._prepare_manager or PrepareManager()
