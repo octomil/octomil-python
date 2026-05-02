@@ -3618,8 +3618,29 @@ class ExecutionKernel:
         Used by tests and long-running embedded callers that want to
         free GPU memory between phases. The next inference dispatch
         rebuilds through the normal cold path. Idempotent.
+
+        Also clears the per-process planner-selection cache (added in
+        the cross-model perf PR) so the next dispatch re-resolves
+        from scratch — same posture the warmup cache uses.
         """
+        from octomil.execution.planner_resolution import (
+            release_planner_selection_cache,
+        )
+
         self._warmed_backends.clear()
+        release_planner_selection_cache()
+        # Best-effort: voice catalog cache lives in the sherpa engine
+        # module which only imports successfully when [tts] is
+        # installed. Skipping on ImportError matches the rest of the
+        # kernel's "sherpa-onnx may be unavailable on stripped
+        # embedded Pythons" posture.
+        try:
+            from octomil.runtime.engines.sherpa.engine import (
+                release_voice_catalog_cache,
+            )
+        except Exception:  # pragma: no cover — best-effort import
+            return
+        release_voice_catalog_cache()
 
     def _prepare_local_transcription_artifact(self, selection: Optional[Any]) -> Optional[str]:
         """Run PrepareManager for the local transcription candidate, if any.

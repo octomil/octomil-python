@@ -34,6 +34,46 @@ _PLANNER_CAPABILITY_MAP = {
 _PLANNER_BOOTSTRAP_WARNED = False
 
 
+# ---------------------------------------------------------------------------
+# Outer per-process planner-selection cache: REMOVED (reviewer P1).
+# ---------------------------------------------------------------------------
+#
+# An earlier revision of this PR added a TTL'd dict here keyed only on
+# ``(model, capability, policy_preset)``. That key shadowed the
+# correctness-critical context the planner already keys on internally
+# at ``runtime/planner/planner.py::resolve`` —
+# ``sdk_version + platform + arch + chip + installed_runtimes_hash +
+# api_base + org_id_hash + key_type + app_slug``. The narrow outer
+# cache could serve org-A / staging / app-policy plans to org-B /
+# prod / later-app-policy calls within the TTL, and bypassed the
+# live-app-plan rule the planner enforces for app-ref dispatches.
+#
+# The planner already covers the "skip the round-trip on warm
+# repeats" case via its own ``_store.get_plan(cache_key)`` lookup —
+# at the right layer, with the right keys. The outer cache was pure
+# complexity for no correctness-safe win. Dropped.
+#
+# If a future perf cut wants to skip the planner construction or the
+# disk lookup entirely, that work belongs INSIDE the planner module
+# where the auth/device/app context is already in scope. Don't
+# reintroduce an outer cache here.
+#
+# ``release_planner_selection_cache`` is preserved as a no-op shim
+# so existing callers (and the kernel's ``release_warmed_backends``
+# cascade) keep importing successfully.
+
+
+def release_planner_selection_cache() -> None:
+    """No-op shim. The outer process cache was removed in the
+    P1 fix; the planner's internal store cache is now the only
+    correctness-aware caching layer. This entry point stays
+    callable for the public ``release_warmed_backends`` cascade.
+
+    Idempotent.
+    """
+    return None
+
+
 def _resolve_planner_selection(
     model: str,
     capability: str,
@@ -97,7 +137,10 @@ def _resolve_planner_selection(
 
     # Resolve phase: HTTP misses, auth failures, transient 5xx. Stay
     # at DEBUG — the per-request error already surfaces through the
-    # client, and routing falls through to local.
+    # client, and routing falls through to local. The planner's own
+    # ``_store.get_plan(cache_key)`` already handles repeat calls
+    # cheaply (and correctly, since it keys on the full auth/device/
+    # app context); no outer caching here.
     try:
         return planner.resolve(
             model=model,
