@@ -114,9 +114,11 @@ class RejectionReason(str, Enum):
 #
 # SDK ``TtsStreamingMode`` is a richer taxonomy than the contract:
 #   - ``final_chunk``     → ``coalesced_final_chunk``
-#   - ``sentence_chunk``  → ``realtime`` (per-sentence boundary IS
-#     progressive — the consumer gets TTFB benefit on multi-
-#     sentence input).
+#   - ``sentence_chunk``  → ``realtime`` under the observability
+#     contract (the consumer gets TTFB benefit on multi-sentence
+#     input). NOT progressive in the engine-cadence sense —
+#     progressive denotes sub-sentence PCM, which only
+#     ``TtsStreamingMode.PROGRESSIVE`` advertises.
 #   - ``progressive``     → ``realtime`` (sub-sentence cadence —
 #     the engine streams PCM as samples are produced).
 #
