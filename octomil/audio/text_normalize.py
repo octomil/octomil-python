@@ -23,8 +23,10 @@ Profiles
       - Percentage: ``50%`` → ``50 percent`` (espeak version
         coverage is uneven).
       - Common abbreviations: ``Mr.`` / ``Mrs.`` / ``Ms.`` / ``Dr.``
-        / ``St.`` / ``Mt.`` / ``vs.`` / ``etc.`` expand to their
-        spoken forms.
+        / ``Mt.`` / ``vs.`` / ``etc.`` expand to their spoken forms.
+        ``St.`` is intentionally NOT in this set — too ambiguous
+        between Saint and Street; expanding by default produces
+        prose-wrecking false positives on street addresses.
       - Degree symbols: ``°F`` / ``°C`` → "degrees Fahrenheit/Celsius".
 
 ``none``
@@ -124,21 +126,60 @@ _CURRENCY_SYMBOLS: dict[str, str] = {
     "£": "pounds",
     "¥": "yen",
 }
-# Match digits + optional comma-grouped thousands + optional decimal.
-# Each comma must be FOLLOWED by exactly three digits — that's the
-# thousands-separator grammar — so a trailing ``$1200,`` (comma is
-# sentence punctuation, not a thousands separator) leaves the comma
-# in the source text. ``\d+`` first consumes greedy leading digits;
-# the ``(?:,\d{3})*`` only fires for genuine thousands groups.
-_CURRENCY_PATTERN = re.compile(
-    r"(?P<neg>-)?(?P<sym>[$€£¥])" r"(?P<amount>\d+(?:,\d{3})*(?:\.\d+)?)",
-)
+
+# Per-symbol set of trailing unit-words the regex should swallow when
+# the author already wrote one. Without this the match for ``$1200``
+# in ``"$1200 dollars"`` would produce ``"1200 dollars dollars"`` —
+# the headline P2 a reviewer flagged after 4.16.0 went out. Includes
+# both singular and plural forms plus the ISO code so prose like
+# ``$50 USD`` doesn't double-print.
+_CURRENCY_TRAILING_UNITS: dict[str, tuple[str, ...]] = {
+    "$": ("dollars", "dollar", "USD"),
+    "€": ("euros", "euro", "EUR"),
+    "£": ("pounds", "pound", "GBP"),
+    "¥": ("yen", "JPY"),
+}
+
+
+def _build_currency_pattern() -> re.Pattern[str]:
+    """Compile the currency regex with an optional trailing-unit
+    capture group derived from :data:`_CURRENCY_TRAILING_UNITS`.
+
+    The trailing alternation ``\\s+(?:dollars|...)\\b`` captures any
+    unit word the author already wrote so the replacement can skip
+    re-appending it. When no trailing unit is present, that group
+    is ``None`` and the replacement falls back to "amount + unit".
+    """
+    units_alt = "|".join(re.escape(u) for words in _CURRENCY_TRAILING_UNITS.values() for u in words)
+    return re.compile(
+        r"(?P<neg>-)?(?P<sym>[$€£¥])"
+        r"(?P<amount>\d+(?:,\d{3})*(?:\.\d+)?)"
+        r"(?P<trailing>\s+(?:" + units_alt + r")\b)?"
+    )
+
+
+# Match digits + optional comma-grouped thousands + optional decimal,
+# plus an optional ALREADY-PRESENT unit word. Each thousands comma
+# must be followed by exactly three digits, so a trailing ``$1200,``
+# (comma is sentence punctuation, not a thousands separator) leaves
+# the comma in the source text.
+_CURRENCY_PATTERN = _build_currency_pattern()
 
 
 def _replace_currency(match: re.Match[str]) -> str:
     sym = match.group("sym")
     amount = match.group("amount").replace(",", "")
     unit = _CURRENCY_SYMBOLS.get(sym, sym)
+    trailing = match.group("trailing")
+    # If the author already wrote a unit word after the amount,
+    # preserve it verbatim and drop the symbol — replacing
+    # ``$1200 dollars`` with ``1200 dollars dollars`` is the bug
+    # that prompted this fix. The trailing group includes its own
+    # leading whitespace, so concatenating reproduces the original
+    # spacing exactly.
+    if trailing is not None:
+        head = f"negative {amount}" if match.group("neg") else amount
+        return f"{head}{trailing}"
     if match.group("neg"):
         return f"negative {amount} {unit}"
     return f"{amount} {unit}"
@@ -169,12 +210,19 @@ def _replace_degree(match: re.Match[str]) -> str:
 # Abbreviations: word-boundary match the abbrev followed by a
 # period; expand to spoken form. Order matters — longer matches
 # first so ``Mrs.`` doesn't get caught by ``Mr.``.
+# NOTE: ``St.`` is intentionally NOT in this list. It's ambiguous
+# between "Saint" and "Street" — sentences like
+# ``"Meet me on St. John St."`` would normalize to
+# ``"Meet me on Saint John Saint"`` (P2 reviewer finding on 4.16.0).
+# Espeak reads ``St.`` as "saint" approximately correctly without
+# our help, so the conservative posture is to leave it alone
+# entirely. A future context-sensitive expansion (``\bSt\. [A-Z]``
+# only at title position, etc.) could revisit this.
 _ABBREVIATIONS: tuple[tuple[str, str], ...] = (
     ("Mrs.", "Misses"),
     ("Ms.", "Miss"),
     ("Mr.", "Mister"),
     ("Dr.", "Doctor"),
-    ("St.", "Saint"),  # ambiguous w/ "Street"; "Saint" is more common
     ("Mt.", "Mount"),
     ("vs.", "versus"),
     ("etc.", "etcetera"),
