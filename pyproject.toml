@@ -108,6 +108,13 @@ test = [
   "pytest>=7.0.0",
   "pytest-cov>=4.0.0",
   "pytest-asyncio>=0.21.0",
+  # ``pytest-timeout`` is a structural fence: any individual test that
+  # deadlocks (subprocess wait, asyncio loop, network call) is killed
+  # at the per-test ``timeout`` instead of consuming the full job
+  # ceiling. Required after the multi-hour 3.9 hang that burned
+  # Actions minutes across every Dependabot PR. See
+  # ``[tool.pytest.ini_options].timeout`` below for the default.
+  "pytest-timeout>=2.3.0",
   # ``pytest-xdist`` parallelizes the suite across worker processes
   # (``pytest -n auto`` in CI). With ~5k tests, it cuts CI wall time
   # 2-4x. Tests must remain isolated across workers — use ``tmp_path``
@@ -172,6 +179,14 @@ testpaths = ["tests"]
 python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
+# Structural per-test timeout. Catches any test that hangs on a
+# subprocess / asyncio / network call before it consumes the full
+# job ceiling. ``thread`` method works under ``pytest-xdist`` (the
+# default ``signal`` method is incompatible with worker subprocesses).
+# Individual tests that legitimately need longer can override with
+# ``@pytest.mark.timeout(N)``.
+timeout = 60
+timeout_method = "thread"
 addopts = [
   "--cov=octomil",
   "--cov-report=term-missing",

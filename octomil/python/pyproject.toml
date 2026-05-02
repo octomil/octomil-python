@@ -40,6 +40,9 @@ torch = ["torch>=2.8.0"]
 dev = [
     "pytest>=8.4.2",
     "pytest-cov>=4.0.0",
+    # Structural per-test timeout fence. See [tool.pytest.ini_options]
+    # below for the default. Required after the multi-hour 3.9 hang.
+    "pytest-timeout>=2.3.0",
     "mypy>=1.19.1",
     "ruff>=0.1.0",
     "flwr-datasets>=0.5.0",
@@ -76,6 +79,11 @@ testpaths = ["tests"]
 python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
+# Structural per-test timeout. Use the ``thread`` method so it
+# composes with pytest-xdist worker subprocesses. Override per-test
+# with ``@pytest.mark.timeout(N)`` if a test legitimately needs more.
+timeout = 60
+timeout_method = "thread"
 addopts = [
     "--cov=octomil",
     "--cov-report=term-missing",
