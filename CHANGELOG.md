@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## 4.16.0 (2026-05-02)
+
+### Features
+
+- automatic backend-aware text normalization for TTS (#493) — Kokoro / Piper requests now have `$1200`, `Mr.`, `50%`, `°F`, etc. normalized in the dispatch path before the espeak-ng frontend sees them. No client-side normalizer needed. Pocket and other LM-based backends declare `text_normalization_profile() == "none"` and remain untouched. Opt-out via `text_normalization="off"`.
+- cross-model perf cuts: voice catalog cache (mtime-keyed) + ORT thread default (cores capped at 4) + opt-in `OCTOMIL_SHERPA_PROVIDER=coreml` (#492) — measurable warm-dispatch `setup_ms` reduction across all sherpa-family TTS backends.
+
 ## 4.15.1 (2026-05-02)
 
 ### Fixes
