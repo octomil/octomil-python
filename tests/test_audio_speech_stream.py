@@ -1528,28 +1528,33 @@ async def test_pocket_missing_reference_raises_before_started_is_emitted():
 
 
 # ---------------------------------------------------------------------------
-# P1 regression — v4.13 stream API compatibility
+# Hard-cutover invariants — the v4.13 ``StreamingMode`` alias and
+# the ``streaming_mode`` / ``latency_ms`` / ``first_chunk_ms``
+# compat properties have been removed. These tests pin the new
+# canonical API and assert the old names DO NOT resolve, so any
+# attempt to re-add a compat shim fails the build.
 # ---------------------------------------------------------------------------
 
 
-def test_v4_13_streaming_mode_alias_keeps_working():
-    """v4.13 shipped the enum as ``StreamingMode``. Renaming to
-    ``TtsStreamingMode`` was correct, but ``from octomil.audio.streaming
-    import StreamingMode`` was already in customer code. The alias
-    must keep working through the deprecation window."""
-    from octomil.audio.streaming import StreamingMode, TtsStreamingMode
+def test_streaming_mode_alias_no_longer_exported():
+    """v4.13's ``StreamingMode`` alias was removed in the hard
+    cutover. ``TtsStreamingMode`` is the canonical name; any
+    consumer importing the old name must migrate."""
+    import octomil.audio.streaming as streaming
 
-    assert StreamingMode is TtsStreamingMode
-    assert StreamingMode.FINAL_CHUNK == TtsStreamingMode.FINAL_CHUNK
-    assert StreamingMode("sentence_chunk") is TtsStreamingMode.SENTENCE_CHUNK
+    assert hasattr(streaming, "TtsStreamingMode")
+    assert not hasattr(streaming, "StreamingMode"), (
+        "StreamingMode alias is gone post-cutover; consumers must " "import TtsStreamingMode."
+    )
 
 
-def test_v4_13_started_event_streaming_mode_property():
-    """v4.13 read ``started.streaming_mode`` directly. Post-rename
-    the canonical field is ``started.streaming_capability.mode``;
-    a read-only property forwards the v4.13 spelling so existing
-    code keeps working."""
+def test_started_and_completed_no_longer_expose_v4_13_attribute_names():
+    """``SpeechStreamStarted.streaming_mode`` and
+    ``SpeechStreamCompleted.{streaming_mode,latency_ms,first_chunk_ms}``
+    are gone. Use ``streaming_capability.mode`` /
+    ``total_latency_ms`` / ``e2e_first_chunk_ms``."""
     from octomil.audio.streaming import (
+        SpeechStreamCompleted,
         SpeechStreamStarted,
         TtsStreamingCapability,
         TtsStreamingMode,
@@ -1564,23 +1569,8 @@ def test_v4_13_started_event_streaming_mode_property():
         streaming_capability=TtsStreamingCapability.sentence(verified=True),
         locality="on_device",
     )
-    assert started.streaming_mode is TtsStreamingMode.SENTENCE_CHUNK
-    # Canonical field still reachable.
+    assert not hasattr(started, "streaming_mode"), "streaming_mode property removed; use streaming_capability.mode"
     assert started.streaming_capability.mode is TtsStreamingMode.SENTENCE_CHUNK
-
-
-def test_v4_13_completed_event_compat_properties():
-    """v4.13 read ``completed.streaming_mode`` /
-    ``completed.latency_ms`` / ``completed.first_chunk_ms``.
-    Post-rename the canonical names are ``streaming_capability.mode``
-    / ``total_latency_ms`` / ``e2e_first_chunk_ms``; mapping
-    properties forward the v4.13 spelling so existing code reading
-    the old names keeps working."""
-    from octomil.audio.streaming import (
-        SpeechStreamCompleted,
-        TtsStreamingCapability,
-        TtsStreamingMode,
-    )
 
     completed = SpeechStreamCompleted(
         duration_ms=1000,
@@ -1596,11 +1586,10 @@ def test_v4_13_completed_event_compat_properties():
         observed_chunks=1,
         capability_verified=True,
     )
-    # v4.13 compat surface.
-    assert completed.streaming_mode is TtsStreamingMode.FINAL_CHUNK
-    assert completed.latency_ms == 950.0
-    assert completed.first_chunk_ms == 18.0
-    # Canonical fields unchanged.
+    assert not hasattr(completed, "streaming_mode")
+    assert not hasattr(completed, "latency_ms")
+    assert not hasattr(completed, "first_chunk_ms")
+    # Canonical fields are reachable under their new names.
     assert completed.streaming_capability.mode is TtsStreamingMode.FINAL_CHUNK
     assert completed.total_latency_ms == 950.0
     assert completed.e2e_first_chunk_ms == 18.0
