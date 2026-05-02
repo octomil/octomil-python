@@ -84,12 +84,23 @@ class TtsStreamingGranularity(str, Enum):
 
 @dataclass(frozen=True)
 class TtsStreamingCapability:
-    """What the engine *claims* it can do for a given (model, input).
+    """What a **TTS runtime backend** claims it can do for a given
+    (model, input).
+
+    Generic over TTS runtimes — the same capability shape is the
+    common contract for Kokoro, Piper, Pocket/F5, XTTS, future Sherpa
+    adapters, and anything else that implements ``synthesize_stream``.
+    ASR / transcription / translation runtimes get analogous
+    capability objects later; do NOT reuse this one for those.
 
     ``verified`` is ``True`` once the SDK has observed the engine
     actually delivering the advertised cadence on this model+artifact.
-    Until then it's an unverified declaration; the completion event
-    will flag a downgrade if the run did not match.
+    Until then it's an unverified declaration; the kernel's
+    ``_verify_capability`` flips it on completion based on
+    ``observed_chunks`` and (for ``progressive``) the input's sentence
+    count. ``progressive`` does NOT mean "this runtime magically
+    streams"; it means "this TTS backend claims sub-sentence cadence,
+    and the kernel will verify or downgrade based on the actual run."
 
     Construct via :func:`TtsStreamingCapability.final_only` /
     ``.sentence`` / ``.progressive`` for readability.

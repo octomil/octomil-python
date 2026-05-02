@@ -15,7 +15,6 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-import re
 import struct
 import threading
 import time
@@ -24,6 +23,12 @@ from dataclasses import dataclass
 from io import BytesIO
 from typing import TYPE_CHECKING, Any, AsyncIterator, Optional
 
+# Sentence counting moved to ``octomil.audio._segmentation`` so the
+# kernel's ``_verify_capability`` can use the same regex without
+# importing from a backend-specific module. Re-exported here as
+# ``_count_sentences`` so existing callers (and the engine's own
+# ``streaming_capability``) keep working unchanged.
+from octomil.audio._segmentation import count_sentences as _count_sentences
 from octomil.errors import OctomilError, OctomilErrorCode
 from octomil.runtime.core.base import BenchmarkResult, EnginePlugin
 
@@ -1296,25 +1301,6 @@ class _StreamBridge:
             err = self._error
         if err is not None:
             raise err
-
-
-_SENTENCE_TERMINATORS = re.compile(r"[.!?。！？]+\s+\S")
-
-
-def _count_sentences(text: str) -> int:
-    """Cheap sentence count for streaming-capability advertisement.
-
-    Mirrors what sherpa-onnx's ``max_num_sentences=1`` will actually
-    split on (period / exclamation / question + whitespace). Not a
-    full ICU-grade sentence segmenter — we just need a yes/no on
-    "is multi-sentence." A trailing terminator without following
-    text is still one sentence; the regex requires a non-space
-    character after the whitespace so ``"Hello."`` reports 1, not 2.
-    """
-    if not text or not text.strip():
-        return 0
-    matches = _SENTENCE_TERMINATORS.findall(text)
-    return 1 + len(matches)
 
 
 def _float32_to_pcm_s16le_bytes(samples: Any) -> bytes:

@@ -105,22 +105,33 @@ class RejectionReason(str, Enum):
 # to the contract's wire vocabulary
 # (``octomil-contracts/conformance/tts_observability.yaml::field_semantics.streaming_mode.enum``).
 #
-# Contract vocabulary (only two values):
-#   - ``realtime`` — engine emits PCM as it synthesizes (any
-#     progressive cadence: per-sentence chunks, per-frame chunks,
-#     or anything finer than a single coalesced final chunk).
+# Contract vocabulary today is intentionally just two values:
+#   - ``realtime`` — engine emits PCM incrementally during synthesis,
+#     any cadence finer than a single coalesced final chunk.
 #   - ``coalesced_final_chunk`` — engine batched and the SDK wraps
 #     the completed buffer as a single trailing chunk.
 #
-# SDK ``TtsStreamingMode`` is a richer taxonomy than the contract:
-#   - ``final_chunk``     → ``coalesced_final_chunk``
-#   - ``sentence_chunk``  → ``realtime`` under the observability
-#     contract (the consumer gets TTFB benefit on multi-sentence
-#     input). NOT progressive in the engine-cadence sense —
-#     progressive denotes sub-sentence PCM, which only
-#     ``TtsStreamingMode.PROGRESSIVE`` advertises.
+# SDK ``TtsStreamingMode`` is a richer taxonomy than the 2-label
+# observability contract; the projection here is lossy ON PURPOSE
+# (the contract may grow a third label later — see the comment in
+# ``octomil-contracts/conformance/tts_observability.yaml`` on the
+# streaming_mode enum). Don't rely on the projection to disambiguate
+# sentence-boundary from sub-sentence cadence; that's what the
+# ``streaming_capability`` field on the typed events is for.
+#
+#   - ``final_chunk``     → ``coalesced_final_chunk`` (no streaming).
+#   - ``sentence_chunk``  → ``realtime`` (incremental sentence-
+#     boundary cadence — the consumer gets per-sentence TTFB benefit
+#     on multi-sentence input). NOT "progressive" in the engine-
+#     cadence sense — progressive denotes sub-sentence PCM, which
+#     only ``TtsStreamingMode.PROGRESSIVE`` advertises. Sentence-
+#     boundary output is ``sentence_chunk``, distinct from sub-
+#     sentence progressive output even though both project to
+#     ``realtime`` under the current 2-label observability contract.
 #   - ``progressive``     → ``realtime`` (sub-sentence cadence —
-#     the engine streams PCM as samples are produced).
+#     engine streams PCM as samples are produced; only verified for
+#     single-sentence input that yields multiple chunks, see
+#     ``octomil.execution.kernel._verify_capability``).
 #
 # Anything not listed here projects to ``coalesced_final_chunk``
 # (the safe default — never claim realtime cadence we can't prove).
