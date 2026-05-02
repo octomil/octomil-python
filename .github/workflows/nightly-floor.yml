@@ -11,9 +11,16 @@ name: Nightly Floor (3.9)
 #
 # Strict bounds:
 # - timeout-minutes: 60 on the job (10x the typical 3.11 wall time)
-# - fail-fast: true so a hang doesn't block subsequent attempts
-# - --timeout=120 if pytest-timeout is available (added with the
-#   companion follow-up); otherwise the job-level fence still applies.
+# - --timeout=120 per pytest test (via pytest-timeout); pin in install
+#   step so the job fences even if pytest-timeout isn't in the runtime
+#   default install profile.
+#
+# Note on what's NOT here:
+# - No ``strategy.fail-fast`` is set because there is no matrix: the
+#   workflow runs a single 3.9 job. ``fail-fast`` only applies to
+#   matrix strategies, so it would be inert. If 3.12 or another
+#   Python is added back to this floor, add a matrix and the
+#   corresponding ``fail-fast`` directive then.
 
 on:
   schedule:
