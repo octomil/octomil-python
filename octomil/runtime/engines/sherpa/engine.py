@@ -77,6 +77,35 @@ def _default_voice(model_name: str) -> str:
     return entry[1] if entry else ""
 
 
+def _default_sherpa_num_threads() -> int:
+    """Default ONNX Runtime thread count for sherpa-onnx TTS load.
+
+    Cross-model perf knob — applies uniformly to Kokoro, Piper, Pocket
+    (all sherpa-onnx-backed). Pre-fix the default was hardcoded ``2``,
+    leaving ~75% of an M-series perf-core budget on the floor for the
+    main-thread synthesis path.
+
+    Heuristic: ``min(os.cpu_count() or 2, 4)``. Four threads is the
+    sweet spot ONNX Runtime documents for non-batched VITS-class
+    graphs — diminishing returns above, and oversubscription causes
+    thrash that *increases* per-sentence latency. Capping at 4 keeps
+    us safe on 16+ core boxes and on shared CI runners.
+
+    Override paths (in priority order):
+      - per-call ``num_threads=`` kwarg (tests pin this).
+      - ``OCTOMIL_SHERPA_NUM_THREADS`` env var.
+      - this default.
+    """
+    raw = os.environ.get("OCTOMIL_SHERPA_NUM_THREADS")
+    if raw is not None:
+        try:
+            return max(1, int(raw))
+        except (TypeError, ValueError):
+            pass
+    cores = os.cpu_count() or 2
+    return min(max(1, cores), 4)
+
+
 # Per-artifact Kokoro voice catalogs. Position in the tuple ==
 # sherpa-onnx speaker id in the corresponding voices.bin.
 #
@@ -268,6 +297,27 @@ class ResolvedVoiceCatalog:
     artifact_version: str = ""
 
 
+# Process-lifetime cache for ``resolve_voice_catalog``. Keyed on the
+# resolver inputs; values invalidate via ``release_voice_catalog_cache``
+# (called from ``ExecutionKernel.release_warmed_backends`` so the public
+# "drop caches" surface clears this too). Without the cache, every TTS
+# dispatch re-reads ``voices.txt`` + ``VERSION`` from disk and re-runs the
+# layout-fallback introspection — pure waste once the prepared artifact is
+# on disk and immutable. The cache key includes the prepared_model_dir
+# string verbatim so two artifacts at different paths don't alias.
+_VOICE_CATALOG_CACHE: dict[tuple[str, Optional[str], tuple[str, ...], str], "ResolvedVoiceCatalog"] = {}
+
+
+def release_voice_catalog_cache() -> None:
+    """Drop every cached voice-catalog resolution.
+
+    Idempotent. Called from ``ExecutionKernel.release_warmed_backends``
+    so the existing public "drop my caches" surface clears this too.
+    Tests use it directly to reset between runs.
+    """
+    _VOICE_CATALOG_CACHE.clear()
+
+
 def resolve_voice_catalog(
     model_name: str,
     *,
@@ -293,6 +343,43 @@ def resolve_voice_catalog(
     Returns an empty catalog (``voices=()``) when none of the above
     yields a result; callers translate that into a strict refusal
     for the explicit-voice path or a "no catalog known" listing.
+
+    Cached for the lifetime of the process (or until
+    :func:`release_voice_catalog_cache` is called). Prepared
+    artifacts are content-addressed by digest under PrepareManager,
+    so the contents at ``prepared_model_dir`` are immutable for as
+    long as that path resolves — caching is safe.
+    """
+    cache_key = (
+        model_name,
+        prepared_model_dir,
+        static_recipe_manifest,
+        static_recipe_artifact_version,
+    )
+    cached = _VOICE_CATALOG_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
+    result = _resolve_voice_catalog_uncached(
+        model_name,
+        prepared_model_dir=prepared_model_dir,
+        static_recipe_manifest=static_recipe_manifest,
+        static_recipe_artifact_version=static_recipe_artifact_version,
+    )
+    _VOICE_CATALOG_CACHE[cache_key] = result
+    return result
+
+
+def _resolve_voice_catalog_uncached(
+    model_name: str,
+    *,
+    prepared_model_dir: Optional[str] = None,
+    static_recipe_manifest: tuple[str, ...] = (),
+    static_recipe_artifact_version: str = "",
+) -> ResolvedVoiceCatalog:
+    """Inner resolver — see :func:`resolve_voice_catalog` for the contract.
+
+    Split out so the public entry point owns caching and the body
+    stays a pure function of its inputs.
     """
     if prepared_model_dir:
         sidecar = _read_voice_manifest(prepared_model_dir)
@@ -724,8 +811,16 @@ class _SherpaTtsBackend:
 
         model_dir = self._resolve_model_dir(model_name)
         family = _model_family(model_name)
-        num_threads = int(self._kwargs.get("num_threads", 2))
-        provider = self._kwargs.get("provider", "cpu")
+        num_threads = int(self._kwargs.get("num_threads", _default_sherpa_num_threads()))
+        # Provider override path: ``OCTOMIL_SHERPA_PROVIDER`` lets
+        # operators opt into ``coreml`` on Apple Silicon (often 2–4×
+        # faster than CPU for VITS-class graphs). Stays "cpu" by
+        # default — the CoreML provider has historical numerical-
+        # precision quirks with some VITS/Kokoro graphs that show
+        # up as audio-quality regressions, not crashes, so opt-in
+        # is the conservative posture. Per-call ``provider=`` kwarg
+        # wins over the env var so tests pin behaviour explicitly.
+        provider = self._kwargs.get("provider", os.environ.get("OCTOMIL_SHERPA_PROVIDER", "cpu"))
 
         if family == "kokoro":
             inner_model_config = sherpa_onnx.OfflineTtsModelConfig(
