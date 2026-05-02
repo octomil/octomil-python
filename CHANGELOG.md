@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 4.15.1 (2026-05-02)
+
+### Fixes
+
+- warmup cache key under planner candidate, not substituted candidate (#490) — fixes Eternum-reported cold-load regression where `client.warmup(model, capability='tts')` reported `loaded=True` but every subsequent `audio.speech.stream(...)` paid ~1.5–1.7s `setup_ms` (full ONNX cold load) instead of ~30–60ms warm. Substituted-static-recipe candidate's artifact identity didn't match the planner-original identity dispatch looks up under, so the cache entry was unreachable.
+
 ## 4.15.0 (2026-05-02)
 
 ### Features
