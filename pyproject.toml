@@ -136,6 +136,11 @@ dev = [
   "pytest>=7.0.0",
   "pytest-cov>=4.0.0",
   "pytest-asyncio>=0.21.0",
+  # Mirror the structural fence in the [test] extra. The Makefile's
+  # ``make setup`` installs ``.[dev]``, so without this entry the
+  # ``timeout = 60`` config below would silently no-op for local dev
+  # pytest runs (CI installs ``.[test]`` and is unaffected).
+  "pytest-timeout>=2.3.0",
   "torch>=2.0.0",
   "numpy>=1.24.0",
   "pandas>=1.5.0",
