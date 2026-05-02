@@ -88,6 +88,72 @@ def test_voice_catalog_cache_distinguishes_artifact_dirs(tmp_path):
     assert cat_v1 is not cat_v2
 
 
+def test_voice_catalog_cache_invalidates_on_in_place_artifact_overwrite(tmp_path):
+    """Reviewer P1: ``PrepareManager`` keys artifacts by
+    ``artifact_id`` (NOT digest), so a v2 prepare overwrites v1
+    contents at the SAME prepared_model_dir path. A path-only cache
+    key would serve the v1 voice catalog after the v2 prepare —
+    reopening the voice-drift class of bugs.
+
+    The cache key includes the mtime_ns of ``voices.txt`` +
+    ``VERSION``. When the file is rewritten in place, mtime
+    changes → cache key changes → fresh resolve.
+    """
+    artifact_dir = tmp_path / "kokoro"
+    artifact_dir.mkdir()
+    voices_path = artifact_dir / "voices.txt"
+    voices_path.write_text("af_v1_alpha\naf_v1_beta\n")
+
+    # Force a stable initial mtime; sleep is the simplest way to
+    # guarantee the second write produces a newer mtime_ns on every
+    # filesystem (some filesystems have second-resolution mtimes).
+    import os
+    import time
+
+    initial_ns = artifact_dir.stat().st_mtime_ns - 2_000_000_000
+    os.utime(voices_path, ns=(initial_ns, initial_ns))
+
+    v1 = resolve_voice_catalog("kokoro-en-v0_19", prepared_model_dir=str(artifact_dir))
+    assert v1.voices == ("af_v1_alpha", "af_v1_beta")
+
+    # Simulate an in-place v2 prepare: overwrite the same file with
+    # different contents AND bump the mtime forward.
+    voices_path.write_text("af_v2_alpha\naf_v2_beta\naf_v2_gamma\n")
+    time.sleep(0.01)
+    new_ns = artifact_dir.stat().st_mtime_ns + 1_000_000_000
+    os.utime(voices_path, ns=(new_ns, new_ns))
+
+    v2 = resolve_voice_catalog("kokoro-en-v0_19", prepared_model_dir=str(artifact_dir))
+    assert v2.voices == ("af_v2_alpha", "af_v2_beta", "af_v2_gamma"), (
+        "voice catalog cache returned stale v1 entry after in-place v2 overwrite — "
+        "the mtime-based key didn't invalidate. This is the reviewer P1 regression."
+    )
+    assert v2 is not v1
+
+
+def test_voice_catalog_cache_invalidates_when_sidecar_appears(tmp_path):
+    """Sidecar-less prepared dir → cached under ``(None, None)``
+    mtime tuple. A subsequent prepare that materializes
+    ``voices.txt`` produces non-None mtime → distinct cache slot →
+    fresh resolve."""
+    artifact_dir = tmp_path / "kokoro"
+    artifact_dir.mkdir()
+    # Layout fallback path: no voices.txt yet, but the model id is
+    # known so ``_resolve_voice_catalog_uncached`` will try the
+    # layout-fallback / model-id-legacy paths. Empty result is fine
+    # for the cache-shape assertion.
+    first = resolve_voice_catalog("kokoro-en-v0_19", prepared_model_dir=str(artifact_dir))
+
+    # Now write the sidecar as a v1 prepare would.
+    (artifact_dir / "voices.txt").write_text("af_a\naf_b\n")
+    second = resolve_voice_catalog("kokoro-en-v0_19", prepared_model_dir=str(artifact_dir))
+
+    # The sidecar appearing must produce a fresh resolve; ``second``
+    # MUST NOT be the cached ``first`` (which had no sidecar).
+    assert second.voices == ("af_a", "af_b")
+    assert second is not first
+
+
 def test_release_voice_catalog_cache_clears_entries(tmp_path):
     artifact_dir = tmp_path / "kokoro"
     artifact_dir.mkdir()

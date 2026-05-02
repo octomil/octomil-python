@@ -8,9 +8,7 @@ from __future__ import annotations
 
 import logging
 import os
-import time
 from dataclasses import asdict
-from threading import RLock
 from typing import Any, Optional
 
 from octomil._generated.routing_policy import RoutingPolicy as ContractRoutingPolicy
@@ -37,58 +35,43 @@ _PLANNER_BOOTSTRAP_WARNED = False
 
 
 # ---------------------------------------------------------------------------
-# Per-process planner-selection cache (PE-driven cross-model perf — TTS, ASR,
-# embeddings, chat all benefit from skipping the per-call planner round-trip
-# when the same (model, capability, policy) tuple has already been resolved).
+# Outer per-process planner-selection cache: REMOVED (reviewer P1).
 # ---------------------------------------------------------------------------
 #
-# The planner is deterministic in (model, capability, policy_preset) within a
-# single process, so re-running ``planner.resolve`` on every dispatch is pure
-# waste once warmup has already cached the same selection. Eternum's 4.15.1
-# warm setup_ms residual (~600 ms after the warmup-cache fix) is dominated by
-# this re-resolution; caching brings warm setup_ms into the tens of ms.
+# An earlier revision of this PR added a TTL'd dict here keyed only on
+# ``(model, capability, policy_preset)``. That key shadowed the
+# correctness-critical context the planner already keys on internally
+# at ``runtime/planner/planner.py::resolve`` —
+# ``sdk_version + platform + arch + chip + installed_runtimes_hash +
+# api_base + org_id_hash + key_type + app_slug``. The narrow outer
+# cache could serve org-A / staging / app-policy plans to org-B /
+# prod / later-app-policy calls within the TTL, and bypassed the
+# live-app-plan rule the planner enforces for app-ref dispatches.
 #
-# The cache is keyed by ``(model, capability, policy_preset)`` and holds the
-# *raw* planner selection (or None for negative results — caching the miss is
-# what avoids re-paying the failure-path cost on every dispatch when the
-# planner is offline). TTL defaults to 30 s so a freshly-deployed planner
-# config eventually propagates without an explicit ``release`` call.
+# The planner already covers the "skip the round-trip on warm
+# repeats" case via its own ``_store.get_plan(cache_key)`` lookup —
+# at the right layer, with the right keys. The outer cache was pure
+# complexity for no correctness-safe win. Dropped.
 #
-# Invalidation:
-#   - ``release_planner_selection_cache()`` — full clear (called from
-#     ``ExecutionKernel.release_warmed_backends`` so the existing public
-#     "drop my caches" surface also clears this).
-#   - TTL expiry — soft refresh; matches the existing
-#     ``OCTOMIL_RUNTIME_PLANNER_CACHE`` env-var posture.
-#   - Bypass via ``OCTOMIL_RUNTIME_PLANNER_CACHE=0`` — already supported by
-#     the underlying ``_resolve_planner_selection``; cache is also bypassed
-#     when this is set so the env switch keeps both layers in sync.
-#   - ``OCTOMIL_PLANNER_SELECTION_CACHE_TTL_SECONDS`` — override the default
-#     30 s TTL. ``0`` disables caching but still calls the planner.
-
-_PLANNER_SELECTION_CACHE: dict[tuple[str, str, str], tuple[float, Any]] = {}
-_PLANNER_SELECTION_CACHE_LOCK = RLock()
-
-
-def _planner_selection_cache_ttl_seconds() -> float:
-    raw = os.environ.get("OCTOMIL_PLANNER_SELECTION_CACHE_TTL_SECONDS")
-    if raw is None:
-        return 30.0
-    try:
-        return max(0.0, float(raw))
-    except (TypeError, ValueError):
-        return 30.0
+# If a future perf cut wants to skip the planner construction or the
+# disk lookup entirely, that work belongs INSIDE the planner module
+# where the auth/device/app context is already in scope. Don't
+# reintroduce an outer cache here.
+#
+# ``release_planner_selection_cache`` is preserved as a no-op shim
+# so existing callers (and the kernel's ``release_warmed_backends``
+# cascade) keep importing successfully.
 
 
 def release_planner_selection_cache() -> None:
-    """Drop every cached planner selection.
+    """No-op shim. The outer process cache was removed in the
+    P1 fix; the planner's internal store cache is now the only
+    correctness-aware caching layer. This entry point stays
+    callable for the public ``release_warmed_backends`` cascade.
 
-    Idempotent. The kernel's :meth:`release_warmed_backends` calls this so
-    a single public "drop my caches" entry point clears both the warmup
-    cache and the planner cache.
+    Idempotent.
     """
-    with _PLANNER_SELECTION_CACHE_LOCK:
-        _PLANNER_SELECTION_CACHE.clear()
+    return None
 
 
 def _resolve_planner_selection(
@@ -123,21 +106,6 @@ def _resolve_planner_selection(
     if os.environ.get("OCTOMIL_RUNTIME_PLANNER_CACHE") == "0":
         return None
 
-    # Per-process selection cache. Skipping the planner re-resolution
-    # is the biggest single cut to warm dispatch ``setup_ms`` for any
-    # capability — same selection shape regardless of TTS / ASR /
-    # embeddings / chat. TTL=0 disables the cache entirely (still
-    # calls the planner; useful for tests / config-change scenarios).
-    cache_key = (model, capability, policy_preset)
-    ttl = _planner_selection_cache_ttl_seconds()
-    if ttl > 0.0:
-        with _PLANNER_SELECTION_CACHE_LOCK:
-            entry = _PLANNER_SELECTION_CACHE.get(cache_key)
-        if entry is not None:
-            stored_at, cached = entry
-            if time.monotonic() - stored_at <= ttl:
-                return cached
-
     # Bootstrap phase: import the planner module. ImportError /
     # AttributeError / cache-backend errors here are
     # configuration-actionable.
@@ -169,25 +137,19 @@ def _resolve_planner_selection(
 
     # Resolve phase: HTTP misses, auth failures, transient 5xx. Stay
     # at DEBUG — the per-request error already surfaces through the
-    # client, and routing falls through to local.
+    # client, and routing falls through to local. The planner's own
+    # ``_store.get_plan(cache_key)`` already handles repeat calls
+    # cheaply (and correctly, since it keys on the full auth/device/
+    # app context); no outer caching here.
     try:
-        selection = planner.resolve(
+        return planner.resolve(
             model=model,
             capability=planner_cap,
             routing_policy=policy_preset,
         )
     except Exception:
         logger.debug("Planner selection failed for %s/%s", capability, model, exc_info=True)
-        selection = None
-
-    # Cache the result — including ``None`` (negative caching). When
-    # the planner is offline / unreachable the failure-path cost is
-    # what hurts every subsequent dispatch; remembering "we tried,
-    # got nothing" within the TTL is the whole point.
-    if ttl > 0.0:
-        with _PLANNER_SELECTION_CACHE_LOCK:
-            _PLANNER_SELECTION_CACHE[cache_key] = (time.monotonic(), selection)
-    return selection
+        return None
 
 
 def _runtime_candidate_to_dict(candidate: Any) -> dict[str, Any]:

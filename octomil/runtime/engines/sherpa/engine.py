@@ -297,15 +297,31 @@ class ResolvedVoiceCatalog:
     artifact_version: str = ""
 
 
-# Process-lifetime cache for ``resolve_voice_catalog``. Keyed on the
-# resolver inputs; values invalidate via ``release_voice_catalog_cache``
-# (called from ``ExecutionKernel.release_warmed_backends`` so the public
-# "drop caches" surface clears this too). Without the cache, every TTS
-# dispatch re-reads ``voices.txt`` + ``VERSION`` from disk and re-runs the
-# layout-fallback introspection — pure waste once the prepared artifact is
-# on disk and immutable. The cache key includes the prepared_model_dir
-# string verbatim so two artifacts at different paths don't alias.
-_VOICE_CATALOG_CACHE: dict[tuple[str, Optional[str], tuple[str, ...], str], "ResolvedVoiceCatalog"] = {}
+# Process-lifetime cache for ``resolve_voice_catalog``. Cleared via
+# ``release_voice_catalog_cache`` (cascaded from
+# ``ExecutionKernel.release_warmed_backends``).
+#
+# Reviewer P1 fix: the cache key includes the mtime_ns of
+# ``voices.txt`` and ``VERSION`` under the prepared dir.
+# ``PrepareManager`` stores artifacts at a path derived from
+# ``artifact_id`` — NOT digest — so a v2 prepare can overwrite v1
+# contents IN PLACE at the same directory string. A path-only cache
+# key would serve the v1 voice catalog after the v2 prepare lands,
+# reopening the voice-drift class of bugs (listing rejects new
+# voices, ``_voice_to_sid()`` maps against stale ordering).
+# Stat-based invalidation: one syscall per lookup, content-
+# addresses for free, no event-bus hookup needed. When either
+# sidecar's mtime_ns changes, the cache key changes and the cached
+# entry is unreachable.
+_VoiceCatalogCacheKey = tuple[
+    str,  # model_name
+    Optional[str],  # prepared_model_dir
+    Optional[int],  # voices.txt mtime_ns (None when absent)
+    Optional[int],  # VERSION mtime_ns (None when absent)
+    tuple[str, ...],  # static_recipe_manifest
+    str,  # static_recipe_artifact_version
+]
+_VOICE_CATALOG_CACHE: dict[_VoiceCatalogCacheKey, "ResolvedVoiceCatalog"] = {}
 
 
 def release_voice_catalog_cache() -> None:
@@ -316,6 +332,21 @@ def release_voice_catalog_cache() -> None:
     Tests use it directly to reset between runs.
     """
     _VOICE_CATALOG_CACHE.clear()
+
+
+def _stat_mtime_ns(path: str) -> Optional[int]:
+    """Return ``stat.st_mtime_ns`` for ``path``, or ``None`` if absent.
+
+    Cheap content-fingerprint primitive for the voice-catalog cache
+    key — one syscall, no read. Returning ``None`` when the file is
+    missing is meaningful: a sidecar-less prepared dir caches under
+    a ``(None, None)`` mtime tuple, and any future prepare that
+    materializes the sidecar lands in a different cache slot.
+    """
+    try:
+        return os.stat(path).st_mtime_ns
+    except OSError:
+        return None
 
 
 def resolve_voice_catalog(
@@ -345,14 +376,25 @@ def resolve_voice_catalog(
     for the explicit-voice path or a "no catalog known" listing.
 
     Cached for the lifetime of the process (or until
-    :func:`release_voice_catalog_cache` is called). Prepared
-    artifacts are content-addressed by digest under PrepareManager,
-    so the contents at ``prepared_model_dir`` are immutable for as
-    long as that path resolves — caching is safe.
+    :func:`release_voice_catalog_cache` is called). The cache key
+    includes the mtime_ns of ``voices.txt`` and ``VERSION`` under
+    ``prepared_model_dir`` so a re-prepare that overwrites the dir
+    in place naturally invalidates the cache — the new mtimes
+    produce a new cache key and the previous entry becomes
+    unreachable. (PrepareManager keys artifacts by ``artifact_id``,
+    not digest, so in-place overwrites do happen on version
+    changes.)
     """
-    cache_key = (
+    voices_mtime: Optional[int] = None
+    version_mtime: Optional[int] = None
+    if prepared_model_dir:
+        voices_mtime = _stat_mtime_ns(os.path.join(prepared_model_dir, "voices.txt"))
+        version_mtime = _stat_mtime_ns(os.path.join(prepared_model_dir, "VERSION"))
+    cache_key: _VoiceCatalogCacheKey = (
         model_name,
         prepared_model_dir,
+        voices_mtime,
+        version_mtime,
         static_recipe_manifest,
         static_recipe_artifact_version,
     )
