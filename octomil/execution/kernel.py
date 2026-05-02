@@ -454,7 +454,14 @@ def _build_local_realtime_stream(
             # ``progressive`` advertised + only one chunk observed
             # downgrades to ``final_chunk`` with verified=False so
             # callers know the engine over-promised on this input.
-            observed_capability = _verify_capability(advertised, observed_chunks=observed_chunks)
+            # ``text`` is forwarded so progressive can only verify on
+            # single-sentence multi-chunk runs (sentence-boundary
+            # output for multi-sentence input is NOT progressive).
+            observed_capability = _verify_capability(
+                advertised,
+                observed_chunks=observed_chunks,
+                text=text,
+            )
 
             yield SpeechStreamCompleted(
                 duration_ms=duration_ms,
@@ -506,28 +513,64 @@ def _backend_can_stream(backend: Any) -> bool:
     return callable(getattr(backend, "synthesize_stream", None))
 
 
-def _verify_capability(advertised: Any, *, observed_chunks: int) -> Any:
+def _verify_capability(
+    advertised: Any,
+    *,
+    observed_chunks: int,
+    text: Optional[str] = None,
+) -> Any:
     """Return the actually-observed capability after a stream completes.
 
-    If the engine advertised ``sentence_chunk`` or ``progressive`` but
-    only delivered one chunk, the run was effectively ``final_chunk``;
-    verify=False on the returned capability so callers can stop
-    trusting the advertised label for this (model, input) shape.
-    Single-chunk runs that *advertised* final_chunk pass verification.
+    Verification rules:
+
+      - ``final_chunk`` advertised: any chunk count ``<= 1`` is the truth;
+        anything more means the engine over-delivered, which we still
+        report as ``final_chunk`` (verified) since the contract was met.
+      - ``sentence_chunk`` advertised + ``observed_chunks > 1``: the engine
+        delivered a sub-utterance cadence as advertised (verified=True).
+        Single-chunk run downgrades to ``final_chunk`` with verified=False.
+      - ``progressive`` advertised: verified=True ONLY if the input was a
+        single sentence AND the engine delivered ``observed_chunks > 1``.
+        A multi-sentence input that produced one-chunk-per-sentence is
+        sentence-boundary cadence, not progressive — the kernel
+        downgrades it to ``sentence_chunk`` (verified=True if multi-chunk,
+        otherwise ``final_chunk`` verified=False) so we never mark
+        sentence-boundary output as proof of sub-sentence streaming.
+
+    ``text`` is the synthesis input; when omitted, progressive
+    verification falls back to the looser ``observed_chunks > 1``
+    rule (acceptable for unit tests that explicitly drive a fake
+    backend with single-sentence input through ``_build_stream``).
     """
-    from octomil.audio.streaming import TtsStreamingCapability, TtsStreamingMode
+    from octomil.audio._segmentation import count_sentences
+    from octomil.audio.streaming import (
+        TtsStreamingCapability,
+        TtsStreamingMode,
+    )
 
     if advertised.mode == TtsStreamingMode.FINAL_CHUNK:
-        # Final-chunk advertised: any chunk count <= 1 is correct.
         return TtsStreamingCapability.final_only(verified=observed_chunks <= 1)
+
+    if advertised.mode == TtsStreamingMode.PROGRESSIVE:
+        # Progressive can only be verified by a single-sentence input
+        # producing multiple chunks. Multi-sentence multi-chunk is
+        # sentence-boundary, not progressive — downgrade.
+        sentence_count = count_sentences(text) if text is not None else 1
+        if observed_chunks > 1 and sentence_count <= 1:
+            return TtsStreamingCapability.progressive(verified=True)
+        if observed_chunks > 1 and sentence_count > 1:
+            # Multi-sentence + multi-chunk: the engine streamed at
+            # sentence boundaries, not sub-sentence. Report what was
+            # actually delivered (verified sentence_chunk) instead of
+            # the over-claimed progressive label.
+            return TtsStreamingCapability.sentence(verified=True)
+        # Single chunk: advertised better than delivered → downgrade.
+        return TtsStreamingCapability.final_only(verified=False)
+
     if observed_chunks > 1:
-        # Sub-utterance cadence delivered as advertised.
-        return advertised.__class__(
-            mode=advertised.mode,
-            granularity=advertised.granularity,
-            verified=True,
-        )
-    # Advertised better than delivered → downgrade and flag.
+        # SENTENCE_CHUNK delivered as advertised.
+        return TtsStreamingCapability.sentence(verified=True)
+    # SENTENCE_CHUNK advertised, single chunk delivered → downgrade.
     return TtsStreamingCapability.final_only(verified=False)
 
 

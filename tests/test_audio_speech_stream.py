@@ -151,18 +151,27 @@ def _stub_kernel_warmup_for_tts(monkeypatch_or_path):
     )
 
 
-def _build_stream(backend: FakeStreamingBackend) -> SpeechStream:
+def _build_stream(
+    backend: FakeStreamingBackend,
+    *,
+    text: str = "hello world",
+) -> SpeechStream:
     """Thin wrapper around the kernel's local realtime stream builder.
 
     Avoids spinning the whole kernel for unit tests; the builder is the
     pure mapping from "backend chunk dicts" to "typed events," which is
     what we want to exercise.
+
+    ``text`` defaults to a single-sentence input ("hello world") so the
+    progressive verification gate sees ``count_sentences <= 1``. Pass
+    multi-sentence text explicitly to drive the
+    "multi-sentence chunks must NOT verify progressive" branch.
     """
     from octomil.execution.kernel import _build_local_realtime_stream
 
     return _build_local_realtime_stream(
         backend=backend,
-        text="hello world",
+        text=text,
         voice="af_bella",
         speed=1.0,
         runtime_model="kokoro-82m",
@@ -1233,6 +1242,9 @@ async def test_advertised_sentence_chunk_with_multiple_chunks_is_verified_true()
 
 @pytest.mark.asyncio
 async def test_advertised_progressive_with_multiple_chunks_is_verified_true():
+    """Single-sentence input + multi-chunk delivery is the only shape
+    that proves true progressive cadence. The default ``_build_stream``
+    text ("hello world") is a single sentence."""
     backend = CapabilityAdvertisingBackend(
         advertised=TtsStreamingCapability.progressive(verified=False),
         num_chunks=4,
@@ -1243,7 +1255,93 @@ async def test_advertised_progressive_with_multiple_chunks_is_verified_true():
     assert started.streaming_capability.mode == TtsStreamingMode.PROGRESSIVE
     assert started.streaming_capability.granularity == TtsStreamingGranularity.FRAME
     assert completed.streaming_capability.mode == TtsStreamingMode.PROGRESSIVE
+    assert completed.streaming_capability.granularity == TtsStreamingGranularity.FRAME
     assert completed.capability_verified is True
+    assert completed.observed_chunks > 1
+    # E2E first-chunk MUST land before total completion — the
+    # consumer-visible TTFB advantage that progressive promises.
+    assert completed.e2e_first_chunk_ms is not None
+    assert completed.e2e_first_chunk_ms < completed.total_latency_ms
+
+
+@pytest.mark.asyncio
+async def test_advertised_progressive_single_chunk_downgrades_to_final_unverified():
+    """Single-sentence input + single chunk: backend over-claimed
+    progressive but only delivered one chunk. Completion must downgrade
+    to ``final_chunk`` with ``capability_verified=False`` so observability
+    consumers stop trusting the advertised label for this (model, input)
+    shape — same posture as the sentence_chunk-single-chunk downgrade,
+    extended to progressive."""
+    backend = CapabilityAdvertisingBackend(
+        advertised=TtsStreamingCapability.progressive(verified=False),
+        num_chunks=1,
+        chunk_delay_s=0.001,
+    )
+    stream = _build_stream(backend)
+    started, _pcm, completed = await stream.collect()
+    assert started.streaming_capability.mode == TtsStreamingMode.PROGRESSIVE
+    assert completed.observed_chunks == 1
+    assert completed.streaming_capability.mode == TtsStreamingMode.FINAL_CHUNK
+    assert completed.capability_verified is False
+
+
+@pytest.mark.asyncio
+async def test_advertised_progressive_multi_sentence_chunks_is_NOT_verified_progressive():
+    """The greenwashing gate: a backend that advertises ``progressive``
+    on a multi-sentence input and yields one chunk per sentence has
+    NOT proven sub-sentence streaming — it's just sentence-boundary
+    cadence under a fancier name. The kernel must downgrade the
+    completion event to ``sentence_chunk`` so dashboards never see
+    sentence-boundary chunks counted as progressive proof.
+
+    Without this gate, every Kokoro multi-sentence run could be
+    relabeled progressive by a backend that lied in
+    ``streaming_capability``."""
+    multi_sentence = "First sentence here. Second sentence here. Third sentence here."
+    backend = CapabilityAdvertisingBackend(
+        advertised=TtsStreamingCapability.progressive(verified=False),
+        num_chunks=3,  # one chunk per sentence
+        chunk_delay_s=0.001,
+    )
+    stream = _build_stream(backend, text=multi_sentence)
+    started, _pcm, completed = await stream.collect()
+    # Started still advertises whatever the backend claimed —
+    # consumers see the advertisement, then the completion truth.
+    assert started.streaming_capability.mode == TtsStreamingMode.PROGRESSIVE
+    # Completion downgrades to the actually-delivered cadence:
+    # sentence_chunk, NOT progressive.
+    assert completed.streaming_capability.mode == TtsStreamingMode.SENTENCE_CHUNK
+    assert completed.streaming_capability.mode != TtsStreamingMode.PROGRESSIVE
+    # observed_chunks is reported truthfully.
+    assert completed.observed_chunks == 3
+    # And it IS verified — sentence_chunk cadence was honestly
+    # delivered, just not at the cadence the backend over-claimed.
+    assert completed.capability_verified is True
+
+
+@pytest.mark.asyncio
+async def test_advertised_progressive_single_sentence_no_terminator_punctuation_still_verifies():
+    """A single sentence with no internal terminator+space boundary
+    (e.g. ``"the quick brown fox jumps over the lazy dog and then keeps going"``)
+    is still one sentence. The progressive verification gate must
+    accept this shape — sentence-counting is not a proxy for
+    "did the input contain a period." This test pins the
+    ``count_sentences`` <= 1 branch on truly unsegmentable input."""
+    long_single_sentence = (
+        "the quick brown fox jumps over the lazy dog and then keeps "
+        "going across the fields toward the horizon without stopping"
+    )
+    backend = CapabilityAdvertisingBackend(
+        advertised=TtsStreamingCapability.progressive(verified=False),
+        num_chunks=5,
+        chunk_delay_s=0.001,
+    )
+    stream = _build_stream(backend, text=long_single_sentence)
+    started, _pcm, completed = await stream.collect()
+    assert started.streaming_capability.mode == TtsStreamingMode.PROGRESSIVE
+    assert completed.streaming_capability.mode == TtsStreamingMode.PROGRESSIVE
+    assert completed.capability_verified is True
+    assert completed.observed_chunks > 1
 
 
 # ---------------------------------------------------------------------------
