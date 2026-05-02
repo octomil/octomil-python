@@ -6,7 +6,19 @@ updates:
       interval: "weekly"
     labels:
       - "dependencies"
-    open-pull-requests-limit: 10
+    # Lowered while the Python 3.9 CI hang is being investigated to
+    # cap fanout. Restore to a higher number after CI is healthy.
+    open-pull-requests-limit: 3
+    # Group all pip updates into a single PR per release category to
+    # avoid one-PR-per-dep CI fanouts that compound the hang.
+    groups:
+      pip-minor-and-patch:
+        update-types:
+          - "minor"
+          - "patch"
+      pip-major:
+        update-types:
+          - "major"
 
   - package-ecosystem: "github-actions"
     directory: "/"
@@ -14,3 +26,12 @@ updates:
       interval: "weekly"
     labels:
       - "dependencies"
+    open-pull-requests-limit: 3
+    groups:
+      actions-minor-and-patch:
+        update-types:
+          - "minor"
+          - "patch"
+      actions-major:
+        update-types:
+          - "major"

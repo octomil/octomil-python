@@ -16,16 +16,18 @@ jobs:
   test:
     name: Test Python ${{ matrix.python-version }}
     runs-on: ubuntu-latest
+    timeout-minutes: 25
     permissions:
       contents: read
     strategy:
-      # 3.12 dropped from the per-PR matrix to halve runner cost; the
-      # interesting axes today are the lowest supported version (3.9 —
-      # the embedded / Ren'Py / PyInstaller floor) and the most-used
-      # production version (3.11). 3.12 still runs in nightly /
-      # release workflows.
+      fail-fast: false
+      # 3.9 temporarily dropped from the per-PR matrix while investigating
+      # a 6-hour hang in the 3.9 leg that was burning Actions minutes across
+      # every Dependabot PR. Re-enable once the hang is rooted out.
+      # Keep 3.11 (production version) on PRs; 3.9 / 3.12 should run in
+      # release / nightly workflows.
       matrix:
-        python-version: ["3.9", "3.11"]
+        python-version: ["3.11"]
 
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
@@ -83,6 +85,7 @@ jobs:
     name: SonarCloud Analysis
     runs-on: ubuntu-latest
     needs: test
+    timeout-minutes: 15
     permissions:
       contents: read
 
@@ -106,6 +109,7 @@ jobs:
   security:
     name: Security Scan
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       contents: read
 
