@@ -1147,6 +1147,32 @@ class _SherpaTtsBackend:
         return [self._model_name] if self._model_name else []
 
     # ------------------------------------------------------------------
+    # Text normalization profile
+    # ------------------------------------------------------------------
+
+    def text_normalization_profile(self) -> str:
+        """Return the text-normalization profile the kernel should
+        apply before handing text to ``synthesize`` / ``synthesize_stream``.
+
+        Kokoro and Piper are espeak-ng-driven and have a documented
+        set of misreads (currency reordering, percent, common
+        abbreviations) the SDK normalizes automatically. Pocket has
+        its own LM-based text frontend and does NOT need (or want)
+        SDK-side normalization — its profile is ``"none"``.
+
+        See :mod:`octomil.audio.text_normalize` for the full rule
+        list per profile.
+        """
+        from octomil.audio.text_normalize import (
+            PROFILE_ESPEAK_COMPAT,
+            PROFILE_NONE,
+        )
+
+        if self._family == "pocket":
+            return PROFILE_NONE
+        return PROFILE_ESPEAK_COMPAT
+
+    # ------------------------------------------------------------------
     # Streaming
     # ------------------------------------------------------------------
 

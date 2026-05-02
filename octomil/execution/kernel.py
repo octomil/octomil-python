@@ -262,6 +262,39 @@ def _backend_synthesize_kwargs(backend: Any, resolved_speaker: Any) -> dict[str,
     return {}
 
 
+def _normalize_text_for_backend(backend: Any, text: str, mode: str) -> str:
+    """Apply the backend's declared text-normalization profile to ``text``.
+
+    Backends opt into normalization by exposing
+    ``text_normalization_profile() -> str``. Returns the original
+    text unchanged when:
+
+      - ``mode == 'off'`` — caller explicitly opted out via the
+        public ``text_normalization='off'`` kwarg.
+      - The backend doesn't expose ``text_normalization_profile``.
+      - The backend declares profile ``'none'``.
+
+    ``mode`` accepts ``'auto'`` (default — use the backend's
+    declared profile) or a literal profile name (``'espeak_compat'``
+    / ``'none'``) which forces that profile regardless of the
+    backend's declaration. Anything else falls back to ``'auto'``.
+    """
+    if mode == "off":
+        return text
+    from octomil.audio.text_normalize import (
+        PROFILE_NONE,
+        available_profiles,
+        normalize_for_profile,
+    )
+
+    if mode and mode != "auto" and mode in available_profiles():
+        profile = mode
+    else:
+        profile_fn = getattr(backend, "text_normalization_profile", None)
+        profile = profile_fn() if callable(profile_fn) else PROFILE_NONE
+    return normalize_for_profile(text, profile)
+
+
 def _call_backend_synthesize(
     backend: Any,
     text: str,
@@ -273,6 +306,11 @@ def _call_backend_synthesize(
     Used by ``synthesize_speech`` under ``asyncio.to_thread``. Pulls the
     native voice off the resolved profile and adds ``speaker_profile``
     when the backend opts in. Keeps the kernel call site terse.
+
+    Text is assumed already-normalized at the call site —
+    ``synthesize_speech`` runs ``_normalize_text_for_backend`` after
+    backend resolution so the dispatched text matches what reaches
+    the synthesis call.
     """
     voice = resolved_speaker.native_voice if resolved_speaker is not None else None
     extra = _backend_synthesize_kwargs(backend, resolved_speaker)
@@ -1691,6 +1729,7 @@ class ExecutionKernel:
         app: Optional[str] = None,
         policy: Optional[str] = None,
         priority: Any = None,
+        text_normalization: str = "auto",
     ) -> Any:
         """Routed TTS synthesis. Returns a ``SpeechResponse``.
 
@@ -2038,6 +2077,14 @@ class ExecutionKernel:
         scheduler_priority = TtsRequestPriority.FOREGROUND
         scheduler_key = f"{runtime_model}:{id(backend)}"
 
+        # Apply backend-aware text normalization once we know which
+        # backend will run. Sherpa Kokoro/Piper get the espeak_compat
+        # profile (``$1200`` → ``1200 dollars``, etc); Pocket and
+        # other LM-based backends get a no-op. Consumers can opt out
+        # via ``text_normalization='off'`` when they've already
+        # normalized themselves.
+        normalized_input = _normalize_text_for_backend(backend, input, text_normalization)
+
         async with await self.tts_scheduler.acquire(key=scheduler_key, priority=scheduler_priority) as slot:
             t0 = time.monotonic()
             # Backends that opt into speaker-aware synthesis accept
@@ -2048,7 +2095,7 @@ class ExecutionKernel:
             local_result = await asyncio.to_thread(
                 _call_backend_synthesize,
                 backend,
-                input,
+                normalized_input,
                 resolved_speaker,
                 speed,
             )
@@ -2392,6 +2439,7 @@ class ExecutionKernel:
         policy: Optional[str] = None,
         sdk_t0: Optional[float] = None,
         priority: Any = None,
+        text_normalization: str = "auto",
     ) -> Any:
         """Streaming TTS. Returns a :class:`SpeechStream`.
 
@@ -2593,9 +2641,17 @@ class ExecutionKernel:
                 ),
             )
 
+        # Apply backend-aware text normalization once we know which
+        # backend will run. Sherpa Kokoro/Piper get the
+        # ``espeak_compat`` profile (currency reordering, percent,
+        # common abbreviations); Pocket and other LM-based backends
+        # get a no-op. Consumers can opt out via
+        # ``text_normalization='off'``.
+        normalized_input = _normalize_text_for_backend(backend, input, text_normalization)
+
         return _build_local_realtime_stream(
             backend=backend,
-            text=input,
+            text=normalized_input,
             voice=voice,
             resolved_speaker=resolved_speaker,
             speed=speed,
