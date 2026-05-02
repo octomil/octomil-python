@@ -45,7 +45,7 @@ dev = [
     # surfaces as a 60s failure, not a 6h Actions ceiling kill.
     "pytest-timeout>=2.3.0",
     "mypy>=1.19.1",
-    "ruff>=0.1.0",
+    "ruff>=0.15.12",
     "flwr-datasets>=0.5.0",
     "cryptography>=47.0.0",
 ]
