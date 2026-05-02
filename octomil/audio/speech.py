@@ -178,6 +178,7 @@ class FacadeSpeech:
         policy: Optional[str] = None,
         app: Optional[str] = None,
         priority: Any = None,
+        text_normalization: str = "auto",
     ) -> Any:
         """Stream synthesized speech as typed events.
 
@@ -235,6 +236,7 @@ class FacadeSpeech:
                 app=app,
                 sdk_t0=sdk_t0,
                 priority=priority,
+                text_normalization=text_normalization,
             )
             async for event in inner:
                 yield event
@@ -255,6 +257,7 @@ class FacadeSpeech:
         policy: Optional[str] = None,
         app: Optional[str] = None,
         priority: Any = None,
+        text_normalization: str = "auto",
     ) -> SpeechResponse:
         """Synthesize speech from text.
 
@@ -291,6 +294,7 @@ class FacadeSpeech:
             policy=policy,
             app=app,
             priority=priority,
+            text_normalization=text_normalization,
         )
 
 
