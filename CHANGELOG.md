@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+## 4.15.0 (2026-05-02)
+
+### Features
+
+- SDK scheduler + speaker resolver + Pocket engine + planner profiles (#485)
+- TTS streaming observability collector + optional OTel sink (#479)
+- tighten progressive TTS verification + integration acceptance (#488)
+
+### Fixes
+
+- hard cutover from v4.13 streaming compat surface (#486)
+
+### Docs
+
+- comment nit — sentence_chunk is realtime under the observability contract, not "progressive" (#487)
+
 ## 4.14.0 (2026-04-29)
 
 ### Features
