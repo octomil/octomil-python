@@ -3436,7 +3436,21 @@ class ExecutionKernel:
 
             Materializer().materialize(prepare_outcome.artifact_dir, used_static_recipe.materialization)
         artifact_dir = str(prepare_outcome.artifact_dir)
-        cache_key = self._warmup_cache_key(capability, runtime_model, candidate)
+        # Cache MUST be keyed under the planner candidate, not the
+        # prepare-substituted candidate. The dispatch path's
+        # ``_lookup_warmed_backend`` re-derives ``planner_candidate``
+        # from ``_local_sdk_runtime_candidate(selection)`` and looks
+        # up under that artifact identity. If we keyed under the
+        # static-recipe-substituted ``candidate`` here, every dispatch
+        # would miss because the dispatch's planner candidate carries
+        # different artifact metadata (or echo-only None metadata)
+        # vs. the recipe's. Symptom: ``warmup`` reports ``loaded=True``
+        # but every stream still pays full ``setup_ms`` for cold load.
+        # Static-recipe substitution is for what gets PREPARED on
+        # disk; cache identity is for what the request will RESOLVE
+        # to at dispatch time. Two different concerns, two different
+        # shapes.
+        cache_key = self._warmup_cache_key(capability, runtime_model, planner_candidate)
 
         backend_loaded = False
         if capability == CAPABILITY_TTS:

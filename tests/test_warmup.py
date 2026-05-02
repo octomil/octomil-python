@@ -770,3 +770,140 @@ def test_cli_warmup_rejects_unwired_capability(tmp_path):
     result = runner.invoke(warmup_cmd, ["m", "--capability", "chat"])
     assert result.exit_code != 0
     assert "chat" in result.output
+
+
+# ---------------------------------------------------------------------------
+# Regression — warmup cache key under the static-recipe substitution
+# ---------------------------------------------------------------------------
+#
+# The bug Eternum hit in 4.15.0:
+#   ``client.warmup(model='kokoro-en-v0_19', capability='tts')`` returned
+#   ``loaded=True`` but every subsequent ``audio.speech.stream(...)`` paid
+#   ~1.5–1.7s ``setup_ms`` (cold load) instead of the expected ~30–60ms.
+#
+# Root cause: ``warmup`` ran ``_select_prepare_candidate`` which, for
+# direct echo-only-planner requests, *substitutes* the static recipe
+# candidate. Pre-fix, the cache was keyed under the substituted
+# candidate's artifact identity, but the streaming dispatch
+# (``_resolve_local_tts_backend``) keys lookups under the planner-
+# original candidate. The planner-original candidate carries
+# echo-only ``None`` artifact metadata in this scenario, so the keys
+# never matched and the cache entry was unreachable.
+#
+# Fix: warmup keys the cache under ``planner_candidate`` (the same
+# shape dispatch will look up under) — substitution remains
+# meaningful for what gets prepared on disk, but the cache identity
+# is the request-shape identity.
+
+
+def test_warmup_cache_key_uses_planner_candidate_not_substituted_candidate(tmp_path):
+    """Echo-only planner candidate + static recipe substitution must
+    still produce a cache that the streaming dispatch can read.
+
+    Pre-fix this test failed: the cache was keyed under the static
+    recipe's artifact identity, but the dispatch looked up under the
+    echo-only planner candidate's identity (all-None artifact tuple),
+    missed, and rebuilt the backend on every stream."""
+    artifact_dir = tmp_path / "kokoro"
+    artifact_dir.mkdir()
+    pm = _FakePM(artifact_dir)
+    kernel = ExecutionKernel(prepare_manager=pm)
+    _stub_kernel_resolve(kernel, "kokoro-en-v0_19")
+
+    # Echo-only planner: no artifact identity. This is what the
+    # offline planner / Ren'Py / sandboxed-CPython case looks like.
+    echo_candidate = RuntimeCandidatePlan(
+        locality="local",
+        priority=0,
+        confidence=0.9,
+        reason="echo",
+        engine="sherpa-onnx",
+        artifact=RuntimeArtifactPlan(
+            model_id="kokoro-en-v0_19",
+            artifact_id="kokoro-en-v0_19",
+            # No digest, no format, no quantization — meaningful
+            # identity is absent. ``_select_prepare_candidate`` will
+            # substitute the static recipe.
+        ),
+        delivery_mode="sdk_runtime",
+        prepare_required=True,
+        prepare_policy="lazy",
+    )
+    selection = _Selection(candidates=[echo_candidate])
+
+    # Static recipe with ITS OWN artifact identity (different
+    # digest/format from the planner's echo). The buggy code would
+    # key the cache under this identity; the fix keys under the
+    # planner-original (echo) identity.
+    fake_recipe_candidate = RuntimeCandidatePlan(
+        locality="local",
+        priority=0,
+        confidence=1.0,
+        reason="static-recipe",
+        engine="sherpa-onnx",
+        artifact=RuntimeArtifactPlan(
+            model_id="kokoro-en-v0_19",
+            artifact_id="kokoro-en-v0_19",
+            digest="sha256:" + "a" * 64,  # recipe-specific digest
+            format="onnx",
+            download_urls=[ArtifactDownloadEndpoint(url="https://recipe.example.com/")],
+        ),
+        delivery_mode="sdk_runtime",
+        prepare_required=True,
+        prepare_policy="explicit_only",
+    )
+
+    # Minimal stand-in for the StaticRecipe shape the warmup path
+    # touches — only ``.materialization`` is read (and we stub the
+    # Materializer below so its value doesn't matter).
+    class _FakeRecipe:
+        materialization = None
+
+    fake_recipe = _FakeRecipe()
+
+    class _FakeEngine:
+        def create_backend(self, model: str, **kwargs: Any) -> _FakeSherpaBackend:
+            return _FakeSherpaBackend(model, **kwargs)
+
+    with ExitStack() as stack:
+        stack.enter_context(patch("octomil.execution.kernel._resolve_planner_selection", return_value=selection))
+        stack.enter_context(patch("octomil.runtime.engines.sherpa.SherpaTtsEngine", _FakeEngine))
+        # Force the substitution path: planner echo + a registered
+        # static recipe. Stub ``_select_prepare_candidate`` to return
+        # the substituted candidate, mirroring what the real
+        # implementation does for direct echo-only requests.
+        stack.enter_context(
+            patch.object(
+                kernel,
+                "_select_prepare_candidate",
+                return_value=(fake_recipe_candidate, fake_recipe),
+            )
+        )
+        # Materializer is invoked when ``used_static_recipe`` is non-
+        # None; stub to a no-op so the test doesn't need a real plan.
+        stack.enter_context(
+            patch("octomil.runtime.lifecycle.materialization.Materializer.materialize", return_value=None)
+        )
+        outcome = kernel.warmup(model="kokoro-en-v0_19", capability="tts")
+
+    assert outcome.backend_loaded is True
+
+    # The cache key MUST match what the streaming dispatch will look
+    # up under — i.e. derived from the planner-original (echo)
+    # candidate, NOT the recipe-substituted candidate.
+    expected_key = kernel._warmup_cache_key("tts", "kokoro-en-v0_19", echo_candidate)
+    assert expected_key in kernel._warmed_backends, (
+        f"warmup cache missing planner-candidate key {expected_key!r}; "
+        f"actual keys: {list(kernel._warmed_backends.keys())!r}. "
+        "Pre-fix bug: cache was keyed under the substituted-recipe "
+        "candidate, making it unreachable from dispatch."
+    )
+
+    # And confirm the dispatch path actually hits the cache when
+    # called with the same echo planner candidate (covering the full
+    # round-trip the user-visible bug exhibited).
+    cached = kernel._lookup_warmed_backend("tts", "kokoro-en-v0_19", candidate=echo_candidate)
+    assert cached is not None
+    # The fake backend's load_model was called exactly once during
+    # warmup; if dispatch reused the cache, it stays at 1.
+    assert _FakeSherpaBackend.load_calls == 1
