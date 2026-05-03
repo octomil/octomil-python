@@ -48,14 +48,24 @@ from octomil.runtime.bench.cache import (
     Result,
     Winner,
 )
+from octomil.runtime.bench.scheduler import (
+    BenchScheduler,
+    CalibrationRefusedError,
+    is_bench_enabled,
+    is_placeholder_bypassed,
+)
 
 __all__ = [
+    "BenchScheduler",
+    "CACHE_DIR_NAME",
+    "CACHE_SCHEMA_VERSION",
     "CacheKey",
     "CacheStore",
+    "CalibrationRefusedError",
     "DispatchShape",
     "HardwareFingerprint",
     "Result",
     "Winner",
-    "CACHE_SCHEMA_VERSION",
-    "CACHE_DIR_NAME",
+    "is_bench_enabled",
+    "is_placeholder_bypassed",
 ]
