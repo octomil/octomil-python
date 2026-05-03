@@ -1072,12 +1072,59 @@ class CacheStore:
     # --------- List / clear ---------
 
     def list_models(self) -> list[str]:
-        """Return all model_ids that have any cache entry under the
-        current hardware fingerprint."""
+        """Return the original (un-sanitized) ``model_id`` for every
+        cache entry under the current hardware fingerprint.
+
+        Reviewer R1 (Codex): an earlier draft returned the
+        URL-encoded directory name, then ``clear_model(model_id)``
+        re-sanitized that already-encoded string, doubly-encoding
+        the percent sign and writing/looking up under a totally
+        different path. Round-trip broken.
+
+        Correct shape:
+          * The index sidecar at ``<model_dir>/index.json`` carries
+            the original ``model_id`` in its body (and again in each
+            entry's nested ``cache_key``). Read that as the source
+            of truth.
+          * Fallback when the index is missing or unreadable:
+            URL-decode the directory name. The defensive
+            ``%2E``-for-``.`` re-encoding makes the decoded form
+            indistinguishable from the original — the only
+            difference is empty-string and ``.``/`..`` cases that
+            cannot occur in real ``model_id``s anyway.
+        """
         hw_dir = self._hardware_dir()
         if not hw_dir.is_dir():
             return []
-        return sorted(p.name for p in hw_dir.iterdir() if p.is_dir())
+        out: list[str] = []
+        for p in sorted(hw_dir.iterdir()):
+            if not p.is_dir():
+                continue
+            original = self._read_original_model_id(p)
+            if original is None:
+                # Index missing/unreadable; fall back to decode.
+                original = urllib.parse.unquote(p.name)
+            out.append(original)
+        return sorted(out)
+
+    def _read_original_model_id(self, model_dir: Path) -> Optional[str]:
+        """Pull the un-sanitized ``model_id`` out of the model's index
+        sidecar. Returns ``None`` if the index is absent or
+        unreadable; callers fall back to URL-decoding the directory
+        name."""
+        index_path = model_dir / "index.json"
+        if not index_path.is_file():
+            return None
+        try:
+            data = json.loads(index_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return None
+        if not isinstance(data, dict):
+            return None
+        model_id = data.get("model_id")
+        if isinstance(model_id, str) and model_id:
+            return model_id
+        return None
 
     def list_cache_keys(self, *, model_id: str) -> list[dict[str, Any]]:
         """Return the index entries for ``model_id``. Empty list when
