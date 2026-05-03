@@ -141,13 +141,30 @@ void test_runtime_open_v1_succeeds_then_close() {
     EXPECT(st == OCT_STATUS_INVALID_INPUT,
            "session_open with NULL out should return INVALID_INPUT");
 
-    /* Stub session_open returns UNSUPPORTED. */
+    /* Stub session_open returns UNSUPPORTED. Slice 2A: also assert
+     * the canonical capability field (strict-reject case under the
+     * stub returns UNSUPPORTED uniformly — no fake handle). */
     oct_session_config_t sess_cfg = {};
     sess_cfg.version = 1;
+    sess_cfg.capability = "audio.realtime.session";
+    sess_cfg.locality = "on_device";
     oct_session_t* sess = reinterpret_cast<oct_session_t*>(0xbadc0de);
     st = oct_session_open(rt, &sess_cfg, &sess);
     EXPECT(st == OCT_STATUS_UNSUPPORTED, "stub session_open should return UNSUPPORTED");
     EXPECT(sess == nullptr, "session out should be NULL on failure");
+
+    /* Slice 2A: session-level introspection sizes are non-zero and
+     * stable under the C compiler. The values themselves don't matter
+     * here — they're checked for parity in the Python-side test. */
+    EXPECT(oct_session_config_size() > 0, "session_config_size > 0");
+    EXPECT(oct_audio_view_size() > 0, "audio_view_size > 0");
+    EXPECT(oct_event_size() > 0, "event_size > 0");
+    EXPECT(oct_session_config_size() == sizeof(oct_session_config_t),
+           "session_config_size matches sizeof in this TU");
+    EXPECT(oct_audio_view_size() == sizeof(oct_audio_view_t),
+           "audio_view_size matches sizeof in this TU");
+    EXPECT(oct_event_size() == sizeof(oct_event_t),
+           "event_size matches sizeof in this TU");
 
     /* The runtime's last_error reflects the last failed call. */
     char errbuf[256] = {};

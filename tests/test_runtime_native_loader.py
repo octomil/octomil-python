@@ -1,4 +1,4 @@
-"""Tests for ``octomil.runtime.native`` cffi loader (slice 3 PR1).
+"""Tests for ``octomil.runtime.native`` cffi loader.
 
 Builds the dylib via CMake in a session fixture (cached across the
 test session), then exercises:
@@ -10,9 +10,10 @@ test session), then exercises:
     sentinel arrays from the slice-2 stub.
   * Forward-compat: capabilities() drops unknown advertised strings.
   * Thread-error and runtime-error read-back paths.
-
-Session entry tests are NOT in this file — those land alongside
-slice 2-proper / 3 PR2.
+  * Slice 2A: ABI parity for the session-level structs
+    (oct_session_config_t, oct_audio_view_t, oct_event_t) plus
+    NativeSession stub-behavior (open/send_audio/send_text/poll_event/
+    cancel/close all surface OCT_STATUS_UNSUPPORTED cleanly).
 """
 
 from __future__ import annotations
@@ -86,10 +87,12 @@ def test_abi_version_returns_three_tuple():
     assert isinstance(major, int)
     assert isinstance(minor, int)
     assert isinstance(patch, int)
-    # Slice 3 PR1 R2: header bumped to MINOR=2 (additive — added
-    # oct_runtime_config_size/oct_capabilities_size introspection
-    # functions; existing readers stay compatible). Lockstep update.
-    assert (major, minor) == (0, 2)
+    # Slice 2A: header bumped to MINOR=3 (additive — added
+    # oct_session_config_size/oct_audio_view_size/oct_event_size
+    # introspection functions; canonical capability comment in
+    # oct_session_config_t.capability. Existing readers stay
+    # compatible). Lockstep update with the cdef in loader.py.
+    assert (major, minor) == (0, 3)
     assert patch == 0
 
 
@@ -152,9 +155,52 @@ def test_oct_capabilities_t_size_matches_runtime():
     ffi, lib = _get_lib()
     cffi_size = ffi.sizeof("oct_capabilities_t")
     runtime_size = int(lib.oct_capabilities_size())
-    assert cffi_size == runtime_size, (
-        f"oct_capabilities_t struct-layout drift: " f"cffi cdef sizeof={cffi_size}, C compiler sizeof={runtime_size}."
-    )
+    assert (
+        cffi_size == runtime_size
+    ), f"oct_capabilities_t struct-layout drift: cffi cdef sizeof={cffi_size}, C compiler sizeof={runtime_size}."
+
+
+def test_oct_session_config_t_size_matches_runtime():
+    """Slice 2A: pin struct-layout parity for oct_session_config_t.
+    The cdef in loader.py mirrors runtime.h's oct_session_config_t
+    field-for-field; if the runtime grows or reorders a field and
+    the cdef doesn't follow, this fails immediately rather than
+    crashing on the first non-version field touch."""
+    from octomil.runtime.native.loader import _get_lib
+
+    ffi, lib = _get_lib()
+    cffi_size = ffi.sizeof("oct_session_config_t")
+    runtime_size = int(lib.oct_session_config_size())
+    assert (
+        cffi_size == runtime_size
+    ), f"oct_session_config_t struct-layout drift: cffi cdef sizeof={cffi_size}, C compiler sizeof={runtime_size}."
+
+
+def test_oct_audio_view_t_size_matches_runtime():
+    from octomil.runtime.native.loader import _get_lib
+
+    ffi, lib = _get_lib()
+    cffi_size = ffi.sizeof("oct_audio_view_t")
+    runtime_size = int(lib.oct_audio_view_size())
+    assert (
+        cffi_size == runtime_size
+    ), f"oct_audio_view_t struct-layout drift: cffi cdef sizeof={cffi_size}, C compiler sizeof={runtime_size}."
+
+
+def test_oct_event_t_size_matches_runtime():
+    """oct_event_t is the largest struct in the ABI (tagged union of
+    every event payload). A cdef that omits one inner struct field
+    would shrink the cffi sizeof; a runtime that grows a payload
+    without a binding update would grow the C sizeof. Either way,
+    this test is the canonical drift detector."""
+    from octomil.runtime.native.loader import _get_lib
+
+    ffi, lib = _get_lib()
+    cffi_size = ffi.sizeof("oct_event_t")
+    runtime_size = int(lib.oct_event_size())
+    assert (
+        cffi_size == runtime_size
+    ), f"oct_event_t struct-layout drift: cffi cdef sizeof={cffi_size}, C compiler sizeof={runtime_size}."
 
 
 def test_context_manager_closes_on_exit():
@@ -314,3 +360,227 @@ def test_dylib_resolution_message_lists_all_candidates(monkeypatch, tmp_path: Pa
     for path in paths:
         assert "runtime-core" in str(path)
         assert "build" in str(path)
+
+
+# ---------------------------------------------------------------------------
+# Slice 2A — NativeSession stub behavior
+#
+# Every session entry point on the slice-2 stub returns
+# OCT_STATUS_UNSUPPORTED. These tests pin that behavior so the slice
+# 2-proper Moshi-on-MLX adapter can replace stubs file-by-file with
+# tests that fail loudly on regressions.
+#
+# Critical property: the stub MUST NEVER yield a fake event. Any
+# poll_event call returns UNSUPPORTED (raised) before reaching the
+# event-loop path; bindings that mistake "stub" for "working" because
+# poll_event silently produced an OCT_EVENT_NONE would silently drop
+# payloads in the slice 2-proper hand-off.
+# ---------------------------------------------------------------------------
+
+
+def test_session_open_against_stub_returns_unsupported():
+    """The strict-reject contract on ``capability``: under the slice-2
+    stub *every* capability — including canonical canonical names —
+    returns UNSUPPORTED. The session out-pointer is NULL."""
+    from octomil.runtime.native import (
+        CAPABILITY_AUDIO_REALTIME_SESSION,
+        OCT_STATUS_UNSUPPORTED,
+        NativeRuntime,
+        NativeRuntimeError,
+    )
+
+    with NativeRuntime.open() as rt:
+        with pytest.raises(NativeRuntimeError) as exc_info:
+            rt.open_session(capability=CAPABILITY_AUDIO_REALTIME_SESSION)
+        assert exc_info.value.status == OCT_STATUS_UNSUPPORTED
+        # last_error round-trips a descriptive runtime message — bindings
+        # rely on this for diagnostic reporting in production.
+        assert "session_open" in exc_info.value.last_error.lower()
+        assert "slice-2" in exc_info.value.last_error.lower()
+
+
+def test_session_open_unknown_capability_under_stub_returns_unsupported():
+    """Even for non-canonical capability strings the stub returns
+    UNSUPPORTED (rather than crashing or producing a fake handle).
+    Real runtime applies strict-reject against the canonical enum
+    here; the stub shape stays consistent."""
+    from octomil.runtime.native import OCT_STATUS_UNSUPPORTED, NativeRuntime, NativeRuntimeError
+
+    with NativeRuntime.open() as rt:
+        with pytest.raises(NativeRuntimeError) as exc_info:
+            rt.open_session(capability="does.not.exist")
+        assert exc_info.value.status == OCT_STATUS_UNSUPPORTED
+
+
+def test_session_open_never_returns_a_handle_against_stub():
+    """Bindings rely on `*out == NULL` after a non-OK session_open.
+    Without it the wrapper would attempt to NativeSession.close() a
+    garbage handle on the cleanup path — the C contract guarantees
+    NULL on failure."""
+    from octomil.runtime.native.loader import (
+        OCT_STATUS_UNSUPPORTED,
+        _get_lib,
+    )
+
+    ffi, lib = _get_lib()
+    cfg = ffi.new("oct_runtime_config_t*")
+    cfg.version = 1
+    cfg.artifact_root = ffi.NULL
+    cfg.telemetry_sink = ffi.NULL
+    cfg.telemetry_user_data = ffi.NULL
+    cfg.max_sessions = 0
+    rt_out = ffi.new("oct_runtime_t**")
+    assert int(lib.oct_runtime_open(cfg, rt_out)) == 0
+    rt = rt_out[0]
+    try:
+        sess_cfg = ffi.new("oct_session_config_t*")
+        sess_cfg.version = 1
+        cap_buf = ffi.new("char[]", b"audio.realtime.session")
+        sess_cfg.capability = cap_buf
+        loc_buf = ffi.new("char[]", b"on_device")
+        sess_cfg.locality = loc_buf
+        sess_out = ffi.new("oct_session_t**")
+        # Pre-poison sess_out so we'd notice if the stub fails to NULL it.
+        sess_out[0] = ffi.cast("oct_session_t*", 0xDEADBEEF)
+        status = int(lib.oct_session_open(rt, sess_cfg, sess_out))
+        assert status == OCT_STATUS_UNSUPPORTED
+        assert sess_out[0] == ffi.NULL, "stub session_open must NULL out on failure"
+    finally:
+        lib.oct_runtime_close(rt)
+
+
+def test_session_send_audio_against_stub_returns_unsupported():
+    """A NativeSession constructed against a NULL handle exercises
+    the entry-point shim. The stub returns UNSUPPORTED; the wrapper
+    raises NativeRuntimeError."""
+    from octomil.runtime.native.loader import (
+        OCT_STATUS_UNSUPPORTED,
+        NativeRuntimeError,
+        NativeSession,
+        _get_lib,
+    )
+
+    ffi, lib = _get_lib()
+    # Construct a NativeSession against NULL — the stub send_audio
+    # explicitly handles this by setting a thread error and returning
+    # UNSUPPORTED. We need a fake "owner" that only exposes last_error;
+    # the simplest is a real (open) NativeRuntime.
+    from octomil.runtime.native import NativeRuntime
+
+    with NativeRuntime.open() as rt:
+        sess = NativeSession(ffi, lib, ffi.NULL, owner=rt)
+        # 4 frames of mono float32 — 16 bytes.
+        samples = b"\x00\x00\x00\x00" * 4
+        with pytest.raises(NativeRuntimeError) as exc_info:
+            sess.send_audio(samples, sample_rate=16000, channels=1)
+        assert exc_info.value.status == OCT_STATUS_UNSUPPORTED
+
+
+def test_session_send_text_against_stub_returns_unsupported():
+    from octomil.runtime.native import NativeRuntime
+    from octomil.runtime.native.loader import (
+        OCT_STATUS_UNSUPPORTED,
+        NativeRuntimeError,
+        NativeSession,
+        _get_lib,
+    )
+
+    ffi, lib = _get_lib()
+    with NativeRuntime.open() as rt:
+        sess = NativeSession(ffi, lib, ffi.NULL, owner=rt)
+        with pytest.raises(NativeRuntimeError) as exc_info:
+            sess.send_text("hello")
+        assert exc_info.value.status == OCT_STATUS_UNSUPPORTED
+
+
+def test_session_poll_event_against_stub_never_yields_fake_event():
+    """The most-load-bearing stub-behavior assertion. The slice-2
+    poll_event MUST NOT silently return a OCT_STATUS_OK event. If it
+    did, a binding would mistake the stub for a working runtime and
+    drop real payloads on the slice-2-proper handover. The stub
+    returns UNSUPPORTED → wrapper raises."""
+    from octomil.runtime.native import NativeRuntime
+    from octomil.runtime.native.loader import (
+        OCT_STATUS_UNSUPPORTED,
+        NativeRuntimeError,
+        NativeSession,
+        _get_lib,
+    )
+
+    ffi, lib = _get_lib()
+    with NativeRuntime.open() as rt:
+        sess = NativeSession(ffi, lib, ffi.NULL, owner=rt)
+        with pytest.raises(NativeRuntimeError) as exc_info:
+            sess.poll_event(timeout_ms=0)
+        assert exc_info.value.status == OCT_STATUS_UNSUPPORTED
+
+
+def test_session_cancel_against_stub_returns_unsupported_status():
+    """cancel() returns the raw status code; UNSUPPORTED is not
+    treated as an error (idempotent semantics include UNSUPPORTED so
+    bindings can call cancel() in cleanup paths without try/except)."""
+    from octomil.runtime.native import NativeRuntime
+    from octomil.runtime.native.loader import (
+        OCT_STATUS_UNSUPPORTED,
+        NativeSession,
+        _get_lib,
+    )
+
+    ffi, lib = _get_lib()
+    with NativeRuntime.open() as rt:
+        sess = NativeSession(ffi, lib, ffi.NULL, owner=rt)
+        status = sess.cancel()
+        assert status == OCT_STATUS_UNSUPPORTED
+
+
+def test_session_close_idempotent():
+    """close() is the cleanup path; it must be a no-op on the second
+    call (mirrors NativeRuntime.close behavior)."""
+    from octomil.runtime.native import NativeRuntime
+    from octomil.runtime.native.loader import NativeSession, _get_lib
+
+    ffi, lib = _get_lib()
+    with NativeRuntime.open() as rt:
+        sess = NativeSession(ffi, lib, ffi.NULL, owner=rt)
+        sess.close()
+        sess.close()
+
+
+def test_session_send_audio_rejects_bad_shape():
+    """Client-side shape validation — channels must divide n_floats,
+    n_floats must be > 0. Surfacing OCT_STATUS_INVALID_INPUT before
+    crossing the FFI is cheaper and gives a Python stack frame for
+    the diagnostic."""
+    from octomil.runtime.native import NativeRuntime
+    from octomil.runtime.native.loader import (
+        OCT_STATUS_INVALID_INPUT,
+        NativeRuntimeError,
+        NativeSession,
+        _get_lib,
+    )
+
+    ffi, lib = _get_lib()
+    with NativeRuntime.open() as rt:
+        sess = NativeSession(ffi, lib, ffi.NULL, owner=rt)
+        with pytest.raises(NativeRuntimeError) as exc_info:
+            sess.send_audio(b"", sample_rate=16000, channels=1)
+        assert exc_info.value.status == OCT_STATUS_INVALID_INPUT
+        with pytest.raises(NativeRuntimeError):
+            # 5 floats but 2 channels — not a frame boundary.
+            sess.send_audio(b"\x00" * 4 * 5, sample_rate=16000, channels=2)
+
+
+def test_session_open_session_after_runtime_close_raises():
+    """Ordering invariant: session_open after runtime_close fails
+    cleanly via the wrapper rather than crashing on a stale handle."""
+    from octomil.runtime.native import (
+        CAPABILITY_AUDIO_REALTIME_SESSION,
+        NativeRuntime,
+        NativeRuntimeError,
+    )
+
+    rt = NativeRuntime.open()
+    rt.close()
+    with pytest.raises(NativeRuntimeError) as exc_info:
+        rt.open_session(capability=CAPABILITY_AUDIO_REALTIME_SESSION)
+    assert "closed" in str(exc_info.value).lower()
