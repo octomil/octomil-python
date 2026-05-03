@@ -417,9 +417,16 @@ typedef struct {
     const char* speaker_id;          /* optional; NULL ok; copied at open */
     uint32_t    sample_rate_in;      /* 0 = engine preferred input rate */
     uint32_t    sample_rate_out;     /* 0 = engine preferred output rate */
-    uint32_t    priority;            /* OCT_PRIORITY_* */
+    oct_priority_t priority;         /* OCT_PRIORITY_*; codegen-friendlier than bare uint32_t */
     void*       user_data;           /* opaque, echoed verbatim on every event */
 } oct_session_config_t;
+/*
+ * RESERVED FIELDS POLICY (Codex R3): all `_reserved*` fields in
+ * public structs MUST be zero-initialized by the caller. The
+ * runtime returns OCT_STATUS_INVALID_INPUT if any `_reserved*`
+ * field is non-zero on input. This guards future extension bits
+ * from being silently ignored by older runtimes.
+ */
 
 /*
  * Open returns oct_status_t; same edge-case contract as
@@ -629,10 +636,12 @@ struct oct_event {
         } session_completed;
         /* INPUT_DROPPED — realtime backpressure / queue overflow */
         struct {
-            uint32_t     n_samples_dropped;
+            uint32_t     n_frames_dropped;  /* frames per channel (NOT total float elements); mirrors oct_audio_view_t.n_frames */
             uint32_t     sample_rate;
-            const char*  reason;        /* runtime-owned. "queue_full" | "session_busy" | "engine_lagging" */
-            uint64_t     dropped_at_ns; /* monotonic timestamp of the drop */
+            uint16_t     channels;          /* channels of the dropped audio */
+            uint16_t     _reserved0;        /* padding; always 0 */
+            const char*  reason;            /* runtime-owned. "queue_full" | "session_busy" | "engine_lagging" */
+            uint64_t     dropped_at_ns;     /* monotonic timestamp of the drop */
         } input_dropped;
     } data;
 };
