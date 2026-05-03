@@ -55,6 +55,7 @@ def main(ctx: click.Context) -> None:
 
 from octomil.commands import (  # noqa: E402
     agent,
+    bench,
     benchmark,
     completions,
     deploy,
@@ -81,6 +82,7 @@ for _mod in [
     model_ops,
     deploy,
     benchmark,
+    bench,
     enterprise,
     federation,
     interactive,
