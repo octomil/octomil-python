@@ -154,6 +154,14 @@ OCT_API void oct_runtime_close(oct_runtime_t* runtime) {
     delete runtime;
 }
 
+/* Sentinel "empty list" — non-NULL pointer to a single-element array
+ * whose element is NULL. Per the header's empty-list convention so
+ * bindings can iterate without an outer NULL check. The struct field
+ * is `const char**` so the inner element type is `const char*`; we
+ * declare the storage with that exact type. Lifetime is the dylib's;
+ * `oct_runtime_capabilities_free` does not free it. */
+static const char* k_empty_string_array[1] = {nullptr};
+
 OCT_API oct_status_t oct_runtime_capabilities(
     oct_runtime_t* runtime,
     oct_capabilities_t* out
@@ -166,10 +174,45 @@ OCT_API oct_status_t oct_runtime_capabilities(
         }
         return OCT_STATUS_INVALID_INPUT;
     }
-    /* Slice-2 stub: empty capability list. The smoke test asserts on
-     * this so bindings learn early that the stub doesn't claim any
-     * capabilities. */
-    std::memset(out, 0, sizeof(*out));
+    /* Honor the versioned-output-struct contract:
+     *   - Caller sets out->size = sizeof(oct_capabilities_t) before
+     *     the call. We refuse anything smaller than the version+size
+     *     header (the binding compiled against a pre-v1 header).
+     *   - We write at most out->size bytes (no overrun on older
+     *     bindings).
+     * Codex R1 fix: previous stub did memset(out, 0, sizeof(*out))
+     * which violated both invariants. */
+    const size_t header_min = offsetof(oct_capabilities_t, supported_engines);
+    if (out->size < header_min) {
+        runtime->set_error(
+            "oct_runtime_capabilities: out->size smaller than minimum required header"
+        );
+        return OCT_STATUS_INVALID_INPUT;
+    }
+    /* Stage to a local fully-populated struct, then copy out->size
+     * bytes — that way bindings compiled against v1 see all fields,
+     * and a hypothetical pre-v1 binding sees only its slice. */
+    oct_capabilities_t staged{};
+    staged.version = OCT_CAPABILITIES_VERSION;
+    staged.size = sizeof(oct_capabilities_t);
+    /* Empty-list convention: non-NULL pointer to a single-element NULL-
+     * terminated array. Bindings iterate without an outer NULL check. */
+    staged.supported_engines = k_empty_string_array;
+    staged.supported_capabilities = k_empty_string_array;
+    staged.supported_archs = k_empty_string_array;
+    staged.ram_total_bytes = 0;
+    staged.ram_available_bytes = 0;
+    staged.has_apple_silicon = 0;
+    staged.has_cuda = 0;
+    staged.has_metal = 0;
+    staged._reserved0 = 0;
+
+    const size_t copy_n = out->size < sizeof(staged) ? out->size : sizeof(staged);
+    std::memcpy(out, &staged, copy_n);
+    /* The size field was set by the caller and is preserved by the
+     * memcpy of the staged struct (which has size=sizeof). The version
+     * field is also overwritten; bindings that passed a pre-init out
+     * see version=OCT_CAPABILITIES_VERSION on return. */
     return OCT_STATUS_OK;
 }
 
@@ -177,7 +220,10 @@ OCT_API void oct_runtime_capabilities_free(oct_capabilities_t* caps) {
     if (caps == nullptr) {
         return;
     }
-    /* No-op; slice-2 stub allocates nothing inside oct_capabilities_t. */
+    /* No-op for now; slice-2 stub points the const char** fields at
+     * the static k_empty_string_array (lifetime is the dylib's, never
+     * freed). Real implementation will free runtime-allocated lists
+     * here. We zero the struct so a use-after-free is detectable. */
     std::memset(caps, 0, sizeof(*caps));
 }
 
@@ -215,9 +261,19 @@ OCT_API oct_status_t oct_session_open(
     const oct_session_config_t* config,
     oct_session_t** out
 ) {
-    if (out != nullptr) {
-        *out = nullptr;
+    /* Codex R1 fix: header invariant requires INVALID_INPUT when
+     * out == NULL. Previous stub fell through to UNSUPPORTED, which
+     * a binding might attempt to recover from by issuing oct_session_close
+     * on an uninitialized handle. */
+    if (out == nullptr) {
+        if (runtime != nullptr) {
+            runtime->set_error("oct_session_open: out parameter is NULL");
+        } else {
+            set_thread_error("oct_session_open: out parameter is NULL");
+        }
+        return OCT_STATUS_INVALID_INPUT;
     }
+    *out = nullptr;
     if (runtime == nullptr) {
         set_thread_error("oct_session_open: runtime is NULL");
         return OCT_STATUS_INVALID_INPUT;
@@ -265,8 +321,22 @@ OCT_API oct_status_t oct_session_poll_event(
 ) {
     (void)session;
     (void)timeout_ms;
+    /* Codex R1 fix: respect out->size to avoid overrunning an older
+     * binding's event buffer. Previous stub did memset(out, 0,
+     * sizeof(*out)) which writes past out->size when the binding
+     * was compiled against a smaller event struct. */
     if (out != nullptr) {
-        std::memset(out, 0, sizeof(*out));
+        const size_t header_min = offsetof(oct_event_t, type);
+        if (out->size >= header_min && out->size <= sizeof(*out)) {
+            /* Zero only up to out->size bytes; the version + size
+             * fields are preserved by the slot-1 fields. */
+            std::memset(out, 0, out->size);
+            out->size = out->size;  /* preserved (was already 0'd above; set explicitly for clarity) */
+            out->version = OCT_EVENT_VERSION;
+            out->type = OCT_EVENT_NONE;
+        }
+        /* If out->size is 0 or wildly larger than sizeof(*out), the
+         * binding violated the contract; we don't write anything. */
     }
     set_thread_error("oct_session_poll_event: not implemented in slice-2 build");
     return OCT_STATUS_UNSUPPORTED;

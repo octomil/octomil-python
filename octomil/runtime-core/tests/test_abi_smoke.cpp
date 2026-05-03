@@ -80,11 +80,43 @@ void test_runtime_open_v1_succeeds_then_close() {
     EXPECT(st == OCT_STATUS_OK, "v1 config should succeed");
     EXPECT(rt != nullptr, "out should be non-NULL on success");
 
-    /* Capabilities returns OK with an empty descriptor. */
-    oct_capabilities_t caps;
+    /* Capabilities returns OK with the empty-list sentinel arrays
+     * AND respects the versioned-output-struct contract:
+     *   - Caller sets out->size before the call.
+     *   - Runtime writes <= out->size bytes.
+     *   - Empty list = non-NULL pointer to a length-1 array of NULL. */
+    oct_capabilities_t caps = {};
+    caps.size = sizeof(caps);
     st = oct_runtime_capabilities(rt, &caps);
     EXPECT(st == OCT_STATUS_OK, "capabilities should return OK");
+    EXPECT(caps.version == OCT_CAPABILITIES_VERSION,
+           "capabilities version should be OCT_CAPABILITIES_VERSION");
+    EXPECT(caps.size == sizeof(caps),
+           "capabilities size should round-trip");
+    EXPECT(caps.supported_engines != nullptr,
+           "supported_engines must be non-NULL (empty-list sentinel)");
+    EXPECT(caps.supported_engines[0] == nullptr,
+           "supported_engines must be empty-sentinel-terminated");
+    EXPECT(caps.supported_capabilities != nullptr &&
+           caps.supported_capabilities[0] == nullptr,
+           "supported_capabilities empty sentinel");
+    EXPECT(caps.supported_archs != nullptr && caps.supported_archs[0] == nullptr,
+           "supported_archs empty sentinel");
     oct_runtime_capabilities_free(&caps);
+
+    /* Versioned-output-struct: out->size = 0 violates the contract. */
+    oct_capabilities_t small_caps = {};
+    small_caps.size = 0;
+    st = oct_runtime_capabilities(rt, &small_caps);
+    EXPECT(st == OCT_STATUS_INVALID_INPUT,
+           "capabilities should reject out->size = 0");
+
+    /* Session_open rejects NULL out per the header invariant. */
+    oct_session_config_t bad_cfg = {};
+    bad_cfg.version = 1;
+    st = oct_session_open(rt, &bad_cfg, nullptr);
+    EXPECT(st == OCT_STATUS_INVALID_INPUT,
+           "session_open with NULL out should return INVALID_INPUT");
 
     /* Stub session_open returns UNSUPPORTED. */
     oct_session_config_t sess_cfg = {};
@@ -130,8 +162,12 @@ void test_session_stub_returns_unsupported() {
     st = oct_session_send_text(nullptr, "hi");
     EXPECT(st == OCT_STATUS_UNSUPPORTED, "send_text stub");
     oct_event_t ev = {};
+    ev.size = sizeof(ev);
     st = oct_session_poll_event(nullptr, &ev, 0);
     EXPECT(st == OCT_STATUS_UNSUPPORTED, "poll_event stub");
+    /* Stub clears the event safely (respects out->size). */
+    EXPECT(ev.version == OCT_EVENT_VERSION, "poll_event sets version on clear");
+    EXPECT(ev.type == OCT_EVENT_NONE, "poll_event sets type=NONE");
     st = oct_session_cancel(nullptr);
     EXPECT(st == OCT_STATUS_UNSUPPORTED, "cancel stub");
     /* close-of-NULL is a no-op (header contract). */

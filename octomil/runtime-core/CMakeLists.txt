@@ -58,7 +58,12 @@ target_include_directories(octomil_runtime
 
 target_compile_definitions(octomil_runtime
     PRIVATE
-        OCT_BUILD_DLL=1
+        # Match the header's Windows export gate. The header at
+        # include/octomil/runtime.h uses OCTOMIL_RUNTIME_BUILDING to
+        # switch __declspec(dllexport) / __declspec(dllimport); without
+        # it the MSVC build sees exported function definitions as
+        # dllimport and produces an unlinkable DLL.
+        OCTOMIL_RUNTIME_BUILDING=1
 )
 
 if(MSVC)
