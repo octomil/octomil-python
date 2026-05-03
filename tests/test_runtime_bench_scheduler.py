@@ -565,3 +565,497 @@ def test_env_var_correct_value_no_warning(caplog, store):
     with caplog.at_level("WARNING", logger="octomil.runtime.bench.scheduler"):
         BenchScheduler(cache=store, env={ENV_BENCH_GATE: ENV_BENCH_GATE_VALUE_ON})
     assert not any(ENV_BENCH_GATE in r.message and "not a recognized" in r.message for r in caplog.records)
+
+
+# ---------------------------------------------------------------------------
+# Worker-exception failure backoff
+# ---------------------------------------------------------------------------
+
+
+def test_worker_exception_throttles_subsequent_enqueues(store, cache_key, fixtures, candidate, calibrated_thresholds):
+    """A deterministic worker exception (raised inside the synthesize
+    factory) records the cache_key in the failure map. A subsequent
+    enqueue for the SAME key is suppressed until the backoff window
+    expires. Without this, dispatch keeps re-enqueueing a guaranteed-
+    failing candidate every cache miss."""
+    factory_calls: list[CandidateConfig] = []
+
+    def crashing_factory(c: CandidateConfig):
+        factory_calls.append(c)
+
+        def synthesize(text: str) -> AudioOutput:
+            del text
+            raise RuntimeError("simulated engine crash")
+
+        return synthesize
+
+    scheduler = BenchScheduler(
+        cache=store,
+        env={ENV_BENCH_GATE: ENV_BENCH_GATE_VALUE_ON},
+        failure_backoff_s=10.0,
+    )
+    try:
+        # First enqueue runs the worker, factory is constructed, then
+        # synthesize raises during the baseline. Exception logged;
+        # cache_key recorded with a deadline.
+        first = scheduler.lookup_or_schedule(
+            cache_key,
+            candidates=[candidate],
+            fixtures=fixtures,
+            synthesize_factory=crashing_factory,
+            cpu_baseline_factory=crashing_factory,
+            asr_fn=_passing_asr_fn,
+            speaker_embedding_fn=_passing_speaker_fn,
+            thresholds=calibrated_thresholds,
+        )
+        assert first is None
+
+        # Wait for worker to finish (drain the in-flight bench).
+        deadline = time.monotonic() + 5.0
+        while scheduler.queue_depth > 0 or scheduler.in_flight:
+            if time.monotonic() > deadline:
+                pytest.fail("scheduler did not drain after exception within 5s")
+            time.sleep(0.05)
+
+        # Subsequent enqueue for the same key is skipped (backoff).
+        prior_calls = len(factory_calls)
+        second = scheduler.lookup_or_schedule(
+            cache_key,
+            candidates=[candidate],
+            fixtures=fixtures,
+            synthesize_factory=crashing_factory,
+            cpu_baseline_factory=crashing_factory,
+            asr_fn=_passing_asr_fn,
+            speaker_embedding_fn=_passing_speaker_fn,
+            thresholds=calibrated_thresholds,
+        )
+        assert second is None
+        # Give a brief moment for any worker activity (there should
+        # be none since the enqueue should have short-circuited).
+        time.sleep(0.1)
+        assert scheduler.queue_depth == 0
+        assert len(factory_calls) == prior_calls, "backoff should have suppressed re-enqueue"
+    finally:
+        scheduler.shutdown(timeout_s=5.0)
+
+
+def test_failure_backoff_expires_after_window(store, cache_key, fixtures, candidate, calibrated_thresholds):
+    """Once the backoff window elapses, subsequent enqueues for the
+    same key are accepted again."""
+    factory_calls: list[CandidateConfig] = []
+
+    def crashing_factory(c: CandidateConfig):
+        factory_calls.append(c)
+
+        def synthesize(text: str) -> AudioOutput:
+            del text
+            raise RuntimeError("simulated engine crash")
+
+        return synthesize
+
+    # 50ms backoff so the test runs quickly.
+    scheduler = BenchScheduler(
+        cache=store,
+        env={ENV_BENCH_GATE: ENV_BENCH_GATE_VALUE_ON},
+        failure_backoff_s=0.05,
+    )
+    try:
+        scheduler.lookup_or_schedule(
+            cache_key,
+            candidates=[candidate],
+            fixtures=fixtures,
+            synthesize_factory=crashing_factory,
+            cpu_baseline_factory=crashing_factory,
+            asr_fn=_passing_asr_fn,
+            speaker_embedding_fn=_passing_speaker_fn,
+            thresholds=calibrated_thresholds,
+        )
+        # Wait for the worker to finish + backoff to expire. Bump
+        # the sleep margin to 250ms over a 50ms backoff so a heavily-
+        # loaded CI runner doesn't flake. Claude R1 nit.
+        deadline = time.monotonic() + 2.0
+        while scheduler.queue_depth > 0 or scheduler.in_flight:
+            if time.monotonic() > deadline:
+                pytest.fail("scheduler did not drain")
+            time.sleep(0.01)
+        time.sleep(0.25)  # >> backoff window of 0.05
+
+        prior = len(factory_calls)
+        scheduler.lookup_or_schedule(
+            cache_key,
+            candidates=[candidate],
+            fixtures=fixtures,
+            synthesize_factory=crashing_factory,
+            cpu_baseline_factory=crashing_factory,
+            asr_fn=_passing_asr_fn,
+            speaker_embedding_fn=_passing_speaker_fn,
+            thresholds=calibrated_thresholds,
+        )
+        # Wait for second cycle to drain.
+        deadline = time.monotonic() + 2.0
+        while scheduler.queue_depth > 0 or scheduler.in_flight:
+            if time.monotonic() > deadline:
+                pytest.fail("second enqueue never ran")
+            time.sleep(0.01)
+        # Factory was invoked again — backoff did not suppress.
+        assert len(factory_calls) > prior
+    finally:
+        scheduler.shutdown(timeout_s=5.0)
+
+
+def test_failure_map_capacity(store, fixtures, candidate, calibrated_thresholds):
+    """The failure map is capped at `failure_map_max` so a pattern
+    where every cache_key fails doesn't grow it without bound."""
+
+    def crashing_factory(c: CandidateConfig):
+        def synthesize(text: str) -> AudioOutput:
+            del text
+            raise RuntimeError("simulated engine crash")
+
+        return synthesize
+
+    scheduler = BenchScheduler(
+        cache=store,
+        env={ENV_BENCH_GATE: ENV_BENCH_GATE_VALUE_ON},
+        failure_backoff_s=10.0,  # long enough that none expire during the test
+        failure_map_max=3,  # tight cap for the test
+    )
+    try:
+        # Schedule 5 distinct cache_keys, all of which crash. Cap is 3,
+        # so failed_keys settles at <= 3.
+        for i in range(5):
+            key = CacheKey(
+                capability="tts",
+                model_id=f"model-{i}",
+                model_digest="sha256:" + "f" * 64,
+                quantization_preference="fp32",
+                candidate_set_version="1.0",
+                reference_workload_version="1.0",
+                dispatch_shape=DispatchShape(
+                    fields={
+                        "language": "en",
+                        "sample_format": "pcm_s16le",
+                        "sample_rate_out": 24000,
+                        "voice_family": f"voice_{i}",
+                    }
+                ),
+            )
+            scheduler.lookup_or_schedule(
+                key,
+                candidates=[candidate],
+                fixtures=fixtures,
+                synthesize_factory=crashing_factory,
+                cpu_baseline_factory=crashing_factory,
+                asr_fn=_passing_asr_fn,
+                speaker_embedding_fn=_passing_speaker_fn,
+                thresholds=calibrated_thresholds,
+            )
+        # Drain. After every failed cycle the worker prunes on
+        # insert, so failed_keys never exceeds the cap — no need for
+        # a sentinel enqueue to trigger a prune. Codex R1 fix made
+        # the test deterministic.
+        deadline = time.monotonic() + 5.0
+        while scheduler.queue_depth > 0 or scheduler.in_flight:
+            if time.monotonic() > deadline:
+                pytest.fail("scheduler did not drain")
+            time.sleep(0.05)
+        # Inspect failed_keys directly via the scheduler's private
+        # state — fine for unit tests, never for production code.
+        with scheduler._lock:  # noqa: SLF001
+            assert len(scheduler._state.failed_keys) <= 3  # noqa: SLF001
+            assert len(scheduler._state.failed_keys) >= 1  # noqa: SLF001 — at least one survived
+    finally:
+        scheduler.shutdown(timeout_s=5.0)
+
+
+def test_enqueue_cache_recheck_precedes_backoff(store, hardware, cache_key, fixtures, candidate, calibrated_thresholds):
+    """Codex R4 sharpened-test: exercise the NARROW `_enqueue`
+    cache-recheck path. The public ``lookup_or_schedule`` does a
+    cache check before reaching ``_enqueue``; once we're inside
+    ``_enqueue`` (under the scheduler lock) a separate cache recheck
+    runs to catch a winner that committed between the public check
+    and the lock acquisition. The order of THAT recheck vs the
+    backoff check is what dispatch correctness depends on.
+
+    This test forces the race by monkey-patching ``store.get`` so the
+    public call sees a miss but the ``_enqueue`` recheck sees a hit.
+    If the ``_enqueue`` cache check ever moves AFTER the backoff
+    check, the backoff path would fire and ``suppressed_leafs`` would
+    record the leaf — assertion fails."""
+
+    from octomil.runtime.bench.cache import Result, Winner
+
+    def crashing_factory(c: CandidateConfig):
+        del c
+
+        def synthesize(text: str) -> AudioOutput:
+            del text
+            raise RuntimeError("simulated engine crash")
+
+        return synthesize
+
+    scheduler = BenchScheduler(
+        cache=store,
+        env={ENV_BENCH_GATE: ENV_BENCH_GATE_VALUE_ON},
+        failure_backoff_s=10.0,
+    )
+    try:
+        # Step 1: register a failure → backoff opens.
+        scheduler.lookup_or_schedule(
+            cache_key,
+            candidates=[candidate],
+            fixtures=fixtures,
+            synthesize_factory=crashing_factory,
+            cpu_baseline_factory=crashing_factory,
+            asr_fn=_passing_asr_fn,
+            speaker_embedding_fn=_passing_speaker_fn,
+            thresholds=calibrated_thresholds,
+        )
+        deadline = time.monotonic() + 5.0
+        while scheduler.queue_depth > 0 or scheduler.in_flight:
+            if time.monotonic() > deadline:
+                pytest.fail("first cycle never drained")
+            time.sleep(0.05)
+        leaf = cache_key.leaf_filename()
+        assert leaf in scheduler._state.failed_keys  # noqa: SLF001
+        assert leaf not in scheduler._state.suppressed_leafs  # noqa: SLF001 — not yet
+
+        # Step 2: monkey-patch the cache so the FIRST get returns None
+        # (public path miss) and the SECOND returns a winner (the
+        # _enqueue recheck under the lock observes a fresh commit).
+        winner_result = Result(
+            cache_key=cache_key,
+            hardware_fingerprint=hardware.full_digest(),
+            hardware_descriptor=hardware.descriptor_dict(),
+            writer_runtime_build_tag=hardware.runtime_build_tag,
+            winner=Winner(
+                engine="sherpa-onnx",
+                provider="coreml",
+                config={"num_threads": 1},
+                score=18.0,
+                first_chunk_ms=10.0,
+                total_latency_ms=20.0,
+                quality_metrics={"avg_speaker_embedding_cosine": 0.95},
+            ),
+            runners_up=(),
+            disqualified=(),
+            incomplete=False,
+            confidence="high",
+        )
+        call_count = {"n": 0}
+        original_get = store.get
+
+        def racing_get(key):
+            call_count["n"] += 1
+            if call_count["n"] == 1:
+                return None  # public lookup_or_schedule miss
+            return winner_result  # _enqueue recheck hit
+
+        store.get = racing_get  # type: ignore[method-assign]
+        try:
+            result = scheduler.lookup_or_schedule(
+                cache_key,
+                candidates=[candidate],
+                fixtures=fixtures,
+                synthesize_factory=crashing_factory,
+                cpu_baseline_factory=crashing_factory,
+                asr_fn=_passing_asr_fn,
+                speaker_embedding_fn=_passing_speaker_fn,
+                thresholds=calibrated_thresholds,
+            )
+        finally:
+            store.get = original_get  # type: ignore[method-assign]
+
+        # The public call returns None (its own cache.get was the
+        # first patched call returning None). _enqueue's recheck
+        # picks up the winner and short-circuits BEFORE the backoff
+        # check fires.
+        assert result is None
+        assert scheduler.queue_depth == 0
+        # Critical assertion: backoff path did NOT fire. If the
+        # cache recheck moves after the backoff check (regression),
+        # suppressed_leafs would now contain leaf.
+        assert leaf not in scheduler._state.suppressed_leafs, (  # noqa: SLF001
+            "backoff suppressed before cache-hit recheck — ordering regression"
+        )
+        # Saw exactly 2 cache.get calls (public + _enqueue recheck).
+        assert call_count["n"] == 2
+    finally:
+        scheduler.shutdown(timeout_s=5.0)
+
+
+def test_cache_hit_overrides_backoff(store, hardware, cache_key, fixtures, candidate, calibrated_thresholds):
+    """A cache hit must take precedence over backoff suppression.
+    Without that ordering, a winner that arrived from another path
+    (another process, manual cache seeding) would be invisible to
+    dispatch until the backoff window expired.
+
+    Codex R3 sharpened-test note: seed the cache directly via
+    `store.put` rather than `run_foreground` so the backoff state
+    stays active during the assertion. If the cache-precedence
+    ordering ever regresses, this test will fail — without the direct
+    seed, `run_foreground` would clear the backoff and the test
+    would pass for the wrong reason."""
+
+    from octomil.runtime.bench.cache import Result, Winner
+
+    def crashing_factory(c: CandidateConfig):
+        del c
+
+        def synthesize(text: str) -> AudioOutput:
+            del text
+            raise RuntimeError("simulated engine crash")
+
+        return synthesize
+
+    scheduler = BenchScheduler(
+        cache=store,
+        env={ENV_BENCH_GATE: ENV_BENCH_GATE_VALUE_ON},
+        failure_backoff_s=10.0,
+    )
+    try:
+        # Step 1: register a failure — backoff window opens.
+        scheduler.lookup_or_schedule(
+            cache_key,
+            candidates=[candidate],
+            fixtures=fixtures,
+            synthesize_factory=crashing_factory,
+            cpu_baseline_factory=crashing_factory,
+            asr_fn=_passing_asr_fn,
+            speaker_embedding_fn=_passing_speaker_fn,
+            thresholds=calibrated_thresholds,
+        )
+        deadline = time.monotonic() + 5.0
+        while scheduler.queue_depth > 0 or scheduler.in_flight:
+            if time.monotonic() > deadline:
+                pytest.fail("first cycle never drained")
+            time.sleep(0.05)
+        leaf = cache_key.leaf_filename()
+        with scheduler._lock:  # noqa: SLF001 — test inspection
+            assert leaf in scheduler._state.failed_keys  # noqa: SLF001
+
+        # Step 2: seed the cache DIRECTLY via the store, bypassing
+        # the scheduler. This simulates a cross-process winner
+        # commit AND keeps the backoff entry intact so the assertion
+        # actually exercises the precedence ordering.
+        store.put(
+            Result(
+                cache_key=cache_key,
+                hardware_fingerprint=hardware.full_digest(),
+                hardware_descriptor=hardware.descriptor_dict(),
+                writer_runtime_build_tag=hardware.runtime_build_tag,
+                winner=Winner(
+                    engine="sherpa-onnx",
+                    provider="coreml",
+                    config={"num_threads": 1},
+                    score=18.0,
+                    first_chunk_ms=10.0,
+                    total_latency_ms=20.0,
+                    quality_metrics={"avg_speaker_embedding_cosine": 0.95},
+                ),
+                runners_up=(),
+                disqualified=(),
+                incomplete=False,
+                confidence="high",
+            )
+        )
+        # Backoff entry is still active.
+        with scheduler._lock:  # noqa: SLF001
+            assert leaf in scheduler._state.failed_keys  # noqa: SLF001
+
+        # Step 3: dispatch lookup must return the winner — cache hit
+        # PRECEDES the backoff check. If a regression moves the
+        # cache check after the backoff check, this assertion fails.
+        result = scheduler.lookup_or_schedule(
+            cache_key,
+            candidates=[candidate],
+            fixtures=fixtures,
+            synthesize_factory=crashing_factory,  # would crash if invoked
+            cpu_baseline_factory=crashing_factory,
+            asr_fn=_passing_asr_fn,
+            speaker_embedding_fn=_passing_speaker_fn,
+            thresholds=calibrated_thresholds,
+        )
+        assert result is not None, "cache hit should override backoff"
+        assert result.winner is not None
+        # Backoff entry STILL active — lookup_or_schedule must not
+        # clear it on cache hit (only on successful new run).
+        with scheduler._lock:  # noqa: SLF001
+            assert leaf in scheduler._state.failed_keys  # noqa: SLF001
+    finally:
+        scheduler.shutdown(timeout_s=5.0)
+
+
+def test_run_foreground_success_clears_failed_key(store, cache_key, fixtures, candidate, calibrated_thresholds):
+    """When `run_foreground` commits a winner, drop any prior backoff
+    entry for the same key. Otherwise a stale `failed_keys` entry
+    sits around eating cap-slots until expiry — even though the
+    engine has recovered.
+
+    This mirrors the worker-loop's success-clear path; both fixes
+    are necessary so manual + background bench paths converge on
+    the same scheduler state."""
+
+    def crashing_factory(c: CandidateConfig):
+        del c
+
+        def synthesize(text: str) -> AudioOutput:
+            del text
+            raise RuntimeError("simulated engine crash")
+
+        return synthesize
+
+    def passing_factory(c: CandidateConfig):
+        del c
+
+        def synthesize(text: str) -> AudioOutput:
+            del text
+            n_samples = 24000
+            return AudioOutput(pcm_s16le=_sine_pcm(n_samples), sample_rate=24000, n_samples=n_samples)
+
+        return synthesize
+
+    scheduler = BenchScheduler(
+        cache=store,
+        env={ENV_BENCH_GATE: ENV_BENCH_GATE_VALUE_ON},
+        failure_backoff_s=10.0,
+    )
+    try:
+        # Failure → key in failed_keys.
+        scheduler.lookup_or_schedule(
+            cache_key,
+            candidates=[candidate],
+            fixtures=fixtures,
+            synthesize_factory=crashing_factory,
+            cpu_baseline_factory=crashing_factory,
+            asr_fn=_passing_asr_fn,
+            speaker_embedding_fn=_passing_speaker_fn,
+            thresholds=calibrated_thresholds,
+        )
+        deadline = time.monotonic() + 5.0
+        while scheduler.queue_depth > 0 or scheduler.in_flight:
+            if time.monotonic() > deadline:
+                pytest.fail("first cycle never drained")
+            time.sleep(0.05)
+        leaf = cache_key.leaf_filename()
+        with scheduler._lock:  # noqa: SLF001
+            assert leaf in scheduler._state.failed_keys  # noqa: SLF001
+
+        # Successful foreground run commits a winner AND clears the
+        # backoff entry.
+        outcome = scheduler.run_foreground(
+            cache_key,
+            candidates=[candidate],
+            fixtures=fixtures,
+            synthesize_factory=passing_factory,
+            cpu_baseline_factory=passing_factory,
+            asr_fn=_passing_asr_fn,
+            speaker_embedding_fn=_passing_speaker_fn,
+            thresholds=calibrated_thresholds,
+        )
+        assert outcome.committed is True
+        with scheduler._lock:  # noqa: SLF001
+            assert leaf not in scheduler._state.failed_keys  # noqa: SLF001
+            assert leaf not in scheduler._state.suppressed_leafs  # noqa: SLF001
+    finally:
+        scheduler.shutdown(timeout_s=5.0)
