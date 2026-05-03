@@ -450,7 +450,10 @@ def test_writes_never_leave_partial_file(store, tts_cache_key, winner_committed,
     # Only the final leaf and the index, plus the lock sidecar that
     # _try_writer_lock leaves behind.
     leaf = tts_cache_key.leaf_filename()
-    expected = {leaf, "index.json", leaf + ".lock"}
+    # Per-leaf write lock + per-model index lock (DiD fix from prior
+    # debate session: index update race needed its own lock so two
+    # writers under the same model don't lose entries).
+    expected = {leaf, "index.json", leaf + ".lock", "index.json.lock"}
     assert set(files) == expected, f"unexpected files in model_dir: {files}"
 
 
