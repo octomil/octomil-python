@@ -43,9 +43,11 @@ import json
 import logging
 import os
 import platform
+import re
 import sys
 import tempfile
 import time
+import urllib.parse
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterator, Optional
@@ -82,6 +84,62 @@ _PEER_WRITE_POLL_INTERVAL_S = 0.5
 
 #: Allowed capability values, kept in sync with the contract enum.
 _CAPABILITIES = frozenset(("tts", "transcription", "chat", "embeddings", "realtime"))
+
+#: Allowed quantization_preference values, kept in sync with the contract enum.
+_QUANTIZATION_PREFERENCES = frozenset(("fp32", "fp16", "bf16", "int8", "int4", "auto"))
+
+#: model_digest must be sha256:<64 hex>.
+_MODEL_DIGEST_RE = re.compile(r"sha256:[a-f0-9]{64}")
+
+#: candidate_set_version + reference_workload_version are semver-shaped.
+_VERSION_RE = re.compile(r"[0-9]+\.[0-9]+(\.[0-9]+)?")
+
+
+def _sanitize_path_component(component: str) -> str:
+    """Make ``component`` safe to use as a single filesystem path
+    segment.
+
+    The cache layout uses ``model_id`` as a directory name. Reviewer P1
+    from the engineering-debate session: raw ``model_id`` joined into
+    ``Path()`` has two real failure modes —
+
+      * Hugging Face-style ids like ``"Qwen/Qwen3-0.6B"`` nest into
+        sub-directories. ``list_models()`` then returns ``["Qwen"]``,
+        not ``["Qwen/Qwen3-0.6B"]``; CLI / observability surfaces lie
+        about what's cached.
+      * Absolute paths or ``..`` components escape ``cache_root``
+        entirely. ``Path("a") / "/tmp/foo"`` is ``Path("/tmp/foo")``
+        per pathlib semantics (absolute RHS replaces LHS). A planner-
+        emitted or attacker-crafted ``model_id`` like ``/tmp/foo`` or
+        ``../../../etc/passwd`` writes outside the cache namespace.
+
+    Sanitization rule: URL-encode (RFC 3986 reserved + path-unsafe
+    chars). The encoded form is reversible (debugging friendly), keeps
+    the human-readable model_id as a single path component, and is
+    safe for every supported filesystem because URL-encoding the
+    reserved set leaves only ``[A-Za-z0-9._~%-]``. The reverse
+    transform isn't load-bearing for cache identity — the index
+    sidecar carries the original ``model_id`` in the cache_key body.
+
+    Empty input is a programming error caught at ``CacheKey``
+    construction; this helper returns ``""`` defensively.
+    """
+    if not component:
+        return ""
+    # urllib.parse.quote with safe="" encodes EVERYTHING except the
+    # unreserved set [A-Za-z0-9._~-]. Forward slashes, backslashes,
+    # NUL bytes, and absolute-path roots all get percent-encoded into
+    # a single-segment string. Hyphens / underscores / tildes stay
+    # readable so ``"kokoro-en-v0_19"`` doesn't get mangled.
+    encoded = urllib.parse.quote(component, safe="")
+    # The ``.`` is in the unreserved set so urllib.parse.quote won't
+    # encode it. That leaves ``"."`` and ``".."`` as path-traversal
+    # holes that survive encoding. Defensively re-encode ``.`` so the
+    # encoded form NEVER equals "." or ".." or starts with "." (hidden
+    # file). Cheap; only fires on the few literal-dot edge cases.
+    if encoded in (".", "..") or encoded.startswith("."):
+        encoded = encoded.replace(".", "%2E")
+    return encoded
 
 
 # ---------------------------------------------------------------------------
@@ -133,8 +191,25 @@ class CacheKey:
             raise ValueError(f"capability must be one of {sorted(_CAPABILITIES)}; got {self.capability!r}")
         if not self.model_id:
             raise ValueError("model_id must be non-empty")
-        if not self.model_digest.startswith("sha256:") or len(self.model_digest) != 71:
-            raise ValueError(f"model_digest must be 'sha256:<64 hex>' shape; got {self.model_digest!r}")
+        # Reviewer DiD: prefix+length only would let "sha256:" + "z"*64
+        # pass Python validation but fail schema validation. Tighten
+        # to the exact hex shape the schema requires.
+        if not _MODEL_DIGEST_RE.fullmatch(self.model_digest):
+            raise ValueError(f"model_digest must be 'sha256:<64 lowercase hex>' shape; got {self.model_digest!r}")
+        if self.quantization_preference not in _QUANTIZATION_PREFERENCES:
+            raise ValueError(
+                f"quantization_preference must be one of {sorted(_QUANTIZATION_PREFERENCES)}; "
+                f"got {self.quantization_preference!r}"
+            )
+        if not _VERSION_RE.fullmatch(self.candidate_set_version):
+            raise ValueError(
+                f"candidate_set_version must be semver-shaped (X.Y or X.Y.Z); " f"got {self.candidate_set_version!r}"
+            )
+        if not _VERSION_RE.fullmatch(self.reference_workload_version):
+            raise ValueError(
+                f"reference_workload_version must be semver-shaped (X.Y or X.Y.Z); "
+                f"got {self.reference_workload_version!r}"
+            )
 
     def to_dict(self) -> dict[str, Any]:
         """Return the schema-canonical dict form. Ordering is alphabetical
@@ -396,8 +471,11 @@ def _detect_ram_gb_rounded() -> int:
     rounding is deliberate: 16 vs 17 GB doesn't change cache identity,
     but 16 vs 32 does. Strategy doc explicitly calls for tier-bucketing.
 
-    Falls back to ``0`` if probing fails — degraded fingerprint, not
-    an exception.
+    Returns at least ``1`` even if probing fails — the schema requires
+    ``ram_gb >= 1`` (DiD from prior debate session). Sandboxed CPython
+    environments where both sysconf and sysctl fail otherwise produce
+    a Result that fails its own contract; floor at 1 keeps the cache
+    write valid even when the fingerprint is degraded.
     """
     bytes_total: Optional[int] = None
     # Linux + most Unixen
@@ -422,10 +500,13 @@ def _detect_ram_gb_rounded() -> int:
         except Exception:  # pragma: no cover — platform-dependent probe
             bytes_total = None
     if bytes_total is None or bytes_total <= 0:
-        return 0
+        # DiD: schema requires ram_gb >= 1; degraded fingerprint
+        # should still write a valid Result.
+        return 1
     gb = bytes_total // (1024 * 1024 * 1024)
     # Round to nearest 2GB — bucketing per the strategy doc.
-    return max(0, ((gb + 1) // 2) * 2)
+    # Floor at 1 to satisfy the schema even on tiny/sandboxed boxes.
+    return max(1, ((gb + 1) // 2) * 2)
 
 
 def _detect_os_version() -> str:
@@ -503,14 +584,22 @@ def _atomic_write_text(path: Path, contents: str) -> None:
 
 
 @contextlib.contextmanager
-def _try_writer_lock(lock_path: Path) -> Iterator[bool]:
-    """Acquire an advisory exclusive lock on ``lock_path`` non-blockingly.
+def _try_writer_lock(lock_path: Path, *, blocking: bool = False) -> Iterator[bool]:
+    """Acquire an advisory exclusive lock on ``lock_path``.
 
-    Yields ``True`` when the lock was acquired (caller is the
-    designated writer), ``False`` otherwise (some other process is
-    benching this same key — caller should skip its own bench and
-    poll for the result file). Lock is released on context exit
-    regardless.
+    Two modes:
+
+      * ``blocking=False`` (default) — non-blocking. Yields ``True``
+        when the lock was acquired (caller is the designated writer),
+        ``False`` otherwise (some other process is benching this same
+        key — caller should skip its own bench and poll for the
+        result file).
+      * ``blocking=True`` — wait until the lock is acquired. Always
+        yields ``True``. Used for short-held locks where a peer would
+        finish quickly anyway (e.g. the per-model index lock that
+        only wraps a read-modify-write transaction).
+
+    Lock is released on context exit regardless.
 
     POSIX uses ``fcntl.flock``; Windows uses ``msvcrt.locking``.
     Both are advisory + OS-level + process-level, so two SDK
@@ -523,10 +612,11 @@ def _try_writer_lock(lock_path: Path) -> Iterator[bool]:
     fh = open(lock_path, "a+", encoding="utf-8")
     try:
         if sys.platform == "win32":  # pragma: no cover — POSIX is the test platform
-            try:
-                import msvcrt
+            import msvcrt
 
-                msvcrt.locking(fh.fileno(), msvcrt.LK_NBLCK, 1)
+            mode = msvcrt.LK_LOCK if blocking else msvcrt.LK_NBLCK
+            try:
+                msvcrt.locking(fh.fileno(), mode, 1)
                 acquired = True
             except OSError:
                 acquired = False
@@ -539,8 +629,9 @@ def _try_writer_lock(lock_path: Path) -> Iterator[bool]:
         else:
             import fcntl
 
+            flags = fcntl.LOCK_EX if blocking else (fcntl.LOCK_EX | fcntl.LOCK_NB)
             try:
-                fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                fcntl.flock(fh.fileno(), flags)
                 acquired = True
             except OSError:
                 acquired = False
@@ -638,13 +729,31 @@ class CacheStore:
         return self._cache_root / self._hardware.path_component()
 
     def _model_dir(self, cache_key: CacheKey) -> Path:
-        return self._hardware_dir() / cache_key.model_id
+        # Sanitize model_id before using as a path component. Reviewer
+        # P1 from the engineering-debate session: raw model_id allows
+        # HF-style nesting ("Qwen/Qwen3-0.6B") AND path-traversal
+        # escape ("/tmp/foo" or "..").
+        return self._model_dir_for_id(cache_key.model_id)
+
+    def _model_dir_for_id(self, model_id: str) -> Path:
+        return self._hardware_dir() / _sanitize_path_component(model_id)
 
     def _leaf_path(self, cache_key: CacheKey) -> Path:
         return self._model_dir(cache_key) / cache_key.leaf_filename()
 
     def _index_path(self, cache_key: CacheKey) -> Path:
         return self._model_dir(cache_key) / "index.json"
+
+    def _index_path_for_id(self, model_id: str) -> Path:
+        return self._model_dir_for_id(model_id) / "index.json"
+
+    def _index_lock_path(self, cache_key: CacheKey) -> Path:
+        # Per-model lock for the index read-modify-write transaction.
+        # Reviewer DiD: the per-leaf write lock doesn't serialize
+        # concurrent puts under the SAME model — both writers would
+        # happily read-modify-write the same index.json and lose one
+        # entry. Separate lock, held only during index update.
+        return self._model_dir(cache_key) / "index.json.lock"
 
     def _lock_path(self, cache_key: CacheKey) -> Path:
         return self._model_dir(cache_key) / (cache_key.leaf_filename() + ".lock")
@@ -811,48 +920,61 @@ class CacheStore:
     def _update_index(self, cache_key: CacheKey, leaf: Path, payload: dict[str, Any]) -> None:
         """Append / replace this cache_key's entry in the per-model index.
 
+        Concurrency: the index is shared across cache_keys of the same
+        model, so per-leaf write locks are insufficient. Take a
+        per-model index lock around the read-modify-write transaction
+        so two concurrent puts (different cache_keys, same model) don't
+        race and lose one entry. Reviewer DiD from the engineering-
+        debate session.
+
         Index loss is non-fatal — callers that need the index can call
         :meth:`rebuild_index` to scan leaves. We update on every put
         anyway so that ``octomil bench list`` (PR D) can answer
         questions without parsing every leaf JSON.
         """
         index_path = self._index_path(cache_key)
-        try:
-            index = self._read_index(cache_key)
-        except Exception:
-            index = {
-                "$schema_version": CACHE_SCHEMA_VERSION,
-                "schema_version": CACHE_SCHEMA_VERSION,
-                "model_id": cache_key.model_id,
-                "entries": [],
-            }
-        # Replace any existing entry for the same leaf filename.
-        entries = [e for e in index.get("entries", []) if e.get("leaf_filename") != leaf.name]
-        entries.append(
-            {
-                "cache_key": payload["cache_key"],
-                "created_at": payload["created_at"],
-                "incomplete": bool(payload.get("incomplete", False)),
-                "leaf_filename": leaf.name,
-                "winner_summary": _winner_summary(payload),
-            }
-        )
-        # Sort entries deterministically so a checked-in fixture
-        # comparison (or two writes from different SDKs) produces
-        # byte-identical index files.
-        entries.sort(key=lambda e: e["leaf_filename"])
-        index["entries"] = entries
-        try:
-            _atomic_write_text(
-                index_path,
-                json.dumps(index, ensure_ascii=False, indent=2, allow_nan=False),
+        index_lock = self._index_lock_path(cache_key)
+        # Per-model index lock. Block (not non-blocking) so concurrent
+        # writers of different cache_keys serialize on the index
+        # update; the actual bench / leaf-write happened outside this
+        # lock and isn't blocked by it.
+        with _try_writer_lock(index_lock, blocking=True):
+            try:
+                index = self._read_index(cache_key)
+            except Exception:
+                index = {
+                    "$schema_version": CACHE_SCHEMA_VERSION,
+                    "schema_version": CACHE_SCHEMA_VERSION,
+                    "model_id": cache_key.model_id,
+                    "entries": [],
+                }
+            # Replace any existing entry for the same leaf filename.
+            entries = [e for e in index.get("entries", []) if e.get("leaf_filename") != leaf.name]
+            entries.append(
+                {
+                    "cache_key": payload["cache_key"],
+                    "created_at": payload["created_at"],
+                    "incomplete": bool(payload.get("incomplete", False)),
+                    "leaf_filename": leaf.name,
+                    "winner_summary": _winner_summary(payload),
+                }
             )
-        except OSError as exc:
-            logger.warning(
-                "runtime_bench cache: failed to update index at %s (%s); leaf still wrote successfully",
-                index_path,
-                exc,
-            )
+            # Sort entries deterministically so a checked-in fixture
+            # comparison (or two writes from different SDKs) produces
+            # byte-identical index files.
+            entries.sort(key=lambda e: e["leaf_filename"])
+            index["entries"] = entries
+            try:
+                _atomic_write_text(
+                    index_path,
+                    json.dumps(index, ensure_ascii=False, indent=2, allow_nan=False),
+                )
+            except OSError as exc:
+                logger.warning(
+                    "runtime_bench cache: failed to update index at %s (%s); leaf still wrote successfully",
+                    index_path,
+                    exc,
+                )
 
     def _read_index(self, cache_key: CacheKey) -> dict[str, Any]:
         """Read the per-model index. Returns an empty index on miss /
@@ -908,6 +1030,19 @@ class CacheStore:
                 continue
             if data.get("$schema_version") != CACHE_SCHEMA_VERSION:
                 continue
+            # DiD: the per-fp directory layout means foreign-fp leaves
+            # SHOULD never appear here. But operator manual `mv`s,
+            # cross-machine cache copies, and runtime-build-tag
+            # mismatches can put a wrong-fp leaf in this dir.
+            # Refuse to materialize entries from a foreign fingerprint.
+            leaf_fp = data.get("hardware_fingerprint")
+            if leaf_fp and leaf_fp != self._hardware.full_digest():
+                logger.debug(
+                    "runtime_bench cache: skipping leaf %s with foreign hardware_fingerprint %s",
+                    leaf.name,
+                    leaf_fp,
+                )
+                continue
             body_cache_key = data.get("cache_key")
             if not isinstance(body_cache_key, dict):
                 continue
@@ -937,12 +1072,59 @@ class CacheStore:
     # --------- List / clear ---------
 
     def list_models(self) -> list[str]:
-        """Return all model_ids that have any cache entry under the
-        current hardware fingerprint."""
+        """Return the original (un-sanitized) ``model_id`` for every
+        cache entry under the current hardware fingerprint.
+
+        Reviewer R1 (Codex): an earlier draft returned the
+        URL-encoded directory name, then ``clear_model(model_id)``
+        re-sanitized that already-encoded string, doubly-encoding
+        the percent sign and writing/looking up under a totally
+        different path. Round-trip broken.
+
+        Correct shape:
+          * The index sidecar at ``<model_dir>/index.json`` carries
+            the original ``model_id`` in its body (and again in each
+            entry's nested ``cache_key``). Read that as the source
+            of truth.
+          * Fallback when the index is missing or unreadable:
+            URL-decode the directory name. The defensive
+            ``%2E``-for-``.`` re-encoding makes the decoded form
+            indistinguishable from the original — the only
+            difference is empty-string and ``.``/`..`` cases that
+            cannot occur in real ``model_id``s anyway.
+        """
         hw_dir = self._hardware_dir()
         if not hw_dir.is_dir():
             return []
-        return sorted(p.name for p in hw_dir.iterdir() if p.is_dir())
+        out: list[str] = []
+        for p in sorted(hw_dir.iterdir()):
+            if not p.is_dir():
+                continue
+            original = self._read_original_model_id(p)
+            if original is None:
+                # Index missing/unreadable; fall back to decode.
+                original = urllib.parse.unquote(p.name)
+            out.append(original)
+        return sorted(out)
+
+    def _read_original_model_id(self, model_dir: Path) -> Optional[str]:
+        """Pull the un-sanitized ``model_id`` out of the model's index
+        sidecar. Returns ``None`` if the index is absent or
+        unreadable; callers fall back to URL-decoding the directory
+        name."""
+        index_path = model_dir / "index.json"
+        if not index_path.is_file():
+            return None
+        try:
+            data = json.loads(index_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return None
+        if not isinstance(data, dict):
+            return None
+        model_id = data.get("model_id")
+        if isinstance(model_id, str) and model_id:
+            return model_id
+        return None
 
     def list_cache_keys(self, *, model_id: str) -> list[dict[str, Any]]:
         """Return the index entries for ``model_id``. Empty list when

@@ -450,7 +450,10 @@ def test_writes_never_leave_partial_file(store, tts_cache_key, winner_committed,
     # Only the final leaf and the index, plus the lock sidecar that
     # _try_writer_lock leaves behind.
     leaf = tts_cache_key.leaf_filename()
-    expected = {leaf, "index.json", leaf + ".lock"}
+    # Per-leaf write lock + per-model index lock (DiD fix from prior
+    # debate session: index update race needed its own lock so two
+    # writers under the same model don't lose entries).
+    expected = {leaf, "index.json", leaf + ".lock", "index.json.lock"}
     assert set(files) == expected, f"unexpected files in model_dir: {files}"
 
 
@@ -619,3 +622,140 @@ def test_hardware_fingerprint_path_component_changes_with_runtime_build_tag():
     fp1 = HardwareFingerprint.detect(runtime_build_tag="octomil-python:1.0.0")
     fp2 = HardwareFingerprint.detect(runtime_build_tag="octomil-python:2.0.0")
     assert fp1.path_component() != fp2.path_component()
+
+
+# ---------------------------------------------------------------------------
+# Path-traversal sanitization round-trip (Codex R1 follow-up)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "model_id",
+    [
+        "Qwen/Qwen3-0.6B",  # HF-style nesting
+        "/tmp/foo",  # absolute path (pathlib trap)
+        "../../etc/passwd",  # parent escape
+        "../../../etc/passwd",  # deeper parent escape
+        ".",  # literal-dot edge case
+        "..",  # parent literal
+        "model with spaces",  # spaces
+        "kokoro-en-v0_19",  # well-formed normal id (control)
+        "Qwen/Qwen3 with: special?chars",  # combo
+    ],
+)
+def test_path_traversal_sanitization_keeps_directory_under_cache_root(tmp_path, hardware, winner_committed, model_id):
+    """The cache layout MUST keep `model_id` as a single safe path
+    component under `<cache_root>/<hw>/`. Pathological inputs that
+    escape via pathlib's absolute-RHS-replaces-LHS or `..` semantics
+    must be encoded into one component.
+    """
+    store = CacheStore(cache_root=tmp_path, hardware=hardware)
+    cache_key = CacheKey(
+        capability="tts",
+        model_id=model_id,
+        model_digest="sha256:" + "a" * 64,
+        quantization_preference="fp16",
+        candidate_set_version="1.0",
+        reference_workload_version="1.0",
+        dispatch_shape=DispatchShape(
+            {
+                "sample_rate_out": 24000,
+                "sample_format": "pcm_s16le",
+                "voice_family": "kokoro_en",
+                "language": "en",
+            }
+        ),
+    )
+    result = _committed_result(cache_key, winner_committed, hardware)
+    store.put(result)
+
+    # The leaf must live UNDER tmp_path (cache_root); not at /tmp/foo
+    # or similar escape destination.
+    leaves = sorted(p for p in tmp_path.rglob("*.json") if p.name != "index.json")
+    assert len(leaves) == 1, f"expected exactly 1 leaf under {tmp_path}, got {leaves}"
+    assert tmp_path in leaves[0].parents, f"leaf {leaves[0]} escaped cache_root {tmp_path}"
+
+    # Cache hit by original model_id round-trips.
+    fetched = store.get(cache_key)
+    assert fetched is not None
+    assert fetched.cache_key.model_id == model_id
+
+
+@pytest.mark.parametrize(
+    "model_id",
+    [
+        "Qwen/Qwen3-0.6B",
+        "/tmp/foo",
+        "../../etc/passwd",
+        "model with spaces",
+        "kokoro-en-v0_19",
+    ],
+)
+def test_list_models_returns_original_model_id_after_round_trip(tmp_path, hardware, winner_committed, model_id):
+    """Codex R1 blocker: `list_models()` returned URL-encoded names,
+    then `clear_model()` re-sanitized → double-encode → wrong path.
+    `list_models()` MUST return the original `model_id` so the
+    round-trip through `clear_model()` works.
+    """
+    store = CacheStore(cache_root=tmp_path, hardware=hardware)
+    cache_key = CacheKey(
+        capability="tts",
+        model_id=model_id,
+        model_digest="sha256:" + "a" * 64,
+        quantization_preference="fp16",
+        candidate_set_version="1.0",
+        reference_workload_version="1.0",
+        dispatch_shape=DispatchShape(
+            {
+                "sample_rate_out": 24000,
+                "sample_format": "pcm_s16le",
+                "voice_family": "kokoro_en",
+                "language": "en",
+            }
+        ),
+    )
+    store.put(_committed_result(cache_key, winner_committed, hardware))
+
+    listed = store.list_models()
+    assert model_id in listed, f"list_models() returned {listed}, missing {model_id!r}"
+
+    # Round-trip: pass the listed name back to clear_model.
+    removed = store.clear_model(model_id=model_id)
+    assert removed >= 1, f"clear_model({model_id!r}) removed {removed} entries; cache directory was not found"
+
+    # And the cache directory is now gone.
+    assert store.list_models() == []
+
+
+def test_list_models_falls_back_to_url_decode_when_index_missing(tmp_path, hardware, winner_committed):
+    """When `index.json` is missing or unreadable, `list_models()`
+    URL-decodes the directory name. Verifies the fallback path."""
+    store = CacheStore(cache_root=tmp_path, hardware=hardware)
+    model_id = "Qwen/Qwen3-0.6B"
+    cache_key = CacheKey(
+        capability="tts",
+        model_id=model_id,
+        model_digest="sha256:" + "a" * 64,
+        quantization_preference="fp16",
+        candidate_set_version="1.0",
+        reference_workload_version="1.0",
+        dispatch_shape=DispatchShape(
+            {
+                "sample_rate_out": 24000,
+                "sample_format": "pcm_s16le",
+                "voice_family": "kokoro_en",
+                "language": "en",
+            }
+        ),
+    )
+    store.put(_committed_result(cache_key, winner_committed, hardware))
+
+    # Delete the index sidecar to force the fallback path.
+    hw_dir = tmp_path / hardware.path_component()
+    model_dirs = [p for p in hw_dir.iterdir() if p.is_dir()]
+    assert len(model_dirs) == 1
+    (model_dirs[0] / "index.json").unlink()
+
+    # list_models() should still return the original via URL-decode.
+    listed = store.list_models()
+    assert model_id in listed, f"fallback URL-decode lost {model_id!r}; got {listed}"
