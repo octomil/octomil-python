@@ -768,37 +768,34 @@ def test_failure_map_capacity(store, fixtures, candidate, calibrated_thresholds)
         scheduler.shutdown(timeout_s=5.0)
 
 
-def test_cache_hit_overrides_backoff(store, cache_key, fixtures, candidate, calibrated_thresholds):
-    """Claude R1 fix: a cache hit must take precedence over backoff
-    suppression. Operator scenario: bench fails, dispatch enters
-    backoff, operator force-runs `bench run` via the CLI which seeds
-    the cache. Subsequent dispatches for that key should observe the
-    fresh winner — even though the backoff window hasn't expired."""
+def test_cache_hit_overrides_backoff(store, hardware, cache_key, fixtures, candidate, calibrated_thresholds):
+    """A cache hit must take precedence over backoff suppression.
+    Without that ordering, a winner that arrived from another path
+    (another process, manual cache seeding) would be invisible to
+    dispatch until the backoff window expired.
 
-    # Step 1: cause a worker exception so the key enters backoff.
+    Codex R3 sharpened-test note: seed the cache directly via
+    `store.put` rather than `run_foreground` so the backoff state
+    stays active during the assertion. If the cache-precedence
+    ordering ever regresses, this test will fail — without the direct
+    seed, `run_foreground` would clear the backoff and the test
+    would pass for the wrong reason."""
+
+    from octomil.runtime.bench.cache import Result, Winner
+
     def crashing_factory(c: CandidateConfig):
+        del c
+
         def synthesize(text: str) -> AudioOutput:
             del text
             raise RuntimeError("simulated engine crash")
 
         return synthesize
 
-    factory_calls: list[CandidateConfig] = []
-
-    def passing_factory(c: CandidateConfig):
-        factory_calls.append(c)
-
-        def synthesize(text: str) -> AudioOutput:
-            del text
-            n_samples = 24000
-            return AudioOutput(pcm_s16le=_sine_pcm(n_samples), sample_rate=24000, n_samples=n_samples)
-
-        return synthesize
-
     scheduler = BenchScheduler(
         cache=store,
         env={ENV_BENCH_GATE: ENV_BENCH_GATE_VALUE_ON},
-        failure_backoff_s=10.0,  # long enough that the test cannot expire
+        failure_backoff_s=10.0,
     )
     try:
         # Step 1: register a failure — backoff window opens.
@@ -817,22 +814,42 @@ def test_cache_hit_overrides_backoff(store, cache_key, fixtures, candidate, cali
             if time.monotonic() > deadline:
                 pytest.fail("first cycle never drained")
             time.sleep(0.05)
+        leaf = cache_key.leaf_filename()
+        with scheduler._lock:  # noqa: SLF001 — test inspection
+            assert leaf in scheduler._state.failed_keys  # noqa: SLF001
 
-        # Step 2: simulate the operator using the CLI to seed a
-        # winner directly (bypassing the scheduler's backoff state).
-        scheduler.run_foreground(
-            cache_key,
-            candidates=[candidate],
-            fixtures=fixtures,
-            synthesize_factory=passing_factory,
-            cpu_baseline_factory=passing_factory,
-            asr_fn=_passing_asr_fn,
-            speaker_embedding_fn=_passing_speaker_fn,
-            thresholds=calibrated_thresholds,
+        # Step 2: seed the cache DIRECTLY via the store, bypassing
+        # the scheduler. This simulates a cross-process winner
+        # commit AND keeps the backoff entry intact so the assertion
+        # actually exercises the precedence ordering.
+        store.put(
+            Result(
+                cache_key=cache_key,
+                hardware_fingerprint=hardware.full_digest(),
+                hardware_descriptor=hardware.descriptor_dict(),
+                writer_runtime_build_tag=hardware.runtime_build_tag,
+                winner=Winner(
+                    engine="sherpa-onnx",
+                    provider="coreml",
+                    config={"num_threads": 1},
+                    score=18.0,
+                    first_chunk_ms=10.0,
+                    total_latency_ms=20.0,
+                    quality_metrics={"avg_speaker_embedding_cosine": 0.95},
+                ),
+                runners_up=(),
+                disqualified=(),
+                incomplete=False,
+                confidence="high",
+            )
         )
+        # Backoff entry is still active.
+        with scheduler._lock:  # noqa: SLF001
+            assert leaf in scheduler._state.failed_keys  # noqa: SLF001
 
-        # Step 3: dispatch lookup must return the winner (cache hit
-        # PRECEDES the backoff check).
+        # Step 3: dispatch lookup must return the winner — cache hit
+        # PRECEDES the backoff check. If a regression moves the
+        # cache check after the backoff check, this assertion fails.
         result = scheduler.lookup_or_schedule(
             cache_key,
             candidates=[candidate],
@@ -845,6 +862,10 @@ def test_cache_hit_overrides_backoff(store, cache_key, fixtures, candidate, cali
         )
         assert result is not None, "cache hit should override backoff"
         assert result.winner is not None
+        # Backoff entry STILL active — lookup_or_schedule must not
+        # clear it on cache hit (only on successful new run).
+        with scheduler._lock:  # noqa: SLF001
+            assert leaf in scheduler._state.failed_keys  # noqa: SLF001
     finally:
         scheduler.shutdown(timeout_s=5.0)
 
