@@ -434,6 +434,15 @@ class BenchHarness:
             # one scalar per fixture; v1 expands to per-stage breakdown.
             per_fixture_quality[fixture.fixture_id] = self._aggregate_quality_scalar(output, ref, fixture)
 
+            # Post-fixture deadline check catches the last-fixture
+            # overrun (the start-of-fixture check alone misses it).
+            # The measurement collected is real, but a candidate that
+            # spilled past the budget on its final fixture is not
+            # comparable to one that finished inside it — drop the
+            # candidate and signal incomplete.
+            if time.monotonic() >= deadline:
+                return None, False
+
         first_chunk_ms = sum(per_fixture_first_chunk) / max(len(per_fixture_first_chunk), 1)
         total_latency_ms = sum(per_fixture_total) / max(len(per_fixture_total), 1)
         score = compute_score(first_chunk_ms, total_latency_ms)

@@ -462,6 +462,37 @@ def test_budget_exhausted_mid_baseline_writes_no_winner(store, cache_key, fixtur
     assert store.get(cache_key) is None
 
 
+def test_budget_exhausted_on_last_fixture_drops_winner(store, cache_key):
+    """The post-fixture deadline check matters: a single-fixture cycle
+    where the candidate overruns the budget on its only fixture must
+    NOT commit. The pre-fixture-only check (start-of-iteration) misses
+    this because the loop exits cleanly."""
+    candidate = CandidateConfig(engine="sherpa-onnx", provider="coreml", config={"num_threads": 1})
+
+    # ONE fixture, candidate sleeps 200ms, budget 0.15s. The pre-fixture
+    # check sees t=0 < 0.15, runs the fixture (200ms), then loop exits.
+    # Without the post-fixture check, the candidate would commit as
+    # complete=True even though it blew the budget.
+    one_fixture = [
+        ReferenceFixture(fixture_id="solo", text="solo.", expected_transcript="solo"),
+    ]
+    harness = BenchHarness(
+        cache=store,
+        cache_key=cache_key,
+        candidates=[candidate],
+        fixtures=one_fixture,
+        synthesize_factory=_make_factory(first_chunk_ms=200, total_latency_ms=200),
+        cpu_baseline_factory=_make_factory(first_chunk_ms=0, total_latency_ms=0),
+        asr_fn=_passing_asr_fn,
+        speaker_embedding_fn=_passing_speaker_fn,
+        budget_s=0.15,
+    )
+    outcome = harness.run()
+    assert outcome.committed is False
+    assert outcome.result.winner is None
+    assert outcome.result.incomplete is True
+
+
 def test_budget_exhausted_mid_candidate_drops_winner(store, cache_key, fixtures):
     """A single candidate that overruns the budget must NOT commit.
     Pre-fix: single-candidate cycles never re-checked the deadline,
