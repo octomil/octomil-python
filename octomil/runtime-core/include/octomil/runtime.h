@@ -326,6 +326,18 @@ OCT_API uint32_t oct_runtime_abi_version_patch(void);
 
 OCT_API uint64_t oct_runtime_abi_version_packed(void);
 
+/*
+ * ABI struct-layout introspection. Returns sizeof(struct) as
+ * computed by the C compiler that built the dylib. Bindings call
+ * these to verify their own (cffi cdef / Swift / JNI) struct
+ * declarations don't drift from the header's definition. Codex R1
+ * fix on the Python cffi binding: ABI mode does NOT catch
+ * struct-layout mismatch at parse time; runtime crash on first
+ * non-version field read is the only signal without these.
+ */
+OCT_API size_t oct_runtime_config_size(void);
+OCT_API size_t oct_capabilities_size(void);
+
 /* ------------------------------------------------------------------- *
  * Diagnostic strings                                                  *
  * ------------------------------------------------------------------- *

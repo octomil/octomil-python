@@ -105,12 +105,56 @@ def test_open_v1_succeeds():
     rt.close()
 
 
+def test_open_with_artifact_root_succeeds():
+    """The actual `oct_runtime_config_t` field is `artifact_root`,
+    not the misnamed `cache_root` an earlier draft used. Codex R1
+    blocker fix."""
+    from octomil.runtime.native import NativeRuntime
+
+    rt = NativeRuntime.open(artifact_root="/tmp/test-artifact-root", max_sessions=4)
+    rt.close()
+
+
 def test_open_idempotent_close():
     from octomil.runtime.native import NativeRuntime
 
     rt = NativeRuntime.open()
     rt.close()
     rt.close()  # second close is a no-op
+
+
+# ---------------------------------------------------------------------------
+# ABI struct-layout parity (Codex R1 blocker)
+# ---------------------------------------------------------------------------
+
+
+def test_oct_runtime_config_t_size_matches_runtime():
+    """The cffi cdef MUST match the C compiler's view of
+    `oct_runtime_config_t` exactly. ABI mode does NOT catch
+    struct-layout mismatch at parse time; only the runtime-side
+    reader would, and only when it touched a non-version field.
+    Pin the size match here so future drift fails loudly."""
+    from octomil.runtime.native.loader import _get_lib
+
+    ffi, lib = _get_lib()
+    cffi_size = ffi.sizeof("oct_runtime_config_t")
+    runtime_size = int(lib.oct_runtime_config_size())
+    assert cffi_size == runtime_size, (
+        f"oct_runtime_config_t struct-layout drift: "
+        f"cffi cdef sizeof={cffi_size}, C compiler sizeof={runtime_size}. "
+        f"The Python cdef in loader.py has drifted from runtime.h."
+    )
+
+
+def test_oct_capabilities_t_size_matches_runtime():
+    from octomil.runtime.native.loader import _get_lib
+
+    ffi, lib = _get_lib()
+    cffi_size = ffi.sizeof("oct_capabilities_t")
+    runtime_size = int(lib.oct_capabilities_size())
+    assert cffi_size == runtime_size, (
+        f"oct_capabilities_t struct-layout drift: " f"cffi cdef sizeof={cffi_size}, C compiler sizeof={runtime_size}."
+    )
 
 
 def test_context_manager_closes_on_exit():
@@ -189,10 +233,10 @@ def test_thread_error_after_invalid_open():
     ffi, lib = _get_lib()
     cfg = ffi.new("oct_runtime_config_t*")
     cfg.version = 1
-    cfg.cache_root = ffi.NULL
-    cfg.runtime_build_tag = ffi.NULL
+    cfg.artifact_root = ffi.NULL
     cfg.telemetry_sink = ffi.NULL
     cfg.telemetry_user_data = ffi.NULL
+    cfg.max_sessions = 0
     status = int(lib.oct_runtime_open(cfg, ffi.NULL))
     assert status == OCT_STATUS_INVALID_INPUT
     err = last_thread_error()

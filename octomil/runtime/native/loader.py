@@ -191,12 +191,18 @@ typedef struct {
 
 typedef void (*oct_telemetry_sink_fn)(const char* event_json, void* user_data);
 
+/* Mirrors oct_runtime_config_t in runtime.h verbatim — Codex R1 fix.
+ * The previous cdef invented `cache_root` + `runtime_build_tag` fields
+ * that don't exist in the header, so a runtime that reads
+ * `artifact_root` would interpret garbage. cffi ABI mode does NOT
+ * catch struct-layout mismatch; only the runtime-side reader would,
+ * and only when it touched a non-version field. */
 typedef struct {
     uint32_t              version;
-    const char*           cache_root;
-    const char*           runtime_build_tag;
+    const char*           artifact_root;
     oct_telemetry_sink_fn telemetry_sink;
     void*                 telemetry_user_data;
+    uint32_t              max_sessions;
 } oct_runtime_config_t;
 
 uint32_t oct_runtime_abi_version_major(void);
@@ -225,6 +231,13 @@ int oct_last_thread_error(
     char* buf,
     size_t buflen
 );
+
+/* ABI-parity introspection — returns sizeof(oct_runtime_config_t) as
+ * computed by the C compiler. Used by the cffi binding's regression
+ * test to assert struct-layout parity between the cdef above and
+ * runtime.h. Codex R1 fix. */
+size_t oct_runtime_config_size(void);
+size_t oct_capabilities_size(void);
 """
 
 
@@ -313,26 +326,37 @@ class NativeRuntime:
     def open(
         cls,
         *,
-        cache_root: str = "",
-        runtime_build_tag: str = "",
+        artifact_root: str = "",
+        max_sessions: int = 0,
     ) -> "NativeRuntime":
-        """Open a runtime with the slice-1 v1 config shape.
+        """Open a runtime with the v1 config shape (matches
+        ``runtime.h``'s ``oct_runtime_config_t``).
 
-        Slice-2-proper extends ``oct_runtime_config_t`` with
-        additional fields; v1 is what the stub accepts today.
-        ``cache_root`` and ``runtime_build_tag`` are passed through
-        as-is; empty strings are valid (the runtime falls back to
-        platform defaults)."""
+        Codex R1 fix: previous signature used invented field names
+        (``cache_root``, ``runtime_build_tag``); the actual config
+        has ``artifact_root`` and ``max_sessions``. The kwargs-only
+        signature lets future minor-bumps add fields painlessly.
+
+        ``artifact_root`` is the directory where prepared artifacts
+        live on disk; the runtime COPIES the string during open, so
+        the caller can free its buffer immediately after.
+
+        ``max_sessions`` is a hard cap (0 = unbounded).
+
+        The telemetry sink + user-data are not exposed in this v0
+        wrapper — set NULL. Slice 2-proper / 3 PR2 will add a
+        Python-side telemetry callback path."""
         ffi, lib = _get_lib()
         cfg = ffi.new("oct_runtime_config_t*")
         cfg.version = 1
-        # Strings need to outlive the call; keep references.
-        cache_root_buf = ffi.new("char[]", cache_root.encode("utf-8"))
-        build_tag_buf = ffi.new("char[]", runtime_build_tag.encode("utf-8"))
-        cfg.cache_root = cache_root_buf
-        cfg.runtime_build_tag = build_tag_buf
+        # String needs to outlive the cffi call; the runtime copies
+        # internally per the header's STRING LIFETIME contract, so
+        # the local ref is fine.
+        artifact_root_buf = ffi.new("char[]", artifact_root.encode("utf-8"))
+        cfg.artifact_root = artifact_root_buf
         cfg.telemetry_sink = ffi.NULL
         cfg.telemetry_user_data = ffi.NULL
+        cfg.max_sessions = max_sessions
         out = ffi.new("oct_runtime_t**")
         status = int(lib.oct_runtime_open(cfg, out))
         if status != OCT_STATUS_OK:
