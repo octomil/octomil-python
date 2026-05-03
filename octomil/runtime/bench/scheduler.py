@@ -164,6 +164,25 @@ def is_bench_enabled(env: Optional[dict[str, str]] = None) -> bool:
     return source.get(ENV_BENCH_GATE) == ENV_BENCH_GATE_VALUE_ON
 
 
+def _warn_on_typo_env_value(env: Optional[dict[str, str]] = None) -> None:
+    """Emit a one-shot WARNING if ``OCTOMIL_RUNTIME_BENCH`` is set to
+    a non-empty value other than ``"experimental"``. Strict-equality
+    silently disables on typos otherwise — Claude R1 finding. Emitted
+    at scheduler construction time so a developer who set the env to
+    ``Experimental`` or ``"on"`` sees the message in their dev console."""
+    source = env if env is not None else os.environ
+    raw = source.get(ENV_BENCH_GATE)
+    if raw is None or raw == "" or raw == ENV_BENCH_GATE_VALUE_ON:
+        return
+    logger.warning(
+        "%s=%r is not a recognized value; the bench is OFF. Set %s=%s to enable.",
+        ENV_BENCH_GATE,
+        raw,
+        ENV_BENCH_GATE,
+        ENV_BENCH_GATE_VALUE_ON,
+    )
+
+
 def is_placeholder_bypassed(env: Optional[dict[str, str]] = None) -> bool:
     """Returns True iff the debug-bypass env var
     (``OCTOMIL_RUNTIME_BENCH_ALLOW_PLACEHOLDER=1``) is set. Used by
@@ -200,6 +219,7 @@ class BenchScheduler:
         self._lock = threading.Lock()
         self._cv = threading.Condition(self._lock)
         self._worker: Optional[threading.Thread] = None
+        _warn_on_typo_env_value(env)
 
     # --------- Public API -------------------------------------------------
 
@@ -223,9 +243,21 @@ class BenchScheduler:
 
         Calibration refusal: if ``thresholds`` is a placeholder
         :class:`QualityGateThresholds` and the debug-bypass env var
-        is unset, raises :class:`CalibrationRefusedError`. The dispatch
-        path catches this and falls through to declared defaults
-        (logging the refusal once per cache_key)."""
+        is unset, the call logs a refusal AND returns ``None`` (the
+        caller falls through to declared defaults, exactly the same
+        as the env-var-off path). Claude R1 fix: raising from the
+        dispatch hot path made first-dispatch crash-prone; the
+        fail-soft refusal is the correct dispatch contract.
+        ``run_foreground`` (the CLI path) still raises — explicit user
+        action deserves the explicit error.
+
+        Cache-miss/commit race (Codex R1): we re-check the cache once
+        inside the enqueue path so a winner that committed between
+        the initial lookup and the lock acquisition isn't followed by
+        a redundant bench cycle. The dispatch caller still gets
+        ``None`` on this call (the winner becomes visible on the
+        next dispatch's lookup); preserves the "first dispatch never
+        blocks" contract while saving the redundant compute."""
         cached = self._cache.get(cache_key)
         if cached is not None:
             return cached
@@ -237,12 +269,8 @@ class BenchScheduler:
 
         thresholds = thresholds if thresholds is not None else QualityGateThresholds()
         if _is_placeholder_thresholds(thresholds) and not is_placeholder_bypassed(self._env):
-            raise CalibrationRefusedError(
-                f"BenchScheduler refuses to enqueue {cache_key.capability} bench for "
-                f"model={cache_key.model_id!r} on real hardware: thresholds match the "
-                f"v0.5 placeholders. Run the calibration step (v1) or set "
-                f"{ENV_ALLOW_PLACEHOLDER}=1 to bypass for tests."
-            )
+            self._log_calibration_refusal(cache_key)
+            return None
 
         job = _BenchJob(
             cache_key=cache_key,
@@ -338,7 +366,17 @@ class BenchScheduler:
 
     def _enqueue(self, job: _BenchJob) -> None:
         """Append ``job`` to the queue if not already in-flight or
-        already queued. Starts the worker thread if it's not running."""
+        already queued. Starts the worker thread if it's not running.
+
+        Codex R1 fix: re-checks the cache under the scheduler lock
+        before enqueueing, so a winner that committed between the
+        caller's lookup and our lock acquisition isn't followed by a
+        redundant cycle. The cache layer's reads are independent of
+        our lock (it has its own per-leaf flock), so the recheck is
+        a *best-effort* race-narrower, not a guarantee — if a commit
+        happens between the recheck and the worker dequeueing, the
+        worker still benches; that's acceptable, the winner just
+        gets re-confirmed."""
         leaf = job.cache_key.leaf_filename()
         with self._cv:
             if self._state.closed:
@@ -350,6 +388,11 @@ class BenchScheduler:
             if any(q.cache_key.leaf_filename() == leaf for q in self._state.queue):
                 logger.debug("dedup: bench already queued for %s", leaf)
                 return
+            # Race recheck — see Codex R1 finding. Cheap (one canonical-
+            # JSON file read); cheaper than the bench cycle it can avert.
+            if self._cache.get(job.cache_key) is not None:
+                logger.debug("dedup: cache hit appeared during scheduling for %s", leaf)
+                return
             if len(self._state.queue) >= self._queue_max:
                 logger.warning(
                     "scheduler queue at capacity (%d); dropping bench for %s",
@@ -360,6 +403,19 @@ class BenchScheduler:
             self._state.queue.append(job)
             self._cv.notify()
             self._ensure_worker_locked()
+
+    def _log_calibration_refusal(self, cache_key: CacheKey) -> None:
+        """Fail-soft refusal log. Emitted at WARNING so dispatch
+        operators see it; structured fields so a follow-on
+        observability layer can scrape. Claude R1 fix replacing the
+        previous ``raise CalibrationRefusedError`` from this hot path."""
+        logger.warning(
+            "BenchScheduler refusing %s bench for model=%s on placeholder thresholds; "
+            "set %s=1 to bypass (tests/CI only)",
+            cache_key.capability,
+            cache_key.model_id,
+            ENV_ALLOW_PLACEHOLDER,
+        )
 
     def _ensure_worker_locked(self) -> None:
         """Spawn the daemon worker if it hasn't started yet. Caller

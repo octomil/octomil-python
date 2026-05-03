@@ -261,23 +261,29 @@ def test_lookup_enqueues_when_env_on_and_calibrated(store, cache_key, fixtures, 
     scheduler.shutdown()
 
 
-def test_lookup_refuses_placeholder_thresholds(store, cache_key, fixtures, candidate):
-    """Env-var on + default thresholds + bypass off → CalibrationRefusedError."""
+def test_lookup_softly_refuses_placeholder_thresholds(caplog, store, cache_key, fixtures, candidate):
+    """Env-var on + default thresholds + bypass off → log WARNING +
+    return None (NOT raise). Claude R1 fix: dispatch hot path must
+    not crash; calibration enforcement is via log + observability."""
     scheduler = BenchScheduler(
         cache=store,
         env={ENV_BENCH_GATE: ENV_BENCH_GATE_VALUE_ON},
     )
-    with pytest.raises(CalibrationRefusedError, match="placeholder"):
-        scheduler.lookup_or_schedule(
+    factory_calls: list[CandidateConfig] = []
+    with caplog.at_level("WARNING", logger="octomil.runtime.bench.scheduler"):
+        result = scheduler.lookup_or_schedule(
             cache_key,
             candidates=[candidate],
             fixtures=fixtures,
-            synthesize_factory=_make_factory([]),
-            cpu_baseline_factory=_make_factory([]),
+            synthesize_factory=_make_factory(factory_calls),
+            cpu_baseline_factory=_make_factory(factory_calls),
             asr_fn=_passing_asr_fn,
             speaker_embedding_fn=_passing_speaker_fn,
             # thresholds=None → defaults to placeholder QualityGateThresholds()
         )
+    assert result is None  # fail-soft, not raise
+    assert factory_calls == []  # no bench was scheduled
+    assert any("placeholder" in r.message for r in caplog.records)
 
 
 def test_lookup_accepts_placeholder_when_bypass_on(store, cache_key, fixtures, candidate):
@@ -424,3 +430,115 @@ def test_shutdown_is_idempotent(store):
     scheduler = BenchScheduler(cache=store, env={})
     scheduler.shutdown()
     scheduler.shutdown()  # should not raise
+
+
+# ---------------------------------------------------------------------------
+# Queue capacity (Codex R1 missed-case)
+# ---------------------------------------------------------------------------
+
+
+def test_queue_capacity_drops_excess(caplog, store, fixtures, calibrated_thresholds):
+    """When the queue is at capacity, new enqueues are dropped with a
+    log warning instead of blocking the caller."""
+    started = threading.Event()
+    finish = threading.Event()
+
+    def slow_factory(c: CandidateConfig):
+        del c
+
+        def synthesize(text: str) -> AudioOutput:
+            del text
+            started.set()
+            finish.wait(timeout=2.0)
+            n_samples = 24000
+            return AudioOutput(
+                pcm_s16le=_sine_pcm(n_samples),
+                sample_rate=24000,
+                n_samples=n_samples,
+            )
+
+        return synthesize
+
+    scheduler = BenchScheduler(
+        cache=store,
+        env={ENV_BENCH_GATE: ENV_BENCH_GATE_VALUE_ON},
+        queue_max=2,
+    )
+    try:
+        # Distinct cache_keys so dedup doesn't fire; queue capacity does.
+        keys = [
+            CacheKey(
+                capability="tts",
+                model_id=f"model-{i}",
+                model_digest="sha256:" + "a" * 64,
+                quantization_preference="fp32",
+                candidate_set_version="1.0",
+                reference_workload_version="1.0",
+                dispatch_shape=DispatchShape(
+                    fields={
+                        "language": "en",
+                        "sample_format": "pcm_s16le",
+                        "sample_rate_out": 24000,
+                        "voice_family": f"voice_{i}",
+                    }
+                ),
+            )
+            for i in range(5)
+        ]
+        # First enqueue starts running and blocks on `finish`. Queue:
+        # depth=0 (in_flight={k0}). Subsequent enqueues fill the queue
+        # to capacity (2), then drop the next two.
+        with caplog.at_level("WARNING", logger="octomil.runtime.bench.scheduler"):
+            for k in keys:
+                scheduler.lookup_or_schedule(
+                    k,
+                    candidates=[CandidateConfig(engine="sherpa-onnx", provider="coreml", config={})],
+                    fixtures=fixtures,
+                    synthesize_factory=slow_factory,
+                    cpu_baseline_factory=slow_factory,
+                    asr_fn=_passing_asr_fn,
+                    speaker_embedding_fn=_passing_speaker_fn,
+                    thresholds=calibrated_thresholds,
+                )
+        assert started.wait(timeout=2.0), "first job never started"
+        # Worker timing is non-deterministic: it might dequeue entries
+        # before subsequent enqueues run. Invariant: queue never exceeds
+        # capacity, and the total dropped + accepted = total enqueued.
+        assert scheduler.queue_depth <= 2
+        drops = [r for r in caplog.records if "scheduler queue at capacity" in r.message]
+        # k0 always accepted (worker drains it immediately). The remaining
+        # 4 distribute across "queued" and "dropped" depending on the
+        # worker's progress; total drops ∈ {2, 3, 4} by invariant.
+        assert 2 <= len(drops) <= 4
+    finally:
+        finish.set()
+        scheduler.shutdown(timeout_s=5.0)
+
+
+# ---------------------------------------------------------------------------
+# Env-var typo warning (Claude R1 missed-case)
+# ---------------------------------------------------------------------------
+
+
+def test_env_var_typo_logs_warning(caplog, store):
+    """Setting `OCTOMIL_RUNTIME_BENCH=Experimental` (capitalized) or
+    any non-empty non-recognized value silently disables the bench;
+    we surface a one-shot WARNING at construction so a developer who
+    typo'd sees it in their dev console."""
+    with caplog.at_level("WARNING", logger="octomil.runtime.bench.scheduler"):
+        BenchScheduler(cache=store, env={ENV_BENCH_GATE: "Experimental"})
+    assert any(ENV_BENCH_GATE in r.message and "Experimental" in r.message for r in caplog.records)
+
+
+def test_env_var_unset_no_warning(caplog, store):
+    """The unset case is the legitimate default; do NOT warn."""
+    with caplog.at_level("WARNING", logger="octomil.runtime.bench.scheduler"):
+        BenchScheduler(cache=store, env={})
+    assert not any(ENV_BENCH_GATE in r.message for r in caplog.records)
+
+
+def test_env_var_correct_value_no_warning(caplog, store):
+    """`experimental` is recognized — no warning."""
+    with caplog.at_level("WARNING", logger="octomil.runtime.bench.scheduler"):
+        BenchScheduler(cache=store, env={ENV_BENCH_GATE: ENV_BENCH_GATE_VALUE_ON})
+    assert not any(ENV_BENCH_GATE in r.message and "not a recognized" in r.message for r in caplog.records)
