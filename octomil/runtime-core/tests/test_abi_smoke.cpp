@@ -167,7 +167,26 @@ void test_session_stub_returns_unsupported() {
     EXPECT(st == OCT_STATUS_UNSUPPORTED, "poll_event stub");
     /* Stub clears the event safely (respects out->size). */
     EXPECT(ev.version == OCT_EVENT_VERSION, "poll_event sets version on clear");
+    EXPECT(ev.size == sizeof(ev), "poll_event preserves out->size (was zeroed by memset; restored)");
     EXPECT(ev.type == OCT_EVENT_NONE, "poll_event sets type=NONE");
+
+    /* Small-buffer event: out->size only large enough to cover the
+     * header up through `type`. Stub must not write past out->size. */
+    {
+        const size_t small_size = offsetof(oct_event_t, type) + sizeof(ev.type);
+        unsigned char canary[sizeof(ev) + 16] = {};
+        for (size_t i = 0; i < sizeof(canary); ++i) canary[i] = 0xAA;
+        oct_event_t* small_ev = reinterpret_cast<oct_event_t*>(canary);
+        small_ev->size = small_size;
+        st = oct_session_poll_event(nullptr, small_ev, 0);
+        EXPECT(st == OCT_STATUS_UNSUPPORTED, "small-buffer poll_event still UNSUPPORTED");
+        EXPECT(small_ev->version == OCT_EVENT_VERSION, "small-buffer version set");
+        EXPECT(small_ev->size == small_size, "small-buffer size preserved");
+        /* Bytes past small_size MUST still be the canary 0xAA. */
+        for (size_t i = small_size; i < sizeof(canary); ++i) {
+            EXPECT(canary[i] == 0xAA, "small-buffer poll_event must not overrun");
+        }
+    }
     st = oct_session_cancel(nullptr);
     EXPECT(st == OCT_STATUS_UNSUPPORTED, "cancel stub");
     /* close-of-NULL is a no-op (header contract). */

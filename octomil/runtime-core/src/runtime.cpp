@@ -220,11 +220,16 @@ OCT_API void oct_runtime_capabilities_free(oct_capabilities_t* caps) {
     if (caps == nullptr) {
         return;
     }
-    /* No-op for now; slice-2 stub points the const char** fields at
-     * the static k_empty_string_array (lifetime is the dylib's, never
-     * freed). Real implementation will free runtime-allocated lists
-     * here. We zero the struct so a use-after-free is detectable. */
-    std::memset(caps, 0, sizeof(*caps));
+    /* Slice-2 stub: the const char** fields point at the static
+     * k_empty_string_array (lifetime is the dylib's, never freed).
+     * We zero only up to caps->size bytes so a binding that
+     * allocated a smaller struct doesn't get its tail clobbered.
+     * Real implementation will additionally free runtime-allocated
+     * string lists. Codex R2 nit. */
+    const size_t buf_size = caps->size;
+    if (buf_size > 0 && buf_size <= sizeof(*caps)) {
+        std::memset(caps, 0, buf_size);
+    }
 }
 
 OCT_API int oct_runtime_last_error(
@@ -321,22 +326,28 @@ OCT_API oct_status_t oct_session_poll_event(
 ) {
     (void)session;
     (void)timeout_ms;
-    /* Codex R1 fix: respect out->size to avoid overrunning an older
-     * binding's event buffer. Previous stub did memset(out, 0,
-     * sizeof(*out)) which writes past out->size when the binding
-     * was compiled against a smaller event struct. */
+    /* Respect out->size to avoid overrunning an older binding's
+     * event buffer. The fields the stub writes are version + size +
+     * type; the buffer must have room for all three.
+     *
+     * Codex R2 fix: previous patch did `memset(out, 0, out->size)`
+     * (which zeroed out->size itself) followed by a self-assign that
+     * left out->size = 0. The caller's versioned handshake was
+     * defeated. Now we snapshot out->size first, clear via memset
+     * up to that limit, then restore size and write the remaining
+     * fields only if the buffer covers them. */
     if (out != nullptr) {
-        const size_t header_min = offsetof(oct_event_t, type);
-        if (out->size >= header_min && out->size <= sizeof(*out)) {
-            /* Zero only up to out->size bytes; the version + size
-             * fields are preserved by the slot-1 fields. */
-            std::memset(out, 0, out->size);
-            out->size = out->size;  /* preserved (was already 0'd above; set explicitly for clarity) */
+        const size_t buf_size = out->size;
+        const size_t need_through_type = offsetof(oct_event_t, type) + sizeof(out->type);
+        if (buf_size >= need_through_type && buf_size <= sizeof(*out)) {
+            std::memset(out, 0, buf_size);
             out->version = OCT_EVENT_VERSION;
+            out->size = buf_size;
             out->type = OCT_EVENT_NONE;
         }
-        /* If out->size is 0 or wildly larger than sizeof(*out), the
-         * binding violated the contract; we don't write anything. */
+        /* If buf_size is too small for version/size/type or wildly
+         * larger than sizeof(*out), the binding violated the contract;
+         * we leave the buffer untouched. */
     }
     set_thread_error("oct_session_poll_event: not implemented in slice-2 build");
     return OCT_STATUS_UNSUPPORTED;
