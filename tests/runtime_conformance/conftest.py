@@ -157,10 +157,17 @@ def pytest_configure(config: pytest.Config) -> None:
 
 
 @pytest.fixture(params=_resolve_backends(), ids=lambda b: f"backend={b}")
-def backend(request: pytest.FixtureRequest, native_runtime_capabilities: frozenset[str]) -> Iterator[str]:
+def backend(request: pytest.FixtureRequest) -> Iterator[str]:
     """The current backend for this test instance. Applies the
     capability-aware skip rules based on the test's
     ``@requires_capability(...)`` marker (if any).
+
+    Codex R1 blocker fix: ``native_runtime_capabilities`` is fetched
+    lazily inside the native branch via ``request.getfixturevalue``.
+    Previous version took it as a direct fixture param, which made
+    pytest resolve it eagerly — and on a Python-only run with the
+    dylib unavailable, that fixture's skip propagated through every
+    backend-parametrized test, hiding Python-oracle regressions.
 
     Skip semantics:
 
@@ -179,7 +186,10 @@ def backend(request: pytest.FixtureRequest, native_runtime_capabilities: frozens
             if capability not in PYTHON_ORACLE_CAPABILITIES:
                 pytest.skip(f"no-python-oracle: {capability} is native-first; Python has no implementation")
         elif backend_value == BACKEND_NATIVE:
-            if capability not in native_runtime_capabilities:
+            # Lazy fetch — only on native branch. Python-only runs
+            # never touch the native runtime fixture.
+            native_caps: frozenset[str] = request.getfixturevalue("native_runtime_capabilities")
+            if capability not in native_caps:
                 pytest.skip(f"runtime_capabilities: native runtime does not advertise {capability}")
         else:  # pragma: no cover — guarded above
             raise RuntimeError(f"unknown backend {backend_value!r}")
