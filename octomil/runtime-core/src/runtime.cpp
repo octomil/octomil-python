@@ -114,6 +114,18 @@ OCT_API uint64_t oct_runtime_abi_version_packed(void) {
            (static_cast<uint64_t>(oct_runtime_abi_version_patch()));
 }
 
+/* ABI struct-layout introspection — returns sizeof as computed by
+ * the C compiler that built this TU. Bindings call these to verify
+ * their own (cffi cdef / Swift / JNI) struct declarations don't
+ * drift from the header. */
+OCT_API size_t oct_runtime_config_size(void) {
+    return sizeof(oct_runtime_config_t);
+}
+
+OCT_API size_t oct_capabilities_size(void) {
+    return sizeof(oct_capabilities_t);
+}
+
 /* -------------------------------------------------------------------------
  * Runtime lifecycle
  * ------------------------------------------------------------------------- */

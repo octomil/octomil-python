@@ -69,7 +69,7 @@ extern "C" {
 /* Bumped on breaking changes. Bindings inspect this at runtime via
  * `oct_runtime_abi_version()` to fail-fast on incompatible dylibs. */
 #define OCT_RUNTIME_ABI_VERSION_MAJOR 0
-#define OCT_RUNTIME_ABI_VERSION_MINOR 1
+#define OCT_RUNTIME_ABI_VERSION_MINOR 2  /* +oct_runtime_config_size, +oct_capabilities_size (additive; reads stay 0.1-compat) */
 #define OCT_RUNTIME_ABI_VERSION_PATCH 0
 
 /* Versions of versioned config structs. Bumped lockstep with the
@@ -325,6 +325,18 @@ OCT_API uint32_t oct_runtime_abi_version_patch(void);
     (((uint64_t)(maj) << 32) | ((uint64_t)(min) << 16) | (uint64_t)(pat))
 
 OCT_API uint64_t oct_runtime_abi_version_packed(void);
+
+/*
+ * ABI struct-layout introspection. Returns sizeof(struct) as
+ * computed by the C compiler that built the dylib. Bindings call
+ * these to verify their own (cffi cdef / Swift / JNI) struct
+ * declarations don't drift from the header's definition. Codex R1
+ * fix on the Python cffi binding: ABI mode does NOT catch
+ * struct-layout mismatch at parse time; runtime crash on first
+ * non-version field read is the only signal without these.
+ */
+OCT_API size_t oct_runtime_config_size(void);
+OCT_API size_t oct_capabilities_size(void);
 
 /* ------------------------------------------------------------------- *
  * Diagnostic strings                                                  *
