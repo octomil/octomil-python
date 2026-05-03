@@ -261,6 +261,29 @@ def test_lookup_enqueues_when_env_on_and_calibrated(store, cache_key, fixtures, 
     scheduler.shutdown()
 
 
+def test_calibration_refusal_logged_once_per_key(caplog, store, cache_key, fixtures, candidate):
+    """Codex R2 nit: a high-RPS dispatch path would log a WARNING on
+    every refused lookup. Dedup per cache_key — first refusal logs
+    WARNING; subsequent refusals for the same key log at DEBUG."""
+    scheduler = BenchScheduler(
+        cache=store,
+        env={ENV_BENCH_GATE: ENV_BENCH_GATE_VALUE_ON},
+    )
+    with caplog.at_level("WARNING", logger="octomil.runtime.bench.scheduler"):
+        for _ in range(5):
+            scheduler.lookup_or_schedule(
+                cache_key,
+                candidates=[candidate],
+                fixtures=fixtures,
+                synthesize_factory=_make_factory([]),
+                cpu_baseline_factory=_make_factory([]),
+                asr_fn=_passing_asr_fn,
+                speaker_embedding_fn=_passing_speaker_fn,
+            )
+    warnings = [r for r in caplog.records if "placeholder" in r.message and r.levelname == "WARNING"]
+    assert len(warnings) == 1
+
+
 def test_lookup_softly_refuses_placeholder_thresholds(caplog, store, cache_key, fixtures, candidate):
     """Env-var on + default thresholds + bypass off → log WARNING +
     return None (NOT raise). Claude R1 fix: dispatch hot path must

@@ -219,6 +219,10 @@ class BenchScheduler:
         self._lock = threading.Lock()
         self._cv = threading.Condition(self._lock)
         self._worker: Optional[threading.Thread] = None
+        # Per-key dedup for the calibration-refusal WARNING. A high-RPS
+        # dispatch path would otherwise log on every miss; we want one
+        # WARNING per cache_key per process. Codex R2 nit.
+        self._refused_keys: set[str] = set()
         _warn_on_typo_env_value(env)
 
     # --------- Public API -------------------------------------------------
@@ -405,17 +409,25 @@ class BenchScheduler:
             self._ensure_worker_locked()
 
     def _log_calibration_refusal(self, cache_key: CacheKey) -> None:
-        """Fail-soft refusal log. Emitted at WARNING so dispatch
-        operators see it; structured fields so a follow-on
-        observability layer can scrape. Claude R1 fix replacing the
-        previous ``raise CalibrationRefusedError`` from this hot path."""
-        logger.warning(
-            "BenchScheduler refusing %s bench for model=%s on placeholder thresholds; "
-            "set %s=1 to bypass (tests/CI only)",
-            cache_key.capability,
-            cache_key.model_id,
-            ENV_ALLOW_PLACEHOLDER,
-        )
+        """Fail-soft refusal log. Emitted at WARNING the FIRST time we
+        refuse a given cache_key; subsequent refusals for the same
+        key drop to DEBUG to avoid log floods in a high-RPS dispatch
+        path. Codex R2 nit. Claude R1 fix replacing the previous
+        ``raise CalibrationRefusedError`` from the hot path."""
+        leaf = cache_key.leaf_filename()
+        with self._lock:
+            first = leaf not in self._refused_keys
+            self._refused_keys.add(leaf)
+        if first:
+            logger.warning(
+                "BenchScheduler refusing %s bench for model=%s on placeholder thresholds; "
+                "set %s=1 to bypass (tests/CI only)",
+                cache_key.capability,
+                cache_key.model_id,
+                ENV_ALLOW_PLACEHOLDER,
+            )
+        else:
+            logger.debug("BenchScheduler still refusing %s on placeholder thresholds", leaf)
 
     def _ensure_worker_locked(self) -> None:
         """Spawn the daemon worker if it hasn't started yet. Caller
