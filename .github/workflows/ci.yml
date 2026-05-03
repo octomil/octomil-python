@@ -52,13 +52,49 @@ jobs:
           pip install -e ".[test]"
 
       - name: Run tests with coverage
-        # ``-n auto`` runs the suite across all available CPU cores
-        # via pytest-xdist. ``--dist=loadfile`` keeps a test file's
-        # tests on the same worker so module-level fixtures (notably
+        # ``-n 2`` matches GitHub Actions ubuntu-latest's 2-core
+        # allocation. ``-n auto`` was picking 4 logical workers via
+        # SMT, then 4 × (torch + sherpa-onnx + bench harness scratch)
+        # was OOM-killing workers around the 84% mark — manifesting as
+        # ``[gw1] node down: Not properly terminated`` and a 25-min
+        # job timeout because xdist transparently restarted workers
+        # and the test process never returned cleanly.
+        #
+        # ``--dist=loadfile`` keeps a test file's tests on the same
+        # worker so module-level fixtures (notably
         # ``OCTOMIL_CACHE_DIR`` / monkeypatched env vars) don't
-        # cross-contaminate. ``pytest-cov`` natively combines
-        # per-worker coverage, so the XML report stays accurate.
-        run: pytest -n auto --dist=loadfile --cov=octomil --cov-report=xml --cov-report=term-missing
+        # cross-contaminate.
+        #
+        # ``--max-worker-restart=0`` is the diagnostic guard: if a
+        # worker dies, fail the suite immediately with the offending
+        # test name in the log instead of silently restarting and
+        # hanging until the job timeout. Triage PRs read the log to
+        # identify the killer test; if it's a memory hog, the fix is
+        # ``@pytest.mark.serial`` + a comment; if it's a real bug,
+        # the fix is fixing the bug.
+        #
+        # ``pytest-cov`` natively combines per-worker coverage, so the
+        # XML report stays accurate.
+        run: |
+          pytest \
+            -n 2 \
+            --dist=loadfile \
+            --max-worker-restart=0 \
+            --cov=octomil \
+            --cov-report=xml \
+            --cov-report=term-missing
+
+      - name: Collect dmesg on failure (OOM-kill detection)
+        # If the worker death was caused by the Linux OOM-killer,
+        # the kernel ring buffer records it. Surface those lines in
+        # the CI log so triage PRs can confirm OOM vs. SIGSEGV vs.
+        # other signal causes without having to reproduce locally.
+        if: failure()
+        run: |
+          echo "=== dmesg (last 200 lines) ==="
+          sudo dmesg --ctime | tail -n 200 || true
+          echo "=== OOM events ==="
+          sudo dmesg --ctime | grep -iE "killed process|out of memory|oom-killer" || echo "no OOM events recorded"
 
       - name: Verify wheel facade export
         if: matrix.python-version == '3.11'
