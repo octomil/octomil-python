@@ -74,7 +74,18 @@ extern "C" {
 
 /* Versions of versioned config structs. Bumped lockstep with the
  * struct's field set. Bindings set these on every config they pass;
- * the runtime fails OCT_STATUS_VERSION_MISMATCH on unknown values. */
+ * the runtime fails OCT_STATUS_VERSION_MISMATCH on unknown values.
+ *
+ * IMPORTANT (Codex R1): version alone is INSUFFICIENT for output
+ * structs (`oct_event_t`, `oct_capabilities_t`). The runtime cannot
+ * know how much memory an older binding allocated; a v2 runtime
+ * emitting v2-shaped events would write past the end of a v1
+ * binding's allocated buffer. Output structs MUST also carry a
+ * `size_t size` field that the binding sets to `sizeof(struct)`
+ * before the call. The runtime writes only up to `size` bytes.
+ * Input config structs (`oct_runtime_config_t`, `oct_session_config_t`)
+ * are read-only from the runtime's perspective, so version alone
+ * suffices there. */
 #define OCT_RUNTIME_CONFIG_VERSION   1
 #define OCT_SESSION_CONFIG_VERSION   1
 #define OCT_EVENT_VERSION            1
@@ -146,14 +157,40 @@ typedef enum {
 
 typedef struct {
     uint32_t      version;                  /* OCT_CAPABILITIES_VERSION */
-    const char**  supported_engines;        /* null-terminated; runtime-owned */
-    const char**  supported_capabilities;   /* null-terminated; runtime-owned */
-    const char**  supported_archs;          /* null-terminated; runtime-owned */
+    /*
+     * Caller MUST set this to `sizeof(oct_capabilities_t)` before
+     * calling `oct_runtime_capabilities`. The runtime writes only
+     * up to `size` bytes; bindings compiled against an older version
+     * see only the fields up to their version's struct size. New
+     * fields are added at the END only — never in the middle.
+     */
+    size_t        size;
+    /*
+     * Null-terminated array of strings. Runtime-owned; valid until
+     * `oct_runtime_capabilities_free(out)` OR `oct_runtime_close`.
+     * EMPTY-LIST CONVENTION: an empty supported set is a non-NULL
+     * pointer to an array of length 1 whose only element is NULL
+     * (the sentinel). Bindings can iterate without a NULL check on
+     * the outer pointer. The outer pointer is NULL only if the
+     * runtime failed to populate the field; treat as
+     * OCT_STATUS_INTERNAL.
+     */
+    const char**  supported_engines;
+    const char**  supported_capabilities;
+    const char**  supported_archs;          /* values: "darwin-arm64", "darwin-x86_64", "linux-amd64", "linux-arm64", "windows-amd64", "wasm32" */
     uint64_t      ram_total_bytes;
     uint64_t      ram_available_bytes;
-    bool          has_apple_silicon;
-    bool          has_cuda;
-    bool          has_metal;
+    /*
+     * Codex R1: prefer fixed-width integer fields over `bool` in
+     * public ABI structs because bool has implementation-defined
+     * size on some platforms. Use uint8_t (0 = false, non-zero =
+     * true) for ABI-stable layout. The runtime asserts size at
+     * impl time via static_assert.
+     */
+    uint8_t       has_apple_silicon;
+    uint8_t       has_cuda;
+    uint8_t       has_metal;
+    uint8_t       _reserved0;               /* padding; always 0 */
 } oct_capabilities_t;
 
 /* ------------------------------------------------------------------- *
@@ -173,6 +210,15 @@ typedef struct {
  * runtime cannot enforce this without losing the no-network          *
  * invariant.                                                          *
  *                                                                    *
+ * SELF-REENTRANCY (callback calling back into runtime APIs):         *
+ * forbidden in v1. The callback MUST NOT call oct_session_*,         *
+ * oct_runtime_capabilities, or oct_runtime_close on a runtime/      *
+ * session that's currently producing the event. Doing so deadlocks  *
+ * (single-thread-affine session) or violates the no-recursion       *
+ * invariant. Bindings that need to drive the runtime in response to *
+ * telemetry signals MUST queue the work and execute it from a       *
+ * different thread.                                                   *
+ *                                                                    *
  * LIFETIME: the `event` pointer is borrowed; valid only for the      *
  * duration of the callback. Bindings that need durable storage copy  *
  * the relevant fields before returning.                              *
@@ -189,9 +235,18 @@ typedef void (*oct_telemetry_sink_fn)(
 
 typedef struct {
     uint32_t version;                          /* OCT_RUNTIME_CONFIG_VERSION */
-    const char* artifact_root;                 /* where prepared artifacts live on disk */
+    /*
+     * STRING LIFETIME (Codex R1): all `const char*` fields in this
+     * config are caller-owned. The runtime COPIES the strings during
+     * `oct_runtime_open`; the caller is free to free / mutate the
+     * underlying buffers immediately after `oct_runtime_open`
+     * returns. This is the only safe rule for FFI bindings (Python
+     * `str.encode("utf-8")` returns a temporary; Swift `String`
+     * may move buffers between calls).
+     */
+    const char* artifact_root;                 /* where prepared artifacts live on disk; copied at open */
     oct_telemetry_sink_fn telemetry_sink;      /* optional; NULL = drop telemetry */
-    void*       telemetry_user_data;           /* passed back to sink callback */
+    void*       telemetry_user_data;           /* passed back to sink callback verbatim */
     uint32_t    max_sessions;                  /* hard cap; 0 = unbounded */
 } oct_runtime_config_t;
 
@@ -210,7 +265,31 @@ OCT_API oct_status_t oct_runtime_open(
     oct_runtime_t** out
 );
 
+/*
+ * Close the runtime. Behavior with live state:
+ *   - Live sessions are CANCELLED and closed implicitly. Bindings
+ *     should call oct_session_close on every open session BEFORE
+ *     calling oct_runtime_close to ensure clean drain; the implicit
+ *     close after runtime_close is best-effort.
+ *   - Outstanding `oct_capabilities_t` allocations from
+ *     `oct_runtime_capabilities` become INVALID. Bindings MUST call
+ *     `oct_runtime_capabilities_free` on every retained
+ *     `oct_capabilities_t` BEFORE oct_runtime_close.
+ *   - The runtime drains pending telemetry sink callbacks before
+ *     returning. If the callback is currently executing on another
+ *     thread (telemetry-from-the-runtime-thread case), runtime_close
+ *     blocks until it returns.
+ *   - Calling oct_runtime_close twice on the same handle is
+ *     undefined behavior. Bindings MUST set the handle to NULL after
+ *     close (the helper macro OCT_CLOSE_RUNTIME below does this).
+ *   - Safe to call from any thread.
+ */
 OCT_API void oct_runtime_close(oct_runtime_t* runtime);
+
+/* Convenience macro: close + null in one shot. Idempotent. */
+#define OCT_CLOSE_RUNTIME(rt_ptr)  do { \
+    if ((rt_ptr) != NULL) { oct_runtime_close(rt_ptr); (rt_ptr) = NULL; } \
+} while (0)
 
 OCT_API oct_status_t oct_runtime_capabilities(
     oct_runtime_t* runtime,
@@ -228,6 +307,17 @@ OCT_API void oct_runtime_capabilities_free(oct_capabilities_t* caps);
 OCT_API uint32_t oct_runtime_abi_version_major(void);
 OCT_API uint32_t oct_runtime_abi_version_minor(void);
 OCT_API uint32_t oct_runtime_abi_version_patch(void);
+
+/*
+ * Packed accessor for bindings that want a single comparable value.
+ * Layout: (major << 32) | (minor << 16) | patch. Useful for "is the
+ * dylib >= 0.2.0?" checks: `oct_runtime_abi_version_packed() >=
+ * OCT_PACK_VERSION(0, 2, 0)`.
+ */
+#define OCT_PACK_VERSION(maj, min, pat) \
+    (((uint64_t)(maj) << 32) | ((uint64_t)(min) << 16) | (uint64_t)(pat))
+
+OCT_API uint64_t oct_runtime_abi_version_packed(void);
 
 /* ------------------------------------------------------------------- *
  * Diagnostic strings                                                  *
@@ -280,15 +370,24 @@ OCT_API int oct_last_thread_error(
  *    Layer 2b BEFORE oct_session_open is called.                     *
  * ------------------------------------------------------------------- */
 
-/* Priority enum — mirrors octomil-python's TtsRequestPriority. */
-#define OCT_PRIORITY_SPECULATIVE  0
-#define OCT_PRIORITY_PREFETCH     1
-#define OCT_PRIORITY_FOREGROUND   2
+/* Priority — mirrors octomil-python's TtsRequestPriority. Enum
+ * (not macros) for codegen-friendly switch exhaustiveness. */
+typedef enum {
+    OCT_PRIORITY_SPECULATIVE  = 0,
+    OCT_PRIORITY_PREFETCH     = 1,
+    OCT_PRIORITY_FOREGROUND   = 2,
+} oct_priority_t;
 
 typedef struct {
     uint32_t version;                /* OCT_SESSION_CONFIG_VERSION */
-    const char* model_uri;           /* "@app/eternum/realtime" | "kokoro-82m" | ... */
-    const char* capability;          /* "realtime" | "tts" | "stt" | "chat" | "embed" */
+    /*
+     * STRING LIFETIME: same rule as oct_runtime_config_t — all
+     * `const char*` fields are caller-owned and the runtime COPIES
+     * them during `oct_session_open`. Caller is free to free /
+     * mutate buffers immediately after open returns.
+     */
+    const char* model_uri;           /* "@app/eternum/realtime" | "kokoro-82m" | ...; copied at open */
+    const char* capability;          /* "realtime" | "tts" | "stt" | "chat" | "embed"; copied at open */
     /*
      * Locality the control plane resolved to. INFORMATIONAL ONLY.
      * The runtime acts on "on_device" only; any other value returns
@@ -296,7 +395,7 @@ typedef struct {
      * fallback or make a network call from this field. Cloud routing
      * is the SDK / control plane's responsibility above the ABI.
      */
-    const char* locality;            /* "on_device" only — anything else => UNSUPPORTED */
+    const char* locality;            /* "on_device" only — anything else => UNSUPPORTED; copied at open */
     /*
      * Policy preset the control plane resolved. INFORMATIONAL ONLY.
      * The runtime carries this in events for observability and
@@ -304,20 +403,41 @@ typedef struct {
      * fallback decisions, no quota checks, no auth). Policy
      * enforcement is Layer 2b's job.
      */
-    const char* policy_preset;       /* "private" | "local_first" | ... */
-    const char* speaker_id;          /* optional; NULL ok */
+    const char* policy_preset;       /* "private" | "local_first" | ...; copied at open */
+    const char* speaker_id;          /* optional; NULL ok; copied at open */
     uint32_t    sample_rate_in;      /* 0 = engine preferred input rate */
     uint32_t    sample_rate_out;     /* 0 = engine preferred output rate */
     uint32_t    priority;            /* OCT_PRIORITY_* */
-    void*       user_data;           /* opaque, returned on events */
+    void*       user_data;           /* opaque, echoed verbatim on every event */
 } oct_session_config_t;
 
+/*
+ * Open returns oct_status_t; same edge-case contract as
+ * oct_runtime_open (Codex R1):
+ *   - If `out == NULL`, returns OCT_STATUS_INVALID_INPUT.
+ *   - On any non-OK return, `*out` is set to NULL.
+ *   - Failure modes: OCT_STATUS_VERSION_MISMATCH (config.version
+ *     unknown), OCT_STATUS_UNSUPPORTED (capability/locality/engine
+ *     not loadable), OCT_STATUS_NOT_FOUND (model_uri or artifact
+ *     missing on disk), OCT_STATUS_INVALID_INPUT (bad config),
+ *     OCT_STATUS_INTERNAL (runtime invariant violated; check
+ *     oct_runtime_last_error or oct_last_thread_error).
+ *   - Configuration strings are copied during open; caller may free
+ *     them immediately after this call returns.
+ */
 OCT_API oct_status_t oct_session_open(
     oct_runtime_t* runtime,
     const oct_session_config_t* config,
     oct_session_t** out
 );
 
+/*
+ * Closes the session, draining any queued events. Safe to call from
+ * any thread, but MUST NOT race oct_session_send_audio /
+ * oct_session_send_text / oct_session_poll_event on the same
+ * session — those are single-thread-affine. The closing thread is
+ * the affine thread; coordinate with the producer.
+ */
 OCT_API void oct_session_close(oct_session_t* session);
 
 /* ------------------------------------------------------------------- *
@@ -408,17 +528,37 @@ typedef enum {
     OCT_EVENT_INPUT_DROPPED         = 9,  /* realtime backpressure; see strategy/realtime-architecture.md */
 } oct_event_type_t;
 
+/*
+ * Sample format codes for audio_chunk payload (Codex R1 — pcm +
+ * n_bytes + sample_rate is insufficient; bindings need format /
+ * channels / interleaving / endian / range to decode). Values
+ * are stable across ABI versions; new formats append.
+ */
+#define OCT_SAMPLE_FORMAT_PCM_S16LE  1   /* int16 little-endian, range [-32768, 32767], interleaved if channels > 1 */
+#define OCT_SAMPLE_FORMAT_PCM_F32LE  2   /* float32 little-endian, range [-1.0, 1.0], interleaved if channels > 1 */
+
 struct oct_event {
     uint32_t           version;       /* OCT_EVENT_VERSION */
+    /*
+     * Caller MUST set `size = sizeof(oct_event_t)` before passing
+     * `out` to oct_session_poll_event. The runtime writes only up to
+     * `size` bytes; bindings compiled against an older version see
+     * fields up to their version's struct size. New event types and
+     * new fields append at the end; never insert in the middle.
+     */
+    size_t             size;
     oct_event_type_t   type;
     uint64_t           monotonic_ns;
-    void*              user_data;     /* echoed from oct_session_config_t.user_data */
+    void*              user_data;     /* echoed VERBATIM from the oct_session_config_t.user_data of the session that produced this event */
     union {
         struct {
-            const uint8_t* pcm;        /* runtime-owned; lifetime per the rule above */
+            const uint8_t* pcm;             /* runtime-owned; lifetime per the rule above */
             uint32_t       n_bytes;
-            uint32_t       sample_rate;
-            bool           is_final;
+            uint32_t       sample_rate;     /* Hz */
+            uint32_t       sample_format;   /* OCT_SAMPLE_FORMAT_PCM_S16LE or OCT_SAMPLE_FORMAT_PCM_F32LE */
+            uint16_t       channels;        /* 1 = mono (canonical), 2 = stereo interleaved */
+            uint8_t        is_final;        /* uint8 instead of bool for ABI portability */
+            uint8_t        _reserved0;      /* padding; always 0 */
         } audio_chunk;
         struct {
             const char* utf8;          /* runtime-owned */
@@ -442,7 +582,9 @@ struct oct_event {
             float        total_latency_ms;
             float        queued_ms;
             uint32_t     observed_chunks;
-            bool         capability_verified;
+            uint8_t      capability_verified;     /* uint8 instead of bool for ABI portability */
+            uint8_t      _reserved0;              /* padding; always 0 */
+            uint16_t     _reserved1;              /* padding; always 0 */
             oct_status_t terminal_status;
         } session_completed;
         /* INPUT_DROPPED — realtime backpressure / queue overflow */
@@ -479,8 +621,34 @@ OCT_API oct_status_t oct_session_poll_event(
  * poll_event calls on the cancelled session deliver a
  * SESSION_COMPLETED event with terminal_status=CANCELLED, then
  * return OCT_STATUS_CANCELLED.
+ *
+ * Return values (Codex R1 — document the space explicitly):
+ *   - OCT_STATUS_OK: cancellation requested; the session will
+ *     transition to cancelled state at the next chunk boundary.
+ *   - OCT_STATUS_INVALID_INPUT: session == NULL.
+ *   - OCT_STATUS_CANCELLED: session was already cancelled. Idempotent
+ *     to call cancel multiple times; the second+ calls return this
+ *     code rather than OCT_STATUS_OK.
  */
 OCT_API oct_status_t oct_session_cancel(oct_session_t* session);
+
+/*
+ * send_audio semantics (Codex R1 — atomic per-call):
+ *   - Either the entire `audio_view_t` is consumed (returns
+ *     OCT_STATUS_OK), or none of it is (returns OCT_STATUS_BUSY).
+ *     The runtime never partial-consumes a buffer. Bindings facing
+ *     OCT_STATUS_BUSY can either drop the chunk OR retry after
+ *     yielding (drop is the iOS / Android default for realtime
+ *     because the audio I/O thread cannot block; retry is the
+ *     Python default).
+ *   - Returns OCT_STATUS_INVALID_INPUT if session or audio is NULL,
+ *     or if audio->channels == 0, n_samples == 0, sample_rate == 0,
+ *     or samples == NULL.
+ *   - Returns OCT_STATUS_CANCELLED if the session has been cancelled.
+ *
+ * Documented here rather than at the function comment to centralize
+ * the contract.
+ */
 
 #ifdef __cplusplus
 }  /* extern "C" */
