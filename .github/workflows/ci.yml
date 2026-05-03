@@ -16,7 +16,13 @@ jobs:
   test:
     name: Test Python ${{ matrix.python-version }}
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    # Bumped from 25 → 40 alongside the `-n 2` parallelism reduction.
+    # Halving worker count roughly 1.5–2x the wall-clock; the original
+    # 25-min ceiling was already close to what the suite hit at -n auto,
+    # and the diagnostic dmesg post-step needs to run AFTER the test
+    # step before any job-level timeout. Both reviewers in PR R1
+    # flagged this as the most likely self-inflicted failure mode.
+    timeout-minutes: 40
     permissions:
       contents: read
     strategy:
@@ -80,9 +86,15 @@ jobs:
             -n 2 \
             --dist=loadfile \
             --max-worker-restart=0 \
+            -v --tb=short \
             --cov=octomil \
             --cov-report=xml \
             --cov-report=term-missing
+        # `-v --tb=short`: when --max-worker-restart=0 fails the run
+        # on a worker death, xdist's `node down` message names the
+        # worker (gw0/gw1) but not the last-started test. With -v the
+        # last test name in the log IS the killer. Cost: ~2x larger
+        # log; benefit: triage in seconds.
 
       - name: Collect dmesg on failure (OOM-kill detection)
         # If the worker death was caused by the Linux OOM-killer,
@@ -91,6 +103,14 @@ jobs:
         # other signal causes without having to reproduce locally.
         if: failure()
         run: |
+          # GH-Actions ubuntu-latest currently allows passwordless
+          # sudo for the runner user; if that ever changes, surface
+          # the policy change cleanly rather than masking the original
+          # CI failure with a sudo error.
+          if ! sudo --non-interactive true 2>/dev/null; then
+            echo "passwordless sudo unavailable on this runner; skipping dmesg diagnostic"
+            exit 0
+          fi
           echo "=== dmesg (last 200 lines) ==="
           sudo dmesg --ctime | tail -n 200 || true
           echo "=== OOM events ==="
