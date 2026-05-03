@@ -768,6 +768,122 @@ def test_failure_map_capacity(store, fixtures, candidate, calibrated_thresholds)
         scheduler.shutdown(timeout_s=5.0)
 
 
+def test_enqueue_cache_recheck_precedes_backoff(store, hardware, cache_key, fixtures, candidate, calibrated_thresholds):
+    """Codex R4 sharpened-test: exercise the NARROW `_enqueue`
+    cache-recheck path. The public ``lookup_or_schedule`` does a
+    cache check before reaching ``_enqueue``; once we're inside
+    ``_enqueue`` (under the scheduler lock) a separate cache recheck
+    runs to catch a winner that committed between the public check
+    and the lock acquisition. The order of THAT recheck vs the
+    backoff check is what dispatch correctness depends on.
+
+    This test forces the race by monkey-patching ``store.get`` so the
+    public call sees a miss but the ``_enqueue`` recheck sees a hit.
+    If the ``_enqueue`` cache check ever moves AFTER the backoff
+    check, the backoff path would fire and ``suppressed_leafs`` would
+    record the leaf — assertion fails."""
+
+    from octomil.runtime.bench.cache import Result, Winner
+
+    def crashing_factory(c: CandidateConfig):
+        del c
+
+        def synthesize(text: str) -> AudioOutput:
+            del text
+            raise RuntimeError("simulated engine crash")
+
+        return synthesize
+
+    scheduler = BenchScheduler(
+        cache=store,
+        env={ENV_BENCH_GATE: ENV_BENCH_GATE_VALUE_ON},
+        failure_backoff_s=10.0,
+    )
+    try:
+        # Step 1: register a failure → backoff opens.
+        scheduler.lookup_or_schedule(
+            cache_key,
+            candidates=[candidate],
+            fixtures=fixtures,
+            synthesize_factory=crashing_factory,
+            cpu_baseline_factory=crashing_factory,
+            asr_fn=_passing_asr_fn,
+            speaker_embedding_fn=_passing_speaker_fn,
+            thresholds=calibrated_thresholds,
+        )
+        deadline = time.monotonic() + 5.0
+        while scheduler.queue_depth > 0 or scheduler.in_flight:
+            if time.monotonic() > deadline:
+                pytest.fail("first cycle never drained")
+            time.sleep(0.05)
+        leaf = cache_key.leaf_filename()
+        assert leaf in scheduler._state.failed_keys  # noqa: SLF001
+        assert leaf not in scheduler._state.suppressed_leafs  # noqa: SLF001 — not yet
+
+        # Step 2: monkey-patch the cache so the FIRST get returns None
+        # (public path miss) and the SECOND returns a winner (the
+        # _enqueue recheck under the lock observes a fresh commit).
+        winner_result = Result(
+            cache_key=cache_key,
+            hardware_fingerprint=hardware.full_digest(),
+            hardware_descriptor=hardware.descriptor_dict(),
+            writer_runtime_build_tag=hardware.runtime_build_tag,
+            winner=Winner(
+                engine="sherpa-onnx",
+                provider="coreml",
+                config={"num_threads": 1},
+                score=18.0,
+                first_chunk_ms=10.0,
+                total_latency_ms=20.0,
+                quality_metrics={"avg_speaker_embedding_cosine": 0.95},
+            ),
+            runners_up=(),
+            disqualified=(),
+            incomplete=False,
+            confidence="high",
+        )
+        call_count = {"n": 0}
+        original_get = store.get
+
+        def racing_get(key):
+            call_count["n"] += 1
+            if call_count["n"] == 1:
+                return None  # public lookup_or_schedule miss
+            return winner_result  # _enqueue recheck hit
+
+        store.get = racing_get  # type: ignore[method-assign]
+        try:
+            result = scheduler.lookup_or_schedule(
+                cache_key,
+                candidates=[candidate],
+                fixtures=fixtures,
+                synthesize_factory=crashing_factory,
+                cpu_baseline_factory=crashing_factory,
+                asr_fn=_passing_asr_fn,
+                speaker_embedding_fn=_passing_speaker_fn,
+                thresholds=calibrated_thresholds,
+            )
+        finally:
+            store.get = original_get  # type: ignore[method-assign]
+
+        # The public call returns None (its own cache.get was the
+        # first patched call returning None). _enqueue's recheck
+        # picks up the winner and short-circuits BEFORE the backoff
+        # check fires.
+        assert result is None
+        assert scheduler.queue_depth == 0
+        # Critical assertion: backoff path did NOT fire. If the
+        # cache recheck moves after the backoff check (regression),
+        # suppressed_leafs would now contain leaf.
+        assert leaf not in scheduler._state.suppressed_leafs, (  # noqa: SLF001
+            "backoff suppressed before cache-hit recheck — ordering regression"
+        )
+        # Saw exactly 2 cache.get calls (public + _enqueue recheck).
+        assert call_count["n"] == 2
+    finally:
+        scheduler.shutdown(timeout_s=5.0)
+
+
 def test_cache_hit_overrides_backoff(store, hardware, cache_key, fixtures, candidate, calibrated_thresholds):
     """A cache hit must take precedence over backoff suppression.
     Without that ordering, a winner that arrived from another path
