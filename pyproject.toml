@@ -131,6 +131,20 @@ test = [
   "flwr-datasets>=0.3.0",
   "eth-account>=0.10.0",
   "httpx>=0.25.0",
+  # ``cffi`` is required by the runtime/native binding tests
+  # (see ``octomil.runtime.native``). Pulled into ``test`` so the
+  # default test profile exercises the embedded host loader against
+  # the slice-2 stub dylib. Production users who need the embedded
+  # host install via the ``native`` extra below.
+  "cffi>=1.16.0",
+]
+# Embedded host: cffi binding to liboctomil-runtime. Slice-3 PR1.
+# The dylib itself is built separately (CMake under
+# ``octomil/runtime-core/``); this extra installs only the Python-
+# side cffi runtime. Locate the dylib via ``OCTOMIL_RUNTIME_DYLIB``
+# env var or the sibling ``runtime-core/build/`` dev path.
+native = [
+  "cffi>=1.16.0",
 ]
 dev = [
   "pytest>=7.0.0",
