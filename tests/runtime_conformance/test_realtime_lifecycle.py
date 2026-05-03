@@ -61,8 +61,16 @@ def test_session_open_then_close(backend: str):
 @requires_capability(CAPABILITY_AUDIO_REALTIME_SESSION)
 def test_session_cancel_terminates_with_completed_event(backend: str):
     """Cancellation is observable: poll_event after cancel delivers a
-    SESSION_COMPLETED with terminal_status==CANCELLED, then
-    OCT_STATUS_CANCELLED on subsequent polls."""
+    SESSION_COMPLETED event.
+
+    Slice 2A scaffold scope: we only assert the SESSION_COMPLETED
+    type arrives. Asserting ``terminal_status == OCT_STATUS_CANCELLED``
+    on the payload requires NativeEvent to expose the
+    ``session_completed`` union branch — that lands in slice 2-proper
+    when NativeEvent grows the payload accessors. Codex R1 missed-case:
+    tracked as a follow-up to tighten this test once the wrapper
+    surfaces the terminal_status field. The post-completion poll
+    asserting OCT_STATUS_CANCELLED is captured here today."""
     assert backend == BACKEND_NATIVE
     with NativeRuntime.open() as rt:
         with rt.open_session(capability=CAPABILITY_AUDIO_REALTIME_SESSION) as sess:
@@ -76,29 +84,45 @@ def test_session_cancel_terminates_with_completed_event(backend: str):
                 if ev.type == OCT_EVENT_NONE:
                     continue
             assert saw_completed, "expected SESSION_COMPLETED after cancel"
+            # Subsequent polls return OCT_STATUS_CANCELLED, which the
+            # wrapper raises as NativeRuntimeError.
+            with pytest.raises(NativeRuntimeError):
+                sess.poll_event(timeout_ms=100)
 
 
 @requires_capability(CAPABILITY_AUDIO_REALTIME_SESSION)
 def test_session_send_audio_round_trip(backend: str):
-    """Push a small audio buffer, drive the poll loop, expect at
-    least one AUDIO_CHUNK or TRANSCRIPT_CHUNK event back. Slice 2-
-    proper behavior; slice-2-stub never reaches this body."""
+    """Push a small audio buffer, drive the poll loop, expect a real
+    payload event (AUDIO_CHUNK or TRANSCRIPT_CHUNK).
+
+    Codex R1 missed-case fix: previous version accepted ANY non-NONE
+    event, which a queued SESSION_STARTED would satisfy without
+    proving the audio path actually flowed. The test now requires
+    a payload event AFTER the SESSION_STARTED handshake, so a
+    runtime that emits SESSION_STARTED but never engages the engine
+    fails this test loudly. Slice 2-proper acceptance criterion."""
+    from octomil.runtime.native import OCT_EVENT_AUDIO_CHUNK, OCT_EVENT_TRANSCRIPT_CHUNK
+
     assert backend == BACKEND_NATIVE
+    payload_event_types = {OCT_EVENT_AUDIO_CHUNK, OCT_EVENT_TRANSCRIPT_CHUNK}
     with NativeRuntime.open() as rt:
         with rt.open_session(capability=CAPABILITY_AUDIO_REALTIME_SESSION) as sess:
             # 100ms of silence at 16kHz mono float32 = 1600 frames * 4 bytes.
+            # Real Moshi adapter handles silence as a valid input — VAD
+            # gates output but SESSION_STARTED is unconditional.
             silence = b"\x00\x00\x00\x00" * 1600
             sess.send_audio(silence, sample_rate=16000, channels=1)
-            # Drain a few events; the slice 2-proper acceptance is "no
-            # raise, eventually a non-NONE event". This test is the
-            # smallest end-to-end smoke for the realtime path.
-            saw_any = False
-            for _ in range(20):
+            saw_payload = False
+            saw_started = False
+            for _ in range(40):  # 40 polls × 200ms = 8s budget
                 ev = sess.poll_event(timeout_ms=200)
-                if ev.type != OCT_EVENT_NONE:
-                    saw_any = True
+                if ev.type == OCT_EVENT_SESSION_STARTED:
+                    saw_started = True
+                if ev.type in payload_event_types:
+                    saw_payload = True
                     break
-            assert saw_any, "expected at least one event from realtime session"
+            assert saw_started, "expected SESSION_STARTED handshake"
+            assert saw_payload, "expected AUDIO_CHUNK or TRANSCRIPT_CHUNK payload event"
 
 
 @requires_capability(CAPABILITY_AUDIO_REALTIME_SESSION)

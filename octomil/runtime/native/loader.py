@@ -452,6 +452,15 @@ class NativeRuntime:
         self._lib = lib
         self._handle = handle  # cffi `oct_runtime_t*`
         self._closed = False
+        # Track live child sessions via weakref so NativeRuntime.close()
+        # can mark them closed before the dylib's `oct_runtime_close`
+        # implicitly tears them down. Without this, a Python wrapper
+        # would call into a freed `oct_session_t*` on its next
+        # send_audio / poll_event / __del__.
+        # Codex R1 blocker fix.
+        import weakref
+
+        self._sessions: "weakref.WeakSet[NativeSession]" = weakref.WeakSet()
 
     @classmethod
     def open(
@@ -499,9 +508,21 @@ class NativeRuntime:
         return cls(ffi, lib, out[0])
 
     def close(self) -> None:
-        """Close the handle. Idempotent."""
+        """Close the handle. Idempotent.
+
+        Codex R1 blocker: per `runtime.h`, live sessions are
+        CANCELLED and closed implicitly by `oct_runtime_close`. We
+        tell every Python wrapper "the C handle behind you is gone"
+        BEFORE the dylib closes the runtime, so any later call on
+        a stale `NativeSession` raises NativeRuntimeError instead of
+        dereferencing freed memory."""
         if self._closed:
             return
+        # Snapshot first; closing each wrapper removes itself from
+        # the WeakSet which would mutate during iteration.
+        for sess in list(self._sessions):
+            sess._invalidate_after_runtime_close()  # noqa: SLF001
+        self._sessions.clear()
         self._lib.oct_runtime_close(self._handle)
         self._closed = True
 
@@ -656,7 +677,11 @@ class NativeRuntime:
                 f"oct_session_open(capability={capability!r}) failed",
                 last_error=self.last_error(),
             )
-        return NativeSession(ffi, lib, out[0], owner=self)
+        sess = NativeSession(ffi, lib, out[0], owner=self)
+        # Register so NativeRuntime.close() can pre-invalidate the
+        # wrapper before the dylib implicitly closes its handle.
+        self._sessions.add(sess)
+        return sess
 
 
 def _read_string_array(ffi: Any, ptr: Any) -> list[str]:
@@ -804,6 +829,12 @@ class NativeSession:
         self._handle = handle
         self._owner = owner
         self._closed = False
+        # Set by NativeRuntime.close() right before it calls
+        # `oct_runtime_close()`. Once flipped, every entry point
+        # raises rather than dereferencing the now-freed handle, and
+        # session_close becomes a no-op (dylib already closed it).
+        # Codex R1 blocker fix.
+        self._handle_invalid = False
         # Reusable event buffer — runtime fills the same struct on every
         # poll; the inner pointer fields are valid only until the next
         # poll call per the header's lifetime contract.
@@ -811,6 +842,11 @@ class NativeSession:
         self._event_buf.size = ffi.sizeof("oct_event_t")
 
     def _check_open(self) -> None:
+        if self._handle_invalid:
+            raise NativeRuntimeError(
+                OCT_STATUS_INVALID_INPUT,
+                "session handle invalidated by parent NativeRuntime.close()",
+            )
         if self._closed:
             raise NativeRuntimeError(
                 OCT_STATUS_INVALID_INPUT,
@@ -914,7 +950,7 @@ class NativeSession:
         Returns the raw status code (OCT_STATUS_OK on first call,
         OCT_STATUS_CANCELLED on idempotent re-cancel) — these are NOT
         treated as errors. Any other code raises."""
-        if self._closed:
+        if self._handle_invalid or self._closed:
             return OCT_STATUS_CANCELLED
         status = int(self._lib.oct_session_cancel(self._handle))
         if status not in (OCT_STATUS_OK, OCT_STATUS_CANCELLED, OCT_STATUS_UNSUPPORTED):
@@ -926,10 +962,25 @@ class NativeSession:
         return status
 
     def close(self) -> None:
-        """Close the session. Idempotent."""
+        """Close the session. Idempotent.
+
+        If the parent runtime has already been closed, the underlying
+        ``oct_session_t*`` was implicitly closed by the dylib (per
+        the runtime.h contract); we MUST NOT call ``oct_session_close``
+        on a freed handle. ``_invalidate_after_runtime_close`` flips
+        this flag so the cleanup path becomes a no-op."""
         if self._closed:
             return
-        self._lib.oct_session_close(self._handle)
+        if not self._handle_invalid:
+            self._lib.oct_session_close(self._handle)
+        self._closed = True
+
+    def _invalidate_after_runtime_close(self) -> None:
+        """Marker called by NativeRuntime.close() before the dylib
+        tears down the runtime. Subsequent operations on this session
+        raise (via _check_open); subsequent close() is a no-op (the
+        dylib already freed the handle implicitly)."""
+        self._handle_invalid = True
         self._closed = True
 
     def __enter__(self) -> "NativeSession":

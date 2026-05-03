@@ -570,6 +570,49 @@ def test_session_send_audio_rejects_bad_shape():
             sess.send_audio(b"\x00" * 4 * 5, sample_rate=16000, channels=2)
 
 
+def test_runtime_close_invalidates_live_sessions():
+    """Codex R1 blocker fix regression: per runtime.h, live sessions
+    are CANCELLED and closed implicitly by oct_runtime_close. A
+    Python NativeSession wrapper that survives that teardown must
+    NOT call into the freed handle on its next operation or its
+    __del__."""
+    from octomil.runtime.native import (
+        NativeRuntime,
+        NativeRuntimeError,
+        NativeSession,
+    )
+    from octomil.runtime.native.loader import OCT_STATUS_INVALID_INPUT, _get_lib
+
+    ffi, lib = _get_lib()
+    rt = NativeRuntime.open()
+    # Construct a live NativeSession via the wrapper, registered with
+    # the runtime. The slice-2 stub returns UNSUPPORTED on real opens,
+    # so we synthesize the registration directly via the path that
+    # NativeRuntime.open_session would take after a successful call.
+    sess = NativeSession(ffi, lib, ffi.NULL, owner=rt)
+    rt._sessions.add(sess)  # noqa: SLF001 — internal wiring under test
+
+    rt.close()
+
+    # After runtime close, every operation on the session wrapper
+    # raises rather than dereferencing the freed handle.
+    with pytest.raises(NativeRuntimeError) as exc_info:
+        sess.send_text("after-close")
+    assert exc_info.value.status == OCT_STATUS_INVALID_INPUT
+    assert "invalidated" in str(exc_info.value).lower()
+
+    # close() on the invalidated session is a no-op (must NOT call
+    # oct_session_close on a freed handle).
+    sess.close()
+    sess.close()
+
+    # cancel() falls through to the idempotent CANCELLED return so
+    # cleanup paths can call it without try/except.
+    from octomil.runtime.native.loader import OCT_STATUS_CANCELLED
+
+    assert sess.cancel() == OCT_STATUS_CANCELLED
+
+
 def test_session_open_session_after_runtime_close_raises():
     """Ordering invariant: session_open after runtime_close fails
     cleanly via the wrapper rather than crashing on a stale handle."""
