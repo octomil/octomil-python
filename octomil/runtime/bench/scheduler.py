@@ -359,7 +359,18 @@ class BenchScheduler:
         if budget_s is not None:
             kwargs["budget_s"] = budget_s
         harness = BenchHarness(**kwargs)  # type: ignore[arg-type]
-        return harness.run()
+        outcome = harness.run()
+        # Mirror the worker-loop's success-clear: a foreground run
+        # that committed a winner means the engine recovered. Drop
+        # any prior backoff so dispatch (which already sees the
+        # cache hit thanks to the cache-precedence ordering) doesn't
+        # leave a stale entry eating cap-slots until expiry.
+        if outcome.committed:
+            leaf = cache_key.leaf_filename()
+            with self._lock:
+                self._state.failed_keys.pop(leaf, None)
+                self._state.suppressed_leafs.discard(leaf)
+        return outcome
 
     def shutdown(self, *, timeout_s: Optional[float] = 5.0) -> None:
         """Stop the worker. Idempotent. Drains the in-flight job

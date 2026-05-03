@@ -849,17 +849,18 @@ def test_cache_hit_overrides_backoff(store, cache_key, fixtures, candidate, cali
         scheduler.shutdown(timeout_s=5.0)
 
 
-def test_successful_run_clears_failed_key(store, cache_key, fixtures, candidate, calibrated_thresholds):
-    """Claude R1 missed-case: when the worker successfully completes
-    a cycle for a previously-failed key, clear the entry from
-    `failed_keys`. Then a fresh failure later starts a new window
-    rather than reusing a stale deadline."""
+def test_run_foreground_success_clears_failed_key(store, cache_key, fixtures, candidate, calibrated_thresholds):
+    """When `run_foreground` commits a winner, drop any prior backoff
+    entry for the same key. Otherwise a stale `failed_keys` entry
+    sits around eating cap-slots until expiry — even though the
+    engine has recovered.
 
-    crashing_calls: list[CandidateConfig] = []
-    passing_calls: list[CandidateConfig] = []
+    This mirrors the worker-loop's success-clear path; both fixes
+    are necessary so manual + background bench paths converge on
+    the same scheduler state."""
 
     def crashing_factory(c: CandidateConfig):
-        crashing_calls.append(c)
+        del c
 
         def synthesize(text: str) -> AudioOutput:
             del text
@@ -868,7 +869,7 @@ def test_successful_run_clears_failed_key(store, cache_key, fixtures, candidate,
         return synthesize
 
     def passing_factory(c: CandidateConfig):
-        passing_calls.append(c)
+        del c
 
         def synthesize(text: str) -> AudioOutput:
             del text
@@ -903,8 +904,9 @@ def test_successful_run_clears_failed_key(store, cache_key, fixtures, candidate,
         with scheduler._lock:  # noqa: SLF001
             assert leaf in scheduler._state.failed_keys  # noqa: SLF001
 
-        # Successful foreground run — should clear the entry.
-        scheduler.run_foreground(
+        # Successful foreground run commits a winner AND clears the
+        # backoff entry.
+        outcome = scheduler.run_foreground(
             cache_key,
             candidates=[candidate],
             fixtures=fixtures,
@@ -914,14 +916,9 @@ def test_successful_run_clears_failed_key(store, cache_key, fixtures, candidate,
             speaker_embedding_fn=_passing_speaker_fn,
             thresholds=calibrated_thresholds,
         )
-        # run_foreground does NOT update failed_keys (it doesn't go
-        # through the worker loop). The clear-on-success is for the
-        # worker path. Test: enqueue a successful background bench
-        # for the same key by using a DIFFERENT cache_key with the
-        # same leaf_filename? Not possible — leaf is content-derived.
-        # Instead, verify clear-on-success via direct scheduler-state
-        # inspection through a fresh worker cycle: clear the cache
-        # so the next lookup_or_schedule actually enqueues, then
-        # supply a passing factory.
+        assert outcome.committed is True
+        with scheduler._lock:  # noqa: SLF001
+            assert leaf not in scheduler._state.failed_keys  # noqa: SLF001
+            assert leaf not in scheduler._state.suppressed_leafs  # noqa: SLF001
     finally:
         scheduler.shutdown(timeout_s=5.0)
