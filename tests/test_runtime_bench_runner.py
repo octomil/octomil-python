@@ -38,6 +38,7 @@ from octomil.runtime.bench.runner import (
     DQ_DTW_CORRELATION_LOW,
     DQ_FRAME_ENERGY_CONTOUR_LOW,
     DQ_RMS_OUT_OF_BAND,
+    DQ_SAMPLE_FORMAT_MISMATCH,
     DQ_SPEAKER_EMBEDDING_LOW,
     AudioOutput,
     BenchHarness,
@@ -315,6 +316,76 @@ def test_speaker_embedding_low_disqualifies(store, cache_key, fixtures):
     outcome = harness.run()
     assert outcome.committed is False
     assert outcome.result.disqualified[0]["reason"] == DQ_SPEAKER_EMBEDDING_LOW
+
+
+# ---------------------------------------------------------------------------
+# Stage-1 structural — PCM shape mismatch (Codex R2 blocker)
+# ---------------------------------------------------------------------------
+
+
+def test_truncated_pcm_disqualifies_as_format_mismatch(store, cache_key, fixtures):
+    """Stage 1: a candidate whose `pcm_s16le` byte length doesn't match
+    `n_samples * 2` must DQ as `DQ_SAMPLE_FORMAT_MISMATCH` *before*
+    duration/energy/alignment checks read the wrong number of bytes.
+    Codex R2 blocker — the structural gate previously trusted
+    `n_samples` for duration but read `len(pcm_s16le)` for RMS, so a
+    truncated buffer with a plausible advertised length could pass."""
+    candidate = CandidateConfig(engine="sherpa-onnx", provider="coreml", config={"num_threads": 1})
+
+    def truncated_factory(c: CandidateConfig):
+        del c
+
+        def synthesize(text: str) -> AudioOutput:
+            del text
+            # Claims 24000 samples (1s at 24 kHz) but ships only 4
+            # bytes (2 samples). Pre-fix this would pass duration
+            # (1s ≈ 1s) and skew RMS (4 bytes / 2 = 2 samples).
+            return AudioOutput(pcm_s16le=b"\x00\x01\x00\x02", sample_rate=24000, n_samples=24000)
+
+        return synthesize
+
+    harness = BenchHarness(
+        cache=store,
+        cache_key=cache_key,
+        candidates=[candidate],
+        fixtures=fixtures,
+        synthesize_factory=truncated_factory,
+        cpu_baseline_factory=_make_factory(first_chunk_ms=20, total_latency_ms=40),
+        asr_fn=_passing_asr_fn,
+        speaker_embedding_fn=_passing_speaker_fn,
+    )
+    outcome = harness.run()
+    assert outcome.committed is False
+    assert outcome.result.disqualified[0]["reason"] == DQ_SAMPLE_FORMAT_MISMATCH
+
+
+def test_odd_byte_pcm_disqualifies_as_format_mismatch(store, cache_key, fixtures):
+    """Odd byte length is impossible for valid pcm_s16le (2 bytes per
+    sample). Catches engines that emitted the wrong sample format."""
+    candidate = CandidateConfig(engine="sherpa-onnx", provider="coreml", config={"num_threads": 1})
+
+    def odd_byte_factory(c: CandidateConfig):
+        del c
+
+        def synthesize(text: str) -> AudioOutput:
+            del text
+            return AudioOutput(pcm_s16le=b"\x00" * 24001, sample_rate=24000, n_samples=12000)
+
+        return synthesize
+
+    harness = BenchHarness(
+        cache=store,
+        cache_key=cache_key,
+        candidates=[candidate],
+        fixtures=fixtures,
+        synthesize_factory=odd_byte_factory,
+        cpu_baseline_factory=_make_factory(first_chunk_ms=20, total_latency_ms=40),
+        asr_fn=_passing_asr_fn,
+        speaker_embedding_fn=_passing_speaker_fn,
+    )
+    outcome = harness.run()
+    assert outcome.committed is False
+    assert outcome.result.disqualified[0]["reason"] == DQ_SAMPLE_FORMAT_MISMATCH
 
 
 # ---------------------------------------------------------------------------

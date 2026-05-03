@@ -502,10 +502,21 @@ class BenchHarness:
         output: AudioOutput,
         reference: AudioOutput,
     ) -> Optional[tuple[str, float]]:
-        """Hard structural checks: NaN/Inf, saturating clipping,
-        sample-rate match, sample-format match, duration ±10% of
-        reference. Each is cheap; they catch the worst regressions
+        """Hard structural checks: PCM shape match, NaN/Inf, saturating
+        clipping, sample-rate match, sample-format match, duration ±10%
+        of reference. Each is cheap; they catch the worst regressions
         before any expensive analysis runs."""
+        # Codex R2 blocker: validate PCM byte length against the
+        # advertised n_samples *before* computing any energy/duration
+        # metric. A candidate that returns a 2-sample buffer with
+        # n_samples=24000 (claiming 1s duration at 24 kHz) would pass
+        # the duration check (which trusts duration_s) and skew RMS /
+        # alignment (which read len(pcm_s16le)) — defense-in-depth
+        # requires the buffer length to match the contract.
+        expected_byte_len = output.n_samples * 2
+        if len(output.pcm_s16le) != expected_byte_len or len(output.pcm_s16le) % 2 != 0:
+            return (DQ_SAMPLE_FORMAT_MISMATCH, float(len(output.pcm_s16le)))
+
         # PCM s16le has no NaN/Inf representation; the float-domain
         # equivalent is "all-zero sample buffers" which the energy
         # stage catches. Skipped here.
