@@ -1,0 +1,13 @@
+build/
+build-*/
+*.o
+*.obj
+*.a
+*.dylib
+*.so
+*.dll
+*.lib
+*.pdb
+.cmake/
+CMakeCache.txt
+CMakeFiles/
