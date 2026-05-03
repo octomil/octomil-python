@@ -565,3 +565,227 @@ def test_env_var_correct_value_no_warning(caplog, store):
     with caplog.at_level("WARNING", logger="octomil.runtime.bench.scheduler"):
         BenchScheduler(cache=store, env={ENV_BENCH_GATE: ENV_BENCH_GATE_VALUE_ON})
     assert not any(ENV_BENCH_GATE in r.message and "not a recognized" in r.message for r in caplog.records)
+
+
+# ---------------------------------------------------------------------------
+# Worker-exception failure backoff
+# ---------------------------------------------------------------------------
+
+
+def test_worker_exception_throttles_subsequent_enqueues(store, cache_key, fixtures, candidate, calibrated_thresholds):
+    """A deterministic worker exception (raised inside the synthesize
+    factory) records the cache_key in the failure map. A subsequent
+    enqueue for the SAME key is suppressed until the backoff window
+    expires. Without this, dispatch keeps re-enqueueing a guaranteed-
+    failing candidate every cache miss."""
+    factory_calls: list[CandidateConfig] = []
+
+    def crashing_factory(c: CandidateConfig):
+        factory_calls.append(c)
+
+        def synthesize(text: str) -> AudioOutput:
+            del text
+            raise RuntimeError("simulated engine crash")
+
+        return synthesize
+
+    scheduler = BenchScheduler(
+        cache=store,
+        env={ENV_BENCH_GATE: ENV_BENCH_GATE_VALUE_ON},
+        failure_backoff_s=10.0,
+    )
+    try:
+        # First enqueue runs the worker, factory is constructed, then
+        # synthesize raises during the baseline. Exception logged;
+        # cache_key recorded with a deadline.
+        first = scheduler.lookup_or_schedule(
+            cache_key,
+            candidates=[candidate],
+            fixtures=fixtures,
+            synthesize_factory=crashing_factory,
+            cpu_baseline_factory=crashing_factory,
+            asr_fn=_passing_asr_fn,
+            speaker_embedding_fn=_passing_speaker_fn,
+            thresholds=calibrated_thresholds,
+        )
+        assert first is None
+
+        # Wait for worker to finish (drain the in-flight bench).
+        deadline = time.monotonic() + 5.0
+        while scheduler.queue_depth > 0 or scheduler.in_flight:
+            if time.monotonic() > deadline:
+                pytest.fail("scheduler did not drain after exception within 5s")
+            time.sleep(0.05)
+
+        # Subsequent enqueue for the same key is skipped (backoff).
+        prior_calls = len(factory_calls)
+        second = scheduler.lookup_or_schedule(
+            cache_key,
+            candidates=[candidate],
+            fixtures=fixtures,
+            synthesize_factory=crashing_factory,
+            cpu_baseline_factory=crashing_factory,
+            asr_fn=_passing_asr_fn,
+            speaker_embedding_fn=_passing_speaker_fn,
+            thresholds=calibrated_thresholds,
+        )
+        assert second is None
+        # Give a brief moment for any worker activity (there should
+        # be none since the enqueue should have short-circuited).
+        time.sleep(0.1)
+        assert scheduler.queue_depth == 0
+        assert len(factory_calls) == prior_calls, "backoff should have suppressed re-enqueue"
+    finally:
+        scheduler.shutdown(timeout_s=5.0)
+
+
+def test_failure_backoff_expires_after_window(store, cache_key, fixtures, candidate, calibrated_thresholds):
+    """Once the backoff window elapses, subsequent enqueues for the
+    same key are accepted again."""
+    factory_calls: list[CandidateConfig] = []
+
+    def crashing_factory(c: CandidateConfig):
+        factory_calls.append(c)
+
+        def synthesize(text: str) -> AudioOutput:
+            del text
+            raise RuntimeError("simulated engine crash")
+
+        return synthesize
+
+    # 50ms backoff so the test runs quickly.
+    scheduler = BenchScheduler(
+        cache=store,
+        env={ENV_BENCH_GATE: ENV_BENCH_GATE_VALUE_ON},
+        failure_backoff_s=0.05,
+    )
+    try:
+        scheduler.lookup_or_schedule(
+            cache_key,
+            candidates=[candidate],
+            fixtures=fixtures,
+            synthesize_factory=crashing_factory,
+            cpu_baseline_factory=crashing_factory,
+            asr_fn=_passing_asr_fn,
+            speaker_embedding_fn=_passing_speaker_fn,
+            thresholds=calibrated_thresholds,
+        )
+        # Wait for the worker to finish + backoff to expire.
+        deadline = time.monotonic() + 2.0
+        while scheduler.queue_depth > 0 or scheduler.in_flight:
+            if time.monotonic() > deadline:
+                pytest.fail("scheduler did not drain")
+            time.sleep(0.01)
+        time.sleep(0.10)  # > backoff window of 0.05
+
+        prior = len(factory_calls)
+        scheduler.lookup_or_schedule(
+            cache_key,
+            candidates=[candidate],
+            fixtures=fixtures,
+            synthesize_factory=crashing_factory,
+            cpu_baseline_factory=crashing_factory,
+            asr_fn=_passing_asr_fn,
+            speaker_embedding_fn=_passing_speaker_fn,
+            thresholds=calibrated_thresholds,
+        )
+        # Wait for second cycle to drain.
+        deadline = time.monotonic() + 2.0
+        while scheduler.queue_depth > 0 or scheduler.in_flight:
+            if time.monotonic() > deadline:
+                pytest.fail("second enqueue never ran")
+            time.sleep(0.01)
+        # Factory was invoked again — backoff did not suppress.
+        assert len(factory_calls) > prior
+    finally:
+        scheduler.shutdown(timeout_s=5.0)
+
+
+def test_failure_map_capacity(store, fixtures, candidate, calibrated_thresholds):
+    """The failure map is capped at `failure_map_max` so a pattern
+    where every cache_key fails doesn't grow it without bound."""
+
+    def crashing_factory(c: CandidateConfig):
+        def synthesize(text: str) -> AudioOutput:
+            del text
+            raise RuntimeError("simulated engine crash")
+
+        return synthesize
+
+    scheduler = BenchScheduler(
+        cache=store,
+        env={ENV_BENCH_GATE: ENV_BENCH_GATE_VALUE_ON},
+        failure_backoff_s=10.0,  # long enough that none expire during the test
+        failure_map_max=3,  # tight cap for the test
+    )
+    try:
+        # Schedule 5 distinct cache_keys, all of which crash. Cap is 3,
+        # so failed_keys settles at <= 3.
+        for i in range(5):
+            key = CacheKey(
+                capability="tts",
+                model_id=f"model-{i}",
+                model_digest="sha256:" + "f" * 64,
+                quantization_preference="fp32",
+                candidate_set_version="1.0",
+                reference_workload_version="1.0",
+                dispatch_shape=DispatchShape(
+                    fields={
+                        "language": "en",
+                        "sample_format": "pcm_s16le",
+                        "sample_rate_out": 24000,
+                        "voice_family": f"voice_{i}",
+                    }
+                ),
+            )
+            scheduler.lookup_or_schedule(
+                key,
+                candidates=[candidate],
+                fixtures=fixtures,
+                synthesize_factory=crashing_factory,
+                cpu_baseline_factory=crashing_factory,
+                asr_fn=_passing_asr_fn,
+                speaker_embedding_fn=_passing_speaker_fn,
+                thresholds=calibrated_thresholds,
+            )
+        # Drain.
+        deadline = time.monotonic() + 5.0
+        while scheduler.queue_depth > 0 or scheduler.in_flight:
+            if time.monotonic() > deadline:
+                pytest.fail("scheduler did not drain")
+            time.sleep(0.05)
+        # Force a prune by calling _enqueue (which calls
+        # _prune_failed_keys_locked); inspect the cap via a fresh
+        # enqueue against a NEW key to trigger the prune.
+        sentinel_key = CacheKey(
+            capability="tts",
+            model_id="sentinel",
+            model_digest="sha256:" + "0" * 64,
+            quantization_preference="fp32",
+            candidate_set_version="1.0",
+            reference_workload_version="1.0",
+            dispatch_shape=DispatchShape(
+                fields={
+                    "language": "en",
+                    "sample_format": "pcm_s16le",
+                    "sample_rate_out": 24000,
+                    "voice_family": "sentinel",
+                }
+            ),
+        )
+        scheduler.lookup_or_schedule(
+            sentinel_key,
+            candidates=[candidate],
+            fixtures=fixtures,
+            synthesize_factory=crashing_factory,
+            cpu_baseline_factory=crashing_factory,
+            asr_fn=_passing_asr_fn,
+            speaker_embedding_fn=_passing_speaker_fn,
+            thresholds=calibrated_thresholds,
+        )
+        # Inspect failed_keys directly via the scheduler's private
+        # state — fine for unit tests, never for production code.
+        with scheduler._lock:  # noqa: SLF001
+            assert len(scheduler._state.failed_keys) <= 3  # noqa: SLF001
+    finally:
+        scheduler.shutdown(timeout_s=5.0)

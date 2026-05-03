@@ -45,6 +45,7 @@ from __future__ import annotations
 import logging
 import os
 import threading
+import time
 from collections import deque
 from dataclasses import dataclass, field
 from typing import Optional
@@ -91,6 +92,21 @@ ENV_ALLOW_PLACEHOLDER_VALUE_ON: str = "1"
 #: rather than blocking the caller. v1 will surface this as a metric.
 DEFAULT_QUEUE_MAX: int = 64
 
+#: After a worker exception, the offending cache_key enters a backoff
+#: window during which subsequent enqueues are suppressed. Without
+#: this, a deterministically-broken candidate config (missing engine
+#: binary, bad model artifact) re-enqueues on every cache miss and
+#: spins the worker thread on guaranteed failures. Both reviewers in
+#: the PR-C consensus flagged this as the top deferred concern; this
+#: addresses it without changing the on-disk schema.
+DEFAULT_FAILURE_BACKOFF_S: float = 60.0
+
+#: Maximum entries in ``_failed_keys``. The map is pruned lazily at
+#: every check (entries past their backoff window drop). Cap exists
+#: so a pathological pattern (every cache_key fails) doesn't grow
+#: the dict without bound. v1 may swap to a proper LRU.
+DEFAULT_FAILURE_MAP_MAX: int = 256
+
 
 # ---------------------------------------------------------------------------
 # Job records
@@ -116,15 +132,19 @@ class _BenchJob:
 class _SchedulerState:
     """Mutable state guarded by ``_lock``.
 
-    ``in_flight`` keys on the cache_key's stable leaf-filename digest
-    rather than the dataclass instance — :class:`CacheKey` contains
-    a :class:`DispatchShape` whose ``fields`` dict is unhashable, so
-    we can't put :class:`CacheKey` in a Python ``set``. The leaf
-    filename is the canonical-JSON SHA256 from
+    ``in_flight`` and ``failed_keys`` key on the cache_key's stable
+    leaf-filename digest rather than the dataclass instance —
+    :class:`CacheKey` contains a :class:`DispatchShape` whose
+    ``fields`` dict is unhashable, so we can't put :class:`CacheKey`
+    in a Python ``set`` or ``dict``. The leaf filename is the
+    canonical-JSON SHA256 from
     ``octomil-contracts/schemas/core/runtime_bench_cache_key.json``."""
 
     queue: deque[_BenchJob] = field(default_factory=deque)
     in_flight: set[str] = field(default_factory=set)
+    #: leaf_filename → monotonic timestamp at which the key exits its
+    #: backoff window. Used to throttle retries after a worker exception.
+    failed_keys: dict[str, float] = field(default_factory=dict)
     closed: bool = False
 
 
@@ -211,17 +231,21 @@ class BenchScheduler:
         cache: CacheStore,
         env: Optional[dict[str, str]] = None,
         queue_max: int = DEFAULT_QUEUE_MAX,
+        failure_backoff_s: float = DEFAULT_FAILURE_BACKOFF_S,
+        failure_map_max: int = DEFAULT_FAILURE_MAP_MAX,
     ) -> None:
         self._cache = cache
         self._env = env  # snapshot for tests; None → live os.environ
         self._queue_max = queue_max
+        self._failure_backoff_s = failure_backoff_s
+        self._failure_map_max = failure_map_max
         self._state = _SchedulerState()
         self._lock = threading.Lock()
         self._cv = threading.Condition(self._lock)
         self._worker: Optional[threading.Thread] = None
         # Per-key dedup for the calibration-refusal WARNING. A high-RPS
         # dispatch path would otherwise log on every miss; we want one
-        # WARNING per cache_key per process. Codex R2 nit.
+        # WARNING per cache_key per process.
         self._refused_keys: set[str] = set()
         _warn_on_typo_env_value(env)
 
@@ -392,8 +416,24 @@ class BenchScheduler:
             if any(q.cache_key.leaf_filename() == leaf for q in self._state.queue):
                 logger.debug("dedup: bench already queued for %s", leaf)
                 return
-            # Race recheck — see Codex R1 finding. Cheap (one canonical-
-            # JSON file read); cheaper than the bench cycle it can avert.
+            # Failure-backoff: a deterministically-broken candidate config
+            # (missing engine binary, bad model artifact, etc.) shouldn't
+            # re-enqueue on every cache miss. After a worker exception
+            # we record the leaf with a deadline; subsequent enqueues
+            # within the window short-circuit.
+            now = time.monotonic()
+            self._prune_failed_keys_locked(now)
+            deadline = self._state.failed_keys.get(leaf)
+            if deadline is not None and now < deadline:
+                logger.debug(
+                    "backoff: bench for %s skipped (%.1fs remaining)",
+                    leaf,
+                    deadline - now,
+                )
+                return
+            # Race recheck — cache hit during scheduling. Cheap (one
+            # canonical-JSON file read); cheaper than the bench cycle
+            # it averts.
             if self._cache.get(job.cache_key) is not None:
                 logger.debug("dedup: cache hit appeared during scheduling for %s", leaf)
                 return
@@ -407,6 +447,21 @@ class BenchScheduler:
             self._state.queue.append(job)
             self._cv.notify()
             self._ensure_worker_locked()
+
+    def _prune_failed_keys_locked(self, now: float) -> None:
+        """Drop expired entries from ``failed_keys`` AND enforce the
+        soft cap. Caller must hold ``_lock``."""
+        # Cheap path: drop everything past its deadline.
+        expired = [k for k, deadline in self._state.failed_keys.items() if deadline <= now]
+        for k in expired:
+            del self._state.failed_keys[k]
+        # Cap path: if still over capacity (every entry still in
+        # backoff), drop the oldest (smallest deadline) entries.
+        overflow = len(self._state.failed_keys) - self._failure_map_max
+        if overflow > 0:
+            ordered = sorted(self._state.failed_keys.items(), key=lambda item: item[1])
+            for k, _ in ordered[:overflow]:
+                del self._state.failed_keys[k]
 
     def _log_calibration_refusal(self, cache_key: CacheKey) -> None:
         """Fail-soft refusal log. Emitted at WARNING the FIRST time we
@@ -459,6 +514,12 @@ class BenchScheduler:
                 self._run_job(job)
             except Exception:  # noqa: BLE001 — worker must never propagate
                 logger.exception("bench job for %s raised", leaf)
+                # Record the failure so subsequent enqueues for the
+                # same cache_key short-circuit during the backoff
+                # window. Without this, a deterministic engine error
+                # would have the worker spin on guaranteed failures.
+                with self._lock:
+                    self._state.failed_keys[leaf] = time.monotonic() + self._failure_backoff_s
             finally:
                 with self._lock:
                     self._state.in_flight.discard(leaf)
@@ -493,6 +554,8 @@ class BenchScheduler:
 __all__ = [
     "BenchScheduler",
     "CalibrationRefusedError",
+    "DEFAULT_FAILURE_BACKOFF_S",
+    "DEFAULT_FAILURE_MAP_MAX",
     "DEFAULT_QUEUE_MAX",
     "ENV_ALLOW_PLACEHOLDER",
     "ENV_ALLOW_PLACEHOLDER_VALUE_ON",
