@@ -28,6 +28,7 @@ permissions: {}
 
 jobs:
   benchmark:
+    timeout-minutes: 15
     name: TTFT Regression Check
     runs-on: ubuntu-latest
     permissions:
