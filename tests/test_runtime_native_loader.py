@@ -568,6 +568,12 @@ def test_session_send_audio_rejects_bad_shape():
         with pytest.raises(NativeRuntimeError):
             # 5 floats but 2 channels — not a frame boundary.
             sess.send_audio(b"\x00" * 4 * 5, sample_rate=16000, channels=2)
+        # Codex+Gemini R2 nit: trailing byte (len % 4 != 0) is rejected
+        # rather than silently truncated. 5 bytes would have been parsed
+        # as 1 float with a dropped trailing byte previously.
+        with pytest.raises(NativeRuntimeError) as exc_info:
+            sess.send_audio(b"\x00" * 5, sample_rate=16000, channels=1)
+        assert "multiple of float32" in str(exc_info.value)
 
 
 def test_runtime_close_invalidates_live_sessions():

@@ -873,6 +873,15 @@ class NativeSession:
         caller can decide drop-vs-retry, mirroring the C contract."""
         self._check_open()
         ffi = self._ffi
+        # Reject malformed float32 buffers explicitly. Codex+Gemini R2
+        # nit: `len(samples) // 4` would silently truncate a trailing
+        # byte (e.g. len==5 → 1 float + dropped byte), letting a
+        # misaligned buffer cross the FFI.
+        if len(samples) % 4 != 0:
+            raise NativeRuntimeError(
+                OCT_STATUS_INVALID_INPUT,
+                f"send_audio: buffer length {len(samples)} is not a multiple of float32 size (4)",
+            )
         n_floats = len(samples) // 4
         if channels <= 0 or n_floats == 0 or n_floats % channels != 0:
             raise NativeRuntimeError(
