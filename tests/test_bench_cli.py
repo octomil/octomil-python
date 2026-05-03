@@ -30,11 +30,14 @@ from octomil.runtime.bench.cache import (
 
 @pytest.fixture
 def hardware() -> HardwareFingerprint:
-    """Use the real device fingerprint so the CLI's `_open_store`
-    (which calls `HardwareFingerprint.detect`) lands on the same
-    on-disk subdirectory the test seeds. The runtime_build_tag is
-    overridden to keep the test's writer identifiable in cache logs."""
-    return HardwareFingerprint.detect(runtime_build_tag="octomil-cli")
+    """Use the same `runtime_build_tag` the CLI uses by default —
+    `SDK_RUNTIME_BUILD_TAG`. Codex R1 blocker fix: a mismatched tag
+    splits the on-disk cache namespace because
+    `HardwareFingerprint.full_digest()` hashes the tag into the
+    directory name."""
+    from octomil.commands.bench import SDK_RUNTIME_BUILD_TAG
+
+    return HardwareFingerprint.detect(runtime_build_tag=SDK_RUNTIME_BUILD_TAG)
 
 
 @pytest.fixture
@@ -89,6 +92,33 @@ def seeded_store(cache_root: Path, hardware: HardwareFingerprint) -> CacheStore:
     store.put(make_result(make_key("kokoro-en-v0_19", "kokoro_en"), score=18.0))
     store.put(make_result(make_key("piper-en-v1_0", "piper_en"), score=22.0))
     return store
+
+
+# ---------------------------------------------------------------------------
+# Cross-tag regression (Codex R1 blocker fix)
+# ---------------------------------------------------------------------------
+
+
+def test_cli_lands_on_sdk_hardware_directory(seeded_store: CacheStore, cache_root: Path):
+    """The CLI's `_open_store` must use the SAME `runtime_build_tag`
+    the SDK writes with. If they diverge, `_open_store` lands under a
+    different hardware-fingerprint subdirectory and the CLI cannot see
+    SDK-written entries.
+
+    Codex R1 found this: previous CLI hardcoded `runtime_build_tag=
+    "octomil-cli"`, which made the CLI's hardware directory hash
+    different from the SDK's `octomil-python:<version>`. The CLI tests
+    seeded with the same CLI tag, hiding the production mismatch.
+
+    Regression: seed with a tag that mimics the SDK convention, then
+    confirm the CLI's `_open_store` (which uses default tag) lands
+    on the same path."""
+    from octomil.commands.bench import SDK_RUNTIME_BUILD_TAG, _open_store
+
+    cli_store = _open_store(cache_root)
+    assert cli_store.hardware.runtime_build_tag == SDK_RUNTIME_BUILD_TAG
+    # Same fingerprint → same on-disk path component.
+    assert cli_store.hardware.path_component() == seeded_store.hardware.path_component()
 
 
 # ---------------------------------------------------------------------------
@@ -213,21 +243,20 @@ def test_reset_aborts_without_yes(seeded_store: CacheStore, cache_root: Path):
 # ---------------------------------------------------------------------------
 
 
-def test_run_v05_stub_exits_two(cache_root: Path, hardware: HardwareFingerprint):
-    """The v0.5 `run` verb exits 2 with a clear message — wiring lands
-    in PR C2."""
+def test_run_v05_stub_exits_with_distinct_code(cache_root: Path, hardware: HardwareFingerprint):
+    """The v0.5 `run` verb exits 65 (sysexits EX_NOINPUT) with a clear
+    message — distinguishes 'feature not yet wired' from Click's
+    default usage-error exit code 2. Codex R1 + Claude R1 nit."""
     CacheStore(cache_root=cache_root, hardware=hardware)
     runner = CliRunner()
-    res = runner.invoke(bench_cmd, ["run", "kokoro-en-v0_19", "--cache-root", str(cache_root)])
-    assert res.exit_code == 2
+    res = runner.invoke(bench_cmd, ["run", "kokoro-en-v0_19"])
+    assert res.exit_code == 65, res.output
     assert "candidate-enumeration wiring" in res.output
 
 
-def test_run_rejects_unsupported_capability(cache_root: Path):
+def test_run_rejects_unsupported_capability():
     runner = CliRunner()
-    res = runner.invoke(
-        bench_cmd, ["run", "embedding-v1", "--capability", "embeddings", "--cache-root", str(cache_root)]
-    )
+    res = runner.invoke(bench_cmd, ["run", "embedding-v1", "--capability", "embeddings"])
     assert res.exit_code != 0
     assert "v0.5 supports capability=tts only" in res.output
 
@@ -242,8 +271,10 @@ def test_status_emits_json(seeded_store: CacheStore, cache_root: Path):
     res = runner.invoke(bench_cmd, ["status", "--cache-root", str(cache_root)])
     assert res.exit_code == 0, res.output
     payload = json.loads(res.output)
+    assert payload["schema_version"] == 1
     assert payload["entry_count_total"] == 2
     assert payload["entry_count_committed"] == 2
     assert payload["entry_count_incomplete"] == 0
     assert "OCTOMIL_RUNTIME_BENCH" in payload["env"]
     assert payload["cache_root"]
+    assert payload["runtime_build_tag"].startswith("octomil-python:")

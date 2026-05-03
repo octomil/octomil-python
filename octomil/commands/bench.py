@@ -35,12 +35,20 @@ from typing import Any, Optional
 
 import click
 
+from octomil import __version__ as _OCTOMIL_VERSION
 from octomil.runtime.bench.cache import (
     CACHE_DIR_NAME,
     CacheStore,
     HardwareFingerprint,
     default_cache_root,
 )
+
+#: Runtime build tag MUST match the value the SDK writes with so the
+#: CLI lands on the same on-disk hardware directory. Codex R1 blocker
+#: fix — using a CLI-specific tag like "octomil-cli" silently splits
+#: the cache namespace because ``HardwareFingerprint.full_digest()``
+#: hashes ``runtime_build_tag`` along with the device descriptor.
+SDK_RUNTIME_BUILD_TAG: str = f"octomil-python:{_OCTOMIL_VERSION}"
 
 # ---------------------------------------------------------------------------
 # Group root
@@ -64,8 +72,16 @@ def bench_cmd() -> None:
 # ---------------------------------------------------------------------------
 
 
-def _open_store(cache_root: Optional[Path] = None, runtime_build_tag: str = "octomil-cli") -> CacheStore:
-    """Construct a :class:`CacheStore` against the resolved cache root."""
+def _open_store(
+    cache_root: Optional[Path] = None,
+    runtime_build_tag: str = SDK_RUNTIME_BUILD_TAG,
+) -> CacheStore:
+    """Construct a :class:`CacheStore` against the resolved cache root.
+
+    Default ``runtime_build_tag`` is ``octomil-python:<sdk-version>``
+    — matches what the SDK writes with, so the CLI lands on the same
+    on-disk hardware directory. Tests may pass a custom tag for
+    isolation."""
     root = cache_root if cache_root is not None else default_cache_root()
     hardware = HardwareFingerprint.detect(runtime_build_tag=runtime_build_tag)
     return CacheStore(cache_root=root, hardware=hardware)
@@ -197,7 +213,15 @@ def list_cmd(cache_root: Optional[Path], capability: Optional[str], include_inco
     default=None,
     help="Filter to one capability (default: all).",
 )
-def show_cmd(model: str, cache_root: Optional[Path], capability: Optional[str]) -> None:
+@click.option(
+    "--max",
+    "max_blocks",
+    type=int,
+    default=50,
+    show_default=True,
+    help="Maximum leaf JSONs to print (0 = unlimited). Claude R1 nit.",
+)
+def show_cmd(model: str, cache_root: Optional[Path], capability: Optional[str], max_blocks: int) -> None:
     """Pretty-print every cache leaf for a model.
 
     Emits one JSON object per leaf, separated by ``---`` on its own
@@ -207,7 +231,11 @@ def show_cmd(model: str, cache_root: Optional[Path], capability: Optional[str]) 
     model_dir = _model_dir_for(store, model)
     leaves = _list_leaf_files(model_dir)
     printed = 0
+    truncated = False
     for path in leaves:
+        if max_blocks > 0 and printed >= max_blocks:
+            truncated = True
+            break
         payload = _read_json_or_none(path)
         if payload is None:
             click.echo(f"<unreadable: {path.name}>", err=True)
@@ -223,6 +251,11 @@ def show_cmd(model: str, cache_root: Optional[Path], capability: Optional[str]) 
     if printed == 0:
         click.echo(f"No cache entries for model={model!r}.", err=True)
         sys.exit(1)
+    if truncated:
+        click.echo(
+            f"... output truncated at --max={max_blocks}; pass --max=0 for all.",
+            err=True,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -264,9 +297,19 @@ def reset_cmd(model: Optional[str], all_models: bool, cache_root: Optional[Path]
     store = _open_store(cache_root)
     if all_models:
         # CacheStore.clear_all returns None; count via list_models
-        # before+after for a useful CLI summary.
+        # before+after for a useful CLI summary. Compute AFTER the
+        # clear runs so a partial failure (disk full, perms) doesn't
+        # silently report the original count. Claude R1 nit.
         before = sum(len(store.list_cache_keys(model_id=m)) for m in store.list_models())
-        store.clear_all()
+        try:
+            store.clear_all()
+        except Exception as exc:  # noqa: BLE001 — operator action; surface specifics
+            after = sum(len(store.list_cache_keys(model_id=m)) for m in store.list_models())
+            click.echo(
+                f"Cleared {before - after} of {before} entries before failure: {exc!r}",
+                err=True,
+            )
+            sys.exit(1)
         click.echo(f"Cleared {before} cache entries across all models.")
     else:
         assert model is not None
@@ -288,54 +331,37 @@ def reset_cmd(model: Optional[str], all_models: bool, cache_root: Optional[Path]
     show_default=True,
     help="Capability to bench (v0.5 supports tts only).",
 )
-@click.option(
-    "--cache-root",
-    type=click.Path(file_okay=False, path_type=Path),
-    default=None,
-)
-@click.option(
-    "--budget-s",
-    type=float,
-    default=60.0,
-    show_default=True,
-    help="Hard budget for this cycle. Cycle aborts incomplete past this.",
-)
-@click.option(
-    "--allow-placeholder",
-    is_flag=True,
-    default=False,
-    help="Bypass the calibrated-thresholds gate. Tests/CI only.",
-)
-def run_cmd(
-    model: str,
-    capability: str,
-    cache_root: Optional[Path],
-    budget_s: float,
-    allow_placeholder: bool,
-) -> None:
+def run_cmd(model: str, capability: str) -> None:
     """Force a foreground bench cycle for one model.
 
-    v0.5 stub: exits with a clear error explaining what's missing
-    until the SDK-level wiring PR (PR C2) plugs the engine factories
-    into :meth:`BenchScheduler.run_foreground`. The CLI surface is
-    shipped now so PR D's contract is reviewable independently; the
-    wiring step is what unblocks real execution."""
+    \b
+    v0.5 stub. Exit codes:
+      * 2  — usage error (e.g. --capability != tts).
+      * 65 — feature not yet wired (data unavailable, EX_NOINPUT).
+      * 0  — once the candidate-enumeration step lands.
+
+    The CLI surface is shipped now so the contract is reviewable
+    independently; the wiring step (a separate follow-on PR) plugs
+    the engine factories into :meth:`BenchScheduler.run_foreground`.
+    Flags that depend on the wiring (``--budget-s``,
+    ``--allow-placeholder``) deliberately do NOT appear in this
+    surface — they'll land alongside the implementation that
+    actually honors them. Claude R1 nit (don't promise what we
+    can't deliver)."""
     if capability != "tts":
         raise click.UsageError(f"v0.5 supports capability=tts only; got {capability!r}.")
 
-    # Forward references to the unused options keep them in `--help`
-    # output and prevent dead-arg lint warnings without silently
-    # changing behavior when wiring lands.
-    _ = (cache_root, budget_s, allow_placeholder)
-
     click.echo(
         f"octomil bench run {model} --capability {capability}: the candidate-enumeration "
-        "wiring (PR C2 / SDK integration) is not yet shipped. The harness + scheduler "
-        "are ready (this PR D wires the CLI); the next PR plugs the engine factories "
+        "wiring (SDK integration step) is not yet shipped. The harness + scheduler "
+        "are ready (PR D wires the CLI); the next PR plugs the engine factories "
         "into BenchScheduler.run_foreground.",
         err=True,
     )
-    sys.exit(2)
+    # 65 = sysexits.h EX_NOINPUT — distinguishes "missing wiring" from
+    # "usage error" (Click default 2). Scripted callers can branch on
+    # the exit code. Claude R1 nit.
+    sys.exit(65)
 
 
 # ---------------------------------------------------------------------------
@@ -361,9 +387,13 @@ def status_cmd(cache_root: Optional[Path]) -> None:
     store = _open_store(cache_root)
     counts = _entry_counts(store)
     payload = {
+        # Bumped lockstep with the JSON shape. Scripted callers should
+        # reject newer schema_versions they don't recognize. Claude R1 nit.
+        "schema_version": 1,
         "cache_root": str(store.cache_root),
         "cache_dir_name": CACHE_DIR_NAME,
         "hardware": store.hardware.descriptor_dict(),
+        "runtime_build_tag": store.hardware.runtime_build_tag,
         "entry_count_total": counts["total"],
         "entry_count_committed": counts["committed"],
         "entry_count_incomplete": counts["incomplete"],
