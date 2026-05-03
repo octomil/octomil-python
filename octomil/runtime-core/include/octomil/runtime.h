@@ -124,17 +124,24 @@ typedef struct oct_event    oct_event_t;
  * Status enum                                                         *
  * ------------------------------------------------------------------- */
 
-typedef enum {
-    OCT_STATUS_OK                = 0,
-    OCT_STATUS_INVALID_INPUT     = 1,  /* malformed config, NULL out, etc. */
-    OCT_STATUS_UNSUPPORTED       = 2,  /* capability / locality / engine not built into this dylib OR not loadable on this device */
-    OCT_STATUS_NOT_FOUND         = 3,  /* model_uri / artifact missing on disk */
-    OCT_STATUS_BUSY              = 4,  /* input queue full (realtime backpressure) — bindings drop or retry */
-    OCT_STATUS_TIMEOUT           = 5,  /* poll_event timeout — out->type == OCT_EVENT_NONE */
-    OCT_STATUS_CANCELLED         = 6,  /* session was cancelled; subsequent polls also return CANCELLED */
-    OCT_STATUS_INTERNAL          = 7,  /* runtime invariant violated — diagnostic via oct_runtime_last_error */
-    OCT_STATUS_VERSION_MISMATCH  = 8,  /* config.version unknown to this runtime build */
-} oct_status_t;
+/*
+ * Status code. Codex R2 fix: typedef'd to `uint32_t` rather than a C
+ * enum because C enum size is implementation-defined (same class of
+ * ABI layout risk as bare `bool`). Fixed-width integer + named
+ * constants is the FFI-portable shape: bindings see a known-width
+ * field and codegen targets (Swift, Kotlin, Rust bindgen, Python
+ * ctypes) all agree on layout.
+ */
+typedef uint32_t oct_status_t;
+#define OCT_STATUS_OK                ((oct_status_t)0)
+#define OCT_STATUS_INVALID_INPUT     ((oct_status_t)1)  /* malformed config, NULL out, etc. */
+#define OCT_STATUS_UNSUPPORTED       ((oct_status_t)2)  /* capability / locality / engine not built into this dylib OR not loadable on this device */
+#define OCT_STATUS_NOT_FOUND         ((oct_status_t)3)  /* model_uri / artifact missing on disk */
+#define OCT_STATUS_BUSY              ((oct_status_t)4)  /* input queue full (realtime backpressure) — bindings drop or retry */
+#define OCT_STATUS_TIMEOUT           ((oct_status_t)5)  /* poll_event timeout — out->type == OCT_EVENT_NONE */
+#define OCT_STATUS_CANCELLED         ((oct_status_t)6)  /* session was cancelled; subsequent polls also return CANCELLED */
+#define OCT_STATUS_INTERNAL          ((oct_status_t)7)  /* runtime invariant violated — diagnostic via oct_runtime_last_error */
+#define OCT_STATUS_VERSION_MISMATCH  ((oct_status_t)8)  /* config.version unknown to this runtime build */
 
 /* ------------------------------------------------------------------- *
  * Capability discovery                                                *
@@ -370,13 +377,16 @@ OCT_API int oct_last_thread_error(
  *    Layer 2b BEFORE oct_session_open is called.                     *
  * ------------------------------------------------------------------- */
 
-/* Priority — mirrors octomil-python's TtsRequestPriority. Enum
- * (not macros) for codegen-friendly switch exhaustiveness. */
-typedef enum {
-    OCT_PRIORITY_SPECULATIVE  = 0,
-    OCT_PRIORITY_PREFETCH     = 1,
-    OCT_PRIORITY_FOREGROUND   = 2,
-} oct_priority_t;
+/* Priority — mirrors octomil-python's TtsRequestPriority. Codex R2
+ * fix: typedef'd to `uint32_t` rather than a C enum because C enum
+ * size is implementation-defined. Fixed-width integer + named
+ * constants is the FFI-portable shape. Bindings that want switch
+ * exhaustiveness can build their own enum on top (Swift `enum`,
+ * Rust enum) — they just don't cross the ABI as enums. */
+typedef uint32_t oct_priority_t;
+#define OCT_PRIORITY_SPECULATIVE  ((oct_priority_t)0)
+#define OCT_PRIORITY_PREFETCH     ((oct_priority_t)1)
+#define OCT_PRIORITY_FOREGROUND   ((oct_priority_t)2)
 
 typedef struct {
     uint32_t version;                /* OCT_SESSION_CONFIG_VERSION */
@@ -477,11 +487,36 @@ OCT_API void oct_session_close(oct_session_t* session);
  * `utf8` argument.                                                    *
  * ------------------------------------------------------------------- */
 
+/*
+ * Caller-owned view over an audio buffer. Codex R2 fix: tightened
+ * field semantics to remove ambiguity that would let runtime and
+ * binding disagree about buffer size and read past the end.
+ *
+ * LAYOUT:
+ *   - samples: pointer to a contiguous float32 buffer; range
+ *     [-1.0, 1.0] (clamped at the runtime; out-of-range values are
+ *     not undefined behavior, but quality degrades).
+ *   - n_frames: number of FRAMES (NOT total float elements). One
+ *     frame == one sample per channel. Total float element count
+ *     is `n_frames * channels`. Earlier draft used `n_samples`
+ *     which was ambiguous (frames vs total elements); renamed.
+ *   - sample_rate: Hz. 0 is INVALID; runtime returns
+ *     OCT_STATUS_INVALID_INPUT.
+ *   - channels: number of channels. 1 = mono (canonical for
+ *     speech), 2 = stereo. Multichannel buffers MUST be
+ *     INTERLEAVED (LRLRLR…), never planar. The runtime does NOT
+ *     accept planar input; bindings must interleave first.
+ *
+ * Endian: float32 native to the host architecture. Cross-platform
+ * audio bindings (iOS AVAudioEngine, Android AudioRecord, ALSA
+ * snd_pcm_format_t) use native float on every supported target.
+ */
 typedef struct {
-    const float* samples;            /* borrowed; lifetime = call duration */
-    uint32_t     n_samples;
-    uint32_t     sample_rate;
-    uint32_t     channels;           /* 1 = mono (canonical) */
+    const float* samples;            /* borrowed; lifetime = call duration only */
+    uint32_t     n_frames;           /* frames per channel; total float count = n_frames * channels */
+    uint32_t     sample_rate;        /* Hz; 0 => OCT_STATUS_INVALID_INPUT */
+    uint16_t     channels;           /* 1 = mono (canonical), 2 = stereo interleaved */
+    uint16_t     _reserved0;         /* padding; always 0 */
 } oct_audio_view_t;
 
 OCT_API oct_status_t oct_session_send_audio(
@@ -515,18 +550,23 @@ OCT_API oct_status_t oct_session_send_text(
  * case.                                                               *
  * ------------------------------------------------------------------- */
 
-typedef enum {
-    OCT_EVENT_NONE                  = 0,  /* timeout placeholder; out->type set to this when poll_event returns OCT_STATUS_TIMEOUT */
-    OCT_EVENT_SESSION_STARTED       = 1,
-    OCT_EVENT_AUDIO_CHUNK           = 2,
-    OCT_EVENT_TRANSCRIPT_CHUNK      = 3,
-    OCT_EVENT_USER_SPEECH_DETECTED  = 4,
-    OCT_EVENT_TURN_ENDED            = 5,
-    OCT_EVENT_CAPABILITY_VERIFIED   = 6,
-    OCT_EVENT_ERROR                 = 7,
-    OCT_EVENT_SESSION_COMPLETED     = 8,
-    OCT_EVENT_INPUT_DROPPED         = 9,  /* realtime backpressure; see strategy/realtime-architecture.md */
-} oct_event_type_t;
+/*
+ * Event type discriminator. Codex R2 fix: typedef'd to `uint32_t`
+ * rather than a C enum for the same FFI-portability reason as
+ * oct_status_t and oct_priority_t. New types append; closed-list
+ * forward-compat per `schema_version` bump.
+ */
+typedef uint32_t oct_event_type_t;
+#define OCT_EVENT_NONE                  ((oct_event_type_t)0)  /* timeout placeholder; out->type set to this when poll_event returns OCT_STATUS_TIMEOUT */
+#define OCT_EVENT_SESSION_STARTED       ((oct_event_type_t)1)
+#define OCT_EVENT_AUDIO_CHUNK           ((oct_event_type_t)2)
+#define OCT_EVENT_TRANSCRIPT_CHUNK      ((oct_event_type_t)3)
+#define OCT_EVENT_USER_SPEECH_DETECTED  ((oct_event_type_t)4)
+#define OCT_EVENT_TURN_ENDED            ((oct_event_type_t)5)
+#define OCT_EVENT_CAPABILITY_VERIFIED   ((oct_event_type_t)6)
+#define OCT_EVENT_ERROR                 ((oct_event_type_t)7)
+#define OCT_EVENT_SESSION_COMPLETED     ((oct_event_type_t)8)
+#define OCT_EVENT_INPUT_DROPPED         ((oct_event_type_t)9)  /* realtime backpressure; see strategy/realtime-architecture.md */
 
 /*
  * Sample format codes for audio_chunk payload (Codex R1 — pcm +
@@ -642,7 +682,7 @@ OCT_API oct_status_t oct_session_cancel(oct_session_t* session);
  *     because the audio I/O thread cannot block; retry is the
  *     Python default).
  *   - Returns OCT_STATUS_INVALID_INPUT if session or audio is NULL,
- *     or if audio->channels == 0, n_samples == 0, sample_rate == 0,
+ *     or if audio->channels == 0, n_frames == 0, sample_rate == 0,
  *     or samples == NULL.
  *   - Returns OCT_STATUS_CANCELLED if the session has been cancelled.
  *
