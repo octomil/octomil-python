@@ -189,7 +189,14 @@ typedef struct {
     uint8_t       _reserved0;
 } oct_capabilities_t;
 
-typedef void (*oct_telemetry_sink_fn)(const char* event_json, void* user_data);
+/* Forward decl so oct_telemetry_sink_fn can take const oct_event_t*.
+ * This cdef binding never invokes the callback (telemetry is set
+ * to NULL until slice 2-proper); the parameter type only matters
+ * for sizeof of the runtime_config struct (which is pointer-sized
+ * either way) and for future-proofing when slice 2-proper adds
+ * a Python-side telemetry sink. Codex R2 fix. */
+typedef struct oct_event oct_event_t;
+typedef void (*oct_telemetry_sink_fn)(const oct_event_t* event, void* user_data);
 
 /* Mirrors oct_runtime_config_t in runtime.h verbatim — Codex R1 fix.
  * The previous cdef invented `cache_root` + `runtime_build_tag` fields

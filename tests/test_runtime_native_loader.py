@@ -86,10 +86,10 @@ def test_abi_version_returns_three_tuple():
     assert isinstance(major, int)
     assert isinstance(minor, int)
     assert isinstance(patch, int)
-    # The slice-1 header pinned MAJOR=0, MINOR=1, and the stub
-    # returns patch=0. If the header bumps, this test should be
-    # updated lockstep — caught here.
-    assert (major, minor) == (0, 1)
+    # Slice 3 PR1 R2: header bumped to MINOR=2 (additive — added
+    # oct_runtime_config_size/oct_capabilities_size introspection
+    # functions; existing readers stay compatible). Lockstep update.
+    assert (major, minor) == (0, 2)
     assert patch == 0
 
 

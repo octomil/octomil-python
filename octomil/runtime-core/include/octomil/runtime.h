@@ -69,7 +69,7 @@ extern "C" {
 /* Bumped on breaking changes. Bindings inspect this at runtime via
  * `oct_runtime_abi_version()` to fail-fast on incompatible dylibs. */
 #define OCT_RUNTIME_ABI_VERSION_MAJOR 0
-#define OCT_RUNTIME_ABI_VERSION_MINOR 1
+#define OCT_RUNTIME_ABI_VERSION_MINOR 2  /* +oct_runtime_config_size, +oct_capabilities_size (additive; reads stay 0.1-compat) */
 #define OCT_RUNTIME_ABI_VERSION_PATCH 0
 
 /* Versions of versioned config structs. Bumped lockstep with the
