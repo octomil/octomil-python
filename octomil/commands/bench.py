@@ -44,10 +44,11 @@ from octomil.runtime.bench.cache import (
 )
 
 #: Runtime build tag MUST match the value the SDK writes with so the
-#: CLI lands on the same on-disk hardware directory. Codex R1 blocker
-#: fix — using a CLI-specific tag like "octomil-cli" silently splits
-#: the cache namespace because ``HardwareFingerprint.full_digest()``
-#: hashes ``runtime_build_tag`` along with the device descriptor.
+#: CLI lands on the same on-disk hardware directory.
+#: ``HardwareFingerprint.full_digest()`` hashes ``runtime_build_tag``
+#: into the path component, so a CLI-specific tag would silently
+#: split the cache namespace and the CLI would not see SDK-written
+#: entries.
 SDK_RUNTIME_BUILD_TAG: str = f"octomil-python:{_OCTOMIL_VERSION}"
 
 # ---------------------------------------------------------------------------
@@ -219,7 +220,7 @@ def list_cmd(cache_root: Optional[Path], capability: Optional[str], include_inco
     type=int,
     default=50,
     show_default=True,
-    help="Maximum leaf JSONs to print (0 = unlimited). Claude R1 nit.",
+    help="Maximum leaf JSONs to print (0 = unlimited).",
 )
 def show_cmd(model: str, cache_root: Optional[Path], capability: Optional[str], max_blocks: int) -> None:
     """Pretty-print every cache leaf for a model.
@@ -299,7 +300,7 @@ def reset_cmd(model: Optional[str], all_models: bool, cache_root: Optional[Path]
         # CacheStore.clear_all returns None; count via list_models
         # before+after for a useful CLI summary. Compute AFTER the
         # clear runs so a partial failure (disk full, perms) doesn't
-        # silently report the original count. Claude R1 nit.
+        # silently report the original count.
         before = sum(len(store.list_cache_keys(model_id=m)) for m in store.list_models())
         try:
             store.clear_all()
@@ -346,8 +347,7 @@ def run_cmd(model: str, capability: str) -> None:
     Flags that depend on the wiring (``--budget-s``,
     ``--allow-placeholder``) deliberately do NOT appear in this
     surface — they'll land alongside the implementation that
-    actually honors them. Claude R1 nit (don't promise what we
-    can't deliver)."""
+    actually honors them."""
     if capability != "tts":
         raise click.UsageError(f"v0.5 supports capability=tts only; got {capability!r}.")
 
@@ -360,7 +360,7 @@ def run_cmd(model: str, capability: str) -> None:
     )
     # 65 = sysexits.h EX_NOINPUT — distinguishes "missing wiring" from
     # "usage error" (Click default 2). Scripted callers can branch on
-    # the exit code. Claude R1 nit.
+    # the exit code.
     sys.exit(65)
 
 
@@ -388,7 +388,7 @@ def status_cmd(cache_root: Optional[Path]) -> None:
     counts = _entry_counts(store)
     payload = {
         # Bumped lockstep with the JSON shape. Scripted callers should
-        # reject newer schema_versions they don't recognize. Claude R1 nit.
+        # reject newer schema_versions they don't recognize.
         "schema_version": 1,
         "cache_root": str(store.cache_root),
         "cache_dir_name": CACHE_DIR_NAME,
