@@ -9,6 +9,7 @@ permissions: {}
 
 jobs:
   fuzz:
+    timeout-minutes: 25
     name: Fuzz Testing
     runs-on: ubuntu-latest
     permissions:

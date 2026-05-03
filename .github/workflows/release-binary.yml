@@ -14,6 +14,7 @@ permissions: {}
 
 jobs:
   build:
+    timeout-minutes: 20
     name: Build (${{ matrix.target }})
     runs-on: ${{ matrix.runner }}
     permissions:
@@ -82,6 +83,7 @@ jobs:
           retention-days: 5
 
   release:
+    timeout-minutes: 15
     name: Upload to GitHub Release
     runs-on: ubuntu-latest
     needs: build
@@ -128,6 +130,7 @@ jobs:
           echo "WARNING: Could not upload to release ${VERSION}. It may not exist yet."
 
   update-homebrew:
+    timeout-minutes: 15
     name: Update Homebrew Formula
     needs: release
     runs-on: ubuntu-latest

@@ -12,6 +12,7 @@ permissions: {}
 
 jobs:
   sbom:
+    timeout-minutes: 15
     name: Generate SBOM
     runs-on: ubuntu-latest
     permissions:
