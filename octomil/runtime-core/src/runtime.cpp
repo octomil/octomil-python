@@ -189,12 +189,22 @@ OCT_API oct_status_t oct_runtime_capabilities(
         );
         return OCT_STATUS_INVALID_INPUT;
     }
-    /* Stage to a local fully-populated struct, then copy out->size
+    /* Snapshot the caller's size BEFORE we overwrite it. Codex R3 fix:
+     * a smaller binding passes out->size = (its sizeof); we must
+     * preserve that so capabilities_free knows how many bytes to
+     * touch. Otherwise the staged struct's size = sizeof(*staged)
+     * would clobber the caller's smaller value, and a subsequent
+     * capabilities_free could memset past the caller's allocation. */
+    const size_t caller_size = out->size;
+
+    /* Stage to a local fully-populated struct, then copy caller_size
      * bytes — that way bindings compiled against v1 see all fields,
-     * and a hypothetical pre-v1 binding sees only its slice. */
+     * and a hypothetical pre-v1 binding sees only its slice. The
+     * staged size matches the CALLER's view, not ours, so the free
+     * path knows where to stop. */
     oct_capabilities_t staged{};
     staged.version = OCT_CAPABILITIES_VERSION;
-    staged.size = sizeof(oct_capabilities_t);
+    staged.size = caller_size;
     /* Empty-list convention: non-NULL pointer to a single-element NULL-
      * terminated array. Bindings iterate without an outer NULL check. */
     staged.supported_engines = k_empty_string_array;
@@ -207,12 +217,8 @@ OCT_API oct_status_t oct_runtime_capabilities(
     staged.has_metal = 0;
     staged._reserved0 = 0;
 
-    const size_t copy_n = out->size < sizeof(staged) ? out->size : sizeof(staged);
+    const size_t copy_n = caller_size < sizeof(staged) ? caller_size : sizeof(staged);
     std::memcpy(out, &staged, copy_n);
-    /* The size field was set by the caller and is preserved by the
-     * memcpy of the staged struct (which has size=sizeof). The version
-     * field is also overwritten; bindings that passed a pre-init out
-     * see version=OCT_CAPABILITIES_VERSION on return. */
     return OCT_STATUS_OK;
 }
 

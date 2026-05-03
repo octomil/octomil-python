@@ -111,6 +111,29 @@ void test_runtime_open_v1_succeeds_then_close() {
     EXPECT(st == OCT_STATUS_INVALID_INPUT,
            "capabilities should reject out->size = 0");
 
+    /* Small-buffer capabilities canary (Codex R3): a binding that
+     * passes a smaller out->size must see size preserved AND
+     * capabilities_free must not write past size. */
+    {
+        const size_t small_size = offsetof(oct_capabilities_t, supported_engines);
+        unsigned char canary[sizeof(oct_capabilities_t) + 16] = {};
+        for (size_t i = 0; i < sizeof(canary); ++i) canary[i] = 0xBB;
+        oct_capabilities_t* small_view = reinterpret_cast<oct_capabilities_t*>(canary);
+        small_view->size = small_size;
+        st = oct_runtime_capabilities(rt, small_view);
+        EXPECT(st == OCT_STATUS_OK, "small-buffer capabilities should succeed");
+        EXPECT(small_view->size == small_size,
+               "small-buffer size must round-trip (Codex R3: was clobbered)");
+        EXPECT(small_view->version == OCT_CAPABILITIES_VERSION, "small-buffer version set");
+        for (size_t i = small_size; i < sizeof(canary); ++i) {
+            EXPECT(canary[i] == 0xBB, "capabilities must not write past out->size");
+        }
+        oct_runtime_capabilities_free(small_view);
+        for (size_t i = small_size; i < sizeof(canary); ++i) {
+            EXPECT(canary[i] == 0xBB, "capabilities_free must not write past caps->size");
+        }
+    }
+
     /* Session_open rejects NULL out per the header invariant. */
     oct_session_config_t bad_cfg = {};
     bad_cfg.version = 1;
