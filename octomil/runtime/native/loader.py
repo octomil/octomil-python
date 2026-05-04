@@ -95,12 +95,25 @@ OCT_EVENT_CAPABILITY_VERIFIED: int = 6
 OCT_EVENT_ERROR: int = 7
 OCT_EVENT_SESSION_COMPLETED: int = 8
 OCT_EVENT_INPUT_DROPPED: int = 9
+# v0.4 step 2 — runtime-scope events delivered via the
+# oct_telemetry_sink_fn callback.
+OCT_EVENT_MODEL_LOADED: int = 10
+OCT_EVENT_MODEL_EVICTED: int = 11
+OCT_EVENT_CACHE_HIT: int = 12
+OCT_EVENT_CACHE_MISS: int = 13
+OCT_EVENT_QUEUED: int = 14
+OCT_EVENT_PREEMPTED: int = 15
+OCT_EVENT_MEMORY_PRESSURE: int = 16
+OCT_EVENT_THERMAL_STATE: int = 17
+OCT_EVENT_WATCHDOG_TIMEOUT: int = 18
+OCT_EVENT_METRIC: int = 19
 
 OCT_SAMPLE_FORMAT_PCM_S16LE: int = 1
 OCT_SAMPLE_FORMAT_PCM_F32LE: int = 2
 
-OCT_SESSION_CONFIG_VERSION: int = 1
-OCT_EVENT_VERSION: int = 1
+# v0.4 step 2 — bumped lockstep with runtime.h.
+OCT_SESSION_CONFIG_VERSION: int = 2
+OCT_EVENT_VERSION: int = 2
 
 # v0.4 step 1 — model lifecycle.
 OCT_MODEL_CONFIG_VERSION: int = 1
@@ -228,6 +241,7 @@ _CDEF: str = """
 typedef uint32_t oct_status_t;
 typedef uint32_t oct_priority_t;
 typedef uint32_t oct_event_type_t;
+typedef uint32_t oct_error_code_t;  /* v0.4 step 2 — used inside oct_event_t.data.error.error_code */
 
 typedef struct oct_runtime oct_runtime_t;
 typedef struct oct_session oct_session_t;
@@ -273,6 +287,10 @@ typedef struct oct_event {
         struct {
             const char* code;
             const char* message;
+            /* v0.4 step 2 — APPENDED inside the existing inner struct
+             * after slice-2A's two strings. */
+            oct_error_code_t error_code;
+            uint32_t         _reserved0;
         } error;
         struct {
             const char* engine;
@@ -301,7 +319,76 @@ typedef struct oct_event {
             const char*  reason;
             uint64_t     dropped_at_ns;
         } input_dropped;
+
+        /* v0.4 step 2 — runtime-scope event payloads (appended). */
+        struct {
+            const char* engine;
+            const char* model_id;
+            const char* artifact_digest;
+            uint64_t    load_ms;
+            uint64_t    warm_ms;
+            const char* policy_preset;
+            void*       config_user_data;
+            const char* source;
+        } model_loaded;
+        struct {
+            const char* engine;
+            const char* model_id;
+            const char* artifact_digest;
+            uint64_t    freed_bytes;
+            const char* reason;
+            void*       config_user_data;
+        } model_evicted;
+        struct {
+            const char* layer;
+            uint32_t    saved_tokens;
+            uint32_t    _reserved0;
+        } cache;
+        struct {
+            uint32_t    queue_position;
+            uint32_t    queue_depth;
+        } queued;
+        struct {
+            uint32_t    preempted_by_priority;
+            uint32_t    _reserved0;
+            const char* reason;
+        } preempted;
+        struct {
+            uint64_t    ram_available_bytes;
+            uint8_t     severity;
+            uint8_t     _reserved0;
+            uint16_t    _reserved1;
+            uint32_t    _reserved2;
+        } memory_pressure;
+        struct {
+            uint8_t     state;
+            uint8_t     _reserved0;
+            uint16_t    _reserved1;
+            uint32_t    _reserved2;
+        } thermal_state;
+        struct {
+            uint32_t    timeout_ms;
+            uint32_t    _reserved0;
+            const char* phase;
+        } watchdog_timeout;
+        struct {
+            const char* name;
+            double      value;
+        } metric;
     } data;
+
+    /* ──────── v0.4 step 2 — operational envelope APPENDED ──────── */
+    const char*        request_id;
+    const char*        route_id;
+    const char*        trace_id;
+    const char*        engine_version;
+    const char*        adapter_version;
+    const char*        accelerator;
+    const char*        artifact_digest;
+    uint8_t            cache_was_hit;
+    uint8_t            _reserved0;
+    uint16_t           _reserved1;
+    uint32_t           _reserved2;
 } oct_event_t;
 
 typedef void (*oct_telemetry_sink_fn)(const oct_event_t* event, void* user_data);
@@ -325,6 +412,11 @@ typedef struct {
     uint32_t       sample_rate_out;
     oct_priority_t priority;
     void*          user_data;
+    /* v0.4 step 2 — appended. NULL ok; runtime echoes "" on events. */
+    const char*    request_id;
+    const char*    route_id;
+    const char*    trace_id;
+    const char*    kv_prefix_key;
 } oct_session_config_t;
 
 typedef struct {
@@ -399,7 +491,8 @@ size_t oct_event_size(void);
  * Engine adapters (Slice 2C and following) replace these. */
 typedef struct oct_model oct_model_t;
 typedef uint32_t oct_accelerator_pref_t;
-typedef uint32_t oct_error_code_t;
+/* oct_error_code_t typedef moved to top of cdef in v0.4 step 2 (must
+ * appear before oct_event_t inner struct uses it). */
 
 typedef struct {
     uint32_t              version;
@@ -430,7 +523,7 @@ size_t       oct_model_config_size(void);
 # rather than a typed compatibility error. Codex R1 fix: fail fast
 # at load time with NativeRuntimeError(VERSION_MISMATCH).
 _REQUIRED_ABI_MAJOR: int = 0
-_REQUIRED_ABI_MINOR: int = 4
+_REQUIRED_ABI_MINOR: int = 5
 
 
 def _build_lib() -> tuple[Any, Any]:
@@ -728,6 +821,15 @@ class NativeRuntime:
         sample_rate_in: int = 0,
         sample_rate_out: int = 0,
         priority: int = OCT_PRIORITY_FOREGROUND,
+        # v0.4 step 2 — appended correlation IDs. Caller-owned strings
+        # copied by the runtime at open. None ⇒ runtime echoes "" on
+        # events. Length limits per runtime.h: kv_prefix_key ≤256 B;
+        # request/route/trace_id ≤128 B each; ASCII printable, no
+        # whitespace. Out-of-bounds returns OCT_STATUS_INVALID_INPUT.
+        request_id: str | None = None,
+        route_id: str | None = None,
+        trace_id: str | None = None,
+        kv_prefix_key: str | None = None,
     ) -> "NativeSession":
         """Open a session against this runtime.
 
@@ -776,6 +878,28 @@ class NativeRuntime:
         cfg.sample_rate_out = sample_rate_out
         cfg.priority = priority
         cfg.user_data = ffi.NULL
+        # v0.4 step 2 — appended correlation IDs. Length limits enforced
+        # client-side before crossing the FFI (runtime also enforces
+        # per the strict-validate rule).
+        for label, value in (
+            ("request_id", request_id),
+            ("route_id", route_id),
+            ("trace_id", trace_id),
+        ):
+            if value is not None and len(value.encode("utf-8")) > 128:
+                raise NativeRuntimeError(
+                    OCT_STATUS_INVALID_INPUT,
+                    f"{label} exceeds 128-byte limit ({len(value.encode('utf-8'))} bytes)",
+                )
+        if kv_prefix_key is not None and len(kv_prefix_key.encode("utf-8")) > 256:
+            raise NativeRuntimeError(
+                OCT_STATUS_INVALID_INPUT,
+                f"kv_prefix_key exceeds 256-byte limit ({len(kv_prefix_key.encode('utf-8'))} bytes)",
+            )
+        cfg.request_id = _cstr(request_id) if request_id else ffi.NULL
+        cfg.route_id = _cstr(route_id) if route_id else ffi.NULL
+        cfg.trace_id = _cstr(trace_id) if trace_id else ffi.NULL
+        cfg.kv_prefix_key = _cstr(kv_prefix_key) if kv_prefix_key else ffi.NULL
         out = ffi.new("oct_session_t**")
         status = int(lib.oct_session_open(self._handle, cfg, out))
         if status != OCT_STATUS_OK:
@@ -944,13 +1068,51 @@ class NativeEvent:
     exists so the slice-2-proper session adapter has a stable
     surface to write tests against immediately."""
 
-    __slots__ = ("type", "version", "monotonic_ns", "user_data_ptr")
+    __slots__ = (
+        "type",
+        "version",
+        "monotonic_ns",
+        "user_data_ptr",
+        # v0.4 step 2 — operational envelope (always-non-NULL strings;
+        # runtime echoes "" when the source slot was NULL).
+        "request_id",
+        "route_id",
+        "trace_id",
+        "engine_version",
+        "adapter_version",
+        "accelerator",
+        "artifact_digest",
+        "cache_was_hit",
+    )
 
-    def __init__(self, *, type: int, version: int, monotonic_ns: int, user_data_ptr: int) -> None:
+    def __init__(
+        self,
+        *,
+        type: int,
+        version: int,
+        monotonic_ns: int,
+        user_data_ptr: int,
+        request_id: str = "",
+        route_id: str = "",
+        trace_id: str = "",
+        engine_version: str = "",
+        adapter_version: str = "",
+        accelerator: str = "",
+        artifact_digest: str = "",
+        cache_was_hit: bool = False,
+    ) -> None:
         self.type = type
         self.version = version
         self.monotonic_ns = monotonic_ns
         self.user_data_ptr = user_data_ptr
+        self.request_id = request_id
+        self.route_id = route_id
+        self.trace_id = trace_id
+        self.engine_version = engine_version
+        self.adapter_version = adapter_version
+        self.accelerator = accelerator
+        self.artifact_digest = artifact_digest
+        self.cache_was_hit = cache_was_hit
 
     @property
     def is_none(self) -> bool:
@@ -1091,12 +1253,43 @@ class NativeSession:
         ev.size = ffi.sizeof("oct_event_t")
         ev.version = OCT_EVENT_VERSION
         status = int(self._lib.oct_session_poll_event(self._handle, ev, timeout_ms))
+
+        def _envelope(ev_buf: Any) -> dict[str, Any]:
+            """v0.4 step 2: harvest the operational envelope. Runtime
+            ALWAYS writes non-NULL pointers (empty strings on
+            uncorrelated slots), so the cffi.string calls are safe."""
+            return {
+                "request_id": ffi.string(ev_buf.request_id).decode("utf-8", errors="replace")
+                if ev_buf.request_id != ffi.NULL
+                else "",
+                "route_id": ffi.string(ev_buf.route_id).decode("utf-8", errors="replace")
+                if ev_buf.route_id != ffi.NULL
+                else "",
+                "trace_id": ffi.string(ev_buf.trace_id).decode("utf-8", errors="replace")
+                if ev_buf.trace_id != ffi.NULL
+                else "",
+                "engine_version": ffi.string(ev_buf.engine_version).decode("utf-8", errors="replace")
+                if ev_buf.engine_version != ffi.NULL
+                else "",
+                "adapter_version": ffi.string(ev_buf.adapter_version).decode("utf-8", errors="replace")
+                if ev_buf.adapter_version != ffi.NULL
+                else "",
+                "accelerator": ffi.string(ev_buf.accelerator).decode("utf-8", errors="replace")
+                if ev_buf.accelerator != ffi.NULL
+                else "",
+                "artifact_digest": ffi.string(ev_buf.artifact_digest).decode("utf-8", errors="replace")
+                if ev_buf.artifact_digest != ffi.NULL
+                else "",
+                "cache_was_hit": bool(ev_buf.cache_was_hit),
+            }
+
         if status == OCT_STATUS_TIMEOUT:
             return NativeEvent(
                 type=OCT_EVENT_NONE,
                 version=int(ev.version),
                 monotonic_ns=int(ev.monotonic_ns),
                 user_data_ptr=int(ffi.cast("uintptr_t", ev.user_data)),
+                **_envelope(ev),
             )
         if status != OCT_STATUS_OK:
             raise NativeRuntimeError(
@@ -1109,6 +1302,7 @@ class NativeSession:
             version=int(ev.version),
             monotonic_ns=int(ev.monotonic_ns),
             user_data_ptr=int(ffi.cast("uintptr_t", ev.user_data)),
+            **_envelope(ev),
         )
 
     def cancel(self) -> int:

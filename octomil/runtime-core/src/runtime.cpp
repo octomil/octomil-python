@@ -375,6 +375,23 @@ OCT_API oct_status_t oct_session_poll_event(
             out->version = OCT_EVENT_VERSION;
             out->size = buf_size;
             out->type = OCT_EVENT_NONE;
+            /* v0.4 step 2: if the buffer covers the operational
+             * envelope (v0.4-step-2 size), populate envelope strings
+             * with empty string sentinels. Per the contract, runtime
+             * NEVER writes NULL to envelope fields — bindings can
+             * strlen() safely. */
+            const size_t need_envelope =
+                offsetof(oct_event_t, request_id) + sizeof(const char*) * 7 + sizeof(uint8_t) * 4;
+            if (buf_size >= need_envelope) {
+                out->request_id = "";
+                out->route_id = "";
+                out->trace_id = "";
+                out->engine_version = "";
+                out->adapter_version = "";
+                out->accelerator = "";
+                out->artifact_digest = "";
+                out->cache_was_hit = 0;
+            }
         }
         /* If buf_size is too small for version/size/type or wildly
          * larger than sizeof(*out), the binding violated the contract;
