@@ -101,6 +101,88 @@ logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
+# Errors
+# ---------------------------------------------------------------------------
+
+
+class NoRuntimeAvailableError(RuntimeError):
+    """Raised when neither the planner nor the runtime registry can route the
+    inference request — and we want to tell the caller something they can act on.
+
+    The legacy message ("No ModelRuntime registered for model: <id>") was a
+    dead-end: it surfaced an internal registry concept and gave no guidance on
+    how to recover. In practice this fires for two distinct, both-actionable
+    reasons:
+
+    1. **No local engine installed.** The user installed bare ``octomil`` but no
+       ``[mlx]`` / ``[litert]`` / ``[onnxruntime]`` extra. The planner can't
+       prepare a local candidate because there's no engine to run on, and the
+       legacy resolver doesn't know how to route an ``@app/<slug>/<cap>`` alias
+       to cloud either.
+    2. **Cloud reachable but planner returned no candidates.** Auth missing or
+       expired, app slug doesn't exist, or planner-side bug. The fallthrough
+       can't recover because aliases can't be resolved without the planner.
+
+    The message names both branches and the concrete fix for each. The error
+    subclasses :class:`RuntimeError` so existing ``except RuntimeError`` catches
+    keep working.
+    """
+
+    def __init__(self, *, model_id: str, planner_enabled: bool) -> None:
+        self.model_id = model_id
+        self.planner_enabled = planner_enabled
+        self.is_alias = self._looks_like_alias(model_id)
+        super().__init__(self._format_message())
+
+    @staticmethod
+    def _looks_like_alias(model_id: str) -> bool:
+        # ``@app/<slug>/<capability>`` and ``@capability/<cap>`` are the
+        # planner-resolved forms. The legacy registry resolver can't handle
+        # either; the planner is the only path.
+        return model_id.startswith("@app/") or model_id.startswith("@capability/")
+
+    def _format_message(self) -> str:
+        lines = [
+            f"No runtime available for model {self.model_id!r}.",
+            "",
+        ]
+        if self.is_alias:
+            lines += [
+                f"  ``{self.model_id}`` is a planner-resolved alias. Aliases need either",
+                "  a local engine installed (the planner can prepare an on-device candidate)",
+                "  or a server-side cloud route (the planner emits a cloud candidate).",
+                "",
+            ]
+        if not self.planner_enabled:
+            lines += [
+                "  Planner is DISABLED on this client (planner_enabled=False or",
+                "  OCTOMIL_DISABLE_PLANNER=1). Aliases can't resolve without it.",
+                "",
+            ]
+        lines += [
+            "Likely fixes:",
+            "  • Install a local engine extra:",
+            "      pip install 'octomil[mlx]'         # macOS Apple Silicon (Gemma, Llama, etc.)",
+            "      pip install 'octomil[litert]'      # Linux/Android via TFLite",
+            "      pip install 'octomil[onnxruntime]' # cross-platform via ONNX Runtime",
+            "      pip install 'octomil[llamacpp]'    # cross-platform GGUF",
+            "  • Verify cloud auth: OCTOMIL_SERVER_KEY (oct_app_live_… or oct_org_live_…) is set",
+            "    and your org has at least one cloud provider connection configured at",
+            "    /dashboard/settings/providers.",
+            f"  • Verify the alias exists: open /dashboard/apps and confirm '{self._slug_or_id()}'",
+            "    has at least one capability slot.",
+        ]
+        return "\n".join(lines)
+
+    def _slug_or_id(self) -> str:
+        if self.model_id.startswith("@app/"):
+            # ``@app/<slug>/<capability>`` → return ``<slug>``.
+            parts = self.model_id.split("/", 2)
+            return parts[1] if len(parts) >= 2 else self.model_id
+        return self.model_id
+
+
+# ---------------------------------------------------------------------------
 # Attempt runner resolution result
 # ---------------------------------------------------------------------------
 
@@ -990,7 +1072,10 @@ class OctomilResponses:
         if runtime is not None:
             return runtime
 
-        raise RuntimeError(f"No ModelRuntime registered for model: {model_id}")
+        raise NoRuntimeAvailableError(
+            model_id=model_id,
+            planner_enabled=self._planner_enabled,
+        )
 
     def _resolve_runtime_for_candidate(self, model_id: str, candidate: dict[str, Any]) -> ModelRuntime:
         """Resolve the concrete runtime for a planner candidate.

@@ -142,6 +142,79 @@ async def test_create_throws_when_no_runtime():
 
 
 @pytest.mark.asyncio
+async def test_no_runtime_error_for_app_alias_is_actionable():
+    """``@app/<slug>/<capability>`` aliases need either a local engine or
+    a server-side cloud route. When neither resolves, we used to raise
+    ``RuntimeError("No ModelRuntime registered for model: ...")`` — a
+    dead-end for the caller. The new ``NoRuntimeAvailableError`` names
+    both branches and the concrete fix for each.
+
+    Regression for the ``@app/test-model/chat`` failure mode in a fresh
+    venv with no ``[mlx]``/``[litert]``/``[onnxruntime]`` extra.
+    """
+    from octomil.responses import NoRuntimeAvailableError
+
+    responses = OctomilResponses(runtime_resolver=lambda _: None)
+    with pytest.raises(NoRuntimeAvailableError) as exc_info:
+        await responses.create(ResponseRequest(model="@app/test-model/chat", input=[text_input("Hi")]))
+
+    err = exc_info.value
+    # Subclass of RuntimeError so ``except RuntimeError`` keeps working.
+    assert isinstance(err, RuntimeError)
+    assert err.is_alias is True
+    assert err.model_id == "@app/test-model/chat"
+    msg = str(err)
+    # Names every install path plus the cloud-auth path so the user
+    # doesn't have to guess which branch they're in.
+    assert "octomil[mlx]" in msg
+    assert "octomil[litert]" in msg
+    assert "octomil[onnxruntime]" in msg
+    assert "OCTOMIL_SERVER_KEY" in msg
+    # Echoes the slug so the user can find the app in the dashboard.
+    assert "test-model" in msg
+
+
+@pytest.mark.asyncio
+async def test_no_runtime_error_for_raw_model_id_does_not_claim_alias():
+    """Raw model id (not ``@app/...``) gets the same actionable message
+    minus the alias-specific copy. Prevents the message from misleading
+    callers who used a model id directly."""
+    from octomil.responses import NoRuntimeAvailableError
+
+    responses = OctomilResponses(runtime_resolver=lambda _: None)
+    with pytest.raises(NoRuntimeAvailableError) as exc_info:
+        await responses.create(ResponseRequest(model="some-nonexistent-model", input=[text_input("Hi")]))
+
+    err = exc_info.value
+    assert err.is_alias is False
+    assert err.model_id == "some-nonexistent-model"
+    # Install hints + cloud-auth hint still surface (both routes are
+    # valid recoveries regardless of alias-vs-raw).
+    msg = str(err)
+    assert "octomil[mlx]" in msg
+    assert "OCTOMIL_SERVER_KEY" in msg
+
+
+@pytest.mark.asyncio
+async def test_no_runtime_error_when_planner_disabled_says_so():
+    """``planner_enabled=False`` is a valid configuration but it makes
+    aliases unresolvable. The error must surface that explicitly so
+    the caller knows to flip the flag instead of chasing install
+    extras that won't help."""
+    from octomil.responses import NoRuntimeAvailableError
+
+    responses = OctomilResponses(
+        runtime_resolver=lambda _: None,
+        planner_enabled=False,
+    )
+    with pytest.raises(NoRuntimeAvailableError) as exc_info:
+        await responses.create(ResponseRequest(model="@app/test-model/chat", input=[text_input("Hi")]))
+
+    msg = str(exc_info.value)
+    assert "Planner is DISABLED" in msg or "planner is disabled" in msg.lower()
+
+
+@pytest.mark.asyncio
 async def test_tool_schema_serialized_with_json_dumps():
     """Verify that tool schemas are serialized with json.dumps, not str()."""
     captured_request: list[RuntimeRequest] = []
