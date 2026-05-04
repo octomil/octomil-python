@@ -547,7 +547,7 @@ class TestGenerationRequestExtended:
 @pytest.fixture
 def echo_app():
     """Create a FastAPI app with EchoBackend for testing."""
-    with patch("octomil.serve._detect_backend") as mock_detect:
+    with patch("octomil.serve.app._detect_backend") as mock_detect:
         echo = EchoBackend()
         echo.load_model("test-model")
         mock_detect.return_value = echo
@@ -564,7 +564,7 @@ def echo_app():
 @pytest.fixture
 def json_mode_app():
     """Create a FastAPI app with json_mode=True and EchoBackend."""
-    with patch("octomil.serve._detect_backend") as mock_detect:
+    with patch("octomil.serve.app._detect_backend") as mock_detect:
         echo = EchoBackend()
         echo.load_model("test-model")
         mock_detect.return_value = echo
@@ -625,8 +625,17 @@ async def test_response_format_json_schema_accepted(echo_app):
 
 
 @pytest.mark.asyncio
-async def test_grammar_param_accepted(echo_app):
-    """Raw grammar param should be accepted without error."""
+async def test_grammar_param_rejected_against_non_grammar_backend(echo_app):
+    """Cutover follow-up #71 (R3 Codex): explicit caller GBNF against
+    a non-grammar backend (EchoBackend declares grammar_supported=False
+    by default) MUST raise ``UNSUPPORTED_MODALITY`` -> 422 instead of
+    being silently stripped to a 200 OK with unconstrained output.
+
+    Pre-fix the test asserted 200 — that contract was wrong post-cutover
+    (LlamaCppBackend was the only backend that supported grammar; every
+    other backend silently dropped the constraint). Now the contract is:
+    explicit `body.grammar` requires `capabilities.grammar_supported=True`.
+    """
     transport = ASGITransport(app=echo_app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         resp = await client.post(
@@ -637,7 +646,11 @@ async def test_grammar_param_accepted(echo_app):
                 "grammar": 'root ::= "test"',
             },
         )
-    assert resp.status_code == 200
+    assert resp.status_code == 422
+    body = resp.json()
+    err = body.get("error", body)
+    assert err.get("code") == "unsupported_modality"
+    assert "grammar_supported=False" in err.get("message", "")
 
 
 @pytest.mark.asyncio
