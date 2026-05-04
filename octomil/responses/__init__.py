@@ -4,7 +4,7 @@ from __future__ import annotations
 
 # Re-export runtime and tools subpackages
 from . import runtime, tools
-from .responses import OctomilResponses
+from .responses import NoRuntimeAvailableError, OctomilResponses
 from .types import (
     ContentPart,
     InputItem,
@@ -21,6 +21,7 @@ from .types import (
 __all__ = [
     "ContentPart",
     "InputItem",
+    "NoRuntimeAvailableError",
     "OctomilResponses",
     "OutputItem",
     "Response",
