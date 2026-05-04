@@ -270,9 +270,14 @@ def _run_native(gguf: str) -> BackendResult:
                 # Drain SESSION_STARTED so first_chunk_ms reflects
                 # generation time, not bookkeeping.
                 _wait_for(sess, OCT_EVENT_SESSION_STARTED, deadline_ms=2000)
-                payload = json.dumps(messages)
                 t_send = _now_ms()
-                sess.send_text(payload)
+                # v0.1.2: use send_chat with max_tokens so the native
+                # cap matches Python's max_tokens=32. Without this,
+                # native would run to its internal default (256), and
+                # the total-tokens column would diverge by ~8x — the
+                # gate's earlier total_tokens mismatch was exactly
+                # this issue (gate predates v0.1.2).
+                sess.send_chat(messages, max_tokens=MAX_TOKENS)
                 first_chunk_at: float | None = None
                 # Native NativeEvent doesn't expose the inner-payload
                 # text in v0.1.1 (only event type + envelope are
