@@ -576,6 +576,60 @@ def test_native_chat_backend_constructor_default_deadline_overrides_class_defaul
     assert elapsed < 5.0, f"instance default deadline=300ms but generate ran for {elapsed:.2f}s"
 
 
+@pytest.mark.asyncio
+async def test_native_chat_backend_streaming_per_request_deadline_overrides_default():
+    """Cutover follow-up #74 R1 Codex: ``generate_stream()`` honors the
+    per-request deadline the same way ``generate()`` does. Pin both
+    paths on the same fast-fail behavior."""
+    import time
+
+    from octomil.errors import OctomilError, OctomilErrorCode
+    from octomil.runtime.native.chat_backend import NativeChatBackend
+    from octomil.runtime.native.loader import OCT_EVENT_NONE
+    from octomil.serve.types import GenerationRequest
+
+    class _NoneEv:
+        type = OCT_EVENT_NONE
+        text = ""
+        terminal_status = 0
+
+    class _FakeSession:
+        def send_chat(self, *_a: Any, **_k: Any) -> None:
+            return None
+
+        def poll_event(self, *_a: Any, **_k: Any) -> Any:
+            return _NoneEv()
+
+        def close(self) -> None:
+            return None
+
+    class _FakeRuntime:
+        def open_session(self, **_k: Any) -> Any:
+            return _FakeSession()
+
+        def last_error(self) -> str:
+            return ""
+
+    backend = NativeChatBackend()
+    backend._runtime = _FakeRuntime()  # type: ignore[assignment]
+    backend._model = object()  # type: ignore[assignment]
+
+    req = GenerationRequest(
+        model="x.gguf",
+        messages=[{"role": "user", "content": "hi"}],
+        max_tokens=8,
+        stream=True,
+        deadline_ms=300,
+    )
+    t0 = time.monotonic()
+    with pytest.raises(OctomilError) as exc_info:
+        async for _chunk in backend.generate_stream(req):
+            pass
+    elapsed = time.monotonic() - t0
+    assert exc_info.value.code == OctomilErrorCode.REQUEST_TIMEOUT
+    assert elapsed < 5.0, f"streaming deadline=300ms but generate_stream ran for {elapsed:.2f}s"
+
+
 def test_native_chat_backend_zero_deadline_raises_invalid_input():
     """Cutover follow-up #74: deadline_ms <= 0 is a configuration
     error, not an instant timeout. Raise INVALID_INPUT before opening
