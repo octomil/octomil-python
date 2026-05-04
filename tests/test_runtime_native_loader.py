@@ -492,12 +492,14 @@ def test_resolve_dylib_returns_newest_cached_version(monkeypatch, tmp_path: Path
     monkeypatch.delenv("OCTOMIL_RUNTIME_DYLIB", raising=False)
     import octomil.runtime.native.loader as loader
 
-    def make_cached_dylib(version: str) -> Path:
+    def make_cached_dylib(version: str, with_sentinel: bool = True) -> Path:
         version_dir = tmp_path / version
         lib = version_dir / "lib"
         lib.mkdir(parents=True)
         dylib = lib / "liboctomil-runtime.dylib"
         dylib.write_bytes(b"\x00")  # not actually loaded; just must exist
+        if with_sentinel:
+            (lib / loader._EXTRACTION_SENTINEL).write_text(version + "\n")
         return dylib
 
     older = make_cached_dylib("v0.0.2")
@@ -509,6 +511,32 @@ def test_resolve_dylib_returns_newest_cached_version(monkeypatch, tmp_path: Path
         f"_resolve_dylib should pick the newest cached version, got {resolved}; "
         f"older was {older}, newer was {newer}"
     )
+
+
+def test_resolve_dylib_skips_cache_without_sentinel(monkeypatch, tmp_path: Path):
+    """Codex R3 blocker fix: a partial/corrupt extraction can leave
+    a dylib on disk WITHOUT the `.extracted-ok` sentinel that the
+    fetch script writes only after a full successful extraction.
+    The loader MUST refuse such caches. Otherwise the SDK loads a
+    truncated artifact on the next import.
+
+    Set up: a `v0.0.10` cache with a dylib but NO sentinel; confirm
+    `_resolve_dylib()` raises ImportError instead of loading it."""
+    monkeypatch.delenv("OCTOMIL_RUNTIME_DYLIB", raising=False)
+    import octomil.runtime.native.loader as loader
+
+    version_dir = tmp_path / "v0.0.10"
+    lib = version_dir / "lib"
+    lib.mkdir(parents=True)
+    (lib / "liboctomil-runtime.dylib").write_bytes(b"\x00")  # no sentinel
+    monkeypatch.setattr(loader, "_FETCH_CACHE_ROOT", tmp_path)
+    monkeypatch.setattr(loader, "_FFI", None)
+    monkeypatch.setattr(loader, "_LIB", None)
+
+    with pytest.raises(ImportError) as exc_info:
+        loader._resolve_dylib()
+    msg = str(exc_info.value)
+    assert "fetch_runtime_dev.py" in msg or "OCTOMIL_RUNTIME_DYLIB" in msg
 
 
 def test_safe_extract_refuses_symlink_member(tmp_path: Path):

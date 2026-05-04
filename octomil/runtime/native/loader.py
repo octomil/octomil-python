@@ -265,17 +265,31 @@ def _version_sort_key(p: Path) -> tuple:
     return (1, tuple(nums), suffix_key)
 
 
+_EXTRACTION_SENTINEL = ".extracted-ok"
+
+
 def _fetched_dylib_candidates() -> list[Path]:
     """Return any dev-cache dylibs found under ``~/.cache/octomil-runtime``.
 
     Sorted newest-version-last so the most-recently-fetched release
     wins when multiple are cached. The fetch script populates this
-    directory; nothing else writes to it."""
+    directory and writes ``lib/.extracted-ok`` ONLY after extraction
+    fully succeeds.
+
+    Codex R3 blocker fix: the loader MUST honor the sentinel that
+    the fetch script writes. A crash mid-extraction can leave a
+    truncated dylib on disk; without the sentinel check the SDK
+    would happily load it. We refuse caches that don't have a
+    matching sentinel — operator can fix by re-running the fetch
+    script."""
     if not _FETCH_CACHE_ROOT.is_dir():
         return []
     out: list[Path] = []
     for version_dir in sorted(_FETCH_CACHE_ROOT.iterdir(), key=_version_sort_key):
         if not version_dir.is_dir():
+            continue
+        sentinel = version_dir / "lib" / _EXTRACTION_SENTINEL
+        if not sentinel.is_file():
             continue
         for name in _RUNTIME_LIBNAMES:
             candidate = version_dir / "lib" / name
