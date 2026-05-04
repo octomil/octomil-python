@@ -758,11 +758,59 @@ def test_native_model_invalidated_on_runtime_close():
 def test_oct_err_constants_stable():
     """v0.4: OCT_ERR_* numeric assignments are stable forever per
     the contracts schema (canonical_error_codes.json). Drift here
-    breaks SDK codegen across every binding."""
-    from octomil.runtime.native import OCT_ERR_OK, OCT_ERR_UNKNOWN
+    breaks SDK codegen across every binding. Codex R3 missed-case:
+    full parity coverage instead of spot-checking OK/UNKNOWN only."""
+    from octomil.runtime.native.loader import (
+        OCT_ERR_ACCELERATOR_UNAVAILABLE,
+        OCT_ERR_ARTIFACT_DIGEST_MISMATCH,
+        OCT_ERR_ENGINE_INIT_FAILED,
+        OCT_ERR_INPUT_FORMAT_UNSUPPORTED,
+        OCT_ERR_INPUT_OUT_OF_RANGE,
+        OCT_ERR_INTERNAL,
+        OCT_ERR_MODEL_LOAD_FAILED,
+        OCT_ERR_OK,
+        OCT_ERR_PREEMPTED,
+        OCT_ERR_QUOTA_EXCEEDED,
+        OCT_ERR_RAM_INSUFFICIENT,
+        OCT_ERR_TIMEOUT,
+        OCT_ERR_UNKNOWN,
+    )
 
-    assert OCT_ERR_OK == 0
-    assert OCT_ERR_UNKNOWN == 0xFFFFFFFF  # UINT32_MAX forward-compat sentinel
+    # Mirrors octomil-contracts/fixtures/runtime_error_code/canonical_error_codes.json.
+    expected = {
+        "OCT_ERR_OK": 0,
+        "OCT_ERR_MODEL_LOAD_FAILED": 1,
+        "OCT_ERR_ARTIFACT_DIGEST_MISMATCH": 2,
+        "OCT_ERR_ENGINE_INIT_FAILED": 3,
+        "OCT_ERR_RAM_INSUFFICIENT": 4,
+        "OCT_ERR_ACCELERATOR_UNAVAILABLE": 5,
+        "OCT_ERR_INPUT_OUT_OF_RANGE": 6,
+        "OCT_ERR_INPUT_FORMAT_UNSUPPORTED": 7,
+        "OCT_ERR_TIMEOUT": 8,
+        "OCT_ERR_PREEMPTED": 9,
+        "OCT_ERR_QUOTA_EXCEEDED": 10,
+        "OCT_ERR_INTERNAL": 11,
+        "OCT_ERR_UNKNOWN": 0xFFFFFFFF,
+    }
+    actual = {
+        "OCT_ERR_OK": OCT_ERR_OK,
+        "OCT_ERR_MODEL_LOAD_FAILED": OCT_ERR_MODEL_LOAD_FAILED,
+        "OCT_ERR_ARTIFACT_DIGEST_MISMATCH": OCT_ERR_ARTIFACT_DIGEST_MISMATCH,
+        "OCT_ERR_ENGINE_INIT_FAILED": OCT_ERR_ENGINE_INIT_FAILED,
+        "OCT_ERR_RAM_INSUFFICIENT": OCT_ERR_RAM_INSUFFICIENT,
+        "OCT_ERR_ACCELERATOR_UNAVAILABLE": OCT_ERR_ACCELERATOR_UNAVAILABLE,
+        "OCT_ERR_INPUT_OUT_OF_RANGE": OCT_ERR_INPUT_OUT_OF_RANGE,
+        "OCT_ERR_INPUT_FORMAT_UNSUPPORTED": OCT_ERR_INPUT_FORMAT_UNSUPPORTED,
+        "OCT_ERR_TIMEOUT": OCT_ERR_TIMEOUT,
+        "OCT_ERR_PREEMPTED": OCT_ERR_PREEMPTED,
+        "OCT_ERR_QUOTA_EXCEEDED": OCT_ERR_QUOTA_EXCEEDED,
+        "OCT_ERR_INTERNAL": OCT_ERR_INTERNAL,
+        "OCT_ERR_UNKNOWN": OCT_ERR_UNKNOWN,
+    }
+    assert actual == expected, f"OCT_ERR_* assignment drift:\n  expected: {expected}\n  actual:   {actual}"
+    # Numeric values must be unique (collisions silently mis-route errors).
+    values = list(expected.values())
+    assert len(values) == len(set(values)), "duplicate OCT_ERR_* values"
 
 
 def test_loader_rejects_dylib_with_old_abi_minor(monkeypatch, tmp_path: Path):

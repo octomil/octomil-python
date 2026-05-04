@@ -7,8 +7,10 @@ conformance tests. They exercise:
     advertised.
   * Capability NOT owned by Python (native-first): skips on python
     with ``no-python-oracle``, skips on native iff not advertised.
-  * Capability NOT owned by either (e.g. ``embeddings.text`` —
-    intentionally absent from the runtime enum): skips on both.
+  * Capability NOT in PYTHON_ORACLE_CAPABILITIES (e.g. ``embeddings.text``,
+    which v0.4 admitted to the runtime enum but Python does NOT yet
+    own as oracle): skips on python with ``no-python-oracle``, skips
+    on native until the runtime advertises it.
 """
 
 from __future__ import annotations
@@ -111,6 +113,10 @@ def test_python_oracle_includes_tts_chat_stt():
 
 
 def test_python_oracle_does_not_include_embeddings_text():
-    """embeddings.text isn't in the runtime capability enum AT ALL,
-    so it's not in this set either."""
+    """v0.4: embeddings.text IS in the runtime capability enum
+    (admitted in octomil-contracts#99 + this PR's capabilities.py)
+    BUT Python does NOT yet own it as oracle. The conformance
+    harness skips embeddings.text tests on the python backend with
+    `no-python-oracle` until/unless a Python embedding kernel
+    becomes the comparison reference."""
     assert "embeddings.text" not in PYTHON_ORACLE_CAPABILITIES
