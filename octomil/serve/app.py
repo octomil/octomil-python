@@ -13,7 +13,11 @@ from typing import TYPE_CHECKING, Any, Optional
 from ..errors import OctomilError, OctomilErrorCode
 from .config import CloudConfig, MoEConfig, ServerState
 from .detection import _detect_backend, _get_cache_manager, _log_startup_error
-from .grammar_helpers import _inject_json_system_prompt, _resolve_grammar
+from .grammar_helpers import (
+    _inject_json_system_prompt,
+    _reject_explicit_grammar_on_non_grammar_backend,
+    _resolve_grammar,
+)
 from .instrumentation import unwrap_backend
 from .models import ChatCompletionBody
 from .streaming import _queued_stream_response, _stream_response
@@ -649,6 +653,15 @@ def create_app(
         uses_grammar_natively = (
             _primary_backend is not None and unwrap_backend(_primary_backend).capabilities.grammar_supported
         )
+        # Cutover follow-up #71 (R1 Codex): reject explicit caller GBNF
+        # against non-grammar backends instead of silently stripping it.
+        if _primary_backend is not None:
+            _reject_explicit_grammar_on_non_grammar_backend(
+                backend_name=unwrap_backend(_primary_backend).name,
+                grammar_str=grammar_str,
+                is_json=is_json,
+                uses_grammar_natively=uses_grammar_natively,
+            )
         schema_for_prompt: Optional[dict[str, Any]] = None
         if is_json and not uses_grammar_natively:
             rf = body.response_format or {}
@@ -668,7 +681,13 @@ def create_app(
             top_p=body.top_p,
             stream=body.stream,
             grammar=grammar_str if uses_grammar_natively else None,
-            json_mode=is_json,
+            # Cutover follow-up #71 (R1 Codex): only forward json_mode=True
+            # to backends that handle JSON natively via grammar. For
+            # non-grammar backends we already injected a system prompt
+            # (line above); forwarding json_mode=True caused
+            # NativeChatBackend's gate to raise UNSUPPORTED_MODALITY,
+            # turning every JSON-mode request into a 422.
+            json_mode=is_json and uses_grammar_natively,
             enable_thinking=_enable_thinking,
         )
 

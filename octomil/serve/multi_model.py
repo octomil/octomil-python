@@ -11,7 +11,11 @@ from typing import Any, Optional
 from ..errors import OctomilError
 from .config import MultiModelServerState
 from .detection import _detect_backend, _log_startup_error
-from .grammar_helpers import _inject_json_system_prompt, _resolve_grammar
+from .grammar_helpers import (
+    _inject_json_system_prompt,
+    _reject_explicit_grammar_on_non_grammar_backend,
+    _resolve_grammar,
+)
 from .instrumentation import unwrap_backend
 from .models import ChatCompletionBody
 from .streaming import _stream_response
@@ -231,6 +235,14 @@ def create_multi_model_app(
             # evaluated False — semantically correct here, but the
             # type-marker shape is brittle as more backends ship.
             uses_grammar_natively = unwrap_backend(backend).capabilities.grammar_supported
+            # Cutover follow-up #71 (R1 Codex): reject explicit caller GBNF
+            # against non-grammar backends instead of silently stripping it.
+            _reject_explicit_grammar_on_non_grammar_backend(
+                backend_name=unwrap_backend(backend).name,
+                grammar_str=grammar_str,
+                is_json=is_json,
+                uses_grammar_natively=uses_grammar_natively,
+            )
             schema_for_prompt: Optional[dict[str, Any]] = None
             if is_json and not uses_grammar_natively:
                 rf = body.response_format or {}
@@ -247,7 +259,11 @@ def create_multi_model_app(
                 top_p=body.top_p,
                 stream=body.stream,
                 grammar=grammar_str if uses_grammar_natively else None,
-                json_mode=is_json,
+                # Cutover follow-up #71 (R1 Codex): only forward json_mode=True
+                # to grammar-capable backends; for non-grammar backends the
+                # system-prompt fallback above handles JSON nudging and
+                # forwarding the flag would cause NativeChatBackend to 422.
+                json_mode=is_json and uses_grammar_natively,
             )
 
             state.request_count += 1
@@ -482,6 +498,14 @@ def create_multi_model_app(
             # evaluated False — semantically correct here, but the
             # type-marker shape is brittle as more backends ship.
             uses_grammar_natively = unwrap_backend(backend).capabilities.grammar_supported
+            # Cutover follow-up #71 (R1 Codex): reject explicit caller GBNF
+            # against non-grammar backends instead of silently stripping it.
+            _reject_explicit_grammar_on_non_grammar_backend(
+                backend_name=unwrap_backend(backend).name,
+                grammar_str=grammar_str,
+                is_json=is_json,
+                uses_grammar_natively=uses_grammar_natively,
+            )
 
             req_messages = list(sub_messages)
             if is_json and not uses_grammar_natively:
@@ -500,7 +524,11 @@ def create_multi_model_app(
                 top_p=body.top_p,
                 stream=False,
                 grammar=grammar_str if uses_grammar_natively else None,
-                json_mode=is_json,
+                # Cutover follow-up #71 (R1 Codex): only forward json_mode=True
+                # to grammar-capable backends; for non-grammar backends the
+                # system-prompt fallback above handles JSON nudging and
+                # forwarding the flag would cause NativeChatBackend to 422.
+                json_mode=is_json and uses_grammar_natively,
             )
 
             mm_state.request_count += 1

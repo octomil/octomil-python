@@ -4,7 +4,36 @@ from __future__ import annotations
 
 from typing import Any, Optional
 
+from ..errors import OctomilError, OctomilErrorCode
 from .models import ChatCompletionBody
+
+
+def _reject_explicit_grammar_on_non_grammar_backend(
+    backend_name: str,
+    grammar_str: Optional[str],
+    is_json: bool,
+    uses_grammar_natively: bool,
+) -> None:
+    """Cutover follow-up #71 (R1 Codex): raise UNSUPPORTED_MODALITY when the
+    caller supplied an explicit GBNF grammar (``body.grammar``) and the
+    backend's ``capabilities.grammar_supported`` is False.
+
+    Pre-fix the serve layer silently dropped the grammar string before
+    forwarding to the backend, so the request returned 200 OK with text
+    that ignored the requested constraint. JSON-mode (``is_json=True``,
+    grammar derived from ``response_format``) is unaffected — system-
+    prompt fallback handles those requests.
+    """
+    if grammar_str and not is_json and not uses_grammar_natively:
+        raise OctomilError(
+            code=OctomilErrorCode.UNSUPPORTED_MODALITY,
+            message=(
+                f"Backend '{backend_name}' does not support GBNF grammar "
+                f"(capabilities.grammar_supported=False). Use "
+                f"response_format=json_object/json_schema for structured "
+                f"output, or route to a grammar-capable backend."
+            ),
+        )
 
 
 def _resolve_grammar(body: ChatCompletionBody, default_json_mode: bool = False) -> tuple[Optional[str], bool]:
