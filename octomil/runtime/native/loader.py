@@ -654,7 +654,7 @@ size_t       oct_model_config_size(void);
 # rather than a typed compatibility error. Codex R1 fix: fail fast
 # at load time with NativeRuntimeError(VERSION_MISMATCH).
 _REQUIRED_ABI_MAJOR: int = 0
-_REQUIRED_ABI_MINOR: int = 6  # v0.1.1: real oct_model lifecycle + session_config v=3
+_REQUIRED_ABI_MINOR: int = 7  # v0.1.2: chat.completion wrapped-shape with generation options
 
 
 def _build_lib() -> tuple[Any, Any]:
@@ -1430,6 +1430,69 @@ class NativeSession:
                 "oct_session_send_text failed",
                 last_error=self._owner.last_error(),
             )
+
+    def send_chat(
+        self,
+        messages: list[dict[str, str]],
+        *,
+        max_tokens: int | None = None,
+        max_completion_tokens: int | None = None,
+        temperature: float | None = None,
+        top_p: float | None = None,
+    ) -> None:
+        """v0.1.2: send a `chat.completion` turn with caller-controlled
+        generation options.
+
+        Emits the wrapped JSON shape on `oct_session_send_text`:
+        ``{"messages":[...], "options":{...}}``. The runtime applies
+        the model's chat template, tokenizes, prefills, and runs the
+        decode loop bounded by ``max_tokens`` (or ``max_completion_tokens``
+        if both are set — the latter wins, matching OpenAI's spec).
+
+        Bounded errors propagate via the resulting event stream:
+            - out-of-range max_tokens → SESSION_COMPLETED(INVALID_INPUT)
+              with OCT_EVENT_ERROR(error_code=OCT_ERR_INPUT_FORMAT_UNSUPPORTED).
+            - non-zero temperature / non-1.0 top_p →
+              SESSION_COMPLETED(UNSUPPORTED) with the same error envelope.
+            - prompt tokenizing past n_ctx →
+              SESSION_COMPLETED(INVALID_INPUT) with
+              OCT_EVENT_ERROR(error_code=OCT_ERR_INPUT_OUT_OF_RANGE).
+
+        Parameters
+        ----------
+        messages
+            Canonical chat-messages list. Each entry MUST have exactly
+            ``role`` (∈ {system, user, assistant}) and ``content``
+            (string). v0.1.2 rejects unknown keys, extra roles, etc.
+        max_tokens
+            OpenAI-legacy alias. 1..4096 (= n_ctx). When unset, runtime
+            applies its default cap (256).
+        max_completion_tokens
+            OpenAI-current alias. Same range. When BOTH max_tokens
+            and max_completion_tokens are set, max_completion_tokens
+            wins (runtime-side resolution).
+        temperature
+            v0.1.2 ships greedy-only; only 0.0 is accepted. Non-zero
+            values reject UNSUPPORTED.
+        top_p
+            v0.1.2 ships greedy-only; only 1.0 is accepted. Non-1.0
+            values reject UNSUPPORTED.
+        """
+        import json as _json
+
+        options: dict[str, Any] = {}
+        if max_tokens is not None:
+            options["max_tokens"] = int(max_tokens)
+        if max_completion_tokens is not None:
+            options["max_completion_tokens"] = int(max_completion_tokens)
+        if temperature is not None:
+            options["temperature"] = float(temperature)
+        if top_p is not None:
+            options["top_p"] = float(top_p)
+        payload: dict[str, Any] = {"messages": messages}
+        if options:
+            payload["options"] = options
+        self.send_text(_json.dumps(payload))
 
     def poll_event(self, timeout_ms: int = 0) -> NativeEvent:
         """Wait up to ``timeout_ms`` for the next event from the session.

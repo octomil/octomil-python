@@ -123,13 +123,13 @@ def test_abi_version_returns_three_tuple():
     assert isinstance(major, int)
     assert isinstance(minor, int)
     assert isinstance(patch, int)
-    # v0.1.1: ABI MINOR bumped 5→6. Real oct_model_open/_warm/
-    # _evict/_close lifecycle for llama.cpp; oct_session_config_t
-    # v=3 with appended `oct_model_t* model` (chat.completion
-    # REQUIRES non-NULL config.model); oct_model_close return
-    # changes void→oct_status_t; oct_runtime_close refuses with
-    # last_error when models are still open.
-    assert (major, minor) == (0, 6)
+    # v0.1.2: ABI MINOR bumped 6→7. New wrapped JSON shape on
+    # chat.completion send_text carrying max_tokens / temperature
+    # / top_p options. No struct ABI changes. v0.1.1 lifecycle
+    # semantics (oct_model_open/_warm/_evict/_close,
+    # session_config v=3, oct_model_close as oct_status_t,
+    # oct_runtime_close refuse-with-last-error) all preserved.
+    assert (major, minor) == (0, 7)
     assert patch == 0
 
 

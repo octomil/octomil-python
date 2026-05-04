@@ -39,9 +39,7 @@ import urllib.request
 from pathlib import Path
 
 REPO = "octomil/octomil-runtime"
-DEFAULT_VERSION = (
-    "v0.1.1"  # v0.1.1: real oct_model lifecycle for chat.completion (replaces v0.1.0 env-gated capability)
-)
+DEFAULT_VERSION = "v0.1.2"  # v0.1.2: generation options (max_tokens / temperature / top_p) on chat.completion send_text
 CACHE_ROOT = Path.home() / ".cache" / "octomil-runtime"
 
 
