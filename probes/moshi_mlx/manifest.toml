@@ -212,7 +212,7 @@ abi_event = "OCT_EVENT_WATCHDOG_TIMEOUT { timeout_ms, phase ∈ {load, warm, fir
 delta_required = false
 
 [abi_mapping.metric]
-moshi_op = "Slice 2C emits the 15 canonical metrics (kv_prefix.cache_hit_rate, gpu.active_pct, gpu.power_w, mimi.frames_dropped_total, mimi.frames_encoded_total, model.load_ms, model.warm_ms, etc.) per the runtime_metric.json closed enum"
+moshi_op = "Slice 2C emits the canonical metrics defined in runtime_metric.json (octomil-contracts#99) — the JSON file is authoritative for both the count and the exact namespace prefixes (cache.*, gpu.*, kv_prefix.*, mimi.*, model.*, scheduler.*); this manifest deliberately does not paraphrase the enum"
 abi_event = "OCT_EVENT_METRIC { name (closed enum), value (double) }"
 delta_required = false
 notes = "Free-form metric names FORBIDDEN by-construction. Slice 2C MUST draw names from runtime_metric.json (octomil-contracts#99)."
