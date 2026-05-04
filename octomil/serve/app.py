@@ -11,10 +11,13 @@ import uuid
 from typing import TYPE_CHECKING, Any, Optional
 
 from ..errors import OctomilError, OctomilErrorCode
-from .backends.llamacpp import LlamaCppBackend
 from .config import CloudConfig, MoEConfig, ServerState
 from .detection import _detect_backend, _get_cache_manager, _log_startup_error
-from .grammar_helpers import _inject_json_system_prompt, _resolve_grammar
+from .grammar_helpers import (
+    _inject_json_system_prompt,
+    _reject_explicit_grammar_on_non_grammar_backend,
+    _resolve_grammar,
+)
 from .instrumentation import unwrap_backend
 from .models import ChatCompletionBody
 from .streaming import _queued_stream_response, _stream_response
@@ -642,9 +645,30 @@ def create_app(
         _primary_backend = state.backend
         if _routing_decision is not None:
             _primary_backend = _backend_for_locality(state, _routing_decision.primary_locality) or state.backend
-        uses_grammar_natively = _primary_backend is not None and isinstance(
-            unwrap_backend(_primary_backend), LlamaCppBackend
+        # Cutover follow-up #71: capability query replaces the
+        # legacy isinstance(_, LlamaCppBackend) check. The post-
+        # cutover NativeChatBackend declares grammar_supported=False;
+        # legacy LlamaCppBackend declares True. The serve layer
+        # routes accordingly.
+        # Cutover follow-up #71 (R5 Codex): use resolve_backend_capabilities
+        # so duck-typed backends (e.g. _ORTBackend, _OllamaBackend) without
+        # an explicit `capabilities` class attr fall through to conservative
+        # defaults rather than AttributeError'ing the chat handler.
+        from .types import resolve_backend_capabilities  # noqa: PLC0415
+
+        uses_grammar_natively = (
+            _primary_backend is not None
+            and resolve_backend_capabilities(unwrap_backend(_primary_backend)).grammar_supported
         )
+        # Cutover follow-up #71 (R1 Codex): reject explicit caller GBNF
+        # against non-grammar backends instead of silently stripping it.
+        if _primary_backend is not None:
+            _reject_explicit_grammar_on_non_grammar_backend(
+                backend_name=unwrap_backend(_primary_backend).name,
+                grammar_str=grammar_str,
+                is_json=is_json,
+                uses_grammar_natively=uses_grammar_natively,
+            )
         schema_for_prompt: Optional[dict[str, Any]] = None
         if is_json and not uses_grammar_natively:
             rf = body.response_format or {}
@@ -664,7 +688,13 @@ def create_app(
             top_p=body.top_p,
             stream=body.stream,
             grammar=grammar_str if uses_grammar_natively else None,
-            json_mode=is_json,
+            # Cutover follow-up #71 (R1 Codex): only forward json_mode=True
+            # to backends that handle JSON natively via grammar. For
+            # non-grammar backends we already injected a system prompt
+            # (line above); forwarding json_mode=True caused
+            # NativeChatBackend's gate to raise UNSUPPORTED_MODALITY,
+            # turning every JSON-mode request into a 422.
+            json_mode=is_json and uses_grammar_natively,
             enable_thinking=_enable_thinking,
         )
 
@@ -837,6 +867,13 @@ def create_app(
                 else:
                     # Retry once with a stronger system prompt
                     retry_messages = _inject_json_system_prompt(messages, schema_for_prompt)
+                    # Cutover follow-up #71 (R2 Codex): the retry block
+                    # only fires in the `is_json and not uses_grammar_natively`
+                    # branch — by construction the non-grammar fallback. The
+                    # system prompt is doing the JSON constraining; forwarding
+                    # `json_mode=True` to a non-grammar backend (e.g., native)
+                    # would 422 with UNSUPPORTED_MODALITY, so the retry would
+                    # always fail instead of producing a corrected response.
                     retry_req = GenerationRequest(
                         model=gen_req.model,
                         messages=retry_messages,
@@ -844,7 +881,7 @@ def create_app(
                         temperature=max(gen_req.temperature - 0.2, 0.0),
                         top_p=gen_req.top_p,
                         stream=False,
-                        json_mode=True,
+                        json_mode=False,
                     )
                     if _routing_decision is not None:
                         text, metrics, _, _ = await _generate_with_routing(state, retry_req, _routing_decision)

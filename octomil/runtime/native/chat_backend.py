@@ -60,6 +60,7 @@ from typing import Any, AsyncIterator
 
 from ...errors import OctomilError, OctomilErrorCode
 from ...serve.types import (
+    BackendCapabilities,
     GenerationChunk,
     GenerationRequest,
     InferenceBackend,
@@ -228,6 +229,19 @@ class NativeChatBackend(InferenceBackend):
 
     name: str = _BACKEND_NAME
     attention_backend: str = "native"
+    # Cutover follow-up #71: v0.1.2 native subset is greedy-only,
+    # no grammar/tools/streaming. Every reject path raises
+    # OctomilError(UNSUPPORTED_MODALITY) — see
+    # _gate_unsupported_request_features. The serve layer reads
+    # these flags to decide whether to pass grammar through or
+    # fall back to system-prompt JSON nudging.
+    capabilities = BackendCapabilities(
+        grammar_supported=False,
+        json_mode_supported=False,
+        streaming_supported=False,  # chat.stream is follow-up #72
+        tools_supported=False,
+        attention_backend="native",
+    )
 
     def __init__(self, *, model_dir: str | None = None) -> None:
         super().__init__()
@@ -356,12 +370,12 @@ class NativeChatBackend(InferenceBackend):
             # the default path.
             if request.temperature not in (0.0, 0):
                 logger.warning(
-                    "NativeChatBackend: v0.1.2 ships greedy-only; " "ignoring request.temperature=%s (treating as 0.0)",
+                    "NativeChatBackend: v0.1.2 ships greedy-only; ignoring request.temperature=%s (treating as 0.0)",
                     request.temperature,
                 )
             if request.top_p not in (1.0, 1):
                 logger.warning(
-                    "NativeChatBackend: v0.1.2 ships greedy-only; " "ignoring request.top_p=%s (treating as 1.0)",
+                    "NativeChatBackend: v0.1.2 ships greedy-only; ignoring request.top_p=%s (treating as 1.0)",
                     request.top_p,
                 )
             try:

@@ -9,7 +9,13 @@ from contextlib import contextmanager
 from typing import Any, AsyncIterator, Optional
 
 from ..models import resolve_model_name
-from ..types import GenerationChunk, GenerationRequest, InferenceBackend, InferenceMetrics
+from ..types import (
+    BackendCapabilities,
+    GenerationChunk,
+    GenerationRequest,
+    InferenceBackend,
+    InferenceMetrics,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -104,6 +110,18 @@ class MLXBackend(InferenceBackend):
 
     name = "mlx-lm"
     attention_backend = "metal_fused"
+    # Cutover follow-up #71 (R4 Codex): MLX path doesn't currently
+    # constrain via grammar/JSON-mode; relies on system-prompt nudging
+    # for json_mode like the other non-grammar backends. Streaming via
+    # generate_stream is supported. attention_backend mirrors the class
+    # attr to keep telemetry and capability-query views consistent.
+    capabilities = BackendCapabilities(
+        grammar_supported=False,
+        json_mode_supported=False,
+        streaming_supported=True,
+        tools_supported=False,
+        attention_backend="metal_fused",
+    )
 
     def __init__(
         self,
