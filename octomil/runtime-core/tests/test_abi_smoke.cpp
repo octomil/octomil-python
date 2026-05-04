@@ -166,6 +166,24 @@ void test_runtime_open_v1_succeeds_then_close() {
     EXPECT(oct_event_size() == sizeof(oct_event_t),
            "event_size matches sizeof in this TU");
 
+    /* v0.4 step 1: model_config_size introspection (no last_error mutation). */
+    EXPECT(oct_model_config_size() > 0, "model_config_size > 0");
+    EXPECT(oct_model_config_size() == sizeof(oct_model_config_t),
+           "model_config_size matches sizeof in this TU");
+
+    /* v0.4 error code constants. */
+    EXPECT(OCT_ERR_OK == 0u, "OCT_ERR_OK == 0");
+    EXPECT(OCT_ERR_UNKNOWN == 0xFFFFFFFFu, "OCT_ERR_UNKNOWN == UINT32_MAX");
+    EXPECT(OCT_ERR_INTERNAL == 11u, "OCT_ERR_INTERNAL stable assignment");
+
+    /* v0.4 capability constants — string-equality smoke. */
+    EXPECT(std::string(OCT_CAPABILITY_AUDIO_REALTIME_SESSION) == "audio.realtime.session",
+           "OCT_CAPABILITY_AUDIO_REALTIME_SESSION literal");
+    EXPECT(std::string(OCT_CAPABILITY_EMBEDDINGS_TEXT) == "embeddings.text",
+           "OCT_CAPABILITY_EMBEDDINGS_TEXT literal");
+    EXPECT(std::string(OCT_CAPABILITY_INDEX_VECTOR_QUERY) == "index.vector.query",
+           "OCT_CAPABILITY_INDEX_VECTOR_QUERY literal");
+
     /* The runtime's last_error reflects the last failed call. */
     char errbuf[256] = {};
     int n = oct_runtime_last_error(rt, errbuf, sizeof(errbuf));
@@ -173,6 +191,43 @@ void test_runtime_open_v1_succeeds_then_close() {
     const std::string err(errbuf);
     EXPECT(err.find("session_open") != std::string::npos,
            "last_error should mention session_open");
+
+    /* v0.4 step 1: model lifecycle stubs run AFTER the session_open
+     * last_error check (since these mutate runtime->last_error). */
+    {
+        oct_model_config_t mcfg = {};
+        mcfg.version = OCT_MODEL_CONFIG_VERSION;
+        oct_status_t st_m = oct_model_open(rt, &mcfg, nullptr);
+        EXPECT(st_m == OCT_STATUS_INVALID_INPUT,
+               "model_open with NULL out should return INVALID_INPUT");
+    }
+    {
+        oct_model_config_t mcfg = {};
+        mcfg.version = OCT_MODEL_CONFIG_VERSION;
+        oct_model_t* mh = reinterpret_cast<oct_model_t*>(0xb16b00b5);
+        oct_status_t st_m = oct_model_open(rt, &mcfg, &mh);
+        EXPECT(st_m == OCT_STATUS_UNSUPPORTED, "stub model_open returns UNSUPPORTED");
+        EXPECT(mh == nullptr, "model out should be NULL on failure");
+    }
+    EXPECT(oct_model_warm(nullptr) == OCT_STATUS_UNSUPPORTED, "model_warm stub");
+    EXPECT(oct_model_evict(nullptr) == OCT_STATUS_UNSUPPORTED, "model_evict stub");
+    oct_model_close(nullptr);  /* close-of-NULL is no-op */
+    /* v0.4 Codex R2: oct_runtime_close documents implicit cleanup
+     * of live models (parallel to sessions). Stub never produces a
+     * model handle so there's nothing concrete to verify here, but
+     * the contract is documented in runtime.h's oct_runtime_close
+     * docstring. The Python-side regression test in
+     * test_runtime_native_loader.py exercises the binding-side
+     * close-before-invalidate ordering with a fake model handle. */
+    /* model_open with bogus version → VERSION_MISMATCH. */
+    {
+        oct_model_config_t mcfg_bad = {};
+        mcfg_bad.version = 0xFFu;
+        oct_model_t* mh = nullptr;
+        EXPECT(oct_model_open(rt, &mcfg_bad, &mh) == OCT_STATUS_VERSION_MISMATCH,
+               "model_open rejects unknown config.version");
+        EXPECT(mh == nullptr, "model out cleared on version mismatch");
+    }
 
     /* close + idempotent NULL-close. */
     OCT_CLOSE_RUNTIME(rt);

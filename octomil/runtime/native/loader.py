@@ -102,6 +102,31 @@ OCT_SAMPLE_FORMAT_PCM_F32LE: int = 2
 OCT_SESSION_CONFIG_VERSION: int = 1
 OCT_EVENT_VERSION: int = 1
 
+# v0.4 step 1 — model lifecycle.
+OCT_MODEL_CONFIG_VERSION: int = 1
+
+OCT_ACCEL_AUTO: int = 0
+OCT_ACCEL_METAL: int = 1
+OCT_ACCEL_CUDA: int = 2
+OCT_ACCEL_CPU: int = 3
+OCT_ACCEL_ANE: int = 4
+
+# v0.4 — bounded error code taxonomy. Wire-value enum (uint32_t).
+# Mirrors octomil-contracts/fixtures/runtime_error_code/canonical_error_codes.json.
+OCT_ERR_OK: int = 0
+OCT_ERR_MODEL_LOAD_FAILED: int = 1
+OCT_ERR_ARTIFACT_DIGEST_MISMATCH: int = 2
+OCT_ERR_ENGINE_INIT_FAILED: int = 3
+OCT_ERR_RAM_INSUFFICIENT: int = 4
+OCT_ERR_ACCELERATOR_UNAVAILABLE: int = 5
+OCT_ERR_INPUT_OUT_OF_RANGE: int = 6
+OCT_ERR_INPUT_FORMAT_UNSUPPORTED: int = 7
+OCT_ERR_TIMEOUT: int = 8
+OCT_ERR_PREEMPTED: int = 9
+OCT_ERR_QUOTA_EXCEEDED: int = 10
+OCT_ERR_INTERNAL: int = 11
+OCT_ERR_UNKNOWN: int = 0xFFFFFFFF  # forward-compat sentinel — UINT32_MAX
+
 
 def _status_name(code: int) -> str:
     return _STATUS_NAMES.get(code, f"OCT_STATUS_UNKNOWN({code})")
@@ -369,12 +394,53 @@ size_t oct_capabilities_size(void);
 size_t oct_session_config_size(void);
 size_t oct_audio_view_size(void);
 size_t oct_event_size(void);
+
+/* v0.4 step 1 — model lifecycle. Stubs return OCT_STATUS_UNSUPPORTED.
+ * Engine adapters (Slice 2C and following) replace these. */
+typedef struct oct_model oct_model_t;
+typedef uint32_t oct_accelerator_pref_t;
+typedef uint32_t oct_error_code_t;
+
+typedef struct {
+    uint32_t              version;
+    const char*           model_uri;
+    const char*           artifact_digest;
+    const char*           engine_hint;
+    const char*           policy_preset;
+    uint32_t              accelerator_pref;
+    uint64_t              ram_budget_bytes;
+    void*                 user_data;
+} oct_model_config_t;
+
+oct_status_t oct_model_open(
+    oct_runtime_t* runtime,
+    const oct_model_config_t* config,
+    oct_model_t** out_model
+);
+oct_status_t oct_model_warm(oct_model_t* model);
+oct_status_t oct_model_evict(oct_model_t* model);
+void         oct_model_close(oct_model_t* model);
+size_t       oct_model_config_size(void);
 """
+
+
+# v0.4 — minimum ABI version this binding requires. The cdef calls
+# v0.4 symbols (oct_model_open, oct_model_config_size, etc.); loading
+# a v0.3 dylib would fail later with a missing-symbol cffi error
+# rather than a typed compatibility error. Codex R1 fix: fail fast
+# at load time with NativeRuntimeError(VERSION_MISMATCH).
+_REQUIRED_ABI_MAJOR: int = 0
+_REQUIRED_ABI_MINOR: int = 4
 
 
 def _build_lib() -> tuple[Any, Any]:
     """Construct the cffi (FFI, lib) pair. Imported lazily so test
-    discovery doesn't fail when cffi or the dylib is unavailable."""
+    discovery doesn't fail when cffi or the dylib is unavailable.
+
+    Codex R1 fix: enforces (major == _REQUIRED_ABI_MAJOR && minor >=
+    _REQUIRED_ABI_MINOR) at load time so a v0.4 binding loading a
+    v0.3 dylib raises a typed NativeRuntimeError IMMEDIATELY rather
+    than failing later on the first call to a v0.4-only symbol."""
     try:
         from cffi import FFI  # type: ignore[import-untyped]
     except ImportError as exc:
@@ -387,7 +453,32 @@ def _build_lib() -> tuple[Any, Any]:
     ffi.cdef(_CDEF)
     dylib = _resolve_dylib()
     lib = ffi.dlopen(str(dylib))
-    logger.debug("loaded liboctomil-runtime from %s", dylib)
+    # ABI compatibility check — fail fast on dylib/binding skew.
+    dylib_major = int(lib.oct_runtime_abi_version_major())
+    dylib_minor = int(lib.oct_runtime_abi_version_minor())
+    if (dylib_major, dylib_minor) < (_REQUIRED_ABI_MAJOR, _REQUIRED_ABI_MINOR):
+        raise NativeRuntimeError(
+            OCT_STATUS_VERSION_MISMATCH,
+            f"liboctomil-runtime ABI version {dylib_major}.{dylib_minor} loaded "
+            f"from {dylib} is older than the {_REQUIRED_ABI_MAJOR}."
+            f"{_REQUIRED_ABI_MINOR} this binding requires. Rebuild the dylib "
+            "from a matching octomil-python checkout, or downgrade the binding.",
+        )
+    if dylib_major != _REQUIRED_ABI_MAJOR:
+        raise NativeRuntimeError(
+            OCT_STATUS_VERSION_MISMATCH,
+            f"liboctomil-runtime ABI MAJOR {dylib_major} is incompatible with "
+            f"binding MAJOR {_REQUIRED_ABI_MAJOR}. Major bumps require side-by-"
+            "side dylibs and a binding rebuild.",
+        )
+    logger.debug(
+        "loaded liboctomil-runtime from %s (ABI %d.%d, binding requires >= %d.%d)",
+        dylib,
+        dylib_major,
+        dylib_minor,
+        _REQUIRED_ABI_MAJOR,
+        _REQUIRED_ABI_MINOR,
+    )
     return ffi, lib  # noqa: RET504 — explicit ffi/lib pair documents both
 
 
@@ -461,6 +552,8 @@ class NativeRuntime:
         import weakref
 
         self._sessions: "weakref.WeakSet[NativeSession]" = weakref.WeakSet()
+        # v0.4 step 1: same WeakSet pattern for NativeModel children.
+        self._models: "weakref.WeakSet[NativeModel]" = weakref.WeakSet()
 
     @classmethod
     def open(
@@ -523,6 +616,20 @@ class NativeRuntime:
         for sess in list(self._sessions):
             sess._invalidate_after_runtime_close()  # noqa: SLF001
         self._sessions.clear()
+        # v0.4 step 1: explicit model close BEFORE invalidation. Codex
+        # R2 fix: oct_runtime_close documents implicit model cleanup
+        # (defense at C ABI), but we also close handles binding-side
+        # so engine adapters with expensive resources (mmap'd weights,
+        # KV buffers, accelerator contexts) get the explicit close
+        # path. Order matters: close (real C call) first, THEN
+        # invalidate the wrapper so subsequent operations raise.
+        for mdl in list(self._models):
+            try:
+                mdl.close()
+            except Exception:  # noqa: BLE001 — best-effort drain
+                pass
+            mdl._invalidate_after_runtime_close()  # noqa: SLF001
+        self._models.clear()
         self._lib.oct_runtime_close(self._handle)
         self._closed = True
 
@@ -682,6 +789,57 @@ class NativeRuntime:
         # wrapper before the dylib implicitly closes its handle.
         self._sessions.add(sess)
         return sess
+
+    def open_model(
+        self,
+        *,
+        model_uri: str,
+        artifact_digest: str = "",
+        engine_hint: str = "",
+        policy_preset: str = "",
+        accelerator_pref: int = OCT_ACCEL_AUTO,
+        ram_budget_bytes: int = 0,
+    ) -> "NativeModel":
+        """v0.4 step 1: open a warm model handle.
+
+        Slice-2A invariants preserved: caller-owned strings are
+        copied at open per the STRING LIFETIME rule. Stub returns
+        OCT_STATUS_UNSUPPORTED until engine adapters land (Slice 2C
+        Moshi/MLX, then llama.cpp / sherpa-onnx / whisper.cpp / ONNX).
+
+        Layer-2b invariants preserved: `model_uri` MUST be a local
+        URI / digest. The runtime does NOT resolve `@app/...` refs.
+        """
+        self._check_open()
+        ffi = self._ffi
+        lib = self._lib
+        cfg = ffi.new("oct_model_config_t*")
+        cfg.version = OCT_MODEL_CONFIG_VERSION
+        keepalive: list[Any] = []
+
+        def _cstr(s: str) -> Any:
+            buf = ffi.new("char[]", s.encode("utf-8"))
+            keepalive.append(buf)
+            return buf
+
+        cfg.model_uri = _cstr(model_uri)
+        cfg.artifact_digest = _cstr(artifact_digest) if artifact_digest else ffi.NULL
+        cfg.engine_hint = _cstr(engine_hint) if engine_hint else ffi.NULL
+        cfg.policy_preset = _cstr(policy_preset) if policy_preset else ffi.NULL
+        cfg.accelerator_pref = accelerator_pref
+        cfg.ram_budget_bytes = ram_budget_bytes
+        cfg.user_data = ffi.NULL
+        out = ffi.new("oct_model_t**")
+        status = int(lib.oct_model_open(self._handle, cfg, out))
+        if status != OCT_STATUS_OK:
+            raise NativeRuntimeError(
+                status,
+                f"oct_model_open(model_uri={model_uri!r}) failed",
+                last_error=self.last_error(),
+            )
+        mdl = NativeModel(ffi, lib, out[0], owner=self)
+        self._models.add(mdl)
+        return mdl
 
 
 def _read_string_array(ffi: Any, ptr: Any) -> list[str]:
@@ -1005,12 +1163,134 @@ class NativeSession:
             pass
 
 
+# ---------------------------------------------------------------------------
+# v0.4 step 1 — NativeModel
+# ---------------------------------------------------------------------------
+
+
+class NativeModel:
+    """RAII-style wrapper over ``oct_model_t`` (v0.4 step 1).
+
+    The model handle is the warm-handle abstraction the runtime uses
+    for pool-keyed caching, eviction, and signed-manifest identity.
+    A session may open against a `model_uri` (slice-2A behavior) or
+    against a pre-warmed `NativeModel` (future v0.4 step that
+    appends `oct_session_config_t.model`).
+
+    v0.4 step 1: stubs only. Every method calls into the runtime's
+    UNSUPPORTED stub and raises `NativeRuntimeError`. The wrapper
+    exists so:
+      * Conformance harness has a stable target NOW.
+      * Layer-2b warm-pool plumbing can be designed against this
+        surface immediately.
+      * Engine adapters (Slice 2C Moshi, future llama.cpp /
+        sherpa-onnx / whisper.cpp / ONNX) replace stubs file-by-file
+        with tests already pinned.
+
+    Lifetime tracking mirrors `NativeSession`'s slice-2A
+    `_handle_invalid` pattern. `NativeRuntime.close()` invalidates
+    every live `NativeModel` it spawned before calling
+    `oct_runtime_close`.
+    """
+
+    def __init__(self, ffi: Any, lib: Any, handle: Any, *, owner: "NativeRuntime") -> None:
+        self._ffi = ffi
+        self._lib = lib
+        self._handle = handle
+        self._owner = owner
+        self._closed = False
+        self._handle_invalid = False
+
+    def _check_open(self) -> None:
+        if self._handle_invalid:
+            raise NativeRuntimeError(
+                OCT_STATUS_INVALID_INPUT,
+                "model handle invalidated by parent NativeRuntime.close()",
+            )
+        if self._closed:
+            raise NativeRuntimeError(
+                OCT_STATUS_INVALID_INPUT,
+                "model handle is closed",
+            )
+
+    def warm(self) -> None:
+        """Run engine warmup. Stub raises UNSUPPORTED."""
+        self._check_open()
+        status = int(self._lib.oct_model_warm(self._handle))
+        if status != OCT_STATUS_OK:
+            raise NativeRuntimeError(
+                status,
+                "oct_model_warm failed",
+                last_error=self._owner.last_error(),
+            )
+
+    def evict(self) -> int:
+        """Request eviction. Returns raw status code; OCT_STATUS_BUSY
+        and OCT_STATUS_UNSUPPORTED are NOT treated as errors so
+        cleanup paths can call evict() without try/except."""
+        if self._closed or self._handle_invalid:
+            return OCT_STATUS_OK
+        status = int(self._lib.oct_model_evict(self._handle))
+        if status not in (OCT_STATUS_OK, OCT_STATUS_BUSY, OCT_STATUS_UNSUPPORTED):
+            raise NativeRuntimeError(
+                status,
+                "oct_model_evict failed",
+                last_error=self._owner.last_error(),
+            )
+        return status
+
+    def close(self) -> None:
+        """Close the model. Idempotent. No-op if parent runtime
+        already closed (mirrors NativeSession's invalidation pattern)."""
+        if self._closed:
+            return
+        if not self._handle_invalid:
+            self._lib.oct_model_close(self._handle)
+        self._closed = True
+
+    def _invalidate_after_runtime_close(self) -> None:
+        self._handle_invalid = True
+        self._closed = True
+
+    def __enter__(self) -> "NativeModel":
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> None:
+        self.close()
+
+    def __del__(self) -> None:
+        try:
+            self.close()
+        except Exception:
+            pass
+
+
 __all__ = [
     "ENV_DYLIB_OVERRIDE",
     "NativeEvent",
+    "NativeModel",
     "NativeRuntime",
     "NativeRuntimeError",
     "NativeSession",
+    "OCT_ACCEL_ANE",
+    "OCT_ACCEL_AUTO",
+    "OCT_ACCEL_CPU",
+    "OCT_ACCEL_CUDA",
+    "OCT_ACCEL_METAL",
+    "OCT_ERR_ACCELERATOR_UNAVAILABLE",
+    "OCT_ERR_ARTIFACT_DIGEST_MISMATCH",
+    "OCT_ERR_ENGINE_INIT_FAILED",
+    "OCT_ERR_INPUT_FORMAT_UNSUPPORTED",
+    "OCT_ERR_INPUT_OUT_OF_RANGE",
+    "OCT_ERR_INTERNAL",
+    "OCT_ERR_MODEL_LOAD_FAILED",
+    "OCT_ERR_OK",
+    "OCT_ERR_PREEMPTED",
+    "OCT_ERR_QUOTA_EXCEEDED",
+    "OCT_ERR_RAM_INSUFFICIENT",
+    "OCT_ERR_TIMEOUT",
+    "OCT_ERR_UNKNOWN",
+    "OCT_MODEL_CONFIG_VERSION",
     "OCT_EVENT_AUDIO_CHUNK",
     "OCT_EVENT_CAPABILITY_VERIFIED",
     "OCT_EVENT_ERROR",

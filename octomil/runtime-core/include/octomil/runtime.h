@@ -69,7 +69,7 @@ extern "C" {
 /* Bumped on breaking changes. Bindings inspect this at runtime via
  * `oct_runtime_abi_version()` to fail-fast on incompatible dylibs. */
 #define OCT_RUNTIME_ABI_VERSION_MAJOR 0
-#define OCT_RUNTIME_ABI_VERSION_MINOR 3  /* +oct_session_config_size, +oct_audio_view_size, +oct_event_size; capability comment uses canonical contract names (additive; reads stay 0.2-compat) */
+#define OCT_RUNTIME_ABI_VERSION_MINOR 4  /* v0.4 step 1 (PE review octomil-workspace#27): +oct_model_t lifecycle (open/warm/evict/close — stubs); +oct_error_code_t typedef + 13 constants; +6 capability constants (audio.diarization, audio.speaker.embedding, audio.vad, embeddings.image, embeddings.text, index.vector.query). Additive only; reads stay 0.3-compat. Future v0.4 steps: oct_event_t operational envelope; oct_index_t; generic send_json/blob/control; capability descriptors; installed_artifact introspection. */
 #define OCT_RUNTIME_ABI_VERSION_PATCH 0
 
 /* Versions of versioned config structs. Bumped lockstep with the
@@ -90,6 +90,11 @@ extern "C" {
 #define OCT_SESSION_CONFIG_VERSION   1
 #define OCT_EVENT_VERSION            1
 #define OCT_CAPABILITIES_VERSION     1
+
+/* v0.4 (PE review octomil-workspace#27 §1.1) — model lifecycle handle.
+ * Caller-owned config struct read once at open; version-only versioning
+ * per the slice-2A input-config rule. */
+#define OCT_MODEL_CONFIG_VERSION     1
 
 /* ------------------------------------------------------------------- *
  * Export visibility                                                   *
@@ -119,6 +124,7 @@ extern "C" {
 typedef struct oct_runtime  oct_runtime_t;
 typedef struct oct_session  oct_session_t;
 typedef struct oct_event    oct_event_t;
+typedef struct oct_model    oct_model_t;   /* v0.4 — see §1 below */
 
 /* ------------------------------------------------------------------- *
  * Status enum                                                         *
@@ -142,6 +148,61 @@ typedef uint32_t oct_status_t;
 #define OCT_STATUS_CANCELLED         ((oct_status_t)6)  /* session was cancelled; subsequent polls also return CANCELLED */
 #define OCT_STATUS_INTERNAL          ((oct_status_t)7)  /* runtime invariant violated — diagnostic via oct_runtime_last_error */
 #define OCT_STATUS_VERSION_MISMATCH  ((oct_status_t)8)  /* config.version unknown to this runtime build */
+
+/* ------------------------------------------------------------------- *
+ * v0.4 — Bounded error taxonomy                                       *
+ * ------------------------------------------------------------------- *
+ * Closed enum of error codes that travel ASYNCHRONOUSLY in            *
+ * OCT_EVENT_ERROR.error_code (NEW field appended after slice-2A's     *
+ * free-form `code` and `message` strings — see future v0.4 step that *
+ * adds the operational envelope). Distinct from oct_status_t (sync   *
+ * return codes); this is the bounded-cardinality form for telemetry  *
+ * labels.                                                             *
+ *                                                                    *
+ * uint32_t typedef (NOT C enum — implementation-defined size).       *
+ * Numeric assignments are STABLE FOREVER; mirrors                    *
+ * octomil-contracts/fixtures/runtime_error_code/canonical_error_codes.json
+ * Schema validation: octomil-contracts/schemas/core/runtime_error_code.json *
+ * ------------------------------------------------------------------- */
+
+typedef uint32_t oct_error_code_t;
+#define OCT_ERR_OK                          ((oct_error_code_t)0)         /* sentinel */
+#define OCT_ERR_MODEL_LOAD_FAILED           ((oct_error_code_t)1)
+#define OCT_ERR_ARTIFACT_DIGEST_MISMATCH    ((oct_error_code_t)2)
+#define OCT_ERR_ENGINE_INIT_FAILED          ((oct_error_code_t)3)
+#define OCT_ERR_RAM_INSUFFICIENT            ((oct_error_code_t)4)
+#define OCT_ERR_ACCELERATOR_UNAVAILABLE     ((oct_error_code_t)5)
+#define OCT_ERR_INPUT_OUT_OF_RANGE          ((oct_error_code_t)6)
+#define OCT_ERR_INPUT_FORMAT_UNSUPPORTED    ((oct_error_code_t)7)
+#define OCT_ERR_TIMEOUT                     ((oct_error_code_t)8)
+#define OCT_ERR_PREEMPTED                   ((oct_error_code_t)9)
+#define OCT_ERR_QUOTA_EXCEEDED              ((oct_error_code_t)10)
+#define OCT_ERR_INTERNAL                    ((oct_error_code_t)11)
+#define OCT_ERR_UNKNOWN                     ((oct_error_code_t)0xFFFFFFFFu) /* forward-compat sentinel — UINT32_MAX */
+
+/* ------------------------------------------------------------------- *
+ * v0.4 — Canonical capability name constants                          *
+ * ------------------------------------------------------------------- *
+ * Mirror octomil-contracts/schemas/core/runtime_capability.json       *
+ * exactly. SDK bindings reference these constants instead of the     *
+ * literal strings to catch drift at build time.                       *
+ * ------------------------------------------------------------------- */
+
+#define OCT_CAPABILITY_AUDIO_REALTIME_SESSION   "audio.realtime.session"
+#define OCT_CAPABILITY_AUDIO_STT_BATCH          "audio.stt.batch"
+#define OCT_CAPABILITY_AUDIO_STT_STREAM         "audio.stt.stream"
+#define OCT_CAPABILITY_AUDIO_TRANSCRIPTION      "audio.transcription"
+#define OCT_CAPABILITY_AUDIO_TTS_BATCH          "audio.tts.batch"
+#define OCT_CAPABILITY_AUDIO_TTS_STREAM         "audio.tts.stream"
+#define OCT_CAPABILITY_CHAT_COMPLETION          "chat.completion"
+#define OCT_CAPABILITY_CHAT_STREAM              "chat.stream"
+/* v0.4 additions — strict-reject still applies; runtime advertises iff implemented. */
+#define OCT_CAPABILITY_AUDIO_DIARIZATION        "audio.diarization"
+#define OCT_CAPABILITY_AUDIO_SPEAKER_EMBEDDING  "audio.speaker.embedding"
+#define OCT_CAPABILITY_AUDIO_VAD                "audio.vad"
+#define OCT_CAPABILITY_EMBEDDINGS_IMAGE         "embeddings.image"
+#define OCT_CAPABILITY_EMBEDDINGS_TEXT          "embeddings.text"
+#define OCT_CAPABILITY_INDEX_VECTOR_QUERY       "index.vector.query"
 
 /* ------------------------------------------------------------------- *
  * Capability discovery                                                *
@@ -278,6 +339,16 @@ OCT_API oct_status_t oct_runtime_open(
  *     should call oct_session_close on every open session BEFORE
  *     calling oct_runtime_close to ensure clean drain; the implicit
  *     close after runtime_close is best-effort.
+ *   - v0.4: Live models (oct_model_t) are CLOSED implicitly under the
+ *     SAME contract as sessions. Bindings should call oct_model_close
+ *     on every open model BEFORE calling oct_runtime_close; the
+ *     implicit close after runtime_close is best-effort. Engine
+ *     adapters that hold expensive resources (mmap'd weights, KV
+ *     buffers, accelerator contexts) MUST tolerate the implicit
+ *     cleanup path — runtime_close is also the cleanup-of-last-resort
+ *     for processes terminating uncleanly. (Codex R2 fix: previously
+ *     this docstring only mentioned sessions; v0.4 model lifecycle
+ *     extends the rule.)
  *   - Outstanding `oct_capabilities_t` allocations from
  *     `oct_runtime_capabilities` become INVALID. Bindings MUST call
  *     `oct_runtime_capabilities_free` on every retained
@@ -431,11 +502,19 @@ typedef struct {
      *   "audio.stt.stream" | "audio.stt.batch"
      *   "audio.transcription"
      *   "chat.completion" | "chat.stream"
+     *   v0.4 additions:
+     *   "audio.diarization" | "audio.speaker.embedding" | "audio.vad"
+     *   "embeddings.text" | "embeddings.image"
+     *   "index.vector.query"
      *
      * The runtime applies the strict-reject rule on this field: any
      * value not in the canonical enum returns OCT_STATUS_UNSUPPORTED.
-     * `embeddings.text` is intentionally NOT a runtime capability —
-     * embeddings stay above this ABI. Copied at open.
+     * v0.4 (octomil-contracts#99): `embeddings.text` IS a canonical
+     * capability — Cactus-parity + native ONNX embed is 2-5× faster
+     * than Python sentence-transformers. The v0.3 "intentionally
+     * absent" rule was reversed in the v0.4 PE review consensus
+     * (octomil-workspace#27). Strict-reject still applies on requests;
+     * runtime advertises iff the engine adapter ships. Copied at open.
      */
     const char* capability;
     /*
@@ -738,6 +817,98 @@ OCT_API oct_status_t oct_session_cancel(oct_session_t* session);
  * Documented here rather than at the function comment to centralize
  * the contract.
  */
+
+/* ------------------------------------------------------------------- *
+ * v0.4 — Model lifecycle                                              *
+ * ------------------------------------------------------------------- *
+ * Per the ABI v0.4 PE review consensus (octomil-workspace#27 §1.1):  *
+ * `oct_model_t` is the warm-handle abstraction the runtime needs for *
+ * pool-keyed caching, eviction, and signed-manifest identity. A      *
+ * session may open against a model_uri (slice-2A behavior preserved) *
+ * or against a pre-warmed `oct_model_t*` (v0.4, set via              *
+ * `oct_session_config_t.model` — APPENDED in a future v0.4 step).    *
+ *                                                                    *
+ * v0.4 step 1: stubs only. Every entry returns OCT_STATUS_UNSUPPORTED *
+ * with a descriptive last_error. The Slice 2C Moshi adapter and      *
+ * future engine adapters fill these in.                               *
+ * ------------------------------------------------------------------- */
+
+typedef struct {
+    uint32_t    version;                   /* OCT_MODEL_CONFIG_VERSION */
+    /* LOCAL URIs ONLY — Layer 2a does NOT resolve `@app/...` refs.
+     * By the time the runtime sees a URI, Layer 2b has resolved it
+     * to a local path / digest. */
+    const char* model_uri;                 /* "kyutai/moshiko-mlx-q4@<digest>" | "local:///abs/path/..." */
+    const char* artifact_digest;           /* sha256 of the prepared artifact;
+                                              runtime rejects on mismatch */
+    const char* engine_hint;               /* optional: "mlx" | "llama.cpp" |
+                                              "sherpa-onnx" | "" (auto) */
+    const char* policy_preset;             /* informational; carried on events */
+    uint32_t    accelerator_pref;          /* OCT_ACCEL_* */
+    uint64_t    ram_budget_bytes;          /* 0 = no cap */
+    void*       user_data;                 /* echoed verbatim on model events */
+} oct_model_config_t;
+
+/* Accelerator preference — fixed-width int + named constants per the
+ * slice-2A typed-int FFI portability rule. */
+typedef uint32_t oct_accelerator_pref_t;
+#define OCT_ACCEL_AUTO    ((oct_accelerator_pref_t)0)
+#define OCT_ACCEL_METAL   ((oct_accelerator_pref_t)1)
+#define OCT_ACCEL_CUDA    ((oct_accelerator_pref_t)2)
+#define OCT_ACCEL_CPU     ((oct_accelerator_pref_t)3)
+#define OCT_ACCEL_ANE     ((oct_accelerator_pref_t)4)
+
+/*
+ * Open a warm model handle.
+ *   - If `out == NULL`: OCT_STATUS_INVALID_INPUT.
+ *   - On any non-OK return, *out is set to NULL.
+ *   - v0.4 step 1: stub returns OCT_STATUS_UNSUPPORTED.
+ *   - Real implementations: validate config.version; mmap or load
+ *     weights; verify artifact_digest; call engine adapter init;
+ *     emit OCT_EVENT_MODEL_LOADED via telemetry sink (future v0.4).
+ *
+ * Strings are caller-owned and copied at open per the slice-2A
+ * STRING LIFETIME contract.
+ */
+OCT_API oct_status_t oct_model_open(
+    oct_runtime_t* runtime,
+    const oct_model_config_t* config,
+    oct_model_t** out_model
+);
+
+/*
+ * Idempotent. Loads weights into memory, builds KV/cache scaffolding,
+ * runs one-token / silence-frame warmup. Optional but how the runtime
+ * hits warm-open SLOs without paying cold-open every time. Stub
+ * returns UNSUPPORTED.
+ */
+OCT_API oct_status_t oct_model_warm(oct_model_t* model);
+
+/*
+ * Eviction — explicit. Returns OCT_STATUS_BUSY if any session still
+ * references the model (advisory; scheduler honors at next idle).
+ * Bindings that need synchronous eviction call `oct_session_close`
+ * on each session first. Stub returns UNSUPPORTED.
+ */
+OCT_API oct_status_t oct_model_evict(oct_model_t* model);
+
+/*
+ * Close the model handle. void return — slice-2A close-style.
+ * Cancellation cascades to live sessions via the v0.4 step where
+ * `oct_session_config_t.model` is appended; for v0.4 step 1 (no
+ * session→model wiring yet) close is a simple delete.
+ *
+ * Post-close use of `oct_model_t*` is UB at the C ABI per the
+ * slice-2A close-style precedent. Bindings track validity via a
+ * WeakSet + invalidate-flag pattern (see octomil-python's
+ * NativeModel wrapper).
+ */
+OCT_API void oct_model_close(oct_model_t* model);
+
+/* Sizeof introspection — same role as oct_runtime_config_size /
+ * oct_session_config_size. Bindings call this to verify cffi cdef /
+ * Swift / JNI struct declarations don't drift from runtime.h. */
+OCT_API size_t oct_model_config_size(void);
 
 #ifdef __cplusplus
 }  /* extern "C" */
