@@ -39,7 +39,7 @@ import urllib.request
 from pathlib import Path
 
 REPO = "octomil/octomil-runtime"
-DEFAULT_VERSION = "v0.0.1"
+DEFAULT_VERSION = "v0.1.0"  # bumped from v0.0.1 stub to v0.1.0 (first advertised capability: chat.completion)
 CACHE_ROOT = Path.home() / ".cache" / "octomil-runtime"
 
 

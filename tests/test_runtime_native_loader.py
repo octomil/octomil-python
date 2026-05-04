@@ -102,33 +102,13 @@ def runtime_dylib() -> Path:
     return path
 
 
-# NOTE: marker registration + collection auto-marker live in
-# tests/conftest.py — pytest doesn't run the relevant hooks from
-# test modules. The autouse fixture below reads the marker.
-@pytest.fixture(autouse=True)
-def _isolate_loader(request, monkeypatch):
-    """Tests carrying ``@pytest.mark.requires_runtime`` (or
-    auto-marked above) get the FFI/Lib singletons reset and the env
-    override pointed at the resolved dylib; if no dylib is available
-    they skip cleanly. Tests without the marker run unmodified —
-    structural guards run regardless of whether a dylib is staged."""
-    if request.node.get_closest_marker("requires_runtime") is None:
-        yield
-        return
-    dylib = _external_dylib()
-    if dylib is None:
-        pytest.skip(
-            "no external liboctomil-runtime available — set "
-            "OCTOMIL_RUNTIME_DYLIB or run "
-            "`python scripts/fetch_runtime_dev.py`."
-        )
-        return
-    monkeypatch.setenv("OCTOMIL_RUNTIME_DYLIB", str(dylib))
-    import octomil.runtime.native.loader as _loader
-
-    monkeypatch.setattr(_loader, "_FFI", None)
-    monkeypatch.setattr(_loader, "_LIB", None)
-    yield
+# NOTE: marker registration + collection auto-marker + the
+# autouse skip-when-no-dylib gate ALL live in tests/conftest.py
+# now (Codex R1 fix on octomil-python#526). The previous local
+# `_isolate_loader` autouse here was redundant with the conftest
+# one AND scoped to this file only — meaning marked tests in
+# OTHER modules (e.g. test_runtime_chat_completion_conformance.py)
+# never got skip-when-no-dylib behavior.
 
 
 # ---------------------------------------------------------------------------
@@ -589,10 +569,12 @@ def test_safe_extract_refuses_symlink_member(tmp_path: Path):
 # ---------------------------------------------------------------------------
 
 
-def test_session_open_against_stub_returns_unsupported():
-    """The strict-reject contract on ``capability``: under the slice-2
-    stub *every* capability — including canonical canonical names —
-    returns UNSUPPORTED. The session out-pointer is NULL."""
+def test_session_open_unadvertised_capability_returns_unsupported():
+    """Under v0.1.0, capabilities NOT advertised by the runtime
+    (because no engine adapter is loadable for them) return
+    UNSUPPORTED on session_open. `audio.realtime.session` is the
+    Moshi capability; no engine ships it in v0.1.0, so it's
+    always UNSUPPORTED."""
     from octomil.runtime.native import (
         CAPABILITY_AUDIO_REALTIME_SESSION,
         OCT_STATUS_UNSUPPORTED,
@@ -607,7 +589,6 @@ def test_session_open_against_stub_returns_unsupported():
         # last_error round-trips a descriptive runtime message — bindings
         # rely on this for diagnostic reporting in production.
         assert "session_open" in exc_info.value.last_error.lower()
-        assert "slice-2" in exc_info.value.last_error.lower()
 
 
 def test_session_open_unknown_capability_under_stub_returns_unsupported():
@@ -687,21 +668,26 @@ def test_session_send_audio_against_stub_returns_unsupported():
         assert exc_info.value.status == OCT_STATUS_UNSUPPORTED
 
 
-def test_session_send_text_against_stub_returns_unsupported():
+def test_session_send_text_with_null_session_returns_invalid_input():
+    """v0.1.0 tightened the NULL-session contract: send_text on a
+    NULL session pointer returns INVALID_INPUT, not UNSUPPORTED.
+    The previous slice-2A stub returned UNSUPPORTED uniformly;
+    with real engines wired in, NULL-session is now a caller bug."""
     from octomil.runtime.native import NativeRuntime
     from octomil.runtime.native.loader import (
-        OCT_STATUS_UNSUPPORTED,
         NativeRuntimeError,
         NativeSession,
         _get_lib,
     )
+
+    OCT_STATUS_INVALID_INPUT = 1  # from runtime.h
 
     ffi, lib = _get_lib()
     with NativeRuntime.open() as rt:
         sess = NativeSession(ffi, lib, ffi.NULL, owner=rt)
         with pytest.raises(NativeRuntimeError) as exc_info:
             sess.send_text("hello")
-        assert exc_info.value.status == OCT_STATUS_UNSUPPORTED
+        assert exc_info.value.status == OCT_STATUS_INVALID_INPUT
 
 
 def test_session_poll_event_against_stub_never_yields_fake_event():
@@ -726,22 +712,28 @@ def test_session_poll_event_against_stub_never_yields_fake_event():
         assert exc_info.value.status == OCT_STATUS_UNSUPPORTED
 
 
-def test_session_cancel_against_stub_returns_unsupported_status():
-    """cancel() returns the raw status code; UNSUPPORTED is not
-    treated as an error (idempotent semantics include UNSUPPORTED so
-    bindings can call cancel() in cleanup paths without try/except)."""
+def test_session_cancel_with_null_session_raises_invalid_input():
+    """v0.1.0 tightened the NULL-session contract: cancel() on a
+    NULL session raises NativeRuntimeError(INVALID_INPUT). The
+    slice-2A "UNSUPPORTED is fine, return as status" idempotent
+    semantic was appropriate when every session entry point was
+    a stub; with real engines wired in, NULL-session at cancel
+    is a programming error."""
     from octomil.runtime.native import NativeRuntime
     from octomil.runtime.native.loader import (
-        OCT_STATUS_UNSUPPORTED,
+        NativeRuntimeError,
         NativeSession,
         _get_lib,
     )
 
+    OCT_STATUS_INVALID_INPUT = 1
+
     ffi, lib = _get_lib()
     with NativeRuntime.open() as rt:
         sess = NativeSession(ffi, lib, ffi.NULL, owner=rt)
-        status = sess.cancel()
-        assert status == OCT_STATUS_UNSUPPORTED
+        with pytest.raises(NativeRuntimeError) as exc_info:
+            sess.cancel()
+        assert exc_info.value.status == OCT_STATUS_INVALID_INPUT
 
 
 def test_session_close_idempotent():

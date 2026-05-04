@@ -69,6 +69,7 @@ from octomil.runtime.native.loader import (
     # v0.4 step 2 — runtime-scope events.
     OCT_EVENT_CACHE_HIT,
     OCT_EVENT_CACHE_MISS,
+    OCT_EVENT_ERROR,
     OCT_EVENT_MEMORY_PRESSURE,
     OCT_EVENT_METRIC,
     OCT_EVENT_MODEL_EVICTED,
@@ -135,6 +136,7 @@ __all__ = [
     "OCT_EVENT_AUDIO_CHUNK",
     "OCT_EVENT_CACHE_HIT",
     "OCT_EVENT_CACHE_MISS",
+    "OCT_EVENT_ERROR",
     "OCT_EVENT_MEMORY_PRESSURE",
     "OCT_EVENT_METRIC",
     "OCT_EVENT_MODEL_EVICTED",
