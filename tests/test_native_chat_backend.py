@@ -343,6 +343,130 @@ async def test_native_chat_backend_streaming_uses_self_executor_for_session_call
     assert chunks and chunks[-1].finish_reason == "stop"
 
 
+def test_native_chat_backend_metrics_collect_cache_and_latency_telemetry():
+    """Cutover follow-up #73: ``generate()`` drains CACHE_HIT/CACHE_MISS
+    events and reads SESSION_COMPLETED timing (setup_ms,
+    engine_first_chunk_ms, queued_ms, total_latency_ms) into
+    ``InferenceMetrics``. Pre-fix the SDK ignored everything except
+    chunk count + wall-clock TTFC.
+
+    Fake-session test (no runtime required) — emit a CACHE_HIT, a
+    CACHE_MISS, a TRANSCRIPT_CHUNK, then SESSION_COMPLETED with
+    populated timing fields. Assert the metrics object surfaces all
+    of them and ``cache_hit=True`` (legacy bool flag stays in sync)."""
+    from octomil.runtime.native.chat_backend import NativeChatBackend
+    from octomil.runtime.native.loader import (
+        OCT_EVENT_CACHE_HIT,
+        OCT_EVENT_CACHE_MISS,
+        OCT_EVENT_SESSION_COMPLETED,
+        OCT_EVENT_TRANSCRIPT_CHUNK,
+        OCT_STATUS_OK,
+    )
+    from octomil.serve.types import GenerationRequest
+
+    class _Ev:
+        def __init__(self, **kw: Any) -> None:
+            self.type = kw["type"]
+            self.text = kw.get("text", "")
+            self.terminal_status = kw.get("terminal_status", 0)
+            self.cache_saved_tokens = kw.get("cache_saved_tokens", 0)
+            self.setup_ms = kw.get("setup_ms", 0.0)
+            self.engine_first_chunk_ms = kw.get("engine_first_chunk_ms", 0.0)
+            self.queued_ms = kw.get("queued_ms", 0.0)
+            self.total_latency_ms = kw.get("total_latency_ms", 0.0)
+
+    events = iter(
+        [
+            _Ev(type=OCT_EVENT_CACHE_HIT, cache_saved_tokens=128),
+            _Ev(type=OCT_EVENT_CACHE_MISS),
+            _Ev(type=OCT_EVENT_TRANSCRIPT_CHUNK, text="ok"),
+            _Ev(
+                type=OCT_EVENT_SESSION_COMPLETED,
+                terminal_status=OCT_STATUS_OK,
+                setup_ms=12.5,
+                engine_first_chunk_ms=42.0,
+                queued_ms=3.5,
+                total_latency_ms=180.0,
+            ),
+        ]
+    )
+
+    class _FakeSession:
+        def send_chat(self, *_a: Any, **_k: Any) -> None:
+            return None
+
+        def poll_event(self, *_a: Any, **_k: Any) -> Any:
+            return next(events)
+
+        def close(self) -> None:
+            return None
+
+    class _FakeRuntime:
+        def open_session(self, **_k: Any) -> Any:
+            return _FakeSession()
+
+        def last_error(self) -> str:
+            return ""
+
+    backend = NativeChatBackend()
+    backend._runtime = _FakeRuntime()  # type: ignore[assignment]
+    backend._model = object()  # type: ignore[assignment]
+
+    req = GenerationRequest(
+        model="x.gguf",
+        messages=[{"role": "user", "content": "hi"}],
+        max_tokens=8,
+    )
+    text, metrics = backend.generate(req)
+    assert text == "ok"
+    assert metrics.cache_hits == 1
+    assert metrics.cache_misses == 1
+    assert metrics.cache_saved_tokens == 128
+    assert metrics.cache_hit is True  # legacy bool flag
+    assert metrics.setup_ms == 12.5
+    assert metrics.engine_first_chunk_ms == 42.0
+    assert metrics.queued_ms == 3.5
+    # total_duration_ms prefers runtime-reported total_latency_ms.
+    assert metrics.total_duration_ms == 180.0
+    assert metrics.total_tokens == 1
+
+
+def test_native_chat_backend_get_verbose_metadata_surfaces_telemetry():
+    """Cutover follow-up #73: ``get_verbose_metadata`` exposes the
+    cache/latency fields on backend.generate_completed events. The
+    InstrumentedBackend wrapper calls this hook with
+    ``metrics=<InferenceMetrics>``; the returned dict must include
+    cache_hits / cache_misses / cache_saved_tokens / queued_ms /
+    setup_ms / engine_first_chunk_ms so verbose telemetry consumers
+    (CLI, observability) see real numbers."""
+    from octomil.runtime.native.chat_backend import NativeChatBackend
+    from octomil.serve.types import InferenceMetrics
+
+    backend = NativeChatBackend()
+    metrics = InferenceMetrics(
+        ttfc_ms=42.0,
+        total_tokens=10,
+        tokens_per_second=5.5,
+        total_duration_ms=200.0,
+        cache_hit=True,
+        cache_hits=2,
+        cache_misses=1,
+        cache_saved_tokens=256,
+        queued_ms=4.0,
+        setup_ms=15.0,
+        engine_first_chunk_ms=40.0,
+        attention_backend="native",
+    )
+    meta = backend.get_verbose_metadata("backend.generate_completed", metrics=metrics)
+    assert meta["cache_hits"] == 2
+    assert meta["cache_misses"] == 1
+    assert meta["cache_saved_tokens"] == 256
+    assert meta["queued_ms"] == 4.0
+    assert meta["setup_ms"] == 15.0
+    assert meta["engine_first_chunk_ms"] == 40.0
+    assert meta["ttfc_ms"] == 42.0
+
+
 @pytest.mark.requires_runtime
 def test_native_chat_backend_reuses_cached_model_across_requests():
     """The cached ``NativeModel`` MUST be reused across requests on

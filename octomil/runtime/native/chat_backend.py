@@ -68,6 +68,8 @@ from ...serve.types import (
     InferenceMetrics,
 )
 from .loader import (
+    OCT_EVENT_CACHE_HIT,
+    OCT_EVENT_CACHE_MISS,
     OCT_EVENT_ERROR,
     OCT_EVENT_NONE,
     OCT_EVENT_SESSION_COMPLETED,
@@ -399,12 +401,22 @@ class NativeChatBackend(InferenceBackend):
             # generated token; SESSION_COMPLETED carries the bounded
             # terminal status. ERROR events surface the bounded
             # error_code (we map to OctomilError on terminal).
+            # Cutover follow-up #73: also drain CACHE_HIT / CACHE_MISS
+            # events and capture session-completed timing fields so
+            # InferenceMetrics carries real cache + latency telemetry.
             assembled: list[str] = []
             n_chunks = 0
             ttfc_ms: float = 0.0
             terminal_status: int = OCT_STATUS_OK
             saw_error = False
             error_message = ""
+            cache_hits = 0
+            cache_misses = 0
+            cache_saved_tokens = 0
+            sc_setup_ms = 0.0
+            sc_engine_first_chunk_ms = 0.0
+            sc_queued_ms = 0.0
+            sc_total_latency_ms = 0.0
             # Hard wall on session lifetime so a runaway model can't
             # block the request thread forever. 5 minutes is generous
             # for any reasonable chat completion.
@@ -422,24 +434,24 @@ class NativeChatBackend(InferenceBackend):
                     if ev.text:
                         assembled.append(ev.text)
                     continue
+                if ev.type == OCT_EVENT_CACHE_HIT:
+                    cache_hits += 1
+                    cache_saved_tokens += int(ev.cache_saved_tokens)
+                    continue
+                if ev.type == OCT_EVENT_CACHE_MISS:
+                    cache_misses += 1
+                    continue
                 if ev.type == OCT_EVENT_ERROR:
                     saw_error = True
-                    # Codex R1 P1: read last_error IMMEDIATELY on
-                    # OCT_EVENT_ERROR so a subsequent poll can't
-                    # overwrite the diagnostic. The runtime emits
-                    # ERROR before SESSION_COMPLETED in the rejected
-                    # path; capturing here keeps the message bound
-                    # to the originating event.
                     if not error_message:
                         error_message = self._runtime.last_error()
                     continue
                 if ev.type == OCT_EVENT_SESSION_COMPLETED:
-                    # Codex R1 P1: read the TYPED terminal_status
-                    # from the event (NativeEvent now exposes it).
-                    # An UNSUPPORTED reject from the runtime (e.g.,
-                    # non-greedy temperature) maps to UNSUPPORTED_MODALITY,
-                    # NOT INVALID_INPUT.
                     terminal_status = int(ev.terminal_status)
+                    sc_setup_ms = float(ev.setup_ms)
+                    sc_engine_first_chunk_ms = float(ev.engine_first_chunk_ms)
+                    sc_queued_ms = float(ev.queued_ms)
+                    sc_total_latency_ms = float(ev.total_latency_ms)
                     break
             else:
                 # Loop exited via the deadline without seeing
@@ -459,13 +471,27 @@ class NativeChatBackend(InferenceBackend):
             elapsed = time.monotonic() - t_send
             text = "".join(assembled)
             tps = (n_chunks / elapsed) if elapsed > 0 else 0.0
+            # Cutover follow-up #73: prefer the runtime's reported
+            # total_latency_ms when present; fall back to the SDK-
+            # measured wall-clock if the runtime didn't populate it
+            # (e.g., older runtime, or future event ordering where
+            # SESSION_COMPLETED hasn't fired yet — though we'd have
+            # raised on deadline above).
+            duration_ms = sc_total_latency_ms if sc_total_latency_ms > 0 else (elapsed * 1000.0)
             metrics = InferenceMetrics(
                 ttfc_ms=ttfc_ms,
                 prompt_tokens=0,  # not exposed by v0.1.2 envelope
                 total_tokens=n_chunks,
                 tokens_per_second=tps,
-                total_duration_ms=elapsed * 1000.0,
+                total_duration_ms=duration_ms,
                 attention_backend=self.attention_backend,
+                cache_hit=cache_hits > 0,
+                cache_hits=cache_hits,
+                cache_misses=cache_misses,
+                cache_saved_tokens=cache_saved_tokens,
+                queued_ms=sc_queued_ms,
+                setup_ms=sc_setup_ms,
+                engine_first_chunk_ms=sc_engine_first_chunk_ms,
             )
             return text, metrics
         finally:
@@ -607,7 +633,13 @@ class NativeChatBackend(InferenceBackend):
         request: GenerationRequest | None = None,
         metrics: InferenceMetrics | None = None,
     ) -> dict[str, Any]:
-        """Surface the cutover identity in verbose telemetry events."""
+        """Surface the cutover identity + cache/latency telemetry in
+        verbose events. Cutover follow-up #73 added the cache_*,
+        queued_ms, setup_ms, engine_first_chunk_ms fields — they ride
+        along on backend.generate_completed events when the runtime
+        emitted CACHE_HIT/MISS or populated SESSION_COMPLETED timing.
+        Defaults to 0 when no telemetry was produced (e.g., a
+        cold-start request with no prior session warmth)."""
         meta: dict[str, Any] = {
             "backend": self.name,
             "runtime": "octomil-runtime",
@@ -618,4 +650,11 @@ class NativeChatBackend(InferenceBackend):
             meta["ttfc_ms"] = metrics.ttfc_ms
             meta["total_tokens"] = metrics.total_tokens
             meta["tokens_per_second"] = metrics.tokens_per_second
+            # Cutover follow-up #73: cache + latency telemetry.
+            meta["cache_hits"] = metrics.cache_hits
+            meta["cache_misses"] = metrics.cache_misses
+            meta["cache_saved_tokens"] = metrics.cache_saved_tokens
+            meta["queued_ms"] = metrics.queued_ms
+            meta["setup_ms"] = metrics.setup_ms
+            meta["engine_first_chunk_ms"] = metrics.engine_first_chunk_ms
         return meta

@@ -1267,6 +1267,20 @@ class NativeEvent:
         # these fields.
         "terminal_status",
         "error_code",
+        # Cutover follow-up #73: cache + session-completed telemetry.
+        # The runtime emits CACHE_HIT / CACHE_MISS events with
+        # cache.layer + cache.saved_tokens, and SESSION_COMPLETED with
+        # setup_ms / engine_first_chunk_ms / e2e_first_chunk_ms /
+        # total_latency_ms / queued_ms. Expose them so the SDK's
+        # InferenceMetrics + get_verbose_metadata can surface real
+        # telemetry instead of just chunk count + ttfc.
+        "cache_layer",
+        "cache_saved_tokens",
+        "setup_ms",
+        "engine_first_chunk_ms",
+        "e2e_first_chunk_ms",
+        "total_latency_ms",
+        "queued_ms",
     )
 
     def __init__(
@@ -1287,6 +1301,13 @@ class NativeEvent:
         text: str = "",
         terminal_status: int = 0,
         error_code: int = 0,
+        cache_layer: str = "",
+        cache_saved_tokens: int = 0,
+        setup_ms: float = 0.0,
+        engine_first_chunk_ms: float = 0.0,
+        e2e_first_chunk_ms: float = 0.0,
+        total_latency_ms: float = 0.0,
+        queued_ms: float = 0.0,
     ) -> None:
         self.type = type
         self.version = version
@@ -1303,6 +1324,13 @@ class NativeEvent:
         self.text = text
         self.terminal_status = terminal_status
         self.error_code = error_code
+        self.cache_layer = cache_layer
+        self.cache_saved_tokens = cache_saved_tokens
+        self.setup_ms = setup_ms
+        self.engine_first_chunk_ms = engine_first_chunk_ms
+        self.e2e_first_chunk_ms = e2e_first_chunk_ms
+        self.total_latency_ms = total_latency_ms
+        self.queued_ms = queued_ms
 
     @property
     def is_none(self) -> bool:
@@ -1580,6 +1608,13 @@ class NativeSession:
         text_payload = ""
         terminal_status = 0
         error_code = 0
+        cache_layer = ""
+        cache_saved_tokens = 0
+        setup_ms = 0.0
+        engine_first_chunk_ms = 0.0
+        e2e_first_chunk_ms = 0.0
+        total_latency_ms = 0.0
+        queued_ms = 0.0
         ev_type = int(ev.type)
         if ev_type == OCT_EVENT_TRANSCRIPT_CHUNK:
             chunk = ev.data.transcript_chunk
@@ -1590,14 +1625,29 @@ class NativeSession:
             # the SDK can map UNSUPPORTED rejects to
             # UNSUPPORTED_MODALITY (rather than flatten everything
             # post-error to INVALID_INPUT).
-            terminal_status = int(ev.data.session_completed.terminal_status)
+            sc = ev.data.session_completed
+            terminal_status = int(sc.terminal_status)
+            # Cutover follow-up #73: latency telemetry from
+            # SESSION_COMPLETED — surface to InferenceMetrics +
+            # get_verbose_metadata so callers see real timing
+            # rather than just a chunk count.
+            setup_ms = float(sc.setup_ms)
+            engine_first_chunk_ms = float(sc.engine_first_chunk_ms)
+            e2e_first_chunk_ms = float(sc.e2e_first_chunk_ms)
+            total_latency_ms = float(sc.total_latency_ms)
+            queued_ms = float(sc.queued_ms)
         elif ev_type == OCT_EVENT_ERROR:
             # Cutover R1 (Codex): typed error_code from the inner
-            # payload. Free-form `code` and `message` strings live
-            # in the same union but aren't yet exposed by this
-            # wrapper — terminal_status on the subsequent
-            # SESSION_COMPLETED is the load-bearing dispatch.
+            # payload.
             error_code = int(ev.data.error.error_code)
+        elif ev_type in (OCT_EVENT_CACHE_HIT, OCT_EVENT_CACHE_MISS):
+            # Cutover follow-up #73: cache telemetry. layer string is
+            # owned by the runtime only until the next poll, so copy
+            # it out now (same pattern as transcript_chunk text).
+            cache = ev.data.cache
+            cache_saved_tokens = int(cache.saved_tokens)
+            if cache.layer != ffi.NULL:
+                cache_layer = ffi.string(cache.layer).decode("utf-8", errors="replace")
         return NativeEvent(
             type=ev_type,
             version=int(ev.version),
@@ -1606,6 +1656,13 @@ class NativeSession:
             text=text_payload,
             terminal_status=terminal_status,
             error_code=error_code,
+            cache_layer=cache_layer,
+            cache_saved_tokens=cache_saved_tokens,
+            setup_ms=setup_ms,
+            engine_first_chunk_ms=engine_first_chunk_ms,
+            e2e_first_chunk_ms=e2e_first_chunk_ms,
+            total_latency_ms=total_latency_ms,
+            queued_ms=queued_ms,
             **_envelope(ev),
         )
 
