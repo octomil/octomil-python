@@ -238,8 +238,13 @@ budget defined in `manifest.toml [probe.budgets]`.
 OCT_EVENT_METRIC { name (closed enum), value (double) }
 ```
 
-Names drawn from `runtime_metric.json` closed enum (15 metrics
-across cache._, gpu._, kv*prefix.*, mimi._, model._, scheduler.\_).
+Names drawn from `runtime_metric.json` (octomil-contracts#99) — a
+closed enum spanning the `cache.*`, `gpu.*`, `kv_prefix.*`,
+`mimi.*`, `model.*`, and `scheduler.*` namespaces. Authoritative
+count and exact names live in `runtime_metric.json`; this doc
+intentionally does not paraphrase the enum, since paraphrase
+decays the moment the contract changes.
+
 **Free-form names FORBIDDEN by-construction** — Slice 2C cannot
 emit a name not in the canonical assignment table because the
 emission helper takes a constant from the table, not an arbitrary
@@ -267,10 +272,11 @@ readable context but should NOT be used as metric labels.
 
 ## v0.4 step 2 result
 
-All 14 mapping rows fit the v0.4 ABI without modification. The
-manifest's `delta_required = false` markers reflect this in
-machine-readable form. Slice 2C builds against this contract; the
-probe re-asserts no row flips on at startup.
+All 15 mapping rows (5 slice-2A + 10 v0.4 step 2) fit the v0.4 ABI
+without modification. The manifest's `delta_required = false`
+markers reflect this in machine-readable form. Slice 2C builds
+against this contract; the probe re-asserts no row flips on at
+startup.
 
 If a future Moshi-specific requirement forces an ABI delta (e.g.,
 Moshika voice change mid-session needs a SPEAKER_CHANGED event),

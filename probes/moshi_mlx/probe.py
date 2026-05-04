@@ -685,14 +685,28 @@ def acceptance_run_streaming(
 # Required ABI mapping coverage — every probe run MUST declare these
 # rows so coverage cannot regress by omission. Codex R10 missed-case
 # fix: previous version accepted any manifest with zero
-# `delta_required` rows including an empty mapping section.
+# `delta_required` rows including an empty mapping section. Extended
+# at v0.4 step 2 (octomil-python#521) so future removal of an
+# operational-envelope or runtime-scope-event row also fails the probe.
 _REQUIRED_ABI_MAPPING_ROWS = frozenset(
     {
+        # Slice 2A baseline.
         "session_open",
         "audio_chunk_event",
         "transcript_chunk_event",
         "cancel",
         "input_dropped",
+        # ABI v0.4 step 2 additions.
+        "operational_envelope",
+        "model_loaded",
+        "model_evicted",
+        "cache_hit_kv_prefix",
+        "queued_preempted",
+        "memory_pressure",
+        "thermal_state",
+        "watchdog_timeout",
+        "metric",
+        "error_code",
     }
 )
 

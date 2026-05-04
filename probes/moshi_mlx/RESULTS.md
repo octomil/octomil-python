@@ -127,7 +127,7 @@ stub-behavior tests today.
 
 ## Acceptance #6 — ABI sufficiency
 
-**Status: PASSED.** Mapping table grew from 5 rows (slice-2A) to 14
+**Status: PASSED.** Mapping table grew from 5 rows (slice-2A) to 15
 rows (v0.4 step 2). All declare `delta_required = false`:
 
 ### Slice 2A baseline (5 rows)
@@ -140,7 +140,7 @@ rows (v0.4 step 2). All declare `delta_required = false`:
 | `cancel`                 | atomic-flag-flip on next 80ms boundary maps to `oct_session_cancel` semantics                           |
 | `input_dropped`          | encoder backpressure maps to existing `input_dropped` payload                                           |
 
-### ABI v0.4 step 2 additions (9 new rows)
+### ABI v0.4 step 2 additions (10 new rows)
 
 Per octomil-python#521 (merged), the production-debugging surface
 landed and Moshi/MLX has explicit fits documented in
@@ -157,7 +157,7 @@ landed and Moshi/MLX has explicit fits documented in
 | `thermal_state`        | state ∈ {nominal, fair, serious, critical}                                                                                                  |
 | `watchdog_timeout`     | timeout_ms + phase ∈ {load, warm, first_audio, session_step}                                                                                |
 | `metric`               | name (closed runtime_metric.json enum) + value (double); free-form names FORBIDDEN by-construction                                          |
-| `error_code`           | OCT*ERR*\* taxonomy bound to OCT_EVENT_ERROR.error_code (slice-2A code+message strings stay for human context)                              |
+| `error_code`           | `OCT_ERR_*` taxonomy bound to `OCT_EVENT_ERROR.error_code` (slice-2A code+message strings stay for human context)                           |
 
 **No ABI delta required for Moshi.** The v0.4 step 2 header is
 sufficient for Slice 2C. The probe re-asserts no row flips on at
