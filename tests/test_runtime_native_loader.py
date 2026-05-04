@@ -87,12 +87,13 @@ def test_abi_version_returns_three_tuple():
     assert isinstance(major, int)
     assert isinstance(minor, int)
     assert isinstance(patch, int)
-    # Slice 2A: header bumped to MINOR=3 (additive — added
-    # oct_session_config_size/oct_audio_view_size/oct_event_size
-    # introspection functions; canonical capability comment in
-    # oct_session_config_t.capability. Existing readers stay
-    # compatible). Lockstep update with the cdef in loader.py.
-    assert (major, minor) == (0, 3)
+    # ABI v0.4 step 1: header bumped to MINOR=4 (additive — added
+    # oct_model_t lifecycle (open/warm/evict/close — stubs);
+    # oct_error_code_t typedef + 13 constants; +6 capability
+    # constants (audio.diarization, audio.speaker.embedding,
+    # audio.vad, embeddings.image, embeddings.text,
+    # index.vector.query). Existing readers stay 0.3-compat.
+    assert (major, minor) == (0, 4)
     assert patch == 0
 
 
@@ -300,10 +301,12 @@ def test_thread_error_after_invalid_open():
 def test_capabilities_constants_match_contract_set():
     """Sanity: the Python constants mirror the contract enum
     exactly. Drift here would make `requires_capability(...)`
-    silently never match."""
+    silently never match. v0.4: enum +6
+    (octomil-contracts#99)."""
     from octomil.runtime.native import RUNTIME_CAPABILITIES
 
     expected = {
+        # Slice 2A baseline (v0.3)
         "audio.realtime.session",
         "audio.stt.batch",
         "audio.stt.stream",
@@ -312,16 +315,32 @@ def test_capabilities_constants_match_contract_set():
         "audio.tts.stream",
         "chat.completion",
         "chat.stream",
+        # ABI v0.4 expansion
+        "audio.diarization",
+        "audio.speaker.embedding",
+        "audio.vad",
+        "embeddings.image",
+        "embeddings.text",
+        "index.vector.query",
     }
     assert set(RUNTIME_CAPABILITIES) == expected
 
 
-def test_no_embeddings_capability():
-    """Per the strategy doc: embeddings.text is intentionally absent
-    from the runtime capability enum."""
+def test_v0_4_capabilities_present():
+    """ABI v0.4: 6 new capabilities admitted to the runtime enum.
+    embeddings.text in particular replaces the v0.3 'intentionally
+    absent' rule."""
     from octomil.runtime.native import RUNTIME_CAPABILITIES
 
-    assert "embeddings.text" not in RUNTIME_CAPABILITIES
+    for cap in (
+        "audio.diarization",
+        "audio.speaker.embedding",
+        "audio.vad",
+        "embeddings.image",
+        "embeddings.text",
+        "index.vector.query",
+    ):
+        assert cap in RUNTIME_CAPABILITIES, f"v0.4 capability {cap!r} missing"
 
 
 # ---------------------------------------------------------------------------
@@ -633,3 +652,222 @@ def test_session_open_session_after_runtime_close_raises():
     with pytest.raises(NativeRuntimeError) as exc_info:
         rt.open_session(capability=CAPABILITY_AUDIO_REALTIME_SESSION)
     assert "closed" in str(exc_info.value).lower()
+
+
+# ---------------------------------------------------------------------------
+# ABI v0.4 step 1 — model lifecycle stub behavior
+# ---------------------------------------------------------------------------
+
+
+def test_oct_model_config_t_size_matches_runtime():
+    """v0.4 step 1: pin struct-layout parity for oct_model_config_t.
+    Same regression-detector pattern as session_config / audio_view /
+    event."""
+    from octomil.runtime.native.loader import _get_lib
+
+    ffi, lib = _get_lib()
+    cffi_size = ffi.sizeof("oct_model_config_t")
+    runtime_size = int(lib.oct_model_config_size())
+    assert (
+        cffi_size == runtime_size
+    ), f"oct_model_config_t struct-layout drift: cffi cdef sizeof={cffi_size}, C compiler sizeof={runtime_size}."
+
+
+def test_open_model_against_stub_returns_unsupported():
+    """v0.4 step 1: every model entry point returns UNSUPPORTED on
+    the stub. NativeRuntime.open_model raises NativeRuntimeError."""
+    from octomil.runtime.native import OCT_STATUS_UNSUPPORTED, NativeRuntime, NativeRuntimeError
+
+    with NativeRuntime.open() as rt:
+        with pytest.raises(NativeRuntimeError) as exc_info:
+            rt.open_model(model_uri="local:///tmp/does-not-exist")
+        assert exc_info.value.status == OCT_STATUS_UNSUPPORTED
+        assert "model_open" in exc_info.value.last_error.lower()
+        assert "v0.4 step 1" in exc_info.value.last_error.lower()
+
+
+def test_open_model_after_runtime_close_raises():
+    """Ordering invariant: open_model after runtime close raises a
+    typed exception (binding-level invalidation; UB at C level)."""
+    from octomil.runtime.native import NativeRuntime, NativeRuntimeError
+
+    rt = NativeRuntime.open()
+    rt.close()
+    with pytest.raises(NativeRuntimeError) as exc_info:
+        rt.open_model(model_uri="local:///tmp/x")
+    assert "closed" in str(exc_info.value).lower()
+
+
+def test_open_model_v0_returns_version_mismatch():
+    """v0.4 step 1: model_open with config.version=0xFF returns
+    OCT_STATUS_VERSION_MISMATCH cleanly."""
+    from octomil.runtime.native import NativeRuntime
+    from octomil.runtime.native.loader import (
+        OCT_STATUS_VERSION_MISMATCH,
+        NativeRuntimeError,
+        _get_lib,
+    )
+
+    ffi, lib = _get_lib()
+    with NativeRuntime.open() as rt:
+        cfg = ffi.new("oct_model_config_t*")
+        cfg.version = 0xFF  # invalid
+        cfg.model_uri = ffi.new("char[]", b"local:///tmp/x")
+        out = ffi.new("oct_model_t**")
+        status = int(lib.oct_model_open(rt._handle, cfg, out))  # noqa: SLF001
+        assert status == OCT_STATUS_VERSION_MISMATCH
+        assert out[0] == ffi.NULL
+        # Sanity: runtime invariants — wrapper would surface this as
+        # NativeRuntimeError, but this test calls the C ABI directly
+        # to verify the version-mismatch path exists.
+        _ = NativeRuntimeError  # symbol-existence check
+
+
+def test_native_model_invalidated_on_runtime_close():
+    """v0.4 step 1: NativeModel children participate in the same
+    WeakSet invalidation cascade that protects NativeSession (Codex
+    R1 blocker fix from slice 2A — extended to models)."""
+    from octomil.runtime.native import NativeModel, NativeRuntime, NativeRuntimeError
+    from octomil.runtime.native.loader import OCT_STATUS_INVALID_INPUT, _get_lib
+
+    ffi, lib = _get_lib()
+    rt = NativeRuntime.open()
+    # Synthesize a NativeModel + register it (mirrors what
+    # open_model would do after a successful C call; stub never
+    # produces a real handle).
+    mdl = NativeModel(ffi, lib, ffi.NULL, owner=rt)
+    rt._models.add(mdl)  # noqa: SLF001 — internal wiring under test
+
+    rt.close()
+
+    with pytest.raises(NativeRuntimeError) as exc_info:
+        mdl.warm()
+    assert exc_info.value.status == OCT_STATUS_INVALID_INPUT
+    assert "invalidated" in str(exc_info.value).lower()
+
+    # close() on invalidated model is a no-op (must NOT call
+    # oct_model_close on a freed handle).
+    mdl.close()
+    mdl.close()
+    # evict() falls through to OK so cleanup paths are safe.
+    from octomil.runtime.native.loader import OCT_STATUS_OK
+
+    assert mdl.evict() == OCT_STATUS_OK
+
+
+def test_oct_err_constants_stable():
+    """v0.4: OCT_ERR_* numeric assignments are stable forever per
+    the contracts schema (canonical_error_codes.json). Drift here
+    breaks SDK codegen across every binding. Codex R3 missed-case:
+    full parity coverage instead of spot-checking OK/UNKNOWN only."""
+    from octomil.runtime.native.loader import (
+        OCT_ERR_ACCELERATOR_UNAVAILABLE,
+        OCT_ERR_ARTIFACT_DIGEST_MISMATCH,
+        OCT_ERR_ENGINE_INIT_FAILED,
+        OCT_ERR_INPUT_FORMAT_UNSUPPORTED,
+        OCT_ERR_INPUT_OUT_OF_RANGE,
+        OCT_ERR_INTERNAL,
+        OCT_ERR_MODEL_LOAD_FAILED,
+        OCT_ERR_OK,
+        OCT_ERR_PREEMPTED,
+        OCT_ERR_QUOTA_EXCEEDED,
+        OCT_ERR_RAM_INSUFFICIENT,
+        OCT_ERR_TIMEOUT,
+        OCT_ERR_UNKNOWN,
+    )
+
+    # Mirrors octomil-contracts/fixtures/runtime_error_code/canonical_error_codes.json.
+    expected = {
+        "OCT_ERR_OK": 0,
+        "OCT_ERR_MODEL_LOAD_FAILED": 1,
+        "OCT_ERR_ARTIFACT_DIGEST_MISMATCH": 2,
+        "OCT_ERR_ENGINE_INIT_FAILED": 3,
+        "OCT_ERR_RAM_INSUFFICIENT": 4,
+        "OCT_ERR_ACCELERATOR_UNAVAILABLE": 5,
+        "OCT_ERR_INPUT_OUT_OF_RANGE": 6,
+        "OCT_ERR_INPUT_FORMAT_UNSUPPORTED": 7,
+        "OCT_ERR_TIMEOUT": 8,
+        "OCT_ERR_PREEMPTED": 9,
+        "OCT_ERR_QUOTA_EXCEEDED": 10,
+        "OCT_ERR_INTERNAL": 11,
+        "OCT_ERR_UNKNOWN": 0xFFFFFFFF,
+    }
+    actual = {
+        "OCT_ERR_OK": OCT_ERR_OK,
+        "OCT_ERR_MODEL_LOAD_FAILED": OCT_ERR_MODEL_LOAD_FAILED,
+        "OCT_ERR_ARTIFACT_DIGEST_MISMATCH": OCT_ERR_ARTIFACT_DIGEST_MISMATCH,
+        "OCT_ERR_ENGINE_INIT_FAILED": OCT_ERR_ENGINE_INIT_FAILED,
+        "OCT_ERR_RAM_INSUFFICIENT": OCT_ERR_RAM_INSUFFICIENT,
+        "OCT_ERR_ACCELERATOR_UNAVAILABLE": OCT_ERR_ACCELERATOR_UNAVAILABLE,
+        "OCT_ERR_INPUT_OUT_OF_RANGE": OCT_ERR_INPUT_OUT_OF_RANGE,
+        "OCT_ERR_INPUT_FORMAT_UNSUPPORTED": OCT_ERR_INPUT_FORMAT_UNSUPPORTED,
+        "OCT_ERR_TIMEOUT": OCT_ERR_TIMEOUT,
+        "OCT_ERR_PREEMPTED": OCT_ERR_PREEMPTED,
+        "OCT_ERR_QUOTA_EXCEEDED": OCT_ERR_QUOTA_EXCEEDED,
+        "OCT_ERR_INTERNAL": OCT_ERR_INTERNAL,
+        "OCT_ERR_UNKNOWN": OCT_ERR_UNKNOWN,
+    }
+    assert actual == expected, f"OCT_ERR_* assignment drift:\n  expected: {expected}\n  actual:   {actual}"
+    # Numeric values must be unique (collisions silently mis-route errors).
+    values = list(expected.values())
+    assert len(values) == len(set(values)), "duplicate OCT_ERR_* values"
+
+
+def test_loader_rejects_dylib_with_old_abi_minor(monkeypatch, tmp_path: Path):
+    """Codex R1 blocker: v0.4 binding loading a v0.3 dylib should fail
+    fast at load time with OCT_STATUS_VERSION_MISMATCH instead of
+    crashing later on a missing v0.4 symbol. Simulate by monkey-
+    patching the major/minor accessors after dlopen."""
+    from octomil.runtime.native.loader import (
+        OCT_STATUS_VERSION_MISMATCH,
+        NativeRuntimeError,
+        _build_lib,
+    )
+
+    # Pre-warm: real load works.
+    ffi, lib = _build_lib()
+    assert int(lib.oct_runtime_abi_version_minor()) >= 4
+
+    # Now simulate an old dylib by monkey-patching the binding's
+    # required-version constants UPWARD (equivalent test path).
+    import octomil.runtime.native.loader as loader
+
+    monkeypatch.setattr(loader, "_REQUIRED_ABI_MINOR", 99)
+    monkeypatch.setattr(loader, "_FFI", None)
+    monkeypatch.setattr(loader, "_LIB", None)
+    with pytest.raises(NativeRuntimeError) as exc_info:
+        _build_lib()
+    assert exc_info.value.status == OCT_STATUS_VERSION_MISMATCH
+    assert "older than" in str(exc_info.value).lower()
+
+
+def test_native_runtime_close_invokes_model_close_before_invalidation():
+    """Codex R2 fix: NativeRuntime.close() must call NativeModel.close()
+    on each tracked model BEFORE flipping the invalidation flag, so
+    engine adapters with expensive resources get the explicit close
+    path. Defense-in-depth alongside the C ABI's documented implicit
+    cleanup contract."""
+    from octomil.runtime.native import NativeModel, NativeRuntime
+    from octomil.runtime.native.loader import _get_lib
+
+    ffi, lib = _get_lib()
+    rt = NativeRuntime.open()
+
+    closed_count = {"n": 0}
+
+    class _ProbeModel(NativeModel):
+        def close(self):  # type: ignore[override]
+            closed_count["n"] += 1
+            super().close()
+
+    mdl = _ProbeModel(ffi, lib, ffi.NULL, owner=rt)
+    rt._models.add(mdl)  # noqa: SLF001
+
+    rt.close()
+
+    assert closed_count["n"] == 1, "NativeRuntime.close() must call model.close() on each tracked model"
+    # Subsequent ops on the wrapper raise (invalidated).
+    from octomil.runtime.native import NativeRuntimeError
+
+    with pytest.raises(NativeRuntimeError):
+        mdl.warm()

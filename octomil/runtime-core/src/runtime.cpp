@@ -390,4 +390,77 @@ OCT_API oct_status_t oct_session_cancel(oct_session_t* session) {
     return OCT_STATUS_UNSUPPORTED;
 }
 
+/* ==========================================================================
+ * v0.4 step 1 — Model lifecycle stubs.
+ * Every entry point returns OCT_STATUS_UNSUPPORTED with a descriptive
+ * last_error. Engine adapters (Slice 2C Moshi/MLX, future llama.cpp /
+ * sherpa-onnx / whisper.cpp / ONNX) will fill these in.
+ * ========================================================================== */
+
+struct oct_model {
+    /* v0.4 step 1: never actually constructed. Reserved for the real
+     * implementation. */
+    int reserved;
+};
+
+OCT_API size_t oct_model_config_size(void) {
+    return sizeof(oct_model_config_t);
+}
+
+OCT_API oct_status_t oct_model_open(
+    oct_runtime_t* runtime,
+    const oct_model_config_t* config,
+    oct_model_t** out_model
+) {
+    /* Slice-2A invariant preserved: NULL-out → INVALID_INPUT before
+     * any other check, so binding cleanup paths can rely on
+     * `*out == NULL` after a non-OK return. */
+    if (out_model == nullptr) {
+        if (runtime != nullptr) {
+            runtime->set_error("oct_model_open: out_model parameter is NULL");
+        } else {
+            set_thread_error("oct_model_open: out_model parameter is NULL");
+        }
+        return OCT_STATUS_INVALID_INPUT;
+    }
+    *out_model = nullptr;
+    if (runtime == nullptr) {
+        set_thread_error("oct_model_open: runtime is NULL");
+        return OCT_STATUS_INVALID_INPUT;
+    }
+    if (config == nullptr) {
+        runtime->set_error("oct_model_open: config is NULL");
+        return OCT_STATUS_INVALID_INPUT;
+    }
+    if (config->version != OCT_MODEL_CONFIG_VERSION) {
+        runtime->set_error("oct_model_open: config.version must be 1");
+        return OCT_STATUS_VERSION_MISMATCH;
+    }
+    runtime->set_error(
+        "oct_model_open: not implemented in v0.4 step 1 stub (engine adapters "
+        "land in Slice 2C and following slices). Returns OCT_STATUS_UNSUPPORTED."
+    );
+    return OCT_STATUS_UNSUPPORTED;
+}
+
+OCT_API oct_status_t oct_model_warm(oct_model_t* model) {
+    (void)model;
+    set_thread_error("oct_model_warm: not implemented in v0.4 step 1 stub");
+    return OCT_STATUS_UNSUPPORTED;
+}
+
+OCT_API oct_status_t oct_model_evict(oct_model_t* model) {
+    (void)model;
+    set_thread_error("oct_model_evict: not implemented in v0.4 step 1 stub");
+    return OCT_STATUS_UNSUPPORTED;
+}
+
+OCT_API void oct_model_close(oct_model_t* model) {
+    /* Stub never produces a model — nothing to close. The header's
+     * close-of-NULL contract is preserved. */
+    if (model != nullptr) {
+        delete model;
+    }
+}
+
 }  // extern "C"
