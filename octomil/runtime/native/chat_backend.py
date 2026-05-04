@@ -30,9 +30,10 @@ Hard rules (per the cutover spec):
      - top_p (1.0 only — greedy)
    Anything else is a bounded ``INVALID_INPUT`` (caller-misuse) or
    ``UNSUPPORTED_MODALITY`` (capability gap).
-3. Streaming (chat.stream) is not implemented in v0.1.2 and is
-   gated out by ``generate_stream`` raising ``UNSUPPORTED_MODALITY``.
-   A streaming-aware variant ships when the runtime adds it.
+3. Streaming (chat.stream) is supported as of cutover follow-up #72:
+   ``generate_stream`` relays the runtime's per-token TRANSCRIPT_CHUNK
+   events as ``GenerationChunk`` instances, with a final
+   ``finish_reason="stop"`` marker on SESSION_COMPLETED.
 4. Artifact path comes from the PrepareManager's ``model_dir`` —
    no ``OCTOMIL_LLAMA_CPP_GGUF`` requirement on the product flow.
 
@@ -238,7 +239,11 @@ class NativeChatBackend(InferenceBackend):
     capabilities = BackendCapabilities(
         grammar_supported=False,
         json_mode_supported=False,
-        streaming_supported=False,  # chat.stream is follow-up #72
+        # Cutover follow-up #72: chat.stream landed. The runtime emits
+        # one TRANSCRIPT_CHUNK event per generated token; generate_stream
+        # now relays them as ``GenerationChunk`` instances rather than
+        # accumulating into a single string.
+        streaming_supported=True,
         tools_supported=False,
         attention_backend="native",
     )
@@ -467,22 +472,127 @@ class NativeChatBackend(InferenceBackend):
             sess.close()
 
     async def generate_stream(self, request: GenerationRequest) -> AsyncIterator[GenerationChunk]:
-        """Streaming chat is the ``chat.stream`` capability — NOT
-        implemented in v0.1.2's runtime. The planner MUST NOT route
-        streaming requests to native until that capability ships.
-        Calling this raises ``UNSUPPORTED_MODALITY`` rather than
-        falling back to the Python-local path (no silent fallback)."""
-        raise OctomilError(
-            code=OctomilErrorCode.UNSUPPORTED_MODALITY,
-            message=(
-                "Streaming chat (chat.stream) is not implemented in "
-                "octomil-runtime v0.1.2. The planner should route "
-                "stream=True requests to a streaming-capable engine; "
-                "the native chat backend will gain streaming when the "
-                "runtime adds the chat.stream capability."
-            ),
-        )
-        yield  # pragma: no cover — async-generator marker
+        """Cutover follow-up #72: chat.stream capability for the native
+        backend. The runtime already emits one TRANSCRIPT_CHUNK event per
+        generated token; this method relays them as ``GenerationChunk``
+        instances as they arrive (rather than accumulating into a single
+        string the way ``generate()`` does).
+
+        Same gating, validation, and terminal-status mapping as
+        ``generate()`` — ``request.stream`` is just an output-shape
+        choice; the underlying session/poll loop is identical. Yields
+        a final empty-text chunk with ``finish_reason="stop"`` once
+        SESSION_COMPLETED arrives.
+        """
+        import asyncio
+
+        # Gate UNSUPPORTED features before checking runtime availability
+        # so a grammar/json_mode/tools request gets a 422 even if the
+        # backend hasn't been loaded yet — those modalities will never
+        # be supported regardless of load state, while RUNTIME_UNAVAILABLE
+        # is a transient condition.
+        _gate_unsupported_request_features(request)
+        clean_messages = _validate_messages_for_native(request.messages)
+        if self._runtime is None or self._model is None:
+            raise OctomilError(
+                code=OctomilErrorCode.RUNTIME_UNAVAILABLE,
+                message="NativeChatBackend.generate_stream called before load_model",
+            )
+
+        try:
+            sess = self._runtime.open_session(
+                capability="chat.completion",
+                locality="on_device",
+                policy_preset="private",
+                model=self._model,
+            )
+        except NativeRuntimeError as exc:
+            raise _runtime_status_to_sdk_error(
+                exc.status,
+                "native chat backend failed to open streaming session",
+                last_error=getattr(exc, "last_error", ""),
+            ) from exc
+
+        loop = asyncio.get_event_loop()
+        try:
+            if request.temperature not in (0.0, 0):
+                logger.warning(
+                    "NativeChatBackend.generate_stream: v0.1.2 ships greedy-only; ignoring request.temperature=%s",
+                    request.temperature,
+                )
+            if request.top_p not in (1.0, 1):
+                logger.warning(
+                    "NativeChatBackend.generate_stream: v0.1.2 ships greedy-only; ignoring request.top_p=%s",
+                    request.top_p,
+                )
+            try:
+                await loop.run_in_executor(
+                    self._executor, lambda: sess.send_chat(clean_messages, max_tokens=int(request.max_tokens))
+                )
+            except NativeRuntimeError as exc:
+                raise _runtime_status_to_sdk_error(
+                    exc.status,
+                    "native chat backend send_chat failed (stream)",
+                    last_error=getattr(exc, "last_error", ""),
+                ) from exc
+
+            # Same drain loop as generate(), but yield each chunk
+            # instead of accumulating. SESSION_COMPLETED still carries
+            # the bounded terminal_status; an UNSUPPORTED reject on
+            # the streaming path raises the same OctomilError.
+            terminal_status: int = OCT_STATUS_OK
+            saw_error = False
+            error_message = ""
+            deadline = time.monotonic() + 300.0
+            while time.monotonic() < deadline:
+                ev = await loop.run_in_executor(self._executor, lambda: sess.poll_event(timeout_ms=200))
+                if ev is None or ev.type == OCT_EVENT_NONE:
+                    continue
+                if ev.type == OCT_EVENT_SESSION_STARTED:
+                    continue
+                if ev.type == OCT_EVENT_TRANSCRIPT_CHUNK:
+                    if ev.text:
+                        yield GenerationChunk(text=ev.text, finish_reason=None)
+                    continue
+                if ev.type == OCT_EVENT_ERROR:
+                    saw_error = True
+                    if not error_message:
+                        error_message = self._runtime.last_error()
+                    continue
+                if ev.type == OCT_EVENT_SESSION_COMPLETED:
+                    terminal_status = int(ev.terminal_status)
+                    break
+            else:
+                raise OctomilError(
+                    code=OctomilErrorCode.REQUEST_TIMEOUT,
+                    message="native chat backend timed out waiting for SESSION_COMPLETED (stream)",
+                )
+
+            if saw_error or terminal_status != OCT_STATUS_OK:
+                raise _runtime_status_to_sdk_error(
+                    terminal_status if terminal_status != OCT_STATUS_OK else OCT_STATUS_INVALID_INPUT,
+                    "native chat backend reported error during streaming generation",
+                    last_error=error_message,
+                )
+
+            # Final marker chunk so callers can detect terminal cleanly.
+            yield GenerationChunk(text="", finish_reason="stop")
+        finally:
+            # Cutover follow-up #72 (R1 Codex): NativeSession is single-
+            # thread-affine per the loader contract. send_chat / poll_event
+            # ran on `self._executor` (max_workers=1, so all work serializes
+            # on one thread); close() MUST run on the same thread.
+            try:
+                await loop.run_in_executor(self._executor, sess.close)
+            except Exception:  # noqa: BLE001
+                # Generator-close paths can run after the loop has been
+                # shut down (e.g., test teardown). Fall back to a direct
+                # sync close — the session destructor will still cleanly
+                # tear down in that path.
+                try:
+                    sess.close()
+                except Exception:  # noqa: BLE001
+                    logger.warning("NativeChatBackend.generate_stream: session close failed", exc_info=True)
 
     def list_models(self) -> list[str]:
         """The v0.1.2 native runtime doesn't enumerate models; the

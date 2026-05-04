@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import os
 import tempfile
+from typing import Any
 
 import pytest
 
@@ -55,9 +56,9 @@ def test_planner_engine_returns_native_chat_backend():
         engine = LlamaCppEngine()
         backend = engine.create_backend("test-model.gguf", model_dir=tmp)
         try:
-            assert isinstance(backend, NativeChatBackend), (
-                f"engine.create_backend MUST return NativeChatBackend, got " f"{type(backend).__name__!r}"
-            )
+            assert isinstance(
+                backend, NativeChatBackend
+            ), f"engine.create_backend MUST return NativeChatBackend, got {type(backend).__name__!r}"
             assert not isinstance(
                 backend, LlamaCppBackend
             ), "engine.create_backend MUST NOT return the legacy LlamaCppBackend"
@@ -144,6 +145,202 @@ def test_native_chat_backend_generate_end_to_end():
             assert metrics.ttfc_ms > 0, "first-chunk time must be measured"
         finally:
             backend.close()
+
+
+@pytest.mark.requires_runtime
+@pytest.mark.timeout(120)
+@pytest.mark.asyncio
+async def test_native_chat_backend_generate_stream_end_to_end():
+    """Cutover follow-up #72 end-to-end: streaming chat completion.
+    Exercise: load → generate_stream → AsyncIterator[GenerationChunk]
+    yields N>0 non-empty chunks plus a final ``finish_reason="stop"``
+    marker. Pins that:
+      - the runtime's TRANSCRIPT_CHUNK events are relayed as
+        ``GenerationChunk`` instances rather than accumulated;
+      - the final chunk carries ``finish_reason="stop"`` so callers
+        can detect terminal cleanly;
+      - the assembled text is non-empty (matches non-streaming output
+        shape — same model, same prompt, same max_tokens)."""
+    from octomil.runtime.native.chat_backend import NativeChatBackend
+    from octomil.serve.types import GenerationRequest
+
+    gguf = os.environ.get("OCTOMIL_LLAMA_CPP_GGUF", "")
+    if not gguf or not os.path.isfile(gguf):
+        pytest.skip("OCTOMIL_LLAMA_CPP_GGUF unset or missing")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        target = os.path.join(tmp, os.path.basename(gguf))
+        os.symlink(gguf, target)
+
+        backend = NativeChatBackend(model_dir=tmp)
+        try:
+            backend.load_model("test-model.gguf")
+            req = GenerationRequest(
+                model="test-model.gguf",
+                messages=[{"role": "user", "content": "Reply with the word 'ok'."}],
+                max_tokens=8,
+                temperature=0.0,
+                top_p=1.0,
+                stream=True,
+            )
+            chunks: list[Any] = []
+            async for chunk in backend.generate_stream(req):
+                chunks.append(chunk)
+            assert len(chunks) >= 2, "expected at least one content chunk + terminal marker"
+            # Terminal marker is the last chunk with finish_reason="stop"
+            assert chunks[-1].finish_reason == "stop"
+            assert chunks[-1].text == ""
+            # Content chunks (everything but the terminal) carry text
+            content_chunks = [c for c in chunks[:-1] if c.text]
+            assert content_chunks, "expected at least one non-empty content chunk"
+            assembled = "".join(c.text for c in content_chunks)
+            assert len(assembled) > 0
+        finally:
+            backend.close()
+
+
+@pytest.mark.asyncio
+async def test_native_chat_backend_streaming_rejects_enable_thinking():
+    """Cutover follow-up #72 R2 Codex: gate parity — the streaming
+    path must reject `enable_thinking` (Qwen3 / OpenClaw chain-of-
+    thought toggle) the same way `generate()` does. Pre-fix the
+    streaming path could have skipped the gate; pin it here."""
+    from octomil.errors import OctomilError, OctomilErrorCode
+    from octomil.serve.types import GenerationRequest
+
+    backend = _make_unloaded_backend()
+    req = GenerationRequest(
+        model="x.gguf",
+        messages=[{"role": "user", "content": "hi"}],
+        max_tokens=8,
+        stream=True,
+        enable_thinking=True,
+    )
+    with pytest.raises(OctomilError) as exc_info:
+        async for _chunk in backend.generate_stream(req):
+            pass
+    assert exc_info.value.code == OctomilErrorCode.UNSUPPORTED_MODALITY
+
+
+@pytest.mark.asyncio
+async def test_native_chat_backend_streaming_maps_terminal_status_to_octomil_error():
+    """Cutover follow-up #72 R2 Codex: a non-OK SESSION_COMPLETED
+    terminal_status must map to the bounded OctomilError via
+    `_runtime_status_to_sdk_error`, same as the generate() path. Pin
+    that the streaming drain loop doesn't skip the terminal-status
+    mapping (a stream that yields chunks then ends with an UNSUPPORTED
+    terminal_status MUST raise rather than silently completing)."""
+    from octomil.errors import OctomilError, OctomilErrorCode
+    from octomil.runtime.native.chat_backend import NativeChatBackend
+    from octomil.runtime.native.loader import OCT_EVENT_SESSION_COMPLETED, OCT_STATUS_INVALID_INPUT
+    from octomil.serve.types import GenerationRequest
+
+    class _ErrorEvent:
+        type = OCT_EVENT_SESSION_COMPLETED
+        terminal_status = OCT_STATUS_INVALID_INPUT
+        text = ""
+
+    class _FakeSession:
+        def send_chat(self, *_a: Any, **_k: Any) -> None:
+            return None
+
+        def poll_event(self, *_a: Any, **_k: Any) -> Any:
+            return _ErrorEvent()
+
+        def close(self) -> None:
+            return None
+
+    class _FakeRuntime:
+        def open_session(self, **_k: Any) -> Any:
+            return _FakeSession()
+
+        def last_error(self) -> str:
+            return "fake runtime rejected"
+
+    backend = NativeChatBackend()
+    backend._runtime = _FakeRuntime()  # type: ignore[assignment]
+    backend._model = object()  # type: ignore[assignment]
+
+    req = GenerationRequest(
+        model="x.gguf",
+        messages=[{"role": "user", "content": "hi"}],
+        max_tokens=8,
+        stream=True,
+    )
+    with pytest.raises(OctomilError) as exc_info:
+        async for _chunk in backend.generate_stream(req):
+            pass
+    # OCT_STATUS_INVALID_INPUT maps to INVALID_INPUT.
+    assert exc_info.value.code == OctomilErrorCode.INVALID_INPUT
+
+
+@pytest.mark.asyncio
+async def test_native_chat_backend_streaming_uses_self_executor_for_session_calls():
+    """Cutover follow-up #72 (R1 Codex): NativeSession is single-
+    thread-affine per the loader contract. ``generate_stream`` must
+    dispatch ``send_chat`` / ``poll_event`` / ``close`` through
+    ``self._executor`` (max_workers=1) so they all run on the same
+    thread. Pre-fix this used ``run_in_executor(None, ...)`` which
+    dispatches successive calls to potentially-different default-
+    executor worker threads, violating the affinity contract and
+    causing intermittent session-state corruption.
+
+    No runtime required: stub a session whose calls record their
+    thread identity, bypass open_session via __dict__ override, and
+    confirm all three calls (send_chat, poll_event, close) run on
+    the same thread."""
+    from threading import get_ident
+
+    from octomil.runtime.native.chat_backend import NativeChatBackend
+    from octomil.runtime.native.loader import OCT_EVENT_SESSION_COMPLETED, OCT_STATUS_OK
+    from octomil.serve.types import GenerationRequest
+
+    class _FakeEvent:
+        type = OCT_EVENT_SESSION_COMPLETED  # terminate the loop
+        terminal_status = OCT_STATUS_OK
+        text = ""
+
+    threads: list[int] = []
+
+    class _FakeSession:
+        def send_chat(self, *_a: Any, **_k: Any) -> None:
+            threads.append(get_ident())
+
+        def poll_event(self, *_a: Any, **_k: Any) -> Any:
+            threads.append(get_ident())
+            return _FakeEvent()
+
+        def close(self) -> None:
+            threads.append(get_ident())
+
+    class _FakeRuntime:
+        def open_session(self, **_k: Any) -> Any:
+            return _FakeSession()
+
+        def last_error(self) -> str:
+            return ""
+
+    backend = NativeChatBackend()
+    backend._runtime = _FakeRuntime()  # type: ignore[assignment]
+    backend._model = object()  # type: ignore[assignment]
+
+    req = GenerationRequest(
+        model="x.gguf",
+        messages=[{"role": "user", "content": "hi"}],
+        max_tokens=8,
+        stream=True,
+    )
+
+    chunks: list[Any] = []
+    async for c in backend.generate_stream(req):
+        chunks.append(c)
+
+    # All session calls (send_chat, poll_event, close) must run on the
+    # same thread — that's the executor's single worker.
+    assert len(threads) >= 3, f"expected send_chat/poll_event/close to all run; got {len(threads)} calls"
+    assert all(t == threads[0] for t in threads), f"NativeSession thread affinity violated: threads={threads}"
+    # Final marker chunk produced.
+    assert chunks and chunks[-1].finish_reason == "stop"
 
 
 @pytest.mark.requires_runtime
@@ -267,10 +464,11 @@ def test_native_chat_backend_rejects_enable_thinking():
 
 
 @pytest.mark.asyncio
-async def test_native_chat_backend_streaming_unsupported():
-    """``chat.stream`` is not implemented in the runtime; the
-    backend MUST raise ``UNSUPPORTED_MODALITY`` rather than fall
-    back to the Python streaming path."""
+async def test_native_chat_backend_streaming_unloaded_raises_runtime_unavailable():
+    """Cutover follow-up #72: ``chat.stream`` is now supported on the
+    native backend. Calling ``generate_stream`` BEFORE ``load_model``
+    raises bounded ``RUNTIME_UNAVAILABLE`` (the runtime/model handle
+    isn't there yet) rather than silently no-op'ing."""
     from octomil.errors import OctomilError, OctomilErrorCode
     from octomil.serve.types import GenerationRequest
 
@@ -280,6 +478,51 @@ async def test_native_chat_backend_streaming_unsupported():
         messages=[{"role": "user", "content": "hi"}],
         max_tokens=8,
         stream=True,
+    )
+    with pytest.raises(OctomilError) as exc_info:
+        async for _chunk in backend.generate_stream(req):
+            pass
+    assert exc_info.value.code == OctomilErrorCode.RUNTIME_UNAVAILABLE
+
+
+@pytest.mark.asyncio
+async def test_native_chat_backend_streaming_rejects_grammar():
+    """Cutover follow-up #72: the streaming path must apply the same
+    feature gate as ``generate()``. Grammar / json_mode / tools all
+    raise UNSUPPORTED_MODALITY before we open a session — the planner
+    should not have routed grammar to native, and the SDK is the last
+    layer that can surface a clean 422 if it does."""
+    from octomil.errors import OctomilError, OctomilErrorCode
+    from octomil.serve.types import GenerationRequest
+
+    backend = _make_unloaded_backend()
+    req = GenerationRequest(
+        model="x.gguf",
+        messages=[{"role": "user", "content": "hi"}],
+        max_tokens=8,
+        stream=True,
+        grammar='root ::= "yes"',
+    )
+    with pytest.raises(OctomilError) as exc_info:
+        async for _chunk in backend.generate_stream(req):
+            pass
+    assert exc_info.value.code == OctomilErrorCode.UNSUPPORTED_MODALITY
+
+
+@pytest.mark.asyncio
+async def test_native_chat_backend_streaming_rejects_json_mode():
+    """Cutover follow-up #72: streaming path rejects json_mode=True
+    with UNSUPPORTED_MODALITY (same gate as generate)."""
+    from octomil.errors import OctomilError, OctomilErrorCode
+    from octomil.serve.types import GenerationRequest
+
+    backend = _make_unloaded_backend()
+    req = GenerationRequest(
+        model="x.gguf",
+        messages=[{"role": "user", "content": "hi"}],
+        max_tokens=8,
+        stream=True,
+        json_mode=True,
     )
     with pytest.raises(OctomilError) as exc_info:
         async for _chunk in backend.generate_stream(req):
