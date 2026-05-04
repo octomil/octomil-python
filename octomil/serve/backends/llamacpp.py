@@ -1,4 +1,20 @@
-"""Cross-platform backend using llama-cpp-python."""
+"""Cross-platform backend using llama-cpp-python.
+
+DEPRECATED for product `chat.completion`: the v0.1.2 hard-cutover
+moved local-GGUF chat to ``octomil.runtime.native.chat_backend
+.NativeChatBackend``, which speaks ``octomil-runtime`` directly.
+``LlamaCppEngine.create_backend`` no longer vends this class.
+
+This module is kept INTERNAL for:
+  - Non-product dev utilities that need the Python ``llama_cpp``
+    surface (e.g., the cutover gate's Python-comparison harness in
+    ``tests/test_chat_cutover_gate.py``).
+  - Any future grammar / JSON-mode / streaming flows that haven't
+    been ported to the native runtime yet — those would need a
+    separate planner route, not silent fallback from native.
+
+Do NOT add new product call sites.
+"""
 
 from __future__ import annotations
 

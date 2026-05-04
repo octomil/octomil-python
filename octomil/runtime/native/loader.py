@@ -654,7 +654,7 @@ size_t       oct_model_config_size(void);
 # rather than a typed compatibility error. Codex R1 fix: fail fast
 # at load time with NativeRuntimeError(VERSION_MISMATCH).
 _REQUIRED_ABI_MAJOR: int = 0
-_REQUIRED_ABI_MINOR: int = 6  # v0.1.1: real oct_model lifecycle + session_config v=3
+_REQUIRED_ABI_MINOR: int = 7  # v0.1.2: chat.completion wrapped-shape with generation options
 
 
 def _build_lib() -> tuple[Any, Any]:
@@ -1252,6 +1252,21 @@ class NativeEvent:
         "accelerator",
         "artifact_digest",
         "cache_was_hit",
+        # Cutover: TRANSCRIPT_CHUNK text payload, copied out of the
+        # cffi event buffer at poll time (the runtime owns the
+        # storage only until the next poll). Empty for non-chunk
+        # event types.
+        "text",
+        # Cutover R1 (Codex): SESSION_COMPLETED.terminal_status
+        # (oct_status_t) and OCT_EVENT_ERROR.error_code
+        # (oct_error_code_t) — copied from the inner-payload union
+        # at poll time so the SDK binding can map runtime-side
+        # rejects to bounded OctomilError codes precisely
+        # (UNSUPPORTED stays UNSUPPORTED, not flattened to
+        # INVALID_INPUT). Zero for event types that don't carry
+        # these fields.
+        "terminal_status",
+        "error_code",
     )
 
     def __init__(
@@ -1269,6 +1284,9 @@ class NativeEvent:
         accelerator: str = "",
         artifact_digest: str = "",
         cache_was_hit: bool = False,
+        text: str = "",
+        terminal_status: int = 0,
+        error_code: int = 0,
     ) -> None:
         self.type = type
         self.version = version
@@ -1282,6 +1300,9 @@ class NativeEvent:
         self.accelerator = accelerator
         self.artifact_digest = artifact_digest
         self.cache_was_hit = cache_was_hit
+        self.text = text
+        self.terminal_status = terminal_status
+        self.error_code = error_code
 
     @property
     def is_none(self) -> bool:
@@ -1431,6 +1452,69 @@ class NativeSession:
                 last_error=self._owner.last_error(),
             )
 
+    def send_chat(
+        self,
+        messages: list[dict[str, str]],
+        *,
+        max_tokens: int | None = None,
+        max_completion_tokens: int | None = None,
+        temperature: float | None = None,
+        top_p: float | None = None,
+    ) -> None:
+        """v0.1.2: send a `chat.completion` turn with caller-controlled
+        generation options.
+
+        Emits the wrapped JSON shape on `oct_session_send_text`:
+        ``{"messages":[...], "options":{...}}``. The runtime applies
+        the model's chat template, tokenizes, prefills, and runs the
+        decode loop bounded by ``max_tokens`` (or ``max_completion_tokens``
+        if both are set — the latter wins, matching OpenAI's spec).
+
+        Bounded errors propagate via the resulting event stream:
+            - out-of-range max_tokens → SESSION_COMPLETED(INVALID_INPUT)
+              with OCT_EVENT_ERROR(error_code=OCT_ERR_INPUT_FORMAT_UNSUPPORTED).
+            - non-zero temperature / non-1.0 top_p →
+              SESSION_COMPLETED(UNSUPPORTED) with the same error envelope.
+            - prompt tokenizing past n_ctx →
+              SESSION_COMPLETED(INVALID_INPUT) with
+              OCT_EVENT_ERROR(error_code=OCT_ERR_INPUT_OUT_OF_RANGE).
+
+        Parameters
+        ----------
+        messages
+            Canonical chat-messages list. Each entry MUST have exactly
+            ``role`` (∈ {system, user, assistant}) and ``content``
+            (string). v0.1.2 rejects unknown keys, extra roles, etc.
+        max_tokens
+            OpenAI-legacy alias. 1..4096 (= n_ctx). When unset, runtime
+            applies its default cap (256).
+        max_completion_tokens
+            OpenAI-current alias. Same range. When BOTH max_tokens
+            and max_completion_tokens are set, max_completion_tokens
+            wins (runtime-side resolution).
+        temperature
+            v0.1.2 ships greedy-only; only 0.0 is accepted. Non-zero
+            values reject UNSUPPORTED.
+        top_p
+            v0.1.2 ships greedy-only; only 1.0 is accepted. Non-1.0
+            values reject UNSUPPORTED.
+        """
+        import json as _json
+
+        options: dict[str, Any] = {}
+        if max_tokens is not None:
+            options["max_tokens"] = int(max_tokens)
+        if max_completion_tokens is not None:
+            options["max_completion_tokens"] = int(max_completion_tokens)
+        if temperature is not None:
+            options["temperature"] = float(temperature)
+        if top_p is not None:
+            options["top_p"] = float(top_p)
+        payload: dict[str, Any] = {"messages": messages}
+        if options:
+            payload["options"] = options
+        self.send_text(_json.dumps(payload))
+
     def poll_event(self, timeout_ms: int = 0) -> NativeEvent:
         """Wait up to ``timeout_ms`` for the next event from the session.
 
@@ -1488,11 +1572,40 @@ class NativeSession:
                 "oct_session_poll_event failed",
                 last_error=self._owner.last_error(),
             )
+        # Cutover: copy out the TRANSCRIPT_CHUNK text BEFORE we
+        # return — the runtime's contract is "inner pointers valid
+        # only until the next poll", so by the time the caller
+        # iterates we'd be reading freed memory. n_bytes bounds the
+        # read; the buffer is utf-8 by spec.
+        text_payload = ""
+        terminal_status = 0
+        error_code = 0
+        ev_type = int(ev.type)
+        if ev_type == OCT_EVENT_TRANSCRIPT_CHUNK:
+            chunk = ev.data.transcript_chunk
+            if chunk.utf8 != ffi.NULL and chunk.n_bytes > 0:
+                text_payload = ffi.buffer(chunk.utf8, int(chunk.n_bytes))[:].decode("utf-8", errors="replace")
+        elif ev_type == OCT_EVENT_SESSION_COMPLETED:
+            # Cutover R1 (Codex): expose typed terminal_status so
+            # the SDK can map UNSUPPORTED rejects to
+            # UNSUPPORTED_MODALITY (rather than flatten everything
+            # post-error to INVALID_INPUT).
+            terminal_status = int(ev.data.session_completed.terminal_status)
+        elif ev_type == OCT_EVENT_ERROR:
+            # Cutover R1 (Codex): typed error_code from the inner
+            # payload. Free-form `code` and `message` strings live
+            # in the same union but aren't yet exposed by this
+            # wrapper — terminal_status on the subsequent
+            # SESSION_COMPLETED is the load-bearing dispatch.
+            error_code = int(ev.data.error.error_code)
         return NativeEvent(
-            type=int(ev.type),
+            type=ev_type,
             version=int(ev.version),
             monotonic_ns=int(ev.monotonic_ns),
             user_data_ptr=int(ffi.cast("uintptr_t", ev.user_data)),
+            text=text_payload,
+            terminal_status=terminal_status,
+            error_code=error_code,
             **_envelope(ev),
         )
 

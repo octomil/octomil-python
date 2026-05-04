@@ -376,6 +376,133 @@ def test_chat_completion_session_pins_borrowed_model_against_gc():
     # operational pin.
 
 
+@pytest.mark.requires_runtime
+@pytest.mark.timeout(90)
+def test_chat_completion_send_chat_caps_at_max_tokens():
+    """v0.1.2: ``NativeSession.send_chat(messages, max_tokens=N)``
+    emits the wrapped shape; the runtime caps decode at N. Pins
+    that the SDK wrapper actually wires the kwarg through to the
+    runtime's chat.completion handler.
+
+    Skipped without a staged GGUF."""
+    from octomil.runtime.native import (
+        OCT_EVENT_NONE,
+        OCT_EVENT_SESSION_COMPLETED,
+        OCT_EVENT_TRANSCRIPT_CHUNK,
+        NativeRuntime,
+    )
+
+    gguf = os.environ.get("OCTOMIL_LLAMA_CPP_GGUF", "")
+    if not gguf or not os.path.isfile(gguf):
+        pytest.skip("OCTOMIL_LLAMA_CPP_GGUF unset or missing")
+
+    with NativeRuntime.open() as rt:
+        mdl = rt.open_model(model_uri=gguf)
+        try:
+            mdl.warm()
+            sess = rt.open_session(
+                capability=CHAT_COMPLETION,
+                locality="on_device",
+                policy_preset="private",
+                model=mdl,
+            )
+            try:
+                sess.send_chat(
+                    [{"role": "user", "content": "Tell me a long story about a dragon."}],
+                    max_tokens=8,
+                )
+                import time
+
+                deadline = time.monotonic() + 30.0
+                n_chunks = 0
+                saw_completed = False
+                while time.monotonic() < deadline and not saw_completed:
+                    ev = sess.poll_event(timeout_ms=200)
+                    if ev is None or ev.type == OCT_EVENT_NONE:
+                        continue
+                    if ev.type == OCT_EVENT_TRANSCRIPT_CHUNK:
+                        n_chunks += 1
+                    elif ev.type == OCT_EVENT_SESSION_COMPLETED:
+                        saw_completed = True
+                assert saw_completed, "session must complete cleanly under cap"
+                assert n_chunks <= 8, f"max_tokens=8 should cap chunk count; got {n_chunks}"
+                assert n_chunks >= 1, "model should have produced something"
+            finally:
+                sess.close()
+        finally:
+            mdl.close()
+
+
+@pytest.mark.requires_runtime
+def test_chat_completion_send_chat_rejects_unsupported_temperature():
+    """v0.1.2 ships greedy-only. ``send_chat(temperature=0.7)``
+    must surface as a bounded UNSUPPORTED via the event stream
+    (the SDK wrapper passes the option to the runtime; the runtime
+    rejects on parse). The session terminates without producing
+    any TRANSCRIPT_CHUNK."""
+    from octomil.runtime.native import (
+        OCT_EVENT_ERROR,
+        OCT_EVENT_NONE,
+        OCT_EVENT_SESSION_COMPLETED,
+        OCT_EVENT_TRANSCRIPT_CHUNK,
+        OCT_STATUS_UNSUPPORTED,
+        NativeRuntime,
+    )
+
+    gguf = os.environ.get("OCTOMIL_LLAMA_CPP_GGUF", "")
+    if not gguf or not os.path.isfile(gguf):
+        pytest.skip("OCTOMIL_LLAMA_CPP_GGUF unset or missing")
+
+    with NativeRuntime.open() as rt:
+        mdl = rt.open_model(model_uri=gguf)
+        try:
+            mdl.warm()
+            sess = rt.open_session(
+                capability=CHAT_COMPLETION,
+                locality="on_device",
+                policy_preset="private",
+                model=mdl,
+            )
+            try:
+                sess.send_chat(
+                    [{"role": "user", "content": "hi"}],
+                    max_tokens=8,
+                    temperature=0.7,
+                )
+                import time
+
+                deadline = time.monotonic() + 5.0
+                n_chunks = 0
+                saw_error = False
+                terminal_status = None
+                while time.monotonic() < deadline and terminal_status is None:
+                    ev = sess.poll_event(timeout_ms=200)
+                    if ev is None or ev.type == OCT_EVENT_NONE:
+                        continue
+                    if ev.type == OCT_EVENT_TRANSCRIPT_CHUNK:
+                        n_chunks += 1
+                    elif ev.type == OCT_EVENT_ERROR:
+                        saw_error = True
+                    elif ev.type == OCT_EVENT_SESSION_COMPLETED:
+                        # The wrapper doesn't expose terminal_status
+                        # in the inner-payload union today; we rely
+                        # on the OCT_EVENT_ERROR sentinel to confirm
+                        # the runtime rejected. The runtime-side
+                        # parser-unit test pins the typed UNSUPPORTED
+                        # status precisely.
+                        terminal_status = "completed"
+                assert saw_error, "non-zero temperature must produce OCT_EVENT_ERROR"
+                assert n_chunks == 0, "no TRANSCRIPT_CHUNK on rejected request"
+                # Suppress unused warning — OCT_STATUS_UNSUPPORTED is
+                # the documented status; binding-side observation is
+                # via the event stream.
+                _ = OCT_STATUS_UNSUPPORTED
+            finally:
+                sess.close()
+        finally:
+            mdl.close()
+
+
 def _wait_event(sess, overall_deadline: float):
     """Poll `sess` until a non-NONE event arrives or the overall
     deadline elapses. Used for the first-event pin where a

@@ -432,17 +432,25 @@ class TestTelemetryAttentionBackend:
 
 
 class TestEnginePluginAttentionBackend:
-    def test_llamacpp_engine_creates_backend_with_flash_attention(self):
-        """LlamaCppEngine.create_backend should return a backend with flash_attention."""
+    def test_llamacpp_engine_creates_native_backend_after_v012_cutover(self):
+        """v0.1.2 hard-cutover: LlamaCppEngine.create_backend returns
+        ``NativeChatBackend`` (attention_backend="native") rather than
+        the legacy Python ``LlamaCppBackend`` (attention_backend=
+        "flash_attention"). The legacy Python path is no longer
+        constructed for product chat. Replaces the prior
+        flash_attention assertion."""
         from octomil.runtime.engines.llamacpp.engine import LlamaCppEngine
+        from octomil.runtime.native.chat_backend import NativeChatBackend
 
         engine = LlamaCppEngine()
-        with patch("octomil.serve.LlamaCppBackend") as MockBackend:
-            mock_instance = MagicMock()
-            mock_instance.attention_backend = "flash_attention"
+        with patch("octomil.runtime.native.chat_backend.NativeChatBackend") as MockBackend:
+            mock_instance = MagicMock(spec=NativeChatBackend)
+            mock_instance.attention_backend = "native"
+            mock_instance.name = "native-llama-cpp"
             MockBackend.return_value = mock_instance
             backend = engine.create_backend("test-model")
-            assert backend.attention_backend == "flash_attention"
+            assert backend.attention_backend == "native"
+            assert backend.name == "native-llama-cpp"
 
     def test_mlx_engine_creates_backend_with_metal_fused(self):
         """MLXEngine.create_backend should return a backend with metal_fused."""

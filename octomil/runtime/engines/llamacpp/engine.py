@@ -111,10 +111,13 @@ class LlamaCppEngine(EnginePlugin):
         return canonical in _GGUF_CATALOG or model_name.endswith(".gguf") or "/" in model_name
 
     def benchmark(self, model_name: str, n_tokens: int = 32) -> BenchmarkResult:
+        """Hard-cutover: benchmark exercises ``NativeChatBackend``
+        (the production chat path) so the planner's bench numbers
+        reflect what production actually runs."""
         try:
-            from octomil.serve import LlamaCppBackend
+            from octomil.runtime.native.chat_backend import NativeChatBackend
 
-            backend = LlamaCppBackend(cache_enabled=False)
+            backend = NativeChatBackend()
             backend.load_model(model_name)
 
             from octomil.serve import GenerationRequest
@@ -123,6 +126,8 @@ class LlamaCppEngine(EnginePlugin):
                 model=model_name,
                 messages=[{"role": "user", "content": "Hello, how are you?"}],
                 max_tokens=n_tokens,
+                temperature=0.0,
+                top_p=1.0,
             )
 
             start = time.monotonic()
@@ -133,7 +138,7 @@ class LlamaCppEngine(EnginePlugin):
             if tps == 0 and metrics.total_tokens > 0 and elapsed > 0:
                 tps = metrics.total_tokens / elapsed
 
-            # Free GPU/Metal memory before next benchmark
+            backend.close()
             del backend
 
             return BenchmarkResult(
@@ -153,7 +158,27 @@ class LlamaCppEngine(EnginePlugin):
         return model_name in _MOE_MODELS
 
     def create_backend(self, model_name: str, **kwargs: Any) -> Any:
-        from octomil.serve import LlamaCppBackend
+        """Hard-cutover (octomil-runtime v0.1.2): product chat.completion
+        for local GGUF artifacts routes through ``NativeChatBackend``,
+        which speaks ``octomil.runtime.native``. The legacy Python
+        ``LlamaCppBackend`` is no longer constructed by the planner
+        for the chat capability.
+
+        Per the cutover spec:
+          - No silent fallback to the Python-local llama.cpp path.
+            Native must serve the request or raise a bounded error.
+          - Fallback (if any) is a planner-level decision in Layer 2b
+            BEFORE this method is called — never an execution-time
+            re-route.
+          - GGUF path comes from the PrepareManager-materialized
+            ``model_dir``. ``OCTOMIL_LLAMA_CPP_GGUF`` is NEVER read
+            on the product path.
+          - Unsupported request features (grammar, json_mode,
+            enable_thinking, streaming) raise bounded
+            ``OctomilError`` from the backend's ``generate`` /
+            ``generate_stream``; they do NOT silently degrade.
+        """
+        from octomil.runtime.native.chat_backend import NativeChatBackend
 
         if self.is_moe_model(model_name):
             logger.info(
@@ -162,13 +187,10 @@ class LlamaCppEngine(EnginePlugin):
             )
 
         # ``model_dir`` is the PrepareManager-materialized artifact path.
-        # When set, LlamaCppBackend.load_model picks the prepared GGUF
-        # (sentinel ``artifact`` first, then ``*.gguf``) and avoids
-        # huggingface_hub.snapshot_download.
-        backend = LlamaCppBackend(
-            cache_size_mb=kwargs.get("cache_size_mb", 2048),
-            cache_enabled=kwargs.get("cache_enabled", True),
-            model_dir=kwargs.get("model_dir"),
-        )
+        # NativeChatBackend.load_model resolves the GGUF via the
+        # standard sentinel-or-glob lookup and opens it through
+        # oct_model_open + oct_model_warm — no huggingface_hub
+        # download path, no env-var dependency.
+        backend = NativeChatBackend(model_dir=kwargs.get("model_dir"))
         backend.load_model(model_name)
         return backend
