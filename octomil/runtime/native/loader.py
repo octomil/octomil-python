@@ -1252,6 +1252,11 @@ class NativeEvent:
         "accelerator",
         "artifact_digest",
         "cache_was_hit",
+        # Cutover: TRANSCRIPT_CHUNK text payload, copied out of the
+        # cffi event buffer at poll time (the runtime owns the
+        # storage only until the next poll). Empty for non-chunk
+        # event types.
+        "text",
     )
 
     def __init__(
@@ -1269,6 +1274,7 @@ class NativeEvent:
         accelerator: str = "",
         artifact_digest: str = "",
         cache_was_hit: bool = False,
+        text: str = "",
     ) -> None:
         self.type = type
         self.version = version
@@ -1282,6 +1288,7 @@ class NativeEvent:
         self.accelerator = accelerator
         self.artifact_digest = artifact_digest
         self.cache_was_hit = cache_was_hit
+        self.text = text
 
     @property
     def is_none(self) -> bool:
@@ -1551,11 +1558,23 @@ class NativeSession:
                 "oct_session_poll_event failed",
                 last_error=self._owner.last_error(),
             )
+        # Cutover: copy out the TRANSCRIPT_CHUNK text BEFORE we
+        # return — the runtime's contract is "inner pointers valid
+        # only until the next poll", so by the time the caller
+        # iterates we'd be reading freed memory. n_bytes bounds the
+        # read; the buffer is utf-8 by spec.
+        text_payload = ""
+        ev_type = int(ev.type)
+        if ev_type == OCT_EVENT_TRANSCRIPT_CHUNK:
+            chunk = ev.data.transcript_chunk
+            if chunk.utf8 != ffi.NULL and chunk.n_bytes > 0:
+                text_payload = ffi.buffer(chunk.utf8, int(chunk.n_bytes))[:].decode("utf-8", errors="replace")
         return NativeEvent(
-            type=int(ev.type),
+            type=ev_type,
             version=int(ev.version),
             monotonic_ns=int(ev.monotonic_ns),
             user_data_ptr=int(ffi.cast("uintptr_t", ev.user_data)),
+            text=text_payload,
             **_envelope(ev),
         )
 
