@@ -124,28 +124,35 @@ def test_serve_app_uses_capabilities_query_not_isinstance() -> None:
         "serve/app.py MUST NOT use isinstance(_, LlamaCppBackend) for "
         "grammar routing — query backend.capabilities.grammar_supported"
     )
+    # Cutover follow-up #71 R5 Codex: production must use the defensive
+    # helper so duck-typed backends (ORT, Ollama) don't AttributeError.
+    assert "resolve_backend_capabilities" in source, (
+        "serve/app.py MUST use resolve_backend_capabilities() rather than "
+        "direct .capabilities access (cutover follow-up #71 R5 Codex — "
+        "duck-typed backends without a `capabilities` class attr would "
+        "AttributeError otherwise)"
+    )
     assert (
-        "capabilities.grammar_supported" in source
-    ), "serve/app.py MUST query backend.capabilities.grammar_supported for grammar routing (cutover follow-up #71)"
+        ".grammar_supported" in source
+    ), "serve/app.py MUST query .grammar_supported on the resolved capabilities (cutover follow-up #71)"
 
 
 def test_multi_model_uses_capabilities_query_not_isinstance() -> None:
     """Same migration as serve/app.py but for the multi-model
     handler. ``_handle_decomposed`` and the standard fallback loop
     both used to type-check ``LlamaCppBackend``; both must now
-    query ``capabilities.grammar_supported``."""
+    query the resolved capabilities at >=2 sites."""
     import inspect
 
     from octomil.serve import multi_model
 
     source = inspect.getsource(multi_model.create_multi_model_app)
     # Both call sites in the multi-model handler.
-    grammar_query_count = source.count("capabilities.grammar_supported")
-    assert grammar_query_count >= 2, (
-        f"multi_model.create_multi_model_app should have >= 2 "
-        f"`capabilities.grammar_supported` queries (one in the "
-        f"standard fallback loop, one in _execute_subtask). "
-        f"Got {grammar_query_count}."
+    resolve_count = source.count("resolve_backend_capabilities")
+    assert resolve_count >= 2, (
+        f"multi_model.create_multi_model_app should call "
+        f"resolve_backend_capabilities() at >=2 sites (standard fallback "
+        f"loop + _execute_subtask). Got {resolve_count}."
     )
 
 

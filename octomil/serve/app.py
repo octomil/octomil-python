@@ -650,8 +650,15 @@ def create_app(
         # cutover NativeChatBackend declares grammar_supported=False;
         # legacy LlamaCppBackend declares True. The serve layer
         # routes accordingly.
+        # Cutover follow-up #71 (R5 Codex): use resolve_backend_capabilities
+        # so duck-typed backends (e.g. _ORTBackend, _OllamaBackend) without
+        # an explicit `capabilities` class attr fall through to conservative
+        # defaults rather than AttributeError'ing the chat handler.
+        from .types import resolve_backend_capabilities  # noqa: PLC0415
+
         uses_grammar_natively = (
-            _primary_backend is not None and unwrap_backend(_primary_backend).capabilities.grammar_supported
+            _primary_backend is not None
+            and resolve_backend_capabilities(unwrap_backend(_primary_backend)).grammar_supported
         )
         # Cutover follow-up #71 (R1 Codex): reject explicit caller GBNF
         # against non-grammar backends instead of silently stripping it.

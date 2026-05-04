@@ -13,7 +13,13 @@ from __future__ import annotations
 import time
 from typing import Any, AsyncIterator
 
-from .types import GenerationChunk, GenerationRequest, InferenceBackend, InferenceMetrics
+from .types import (
+    GenerationChunk,
+    GenerationRequest,
+    InferenceBackend,
+    InferenceMetrics,
+    resolve_backend_capabilities,
+)
 from .verbose_events import VerboseEventEmitter
 
 
@@ -37,7 +43,11 @@ class InstrumentedBackend(InferenceBackend):
         # (grammar=False) even when the wrapped backend declares grammar=True.
         self.name = backend.name  # type: ignore[assignment]
         self.attention_backend = backend.attention_backend  # type: ignore[assignment]
-        self.capabilities = backend.capabilities  # type: ignore[misc]
+        # Cutover follow-up #71 (R5 Codex): use the defensive helper so
+        # wrapping a duck-typed backend (no `capabilities` class attr) falls
+        # through to conservative defaults instead of AttributeError'ing
+        # at construction time.
+        self.capabilities = resolve_backend_capabilities(backend)  # type: ignore[misc]
 
     # --- Proxy properties ---------------------------------------------------
 

@@ -19,7 +19,7 @@ from .grammar_helpers import (
 from .instrumentation import unwrap_backend
 from .models import ChatCompletionBody
 from .streaming import _stream_response
-from .types import GenerationRequest, InferenceBackend
+from .types import GenerationRequest, InferenceBackend, resolve_backend_capabilities
 
 logger = logging.getLogger(__name__)
 
@@ -234,7 +234,7 @@ def create_multi_model_app(
             # support grammar) and the isinstance check silently
             # evaluated False — semantically correct here, but the
             # type-marker shape is brittle as more backends ship.
-            uses_grammar_natively = unwrap_backend(backend).capabilities.grammar_supported
+            uses_grammar_natively = resolve_backend_capabilities(unwrap_backend(backend)).grammar_supported
             # Cutover follow-up #71 (R1 Codex): reject explicit caller GBNF
             # against non-grammar backends instead of silently stripping it.
             _reject_explicit_grammar_on_non_grammar_backend(
@@ -501,7 +501,7 @@ def create_multi_model_app(
             # support grammar) and the isinstance check silently
             # evaluated False — semantically correct here, but the
             # type-marker shape is brittle as more backends ship.
-            uses_grammar_natively = unwrap_backend(backend).capabilities.grammar_supported
+            uses_grammar_natively = resolve_backend_capabilities(unwrap_backend(backend)).grammar_supported
             # Cutover follow-up #71 (R1 Codex): reject explicit caller GBNF
             # against non-grammar backends instead of silently stripping it.
             _reject_explicit_grammar_on_non_grammar_backend(
