@@ -101,7 +101,8 @@ def native_runtime_capabilities() -> frozenset[str]:
     `NativeRuntime.capabilities()`).
 
     Skipped if the native binding can't load the dylib (cffi missing,
-    runtime-core not built); the harness itself never crashes."""
+    OCTOMIL_RUNTIME_DYLIB unset and dev cache empty); the harness
+    itself never crashes."""
     try:
         from octomil.runtime.native import NativeRuntime
     except ImportError as exc:

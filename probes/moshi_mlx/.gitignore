@@ -1,9 +1,0 @@
-# Probe-local artifacts.
-#
-# CHECKED IN (audit trail for the slice 2B → 2C debate):
-#   - probe-results.json      — operator commits each AS-RUN result
-#   - manifest.lock.toml      — operator commits to pin AS-RUN hashes
-#
-# NOT checked in:
-#   - .venv-probe/            — transient interpreter, multi-GB
-.venv-probe/
