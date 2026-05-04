@@ -162,7 +162,17 @@ def _validate_correlation_id(
     in trace/audit envelope labels."""
     if value is None:
         return
-    encoded = value.encode("utf-8")
+    # Codex R2 nit: raw `str.encode("utf-8")` raises UnicodeEncodeError
+    # on lone surrogates / unencodable strings. Translate to the
+    # ABI's typed error so callers don't have to handle two
+    # exception types for the same "bad correlation ID" bug class.
+    try:
+        encoded = value.encode("utf-8")
+    except UnicodeEncodeError as exc:
+        raise NativeRuntimeError(
+            OCT_STATUS_INVALID_INPUT,
+            f"{label} contains unencodable characters (UTF-8): {exc}",
+        ) from exc
     if len(encoded) > max_bytes:
         raise NativeRuntimeError(
             OCT_STATUS_INVALID_INPUT,

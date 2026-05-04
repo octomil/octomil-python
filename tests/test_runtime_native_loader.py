@@ -1064,17 +1064,24 @@ def test_native_event_class_exposes_envelope_fields():
     assert ev.cache_was_hit is True
 
 
-def test_v0_4_step_2_no_payload_data_in_envelope():
+def test_v0_4_step_2_envelope_slots_are_pinned():
     """Privacy invariant from PE review §2: the operational envelope
     fields are id/version/digest strings ONLY. No prompts, audio
     bytes, transcript text, file paths, or PHI/PII may be carried
-    via the envelope. This test pins the envelope's slot names so
-    a future PR can't accidentally introduce a free-form payload
-    field via the envelope."""
+    via the envelope.
+
+    Codex R2 nit: pin the envelope SUBSET, not the full __slots__.
+    Future legitimate payload-parsing fields (audio_chunk pcm,
+    transcript_chunk utf8, model_loaded engine, etc.) are NOT
+    envelope fields and should NOT trip this guard. This test
+    asserts only that:
+      (a) every named envelope slot exists (no accidental removal)
+      (b) any net-new field with an envelope-like name shape (id,
+          version, digest, accelerator) was reviewed.
+    Privacy gates on payload fields live in their own per-payload
+    tests once those payloads ship."""
     from octomil.runtime.native import NativeEvent
 
-    # NativeEvent's __slots__ enumerates the envelope. Any addition
-    # is gated by this test (and by PE review).
     expected_envelope_slots = {
         "request_id",
         "route_id",
@@ -1085,12 +1092,25 @@ def test_v0_4_step_2_no_payload_data_in_envelope():
         "artifact_digest",
         "cache_was_hit",
     }
-    base_slots = {"type", "version", "monotonic_ns", "user_data_ptr"}
     actual_slots = set(NativeEvent.__slots__)
-    extra = actual_slots - base_slots - expected_envelope_slots
-    assert not extra, (
-        f"NativeEvent grew unexpected slots beyond the bounded envelope: "
-        f"{extra}. New fields require explicit PE review (privacy boundary)."
+    # (a) every expected envelope slot MUST exist (no removal).
+    missing = expected_envelope_slots - actual_slots
+    assert not missing, f"envelope slots missing from NativeEvent: {missing}"
+    # (b) base slots (id/version) are part of the structure too.
+    base_slots = {"type", "version", "monotonic_ns", "user_data_ptr"}
+    documented = expected_envelope_slots | base_slots
+    # If a future PR wants to ADD a new envelope-class field
+    # (id-shaped / version-shaped / digest-shaped), it must update
+    # expected_envelope_slots here AND get explicit PE review since
+    # that broadens the privacy surface. Other (payload) slots may
+    # come and go without this test failing.
+    envelope_like_extras = {
+        s for s in actual_slots - documented if any(token in s for token in ("_id", "version", "digest", "accelerator"))
+    }
+    assert not envelope_like_extras, (
+        f"NativeEvent grew envelope-class slots without PE review: "
+        f"{envelope_like_extras}. Privacy boundary requires explicit "
+        f"approval for any new id/version/digest field."
     )
 
 
@@ -1207,3 +1227,27 @@ def test_v0_4_step_2_event_constants_exported_publicly():
         "OCT_EVENT_METRIC",
     ):
         assert hasattr(native, name), f"public surface missing {name}"
+
+
+def test_open_session_translates_unicode_encode_error():
+    """Codex R2 nit: lone surrogates / unencodable strings should
+    raise NativeRuntimeError(INVALID_INPUT), not raw
+    UnicodeEncodeError. Callers handle one exception type for
+    'bad correlation ID', not two."""
+    from octomil.runtime.native import (
+        CAPABILITY_AUDIO_REALTIME_SESSION,
+        NativeRuntime,
+        NativeRuntimeError,
+    )
+    from octomil.runtime.native.loader import OCT_STATUS_INVALID_INPUT
+
+    with NativeRuntime.open() as rt:
+        # Lone surrogate is unencodable as UTF-8 (without surrogateescape).
+        bad = "\ud800"  # high surrogate alone
+        with pytest.raises(NativeRuntimeError) as exc_info:
+            rt.open_session(
+                capability=CAPABILITY_AUDIO_REALTIME_SESSION,
+                request_id=bad,
+            )
+        assert exc_info.value.status == OCT_STATUS_INVALID_INPUT
+        assert "request_id" in str(exc_info.value)
