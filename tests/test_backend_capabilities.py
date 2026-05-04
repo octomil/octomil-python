@@ -61,18 +61,19 @@ def test_legacy_llama_cpp_backend_declares_grammar_supported() -> None:
     assert caps.attention_backend == "flash_attention"
 
 
-def test_native_chat_backend_declares_no_grammar_no_streaming() -> None:
-    """v0.1.2 ``NativeChatBackend`` rejects grammar (UNSUPPORTED_MODALITY)
-    and has no chat.stream capability yet. Capability flags
-    declared accordingly so the serve layer doesn't route those
-    request shapes here."""
+def test_native_chat_backend_declares_streaming_grammar_off_json_off() -> None:
+    """v0.1.2 ``NativeChatBackend`` rejects grammar/json_mode/tools but
+    DOES support streaming as of cutover follow-up #72 (chat.stream).
+    The runtime emits one TRANSCRIPT_CHUNK event per generated token;
+    ``generate_stream`` relays them as ``GenerationChunk`` instances."""
     pytest.importorskip("cffi", reason="cffi extra not installed")
     from octomil.runtime.native.chat_backend import NativeChatBackend
 
     caps = NativeChatBackend.capabilities
     assert caps.grammar_supported is False
     assert caps.json_mode_supported is False
-    assert caps.streaming_supported is False
+    # Cutover follow-up #72: streaming landed.
+    assert caps.streaming_supported is True
     assert caps.tools_supported is False
     assert caps.attention_backend == "native"
 
