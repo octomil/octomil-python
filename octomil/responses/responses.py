@@ -115,10 +115,11 @@ class NoRuntimeAvailableError(RuntimeError):
     reasons:
 
     1. **No local engine installed.** The user installed bare ``octomil`` but no
-       ``[mlx]`` / ``[litert]`` / ``[onnxruntime]`` extra. The planner can't
-       prepare a local candidate because there's no engine to run on, and the
-       legacy resolver doesn't know how to route an ``@app/<slug>/<cap>`` alias
-       to cloud either.
+       ``[mlx]`` / ``[onnx]`` / ``[llama]`` extra (canonical names from
+       ``pyproject.toml [project.optional-dependencies]``; ``whisper`` and
+       ``tts`` cover the speech surfaces). The planner can't prepare a local
+       candidate because there's no engine to run on, and the legacy resolver
+       doesn't know how to route an ``@app/<slug>/<cap>`` alias to cloud either.
     2. **Cloud reachable but planner returned no candidates.** Auth missing or
        expired, app slug doesn't exist, or planner-side bug. The fallthrough
        can't recover because aliases can't be resolved without the planner.
