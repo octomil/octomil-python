@@ -83,6 +83,7 @@ def test_chat_completion_capability_advertised_when_gguf_staged():
 
 
 @pytest.mark.requires_runtime
+@pytest.mark.timeout(90)
 def test_chat_completion_event_sequence_against_real_gguf():
     """End-to-end conformance pin: SESSION_STARTED →
     TRANSCRIPT_CHUNK+ → SESSION_COMPLETED, with the operational
@@ -138,7 +139,10 @@ def test_chat_completion_event_sequence_against_real_gguf():
             # Single overall deadline for the whole sequence —
             # SESSION_STARTED + send_text + chunks + SESSION_COMPLETED.
             # 60s easily covers a small-GGUF cold-load + first-token
-            # latency on CPU; well below pytest's per-test timeout.
+            # latency on CPU; the @pytest.mark.timeout(90) override
+            # gives a 30s margin over this internal deadline so the
+            # test reports its own AssertionError before pytest's
+            # repo-wide 60s watchdog fires.
             import time
 
             overall_deadline = time.monotonic() + 60.0
