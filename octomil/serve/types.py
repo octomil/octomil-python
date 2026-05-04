@@ -116,6 +116,16 @@ class InferenceMetrics:
     attention_backend: str = "standard"
     early_exit_tokens: int = 0
     avg_layers_used: float = 0.0
+    # Cutover follow-up #73: cache + latency telemetry surfaced from
+    # the runtime's CACHE_HIT / CACHE_MISS / SESSION_COMPLETED events.
+    # Default 0 so existing call sites that don't populate them stay
+    # backwards-compatible.
+    cache_hits: int = 0
+    cache_misses: int = 0
+    cache_saved_tokens: int = 0
+    queued_ms: float = 0.0
+    setup_ms: float = 0.0
+    engine_first_chunk_ms: float = 0.0
 
 
 class InferenceBackend:
