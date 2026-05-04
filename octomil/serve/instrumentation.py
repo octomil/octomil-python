@@ -29,9 +29,15 @@ class InstrumentedBackend(InferenceBackend):
         # owns the ThreadPoolExecutor; creating a second one wastes resources.
         self._inner = backend
         self._emitter = emitter
-        # Shadow class-level attrs so __getattr__ isn't needed for these
+        # Shadow class-level attrs so __getattr__ isn't needed for these.
+        # Cutover follow-up #71 (R4 Codex): explicitly delegate `capabilities`
+        # because Python class lookup finds the base `InferenceBackend.capabilities`
+        # default before `__getattr__` runs — without this, callers who don't
+        # `unwrap_backend()` first would see the conservative default
+        # (grammar=False) even when the wrapped backend declares grammar=True.
         self.name = backend.name  # type: ignore[assignment]
         self.attention_backend = backend.attention_backend  # type: ignore[assignment]
+        self.capabilities = backend.capabilities  # type: ignore[misc]
 
     # --- Proxy properties ---------------------------------------------------
 

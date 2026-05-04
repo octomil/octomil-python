@@ -66,6 +66,22 @@ class BackendCapabilities:
 _DEFAULT_BACKEND_CAPABILITIES = BackendCapabilities()
 
 
+def resolve_backend_capabilities(backend: object) -> BackendCapabilities:
+    """Cutover follow-up #71 (R4 Codex): return a backend's declared
+    ``capabilities``, falling back to conservative defaults for duck-
+    typed backends that don't subclass ``InferenceBackend``.
+
+    Some engine plugins (e.g. ORT, Ollama) construct duck-typed backends
+    without inheriting from ``InferenceBackend``. ``backend.capabilities``
+    on those raises ``AttributeError`` even though they implement the
+    rest of the protocol. Callers in the serve layer use this helper to
+    avoid breaking when a duck-typed backend reaches a capability query.
+    Defensive insurance — every shipped backend SHOULD declare
+    capabilities, but the helper makes refactor mistakes graceful.
+    """
+    return getattr(backend, "capabilities", _DEFAULT_BACKEND_CAPABILITIES)
+
+
 @dataclass
 class GenerationRequest:
     model: str
