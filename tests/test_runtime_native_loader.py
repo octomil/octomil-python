@@ -1,13 +1,23 @@
 """Tests for ``octomil.runtime.native`` cffi loader.
 
-Builds the dylib via CMake in a session fixture (cached across the
-test session), then exercises:
+Consumes an external ``liboctomil-runtime`` artifact resolved via:
 
+  1. ``OCTOMIL_RUNTIME_DYLIB`` env var (operator override).
+  2. The dev cache populated by ``scripts/fetch_runtime_dev.py``
+     under ``~/.cache/octomil-runtime/<version>/lib/``.
+
+The runtime source no longer lives in this repo — see the private
+``octomil-runtime`` repo. Tests skip cleanly when neither resolution
+path produces a dylib (CI without a token, or a contributor who
+hasn't run the fetch script). Unit tests not requiring the dylib
+remain green either way.
+
+Exercises:
   * Version handshake.
   * ``oct_runtime_open`` v1 success + v0 / v2 / NULL-out error paths.
   * ``oct_runtime_close`` + idempotent context-manager close.
   * ``oct_runtime_capabilities`` honors out->size, returns empty
-    sentinel arrays from the slice-2 stub.
+    sentinel arrays from the stub.
   * Forward-compat: capabilities() drops unknown advertised strings.
   * Thread-error and runtime-error read-back paths.
   * Slice 2A: ABI parity for the session-level structs
@@ -18,8 +28,7 @@ test session), then exercises:
 
 from __future__ import annotations
 
-import shutil
-import subprocess
+import os
 from pathlib import Path
 
 import pytest
@@ -28,38 +37,47 @@ import pytest
 # `native` extra opt-in surface.
 cffi = pytest.importorskip("cffi", reason="cffi extra not installed")  # noqa: F841
 
-REPO_ROOT = Path(__file__).resolve().parent.parent
-RUNTIME_CORE_DIR = REPO_ROOT / "octomil" / "runtime-core"
-
-
-def _platform_dylib_name() -> str:
-    import sys
-
-    if sys.platform == "darwin":
-        return "liboctomil-runtime.dylib"
-    if sys.platform == "win32":
-        return "octomil-runtime.dll"
-    return "liboctomil-runtime.so"
-
 
 @pytest.fixture(scope="session")
 def runtime_dylib() -> Path:
-    """Build the slice-2 stub dylib once per test session and return
-    its absolute path. The build is cached by CMake so re-runs are
-    fast."""
-    if shutil.which("cmake") is None:
-        pytest.skip("cmake not installed; cannot build runtime-core dylib")
-    build_dir = RUNTIME_CORE_DIR / "build"
-    if not build_dir.exists():
-        subprocess.run(
-            ["cmake", "-S", ".", "-B", "build", "-DCMAKE_BUILD_TYPE=Debug"],
-            check=True,
-            cwd=RUNTIME_CORE_DIR,
-        )
-    subprocess.run(["cmake", "--build", "build"], check=True, cwd=RUNTIME_CORE_DIR)
-    dylib_path = build_dir / _platform_dylib_name()
-    assert dylib_path.is_file(), f"build did not produce {dylib_path}"
-    return dylib_path
+    """Resolve an external ``liboctomil-runtime`` dylib from the
+    operator override or the dev cache. Skip cleanly if neither
+    is populated — the runtime source is no longer in this repo,
+    so we cannot build one on demand.
+
+    To populate the dev cache locally:
+
+        python scripts/fetch_runtime_dev.py
+
+    To pin an explicit binary in CI / dev environments:
+
+        export OCTOMIL_RUNTIME_DYLIB=/abs/path/to/liboctomil-runtime.dylib
+    """
+    # Import inside the fixture so missing-cffi skips the module
+    # cleanly without importing the loader at collection time.
+    from octomil.runtime.native import loader
+
+    override = os.environ.get(loader.ENV_DYLIB_OVERRIDE)
+    if override:
+        path = Path(override)
+        if not path.is_file():
+            pytest.fail(
+                f"{loader.ENV_DYLIB_OVERRIDE}={override!r} does not exist; " f"operator override is authoritative."
+            )
+        return path
+
+    candidates = loader._fetched_dylib_candidates()
+    if candidates:
+        # Pick the most-recently-fetched cached release.
+        return candidates[-1]
+
+    pytest.skip(
+        "no external liboctomil-runtime available — set "
+        f"{loader.ENV_DYLIB_OVERRIDE} or run "
+        "`python scripts/fetch_runtime_dev.py` to populate "
+        "~/.cache/octomil-runtime/."
+    )
+    raise AssertionError("unreachable: pytest.skip raises")  # type narrower for mypy
 
 
 @pytest.fixture(autouse=True)
@@ -353,8 +371,9 @@ def test_v0_4_capabilities_present():
 
 def test_dylib_override_env_var_used(monkeypatch, tmp_path: Path):
     """The OCTOMIL_RUNTIME_DYLIB env var must take precedence over
-    the dev-path fallback. Set it to a non-existent path; loader
-    should error pointing at the override path first."""
+    the dev-cache fallback. Set it to a non-existent path; loader
+    should error pointing at the override path AND name the
+    fetch-script fallback (NOT the deprecated in-tree build path)."""
     monkeypatch.setenv("OCTOMIL_RUNTIME_DYLIB", str(tmp_path / "does-not-exist.dylib"))
     import octomil.runtime.native.loader as loader
 
@@ -362,26 +381,49 @@ def test_dylib_override_env_var_used(monkeypatch, tmp_path: Path):
     monkeypatch.setattr(loader, "_LIB", None)
     with pytest.raises(ImportError) as exc_info:
         loader._build_lib()
-    assert "does-not-exist.dylib" in str(exc_info.value)
-    assert "BUILD.md" in str(exc_info.value)
+    msg = str(exc_info.value)
+    assert "does-not-exist.dylib" in msg
+    assert "fetch_runtime_dev.py" in msg
+    # Hard guard against regression to the in-tree fallback that this
+    # PR removed. If this string ever reappears, the loader is
+    # silently falling back into a deleted runtime-core subtree.
+    assert "runtime-core" not in msg
+    assert "BUILD.md" not in msg
 
 
-def test_dylib_resolution_message_lists_all_candidates(monkeypatch, tmp_path: Path):
-    """When the dylib can't be found, the error message lists every
-    path tried so an operator can correlate which build step failed."""
+def test_dylib_resolution_message_when_nothing_resolves(monkeypatch, tmp_path: Path):
+    """When neither the env override nor the dev cache produces a
+    dylib, the error must name both resolution paths explicitly so
+    an operator can fix it without guessing."""
     monkeypatch.delenv("OCTOMIL_RUNTIME_DYLIB", raising=False)
-    # Move the runtime-core build dir aside temporarily by overriding
-    # the candidate-path resolution — simpler to just check via
-    # _candidate_dylib_paths directly.
-    from octomil.runtime.native.loader import _candidate_dylib_paths
+    # Point the dev-cache root at an empty directory.
+    import octomil.runtime.native.loader as loader
 
-    paths = _candidate_dylib_paths()
-    # Three candidates per platform-name iteration: dylib, so, dll.
-    assert len(paths) == 3
-    # All should reference the runtime-core/build directory.
-    for path in paths:
-        assert "runtime-core" in str(path)
-        assert "build" in str(path)
+    monkeypatch.setattr(loader, "_FETCH_CACHE_ROOT", tmp_path / "empty-cache")
+    monkeypatch.setattr(loader, "_FFI", None)
+    monkeypatch.setattr(loader, "_LIB", None)
+
+    with pytest.raises(ImportError) as exc_info:
+        loader._resolve_dylib()
+    msg = str(exc_info.value)
+    assert "OCTOMIL_RUNTIME_DYLIB" in msg
+    assert "fetch_runtime_dev.py" in msg
+    # Same regression guard as above.
+    assert "runtime-core" not in msg
+
+
+def test_no_in_tree_runtime_core_subtree(monkeypatch):
+    """Guardrail: octomil-python must NOT contain an in-tree
+    runtime-core source subtree. The runtime source lives in the
+    private octomil-runtime repo. This test fails loudly if anyone
+    re-introduces the directory by accident or via a bad cherry-pick."""
+    repo_root = Path(__file__).resolve().parent.parent
+    forbidden = repo_root / "octomil" / "runtime-core"
+    assert not forbidden.exists(), (
+        f"in-tree runtime-core subtree found at {forbidden}. "
+        f"Layer 2a runtime is owned by the private octomil-runtime "
+        f"repo and consumed via OCTOMIL_RUNTIME_DYLIB / dev-cache."
+    )
 
 
 # ---------------------------------------------------------------------------

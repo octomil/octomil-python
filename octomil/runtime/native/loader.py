@@ -215,40 +215,55 @@ class NativeRuntimeError(RuntimeError):
 
 ENV_DYLIB_OVERRIDE: str = "OCTOMIL_RUNTIME_DYLIB"
 
+# Default location for a fetched dev artifact. The fetch script
+# (`scripts/fetch_runtime_dev.py`) extracts release tarballs into
+# `~/.cache/octomil-runtime/<version>/lib/liboctomil-runtime.dylib`.
+# This is the ONLY fallback after the explicit env override; we
+# do NOT walk up to a sibling `runtime-core/` subtree any more —
+# that source code now lives in the private `octomil-runtime`
+# repo and is consumed via signed (eventually) binary releases.
+_FETCH_CACHE_ROOT = Path.home() / ".cache" / "octomil-runtime"
+_RUNTIME_LIBNAMES = (
+    "liboctomil-runtime.dylib",  # macOS
+    "liboctomil-runtime.so",  # Linux
+    "octomil-runtime.dll",  # Windows
+)
 
-def _candidate_dylib_paths() -> list[Path]:
-    """Return the ordered list of paths to try.
 
-    The env-var override wins; otherwise we walk up from this module's
-    file to find the workspace's ``runtime-core/build/`` directory.
-    The dev path covers the common case: cloned the repo, ran
-    ``cmake --build build`` in ``octomil/runtime-core/``."""
-    candidates: list[Path] = []
-    override = os.environ.get(ENV_DYLIB_OVERRIDE)
-    if override:
-        candidates.append(Path(override))
-    here = Path(__file__).resolve()
-    # octomil/runtime/native/loader.py → octomil-python/octomil/runtime-core/build/
-    repo_root = here.parents[2]  # octomil-python/octomil
-    runtime_core_build = repo_root / "runtime-core" / "build"
-    for name in (
-        "liboctomil-runtime.dylib",  # macOS
-        "liboctomil-runtime.so",  # Linux
-        "octomil-runtime.dll",  # Windows
-    ):
-        candidates.append(runtime_core_build / name)
-    return candidates
+def _fetched_dylib_candidates() -> list[Path]:
+    """Return any dev-cache dylibs found under ``~/.cache/octomil-runtime``.
+
+    Sorted newest-version-last so the most-recently-fetched release
+    wins when multiple are cached. The fetch script populates this
+    directory; nothing else writes to it."""
+    if not _FETCH_CACHE_ROOT.is_dir():
+        return []
+    out: list[Path] = []
+    for version_dir in sorted(_FETCH_CACHE_ROOT.iterdir()):
+        if not version_dir.is_dir():
+            continue
+        for name in _RUNTIME_LIBNAMES:
+            candidate = version_dir / "lib" / name
+            if candidate.is_file():
+                out.append(candidate)
+    return out
 
 
 def _resolve_dylib() -> Path:
-    """Find a usable dylib path or raise ImportError pointing at
-    BUILD.md.
+    """Find a usable dylib path or raise ImportError with a precise
+    pointer to the documented setup paths.
 
-    Override semantics: if ``OCTOMIL_RUNTIME_DYLIB`` is set, the
-    override path is authoritative. If it doesn't exist, raise
-    immediately rather than falling through to the dev-path fallback
-    — silently ignoring an explicit operator override would mask
-    deployment configuration bugs."""
+    Resolution order:
+      1. ``OCTOMIL_RUNTIME_DYLIB`` env var. Authoritative when set —
+         if the path is missing we raise immediately (silent fallback
+         would mask deployment bugs).
+      2. Most-recently-fetched dev artifact under
+         ``~/.cache/octomil-runtime/<version>/lib/``. Populated by
+         ``scripts/fetch_runtime_dev.py``.
+
+    There is NO in-tree source-build fallback. The runtime source
+    lives in the private ``octomil-runtime`` repo. SDK builds consume
+    it via the binary release artifact."""
     override = os.environ.get(ENV_DYLIB_OVERRIDE)
     if override:
         override_path = Path(override)
@@ -257,20 +272,23 @@ def _resolve_dylib() -> Path:
         raise ImportError(
             f"{ENV_DYLIB_OVERRIDE} points at {override!r} which does not exist.\n"
             f"Operator override is authoritative — fix the path or unset the\n"
-            f"env var to use the dev-path fallback.\n"
-            f"Build instructions: octomil/runtime-core/BUILD.md"
+            f"env var to use the dev-cache fallback.\n"
+            f"For local dev, run: python scripts/fetch_runtime_dev.py"
         )
     tried: list[str] = []
-    for path in _candidate_dylib_paths():
+    for path in _fetched_dylib_candidates():
         if path.is_file():
             return path
         tried.append(str(path))
     raise ImportError(
         "Could not locate liboctomil-runtime.\n"
-        "Tried (in order):\n"
-        + "\n".join(f"  - {t}" for t in tried)
-        + f"\n\nBuild instructions: octomil/runtime-core/BUILD.md\n"
-        f"Operator override: set {ENV_DYLIB_OVERRIDE} to an absolute path."
+        "Operator override (preferred): set "
+        f"{ENV_DYLIB_OVERRIDE}=/abs/path/to/liboctomil-runtime.dylib\n"
+        "Local dev cache: run `python scripts/fetch_runtime_dev.py` to\n"
+        "fetch the latest dev artifact from the private octomil-runtime\n"
+        "repo's GitHub Releases. The runtime source is no longer in\n"
+        "this repo; do not search for an in-tree build directory.\n"
+        + ("Tried dev-cache paths:\n" + "\n".join(f"  - {t}" for t in tried) if tried else "")
     )
 
 
