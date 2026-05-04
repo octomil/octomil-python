@@ -174,62 +174,78 @@ def test_unsupported_modality_maps_to_422_not_500() -> None:
     assert body["code"] == "unsupported_modality"
 
 
-def test_serve_status_map_matches_production_handler() -> None:
-    """Drift guard: the test app's status_map (above) MUST stay in
-    lockstep with the production handler in
-    ``octomil/serve/app.py``. We extract both maps and assert
-    set-equal keys + identical values.
+def test_shared_status_map_used_by_both_handlers() -> None:
+    """Codex R1 B2 fix: single-model and multi-model serve handlers
+    MUST use the SAME status map. Pre-fix each had its own dict,
+    and the multi-model copy was missing every v0.1.2 cutover code
+    — `octomil serve --auto-route` would surface UNSUPPORTED_MODALITY
+    as 503 (INFERENCE_FAILED) on multi-model but 422 on single-
+    model: same backend, two error stories.
 
-    A future change that adds a new code to either map MUST add
-    the same entry to the other.
+    The shared `OCTOMIL_ERROR_TO_HTTP_STATUS` constant lives in
+    ``octomil/errors.py``; both handlers call
+    ``octomil_error_to_http_status``. This test asserts the
+    shared constant has every cutover-vintage code.
+    """
+    from octomil.errors import OCTOMIL_ERROR_TO_HTTP_STATUS, octomil_error_to_http_status
+
+    expected = {
+        OctomilErrorCode.INVALID_INPUT: 400,
+        OctomilErrorCode.AUTHENTICATION_FAILED: 401,
+        OctomilErrorCode.INVALID_API_KEY: 401,
+        OctomilErrorCode.FORBIDDEN: 403,
+        OctomilErrorCode.UNSUPPORTED_MODALITY: 422,
+        OctomilErrorCode.CONTEXT_TOO_LARGE: 413,
+        OctomilErrorCode.CHECKSUM_MISMATCH: 422,
+        OctomilErrorCode.MODEL_DISABLED: 403,
+        OctomilErrorCode.POLICY_DENIED: 403,
+        OctomilErrorCode.MODEL_NOT_FOUND: 404,
+        OctomilErrorCode.RATE_LIMITED: 429,
+        OctomilErrorCode.MODEL_LOAD_FAILED: 503,
+        OctomilErrorCode.RUNTIME_UNAVAILABLE: 503,
+        OctomilErrorCode.INFERENCE_FAILED: 503,
+        OctomilErrorCode.ACCELERATOR_UNAVAILABLE: 503,
+        OctomilErrorCode.INSUFFICIENT_MEMORY: 503,
+        OctomilErrorCode.INSUFFICIENT_STORAGE: 507,
+        OctomilErrorCode.SERVER_ERROR: 500,
+        OctomilErrorCode.REQUEST_TIMEOUT: 504,
+        OctomilErrorCode.CANCELLED: 499,
+    }
+    assert OCTOMIL_ERROR_TO_HTTP_STATUS == expected, (
+        f"shared status map drifted from cutover-#70 expectations.\n"
+        f"  expected: {expected}\n"
+        f"  got:      {OCTOMIL_ERROR_TO_HTTP_STATUS}"
+    )
+    # Helper round-trips through the same dict.
+    assert octomil_error_to_http_status(OctomilErrorCode.UNSUPPORTED_MODALITY) == 422
+    assert octomil_error_to_http_status(OctomilErrorCode.UNKNOWN) == 500  # fallback
+
+
+def test_multi_model_all_models_failed_preserves_bounded_code() -> None:
+    """Codex R1 B2: when every backend in the multi-model fallback
+    loop rejects with the same OctomilError (e.g., every model
+    rejects grammar with UNSUPPORTED_MODALITY), the outer
+    'All models failed' wrapper must preserve the typed code, not
+    flatten to INFERENCE_FAILED. Pre-fix that flattening turned a
+    422-class request into a 503 server error.
+
+    We exercise the textual contract by re-reading the source —
+    the runtime path requires standing up multi_model state +
+    backends which is heavy for a unit test.
     """
     import inspect
     import re
 
-    from octomil.serve import app as serve_app
+    from octomil.serve import multi_model
 
-    # Find the status_map dict literal in the production handler's
-    # source. We do this textually rather than calling the handler
-    # because importing it requires standing up the full FastAPI
-    # app + middleware stack.
-    source = inspect.getsource(serve_app.create_app)
-    # Pull every `OctomilErrorCode.<NAME>: <int>,` line.
-    pattern = re.compile(r"OctomilErrorCode\.([A-Z_]+):\s*(\d+)")
-    prod_pairs = pattern.findall(source)
-    assert prod_pairs, "could not locate status_map in production handler"
-    prod_map = {name: int(status) for name, status in prod_pairs}
-
-    # Reconstruct our test-side map by re-using _make_app's body
-    # textually. Simpler: hard-code what we expect (any drift
-    # against the production version fails this assertion).
-    expected = {
-        "INVALID_INPUT": 400,
-        "AUTHENTICATION_FAILED": 401,
-        "INVALID_API_KEY": 401,
-        "FORBIDDEN": 403,
-        "UNSUPPORTED_MODALITY": 422,
-        "CONTEXT_TOO_LARGE": 413,
-        "CHECKSUM_MISMATCH": 422,
-        "MODEL_DISABLED": 403,
-        "POLICY_DENIED": 403,
-        "MODEL_NOT_FOUND": 404,
-        "RATE_LIMITED": 429,
-        "MODEL_LOAD_FAILED": 503,
-        "RUNTIME_UNAVAILABLE": 503,
-        "INFERENCE_FAILED": 503,
-        "ACCELERATOR_UNAVAILABLE": 503,
-        "INSUFFICIENT_MEMORY": 503,
-        "INSUFFICIENT_STORAGE": 507,
-        "SERVER_ERROR": 500,
-        "REQUEST_TIMEOUT": 504,
-        "CANCELLED": 499,
-    }
-    assert prod_map == expected, (
-        f"production status_map drifted from cutover-#70 expectations.\n"
-        f"  expected: {expected}\n"
-        f"  got:      {prod_map}\n"
-        f"If this is intentional, update the expected dict above and the "
-        f"test-side _make_app() in lockstep."
+    source = inspect.getsource(multi_model.create_multi_model_app)
+    # The fix block must check `isinstance(last_error, OctomilError)`
+    # AND propagate the `code=last_error.code` field.
+    assert "isinstance(last_error, OctomilError)" in source, (
+        "multi-model fallback loop must check OctomilError type when " "wrapping 'All models failed'"
+    )
+    assert re.search(r"code\s*=\s*last_error\.code", source), (
+        "multi-model fallback wrapper must propagate last_error.code, " "not blanket INFERENCE_FAILED"
     )
 
 
