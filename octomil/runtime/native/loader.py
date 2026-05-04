@@ -1043,14 +1043,28 @@ class NativeRuntime:
         cfg.trace_id = _cstr(trace_id) if trace_id else ffi.NULL
         cfg.kv_prefix_key = _cstr(kv_prefix_key) if kv_prefix_key else ffi.NULL
         # v0.1.1 — wire the warmed model handle. The model's lifetime
-        # MUST extend past oct_session_close; we register the session
-        # → model edge below so NativeRuntime.close() can invalidate
-        # the session before the model goes away.
+        # MUST extend past oct_session_close; we hold a strong
+        # reference on the resulting NativeSession (see Codex R1 P1
+        # fix in NativeSession.__init__) so a temporary-model
+        # pattern like `open_session(model=open_model(...))` doesn't
+        # GC the wrapper out from under the live session.
         if model is not None:
             if model._closed or model._handle_invalid:
                 raise NativeRuntimeError(
                     OCT_STATUS_INVALID_INPUT,
                     "open_session: model handle is closed or invalidated",
+                )
+            # Codex R1 missed-case: cross-runtime model misuse.
+            # `model` MUST have been opened against THIS runtime.
+            # The runtime side may also reject mismatched parents,
+            # but defense-in-depth at the binding layer surfaces a
+            # precise typed error before crossing the FFI boundary.
+            if model._owner is not self:
+                raise NativeRuntimeError(
+                    OCT_STATUS_INVALID_INPUT,
+                    "open_session: model was opened on a different "
+                    "NativeRuntime — cross-runtime model handles are "
+                    "not supported",
                 )
             cfg.model = model._handle
         else:
@@ -1063,7 +1077,7 @@ class NativeRuntime:
                 f"oct_session_open(capability={capability!r}) failed",
                 last_error=self.last_error(),
             )
-        sess = NativeSession(ffi, lib, out[0], owner=self)
+        sess = NativeSession(ffi, lib, out[0], owner=self, borrowed_model=model)
         # Register so NativeRuntime.close() can pre-invalidate the
         # wrapper before the dylib implicitly closes its handle.
         self._sessions.add(sess)
@@ -1298,7 +1312,15 @@ class NativeSession:
         :meth:`NativeRuntime.capabilities` rather than crashing.
     """
 
-    def __init__(self, ffi: Any, lib: Any, handle: Any, *, owner: NativeRuntime) -> None:
+    def __init__(
+        self,
+        ffi: Any,
+        lib: Any,
+        handle: Any,
+        *,
+        owner: NativeRuntime,
+        borrowed_model: "NativeModel | None" = None,
+    ) -> None:
         self._ffi = ffi
         self._lib = lib
         self._handle = handle
@@ -1310,6 +1332,20 @@ class NativeSession:
         # session_close becomes a no-op (dylib already closed it).
         # Codex R1 blocker fix.
         self._handle_invalid = False
+        # v0.1.1 Codex R1 P1 fix: hold a STRONG reference to the
+        # borrowed NativeModel for the session's lifetime. Without
+        # this, the user pattern `rt.open_session(model=rt.open_model(...))`
+        # leaves the model wrapper unreferenced (NativeRuntime._models
+        # is a WeakSet); GC could call NativeModel.__del__ →
+        # close() → BUSY (runtime refuses; handle stays alive
+        # C-side), but our wrapper is gone. Subsequent
+        # NativeRuntime.close() then sees an empty WeakSet, calls
+        # oct_runtime_close, which refuses-with-last-error because
+        # the C-side open_models list is non-empty — leaking the
+        # runtime allocation. The strong ref keeps the wrapper
+        # alive through the session's lifetime so close() and the
+        # WeakSet membership stay coherent.
+        self._borrowed_model = borrowed_model
         # Reusable event buffer — runtime fills the same struct on every
         # poll; the inner pointer fields are valid only until the next
         # poll call per the header's lifetime contract.

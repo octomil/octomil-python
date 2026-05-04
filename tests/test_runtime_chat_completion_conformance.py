@@ -281,6 +281,101 @@ def test_chat_completion_model_close_returns_busy_when_session_live():
         assert mdl.close() == OCT_STATUS_OK, "model.close after session drain should return OK"
 
 
+@pytest.mark.requires_runtime
+def test_chat_completion_cross_runtime_model_rejected():
+    """v0.1.1 R1 Codex: a NativeModel opened against runtime A
+    cannot be passed to runtime B's open_session. Defense-in-depth
+    at the binding layer surfaces a precise typed error before
+    crossing the FFI boundary, regardless of whether the dylib
+    rejects the same shape."""
+    from octomil.runtime.native import (
+        OCT_STATUS_INVALID_INPUT,
+        NativeRuntime,
+        NativeRuntimeError,
+    )
+
+    gguf = os.environ.get("OCTOMIL_LLAMA_CPP_GGUF", "")
+    if not gguf or not os.path.isfile(gguf):
+        pytest.skip("OCTOMIL_LLAMA_CPP_GGUF unset or missing")
+
+    rt_a = NativeRuntime.open()
+    rt_b = NativeRuntime.open()
+    try:
+        mdl_a = rt_a.open_model(model_uri=gguf)
+        try:
+            with pytest.raises(NativeRuntimeError) as exc_info:
+                rt_b.open_session(
+                    capability=CHAT_COMPLETION,
+                    locality="on_device",
+                    policy_preset="private",
+                    model=mdl_a,
+                )
+            assert exc_info.value.status == OCT_STATUS_INVALID_INPUT
+            assert "cross-runtime" in str(exc_info.value).lower() or "different" in str(exc_info.value).lower()
+        finally:
+            mdl_a.close()
+    finally:
+        rt_a.close()
+        rt_b.close()
+
+
+@pytest.mark.requires_runtime
+def test_chat_completion_session_pins_borrowed_model_against_gc():
+    """v0.1.1 R1 Codex P1 fix: a NativeSession holds a strong ref
+    to the NativeModel it borrowed, so the user pattern
+    `rt.open_session(model=rt.open_model(...))` doesn't leave the
+    model wrapper unreferenced (NativeRuntime._models is a WeakSet;
+    GC could otherwise drop the wrapper, leak the C-side handle,
+    and cause runtime_close to refuse with last_error).
+    """
+    import gc
+
+    from octomil.runtime.native import (
+        NativeRuntime,
+    )
+
+    gguf = os.environ.get("OCTOMIL_LLAMA_CPP_GGUF", "")
+    if not gguf or not os.path.isfile(gguf):
+        pytest.skip("OCTOMIL_LLAMA_CPP_GGUF unset or missing")
+
+    with NativeRuntime.open() as rt:
+        # Inline temporary model — no local name. The session's
+        # strong ref is the only thing keeping the wrapper alive.
+        sess = rt.open_session(
+            capability=CHAT_COMPLETION,
+            locality="on_device",
+            policy_preset="private",
+            model=rt.open_model(model_uri=gguf),
+        )
+        try:
+            # Force a GC sweep — the inline temporary would normally
+            # be collected here. The session's _borrowed_model strong
+            # ref must keep the wrapper alive.
+            gc.collect()
+            # The session is still operable; envelope.artifact_digest
+            # should still be readable. We don't run a full inference
+            # here (covered by event_sequence_against_real_gguf); just
+            # confirm the session is open and the model wrapper is
+            # reachable from the session.
+            assert sess._borrowed_model is not None
+            assert not sess._borrowed_model._closed
+            assert not sess._borrowed_model._handle_invalid
+        finally:
+            # close() the session; the model close happens via the
+            # WeakSet drain in NativeRuntime.close().
+            sess.close()
+        # After session close, the strong ref drops; the WeakSet
+        # cleanup in runtime.close() reaps the model. We confirm by
+        # closing the runtime and asserting last_error is empty
+        # (no refusal because models were properly drained).
+    # Re-open just to read last_error of the closed runtime is not
+    # possible; the empty-last-error check is implicit — if the
+    # cascade was broken, runtime_close would have left a refusal
+    # diagnostic in the now-freed runtime, which is not observable
+    # from here. The earlier `gc.collect()` survival is the
+    # operational pin.
+
+
 def _wait_event(sess, overall_deadline: float):
     """Poll `sess` until a non-NONE event arrives or the overall
     deadline elapses. Used for the first-event pin where a
