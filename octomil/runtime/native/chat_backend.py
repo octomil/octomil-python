@@ -30,9 +30,10 @@ Hard rules (per the cutover spec):
      - top_p (1.0 only — greedy)
    Anything else is a bounded ``INVALID_INPUT`` (caller-misuse) or
    ``UNSUPPORTED_MODALITY`` (capability gap).
-3. Streaming (chat.stream) is not implemented in v0.1.2 and is
-   gated out by ``generate_stream`` raising ``UNSUPPORTED_MODALITY``.
-   A streaming-aware variant ships when the runtime adds it.
+3. Streaming (chat.stream) is supported as of cutover follow-up #72:
+   ``generate_stream`` relays the runtime's per-token TRANSCRIPT_CHUNK
+   events as ``GenerationChunk`` instances, with a final
+   ``finish_reason="stop"`` marker on SESSION_COMPLETED.
 4. Artifact path comes from the PrepareManager's ``model_dir`` —
    no ``OCTOMIL_LLAMA_CPP_GGUF`` requirement on the product flow.
 

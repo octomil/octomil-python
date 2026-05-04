@@ -200,6 +200,81 @@ async def test_native_chat_backend_generate_stream_end_to_end():
 
 
 @pytest.mark.asyncio
+async def test_native_chat_backend_streaming_rejects_enable_thinking():
+    """Cutover follow-up #72 R2 Codex: gate parity — the streaming
+    path must reject `enable_thinking` (Qwen3 / OpenClaw chain-of-
+    thought toggle) the same way `generate()` does. Pre-fix the
+    streaming path could have skipped the gate; pin it here."""
+    from octomil.errors import OctomilError, OctomilErrorCode
+    from octomil.serve.types import GenerationRequest
+
+    backend = _make_unloaded_backend()
+    req = GenerationRequest(
+        model="x.gguf",
+        messages=[{"role": "user", "content": "hi"}],
+        max_tokens=8,
+        stream=True,
+        enable_thinking=True,
+    )
+    with pytest.raises(OctomilError) as exc_info:
+        async for _chunk in backend.generate_stream(req):
+            pass
+    assert exc_info.value.code == OctomilErrorCode.UNSUPPORTED_MODALITY
+
+
+@pytest.mark.asyncio
+async def test_native_chat_backend_streaming_maps_terminal_status_to_octomil_error():
+    """Cutover follow-up #72 R2 Codex: a non-OK SESSION_COMPLETED
+    terminal_status must map to the bounded OctomilError via
+    `_runtime_status_to_sdk_error`, same as the generate() path. Pin
+    that the streaming drain loop doesn't skip the terminal-status
+    mapping (a stream that yields chunks then ends with an UNSUPPORTED
+    terminal_status MUST raise rather than silently completing)."""
+    from octomil.errors import OctomilError, OctomilErrorCode
+    from octomil.runtime.native.chat_backend import NativeChatBackend
+    from octomil.runtime.native.loader import OCT_EVENT_SESSION_COMPLETED, OCT_STATUS_INVALID_INPUT
+    from octomil.serve.types import GenerationRequest
+
+    class _ErrorEvent:
+        type = OCT_EVENT_SESSION_COMPLETED
+        terminal_status = OCT_STATUS_INVALID_INPUT
+        text = ""
+
+    class _FakeSession:
+        def send_chat(self, *_a: Any, **_k: Any) -> None:
+            return None
+
+        def poll_event(self, *_a: Any, **_k: Any) -> Any:
+            return _ErrorEvent()
+
+        def close(self) -> None:
+            return None
+
+    class _FakeRuntime:
+        def open_session(self, **_k: Any) -> Any:
+            return _FakeSession()
+
+        def last_error(self) -> str:
+            return "fake runtime rejected"
+
+    backend = NativeChatBackend()
+    backend._runtime = _FakeRuntime()  # type: ignore[assignment]
+    backend._model = object()  # type: ignore[assignment]
+
+    req = GenerationRequest(
+        model="x.gguf",
+        messages=[{"role": "user", "content": "hi"}],
+        max_tokens=8,
+        stream=True,
+    )
+    with pytest.raises(OctomilError) as exc_info:
+        async for _chunk in backend.generate_stream(req):
+            pass
+    # OCT_STATUS_INVALID_INPUT maps to INVALID_INPUT.
+    assert exc_info.value.code == OctomilErrorCode.INVALID_INPUT
+
+
+@pytest.mark.asyncio
 async def test_native_chat_backend_streaming_uses_self_executor_for_session_calls():
     """Cutover follow-up #72 (R1 Codex): NativeSession is single-
     thread-affine per the loader contract. ``generate_stream`` must
