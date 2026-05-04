@@ -495,13 +495,36 @@ def create_app(
             OctomilErrorCode.AUTHENTICATION_FAILED: 401,
             OctomilErrorCode.INVALID_API_KEY: 401,
             OctomilErrorCode.FORBIDDEN: 403,
+            # Cutover follow-up #70: bounded native rejects for
+            # unsupported request features (grammar, json_mode,
+            # enable_thinking, streaming, unknown roles/keys) raise
+            # OctomilErrorCode.UNSUPPORTED_MODALITY. Without this
+            # mapping the API surfaces them as HTTP 500, which reads
+            # as "server bug" to the client. 422 (Unprocessable
+            # Entity) is the right fit: the request is well-formed
+            # but the route can't satisfy it for semantic reasons.
+            OctomilErrorCode.UNSUPPORTED_MODALITY: 422,
+            # Artifact-integrity / policy adjacent codes also reach
+            # the SDK from the runtime / planner; mapping them
+            # explicitly so future code paths emit clean 4xx instead
+            # of defaulting to 500.
+            OctomilErrorCode.CONTEXT_TOO_LARGE: 413,
+            OctomilErrorCode.CHECKSUM_MISMATCH: 422,
+            OctomilErrorCode.MODEL_DISABLED: 403,
+            OctomilErrorCode.POLICY_DENIED: 403,
             OctomilErrorCode.MODEL_NOT_FOUND: 404,
             OctomilErrorCode.RATE_LIMITED: 429,
             OctomilErrorCode.MODEL_LOAD_FAILED: 503,
             OctomilErrorCode.RUNTIME_UNAVAILABLE: 503,
             OctomilErrorCode.INFERENCE_FAILED: 503,
+            OctomilErrorCode.ACCELERATOR_UNAVAILABLE: 503,
+            OctomilErrorCode.INSUFFICIENT_MEMORY: 503,
+            OctomilErrorCode.INSUFFICIENT_STORAGE: 507,
             OctomilErrorCode.SERVER_ERROR: 500,
             OctomilErrorCode.REQUEST_TIMEOUT: 504,
+            # Client-cancelled — nginx 499 convention; widely
+            # understood by API clients including OpenAI's.
+            OctomilErrorCode.CANCELLED: 499,
         }
         status_code = status_map.get(exc.code, 500)
         return JSONResponse(

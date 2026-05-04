@@ -29,10 +29,20 @@ _HTTP_STATUS_MAP: dict[int, OctomilErrorCode] = {
     401: OctomilErrorCode.AUTHENTICATION_FAILED,
     403: OctomilErrorCode.FORBIDDEN,
     404: OctomilErrorCode.MODEL_NOT_FOUND,
+    # Cutover follow-up #70: round-trip parity with the
+    # serve-layer status map. 413 = CONTEXT_TOO_LARGE,
+    # 422 = UNSUPPORTED_MODALITY, 429 = RATE_LIMITED,
+    # 499 = CANCELLED (nginx convention; widely understood
+    # by API clients).
+    413: OctomilErrorCode.CONTEXT_TOO_LARGE,
+    422: OctomilErrorCode.UNSUPPORTED_MODALITY,
     429: OctomilErrorCode.RATE_LIMITED,
+    499: OctomilErrorCode.CANCELLED,
     500: OctomilErrorCode.SERVER_ERROR,
     502: OctomilErrorCode.SERVER_ERROR,
     503: OctomilErrorCode.SERVER_ERROR,
+    504: OctomilErrorCode.REQUEST_TIMEOUT,
+    507: OctomilErrorCode.INSUFFICIENT_STORAGE,
 }
 
 
