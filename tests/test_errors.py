@@ -120,13 +120,21 @@ class TestFromHttpStatus:
             (500, OctomilErrorCode.SERVER_ERROR),
             (502, OctomilErrorCode.SERVER_ERROR),
             (503, OctomilErrorCode.SERVER_ERROR),
+            # Cutover follow-up #70: serve layer now emits 413/422/
+            # 499/504/507 explicitly; the reverse map gains entries
+            # so HTTP-consuming SDK paths get bounded codes back.
+            (413, OctomilErrorCode.CONTEXT_TOO_LARGE),
+            (422, OctomilErrorCode.UNSUPPORTED_MODALITY),
+            (499, OctomilErrorCode.CANCELLED),
+            (504, OctomilErrorCode.REQUEST_TIMEOUT),
+            (507, OctomilErrorCode.INSUFFICIENT_STORAGE),
         ],
     )
     def test_mapped_status_codes(self, status: int, expected: OctomilErrorCode) -> None:
         err = OctomilError.from_http_status(status)
         assert err.code is expected
 
-    @pytest.mark.parametrize("status", [200, 201, 204, 301, 408, 418, 504])
+    @pytest.mark.parametrize("status", [200, 201, 204, 301, 408, 418])
     def test_unmapped_status_returns_unknown(self, status: int) -> None:
         err = OctomilError.from_http_status(status)
         assert err.code is OctomilErrorCode.UNKNOWN

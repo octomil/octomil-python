@@ -489,21 +489,12 @@ def create_app(
     async def octomil_error_handler(request: Request, exc: OctomilError) -> JSONResponse:
         from .._generated.error_code import ERROR_CLASSIFICATION, RetryClass
 
+        # Cutover follow-up #70: SHARED status map across single-
+        # and multi-model handlers. See octomil/errors.py.
+        from ..errors import octomil_error_to_http_status
+
         classification = ERROR_CLASSIFICATION.get(exc.code)
-        status_map = {
-            OctomilErrorCode.INVALID_INPUT: 400,
-            OctomilErrorCode.AUTHENTICATION_FAILED: 401,
-            OctomilErrorCode.INVALID_API_KEY: 401,
-            OctomilErrorCode.FORBIDDEN: 403,
-            OctomilErrorCode.MODEL_NOT_FOUND: 404,
-            OctomilErrorCode.RATE_LIMITED: 429,
-            OctomilErrorCode.MODEL_LOAD_FAILED: 503,
-            OctomilErrorCode.RUNTIME_UNAVAILABLE: 503,
-            OctomilErrorCode.INFERENCE_FAILED: 503,
-            OctomilErrorCode.SERVER_ERROR: 500,
-            OctomilErrorCode.REQUEST_TIMEOUT: 504,
-        }
-        status_code = status_map.get(exc.code, 500)
+        status_code = octomil_error_to_http_status(exc.code)
         return JSONResponse(
             status_code=status_code,
             content={

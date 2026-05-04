@@ -145,21 +145,17 @@ def create_multi_model_app(
     async def octomil_error_handler(request: Request, exc: OctomilError) -> JSONResponse:  # type: ignore[misc]
         from .._generated.error_code import ERROR_CLASSIFICATION, RetryClass
 
+        # Cutover follow-up #70 (Codex R1 B2): SHARED status map
+        # across single- and multi-model handlers. Pre-fix this
+        # block had its own dict missing the v0.1.2 cutover codes
+        # — `octomil serve --auto-route` would surface
+        # UNSUPPORTED_MODALITY as 503 (INFERENCE_FAILED) instead of
+        # 422. Calling the shared helper guarantees both handlers
+        # stay aligned on the bounded SDK taxonomy.
+        from ..errors import octomil_error_to_http_status
+
         classification = ERROR_CLASSIFICATION.get(exc.code)
-        status_map = {
-            OctomilErrorCode.INVALID_INPUT: 400,
-            OctomilErrorCode.AUTHENTICATION_FAILED: 401,
-            OctomilErrorCode.INVALID_API_KEY: 401,
-            OctomilErrorCode.FORBIDDEN: 403,
-            OctomilErrorCode.MODEL_NOT_FOUND: 404,
-            OctomilErrorCode.RATE_LIMITED: 429,
-            OctomilErrorCode.MODEL_LOAD_FAILED: 503,
-            OctomilErrorCode.RUNTIME_UNAVAILABLE: 503,
-            OctomilErrorCode.INFERENCE_FAILED: 503,
-            OctomilErrorCode.SERVER_ERROR: 500,
-            OctomilErrorCode.REQUEST_TIMEOUT: 504,
-        }
-        status_code = status_map.get(exc.code, 500)
+        status_code = octomil_error_to_http_status(exc.code)
         return JSONResponse(
             status_code=status_code,
             content={
@@ -387,7 +383,19 @@ def create_multi_model_app(
                 resp.headers["X-Octomil-Fallback"] = "true"
             return resp
 
-        # All models failed
+        # All models failed.
+        # Cutover follow-up #70 (Codex R1 B2): if the last failure
+        # was an OctomilError, propagate ITS typed code instead of
+        # blanket INFERENCE_FAILED. A grammar/json_mode/streaming
+        # request that every backend rejects with
+        # UNSUPPORTED_MODALITY should still surface as 422, not 503.
+        # The "all-models" wrapper preserves the bounded SDK
+        # taxonomy from the underlying rejection.
+        if isinstance(last_error, OctomilError):
+            raise OctomilError(
+                code=last_error.code,
+                message=f"All models failed. Last error: {last_error}",
+            )
         raise OctomilError(
             code=OctomilErrorCode.INFERENCE_FAILED,
             message=f"All models failed. Last error: {last_error}",
@@ -487,6 +495,18 @@ def create_multi_model_app(
 
             try:
                 text, _metrics = backend.generate(gen_req)
+            except OctomilError:
+                # Cutover follow-up #70 (Codex R2 B1): bounded SDK
+                # errors (UNSUPPORTED_MODALITY for grammar / json_mode
+                # / streaming etc.) MUST propagate, not be swallowed
+                # into a 200-OK sub-task response. Pre-fix the
+                # decomposed `--auto-route` path on multi-model
+                # would return a successful JSONResponse with the
+                # text "[Error processing sub-task N]" — completely
+                # bypassing the 4xx mapping the cutover wired in.
+                # Re-raise so the FastAPI exception handler maps
+                # via the shared status_map.
+                raise
             except Exception as exc:
                 logger.warning(
                     "Sub-task %d failed on model %s: %s",
