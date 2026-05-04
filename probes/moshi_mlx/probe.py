@@ -727,9 +727,22 @@ def acceptance_6_abi_mapping(
         errors.append(f"acceptance-6: required ABI mapping rows missing from manifest: {sorted(missing_rows)}")
         return False, {"missing": sorted(missing_rows), "rows": sorted(declared_rows)}, errors
     deltas: list[str] = []
+    missing_assertion: list[str] = []
     for row_name, row in abi_section.items():
-        if row.get("delta_required", False):
+        if "delta_required" not in row:
+            missing_assertion.append(row_name)
+            continue
+        if row["delta_required"] is not False:
             deltas.append(row_name)
+    if missing_assertion:
+        errors.append(
+            f"acceptance-6: rows missing explicit `delta_required = false` assertion: {sorted(missing_assertion)}"
+        )
+        return (
+            False,
+            {"missing_assertion": sorted(missing_assertion), "rows": sorted(declared_rows)},
+            errors,
+        )
     if deltas:
         errors.append(f"acceptance-6: ABI deltas required for: {deltas}")
         return False, {"deltas": deltas, "rows": sorted(declared_rows)}, errors
