@@ -135,8 +135,16 @@ def test_chat_completion_event_sequence_against_real_gguf():
                 assert ev.trace_id == "0123456789abcdef0123456789abcdef"
                 assert ev.engine_version.startswith("llama_cpp@")
 
+            # Single overall deadline for the whole sequence —
+            # SESSION_STARTED + send_text + chunks + SESSION_COMPLETED.
+            # 60s easily covers a small-GGUF cold-load + first-token
+            # latency on CPU; well below pytest's per-test timeout.
+            import time
+
+            overall_deadline = time.monotonic() + 60.0
+
             # SESSION_STARTED — first event after open.
-            ev = _drain_one(sess, timeout_ms=500)
+            ev = _wait_event(sess, overall_deadline)
             assert ev.type == OCT_EVENT_SESSION_STARTED, f"first event must be SESSION_STARTED, got type={ev.type}"
             assert_envelope(ev)
 
@@ -145,8 +153,13 @@ def test_chat_completion_event_sequence_against_real_gguf():
 
             n_chunks = 0
             saw_completed = False
-            for _ in range(10_000):
-                ev = _drain_one(sess, timeout_ms=200)
+            while time.monotonic() < overall_deadline:
+                ev = sess.poll_event(timeout_ms=200)
+                if ev is None or ev.type == OCT_EVENT_NONE:
+                    # Drained timeout on this poll cycle. Slow
+                    # first-token / cold cache paths land here;
+                    # the overall deadline is the real budget.
+                    continue
                 if ev.type == OCT_EVENT_TRANSCRIPT_CHUNK:
                     n_chunks += 1
                     assert_envelope(ev)
@@ -165,28 +178,25 @@ def test_chat_completion_event_sequence_against_real_gguf():
                         f"(monotonic_ns={ev.monotonic_ns}); "
                         f"see runtime last_error for details"
                     )
-                elif ev.type == OCT_EVENT_NONE:
-                    # Drained timeout — keep polling.
-                    continue
                 else:
                     pytest.fail(f"unexpected event type {ev.type} in " f"chat.completion sequence")
-            assert n_chunks >= 1, "no transcript chunks produced"
-            assert saw_completed, "no SESSION_COMPLETED before iter cap"
+            assert n_chunks >= 1, "no transcript chunks produced before overall deadline"
+            assert saw_completed, "no SESSION_COMPLETED before overall deadline"
         finally:
             sess.close()
 
 
-def _drain_one(sess, timeout_ms: int = 100):
-    """Helper that polls `sess` until an event of type != NONE
-    arrives, or timeout."""
+def _wait_event(sess, overall_deadline: float):
+    """Poll `sess` until a non-NONE event arrives or the overall
+    deadline elapses. Used for the first-event pin where a
+    timeout is genuinely a failure."""
     import time
 
     from octomil.runtime.native import OCT_EVENT_NONE
 
-    deadline = time.monotonic() + (timeout_ms / 1000.0)
-    while time.monotonic() < deadline:
-        ev = sess.poll_event(timeout_ms=10)
+    while time.monotonic() < overall_deadline:
+        ev = sess.poll_event(timeout_ms=200)
         if ev is None or ev.type == OCT_EVENT_NONE:
             continue
         return ev
-    raise AssertionError(f"no event within {timeout_ms} ms")
+    raise AssertionError("no event before overall deadline")
