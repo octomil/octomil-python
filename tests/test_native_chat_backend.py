@@ -387,6 +387,76 @@ def test_native_chat_backend_default_temperature_does_not_block_request():
             backend.close()
 
 
+def test_native_chat_backend_does_not_forward_temperature_or_top_p_to_send_chat():
+    """Codex R2 nit: a no-runtime unit test that pins the B1 fix
+    in CI shape (without OCTOMIL_LLAMA_CPP_GGUF). We replace
+    ``NativeRuntime.open_session`` and ``NativeSession.send_chat``
+    with fakes and assert the SDK passes ONLY ``max_tokens`` to
+    send_chat — never ``temperature`` or ``top_p`` — even when the
+    request carries the dataclass defaults (0.7 / 1.0).
+    """
+    from unittest.mock import MagicMock
+
+    from octomil.runtime.native.chat_backend import NativeChatBackend
+    from octomil.runtime.native.loader import (
+        OCT_EVENT_SESSION_COMPLETED,
+        OCT_STATUS_OK,
+    )
+    from octomil.serve.types import GenerationRequest
+
+    backend = NativeChatBackend()
+    # Stand up fake runtime + model + session so generate() can run
+    # without a real dylib + GGUF.
+    fake_session = MagicMock()
+    sent: dict[str, object] = {}
+
+    def _fake_send_chat(messages, **kwargs):  # noqa: ANN001
+        sent["messages"] = messages
+        sent["kwargs"] = kwargs
+
+    fake_session.send_chat.side_effect = _fake_send_chat
+
+    # Single SESSION_COMPLETED event — generate() should drain and
+    # exit without hitting the deadline.
+    completed_ev = MagicMock()
+    completed_ev.type = OCT_EVENT_SESSION_COMPLETED
+    completed_ev.terminal_status = OCT_STATUS_OK
+    completed_ev.text = ""
+    fake_session.poll_event.return_value = completed_ev
+    fake_session.close.return_value = None
+
+    fake_runtime = MagicMock()
+    fake_runtime.open_session.return_value = fake_session
+    fake_runtime.last_error.return_value = ""
+
+    backend._runtime = fake_runtime  # noqa: SLF001
+    backend._model = MagicMock()  # noqa: SLF001
+
+    req = GenerationRequest(
+        model="x.gguf",
+        messages=[{"role": "user", "content": "hi"}],
+        max_tokens=8,
+        # Defaults (unset) — temperature=0.7, top_p=1.0.
+    )
+    assert req.temperature == 0.7
+    assert req.top_p == 1.0
+
+    text, metrics = backend.generate(req)
+
+    fake_session.send_chat.assert_called_once()
+    assert sent["messages"] == [{"role": "user", "content": "hi"}]
+    kwargs = sent["kwargs"]
+    assert "max_tokens" in kwargs and kwargs["max_tokens"] == 8
+    # The B1 fix: temperature / top_p must NOT be forwarded.
+    assert "temperature" not in kwargs, (
+        "NativeChatBackend MUST NOT forward request.temperature to send_chat "
+        "(v0.1.2 ships greedy-only; runtime applies its default)"
+    )
+    assert "top_p" not in kwargs, "NativeChatBackend MUST NOT forward request.top_p to send_chat"
+    assert isinstance(text, str)
+    assert metrics.total_tokens == 0  # No TRANSCRIPT_CHUNK events delivered by the fake
+
+
 def test_native_chat_backend_runtime_unsupported_maps_to_unsupported_modality():
     """Codex R1 P1: when the runtime's session terminates with
     OCT_STATUS_UNSUPPORTED, the SDK maps to UNSUPPORTED_MODALITY
