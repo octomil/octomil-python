@@ -349,6 +349,76 @@ def test_native_chat_backend_does_not_read_env_var(monkeypatch):
     assert exc_info.value.code == OctomilErrorCode.MODEL_NOT_FOUND
 
 
+@pytest.mark.requires_runtime
+@pytest.mark.timeout(120)
+def test_native_chat_backend_default_temperature_does_not_block_request():
+    """Codex R1 P1 regression: GenerationRequest's default
+    ``temperature=0.7`` MUST NOT block product chat. The cutover
+    backend ignores non-greedy temperature/top_p (logger.warning)
+    and forwards only max_tokens to send_chat. v0.1.2 ships
+    greedy-only on the runtime side.
+    """
+    from octomil.runtime.native.chat_backend import NativeChatBackend
+    from octomil.serve.types import GenerationRequest
+
+    gguf = os.environ.get("OCTOMIL_LLAMA_CPP_GGUF", "")
+    if not gguf or not os.path.isfile(gguf):
+        pytest.skip("OCTOMIL_LLAMA_CPP_GGUF unset or missing")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        target = os.path.join(tmp, os.path.basename(gguf))
+        os.symlink(gguf, target)
+        backend = NativeChatBackend(model_dir=tmp)
+        try:
+            backend.load_model("test-model.gguf")
+            # ALL DEFAULT VALUES — temperature=0.7, top_p=1.0,
+            # max_tokens=512. The runtime caps via n_ctx clamp.
+            req = GenerationRequest(
+                model="test-model.gguf",
+                messages=[{"role": "user", "content": "say ok"}],
+                max_tokens=8,  # short for test speed
+            )
+            assert req.temperature == 0.7, "sanity: default still 0.7"
+            text, metrics = backend.generate(req)
+            assert isinstance(text, str)
+            assert len(text) > 0, "default-temperature request must produce output"
+            assert metrics.total_tokens >= 1
+        finally:
+            backend.close()
+
+
+def test_native_chat_backend_runtime_unsupported_maps_to_unsupported_modality():
+    """Codex R1 P1: when the runtime's session terminates with
+    OCT_STATUS_UNSUPPORTED, the SDK maps to UNSUPPORTED_MODALITY
+    (NOT INVALID_INPUT). We exercise the mapping function directly
+    since simulating the event-stream path requires a runtime."""
+    from octomil.errors import OctomilError, OctomilErrorCode
+    from octomil.runtime.native.chat_backend import _runtime_status_to_sdk_error
+    from octomil.runtime.native.loader import (
+        OCT_STATUS_BUSY,
+        OCT_STATUS_INVALID_INPUT,
+        OCT_STATUS_NOT_FOUND,
+        OCT_STATUS_UNSUPPORTED,
+        OCT_STATUS_VERSION_MISMATCH,
+    )
+
+    err = _runtime_status_to_sdk_error(OCT_STATUS_UNSUPPORTED, "msg")
+    assert isinstance(err, OctomilError)
+    assert err.code == OctomilErrorCode.UNSUPPORTED_MODALITY
+
+    err = _runtime_status_to_sdk_error(OCT_STATUS_NOT_FOUND, "msg")
+    assert err.code == OctomilErrorCode.MODEL_NOT_FOUND
+
+    err = _runtime_status_to_sdk_error(OCT_STATUS_INVALID_INPUT, "msg")
+    assert err.code == OctomilErrorCode.INVALID_INPUT
+
+    err = _runtime_status_to_sdk_error(OCT_STATUS_VERSION_MISMATCH, "msg")
+    assert err.code == OctomilErrorCode.RUNTIME_UNAVAILABLE
+
+    err = _runtime_status_to_sdk_error(OCT_STATUS_BUSY, "msg")
+    assert err.code == OctomilErrorCode.SERVER_ERROR
+
+
 def test_legacy_llama_cpp_backend_module_marked_deprecated_for_product():
     """Sanity: the legacy module's docstring documents the cutover.
     A future refactor that re-promotes it for product chat would

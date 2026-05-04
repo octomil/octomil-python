@@ -201,12 +201,20 @@ def _gate_unsupported_request_features(request: GenerationRequest) -> None:
             code=OctomilErrorCode.UNSUPPORTED_MODALITY,
             message="enable_thinking is not supported by the native chat backend in v0.1.2",
         )
-    # v0.1.2 ships greedy-only on the runtime side. We DO NOT pre-flight
-    # temperature/top_p here because the runtime accepts the value
-    # equal to the greedy default (0.0 / 1.0); other values reject
-    # via the event stream as UNSUPPORTED, which we then map to
-    # OctomilError. Doing the same check Python-side would either
-    # duplicate the runtime's validator OR drift from it.
+    # NOTE on temperature / top_p: v0.1.2 ships greedy-only on the
+    # runtime side, but the SDK's GenerationRequest defaults
+    # temperature=0.7 and top_p=1.0 — meaning every default-shape
+    # /v1/chat/completions and Responses call would reject if we
+    # passed those defaults through to the runtime. Codex R1 P1.
+    # Resolution: NativeChatBackend.generate() does NOT forward
+    # temperature/top_p to send_chat — the runtime applies its
+    # greedy default. A logger.warning is emitted when the request's
+    # values differ from greedy so callers see the coercion
+    # without a hard failure on the default product path. Per the
+    # cutover spec rules (4): the user listed grammar / tools /
+    # top_k / unsupported roles / streaming as the bounded-error
+    # cases; temperature/top_p are sampling parameters the cutover
+    # explicitly subsets to greedy, not unsupported features.
 
 
 class NativeChatBackend(InferenceBackend):
@@ -337,12 +345,29 @@ class NativeChatBackend(InferenceBackend):
 
         try:
             t_send = time.monotonic()
+            # Codex R1 P1: do NOT forward request.temperature /
+            # request.top_p to send_chat — v0.1.2 ships greedy-only
+            # and the SDK's GenerationRequest defaults
+            # (temperature=0.7, top_p=1.0) would reject every
+            # default-shape product call. Runtime applies its
+            # greedy default when the options are omitted. We emit
+            # a diagnostic warning if the request's values differ
+            # so coercion is observable without a hard failure on
+            # the default path.
+            if request.temperature not in (0.0, 0):
+                logger.warning(
+                    "NativeChatBackend: v0.1.2 ships greedy-only; " "ignoring request.temperature=%s (treating as 0.0)",
+                    request.temperature,
+                )
+            if request.top_p not in (1.0, 1):
+                logger.warning(
+                    "NativeChatBackend: v0.1.2 ships greedy-only; " "ignoring request.top_p=%s (treating as 1.0)",
+                    request.top_p,
+                )
             try:
                 sess.send_chat(
                     clean_messages,
                     max_tokens=int(request.max_tokens),
-                    temperature=float(request.temperature),
-                    top_p=float(request.top_p),
                 )
             except NativeRuntimeError as exc:
                 raise _runtime_status_to_sdk_error(
@@ -380,23 +405,22 @@ class NativeChatBackend(InferenceBackend):
                     continue
                 if ev.type == OCT_EVENT_ERROR:
                     saw_error = True
-                    # The wrapper doesn't expose error_message in the
-                    # parsed view today; use last_error as the
-                    # diagnostic source.
-                    error_message = self._runtime.last_error()
+                    # Codex R1 P1: read last_error IMMEDIATELY on
+                    # OCT_EVENT_ERROR so a subsequent poll can't
+                    # overwrite the diagnostic. The runtime emits
+                    # ERROR before SESSION_COMPLETED in the rejected
+                    # path; capturing here keeps the message bound
+                    # to the originating event.
+                    if not error_message:
+                        error_message = self._runtime.last_error()
                     continue
                 if ev.type == OCT_EVENT_SESSION_COMPLETED:
-                    # The wrapper doesn't expose terminal_status in
-                    # the parsed view; harvest from last_error if
-                    # set, otherwise treat as OK. The runtime-side
-                    # tests pin the typed terminal_status.
-                    terminal_status = OCT_STATUS_OK
-                    if saw_error:
-                        # Runtime reported an error before completing —
-                        # last_error has the diagnostic; map best we
-                        # can. We don't have the typed status here, so
-                        # use INFERENCE_FAILED as the bounded fallback.
-                        terminal_status = OCT_STATUS_INVALID_INPUT
+                    # Codex R1 P1: read the TYPED terminal_status
+                    # from the event (NativeEvent now exposes it).
+                    # An UNSUPPORTED reject from the runtime (e.g.,
+                    # non-greedy temperature) maps to UNSUPPORTED_MODALITY,
+                    # NOT INVALID_INPUT.
+                    terminal_status = int(ev.terminal_status)
                     break
             else:
                 # Loop exited via the deadline without seeing
@@ -406,9 +430,9 @@ class NativeChatBackend(InferenceBackend):
                     message="native chat backend timed out waiting for SESSION_COMPLETED",
                 )
 
-            if saw_error:
+            if saw_error or terminal_status != OCT_STATUS_OK:
                 raise _runtime_status_to_sdk_error(
-                    terminal_status,
+                    terminal_status if terminal_status != OCT_STATUS_OK else OCT_STATUS_INVALID_INPUT,
                     "native chat backend reported error during generation",
                     last_error=error_message,
                 )

@@ -1257,6 +1257,16 @@ class NativeEvent:
         # storage only until the next poll). Empty for non-chunk
         # event types.
         "text",
+        # Cutover R1 (Codex): SESSION_COMPLETED.terminal_status
+        # (oct_status_t) and OCT_EVENT_ERROR.error_code
+        # (oct_error_code_t) — copied from the inner-payload union
+        # at poll time so the SDK binding can map runtime-side
+        # rejects to bounded OctomilError codes precisely
+        # (UNSUPPORTED stays UNSUPPORTED, not flattened to
+        # INVALID_INPUT). Zero for event types that don't carry
+        # these fields.
+        "terminal_status",
+        "error_code",
     )
 
     def __init__(
@@ -1275,6 +1285,8 @@ class NativeEvent:
         artifact_digest: str = "",
         cache_was_hit: bool = False,
         text: str = "",
+        terminal_status: int = 0,
+        error_code: int = 0,
     ) -> None:
         self.type = type
         self.version = version
@@ -1289,6 +1301,8 @@ class NativeEvent:
         self.artifact_digest = artifact_digest
         self.cache_was_hit = cache_was_hit
         self.text = text
+        self.terminal_status = terminal_status
+        self.error_code = error_code
 
     @property
     def is_none(self) -> bool:
@@ -1564,17 +1578,34 @@ class NativeSession:
         # iterates we'd be reading freed memory. n_bytes bounds the
         # read; the buffer is utf-8 by spec.
         text_payload = ""
+        terminal_status = 0
+        error_code = 0
         ev_type = int(ev.type)
         if ev_type == OCT_EVENT_TRANSCRIPT_CHUNK:
             chunk = ev.data.transcript_chunk
             if chunk.utf8 != ffi.NULL and chunk.n_bytes > 0:
                 text_payload = ffi.buffer(chunk.utf8, int(chunk.n_bytes))[:].decode("utf-8", errors="replace")
+        elif ev_type == OCT_EVENT_SESSION_COMPLETED:
+            # Cutover R1 (Codex): expose typed terminal_status so
+            # the SDK can map UNSUPPORTED rejects to
+            # UNSUPPORTED_MODALITY (rather than flatten everything
+            # post-error to INVALID_INPUT).
+            terminal_status = int(ev.data.session_completed.terminal_status)
+        elif ev_type == OCT_EVENT_ERROR:
+            # Cutover R1 (Codex): typed error_code from the inner
+            # payload. Free-form `code` and `message` strings live
+            # in the same union but aren't yet exposed by this
+            # wrapper — terminal_status on the subsequent
+            # SESSION_COMPLETED is the load-bearing dispatch.
+            error_code = int(ev.data.error.error_code)
         return NativeEvent(
             type=ev_type,
             version=int(ev.version),
             monotonic_ns=int(ev.monotonic_ns),
             user_data_ptr=int(ffi.cast("uintptr_t", ev.user_data)),
             text=text_payload,
+            terminal_status=terminal_status,
+            error_code=error_code,
             **_envelope(ev),
         )
 
