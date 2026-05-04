@@ -87,13 +87,16 @@ def test_abi_version_returns_three_tuple():
     assert isinstance(major, int)
     assert isinstance(minor, int)
     assert isinstance(patch, int)
-    # ABI v0.4 step 1: header bumped to MINOR=4 (additive — added
-    # oct_model_t lifecycle (open/warm/evict/close — stubs);
-    # oct_error_code_t typedef + 13 constants; +6 capability
-    # constants (audio.diarization, audio.speaker.embedding,
-    # audio.vad, embeddings.image, embeddings.text,
-    # index.vector.query). Existing readers stay 0.3-compat.
-    assert (major, minor) == (0, 4)
+    # ABI v0.4 step 2: header bumped to MINOR=5 (additive — added
+    # operational envelope on oct_event_t (APPENDED after union);
+    # error_code field on OCT_EVENT_ERROR (APPENDED inside inner
+    # struct); 10 runtime-scope event types (MODEL_LOADED/EVICTED,
+    # CACHE_HIT/MISS, QUEUED, PREEMPTED, MEMORY_PRESSURE,
+    # THERMAL_STATE, WATCHDOG_TIMEOUT, METRIC); session_config v=2
+    # with appended request_id/route_id/trace_id/kv_prefix_key.
+    # Existing readers stay 0.3/0.4-step-1-compat via versioned-
+    # output size handshake.
+    assert (major, minor) == (0, 5)
     assert patch == 0
 
 
@@ -871,3 +874,380 @@ def test_native_runtime_close_invokes_model_close_before_invalidation():
 
     with pytest.raises(NativeRuntimeError):
         mdl.warm()
+
+
+# ---------------------------------------------------------------------------
+# ABI v0.4 step 2 — operational envelope + new event types
+# ---------------------------------------------------------------------------
+
+
+def test_oct_event_t_size_includes_v0_4_envelope():
+    """v0.4 step 2: oct_event_t grew by the operational envelope.
+    Size parity test catches accidental cdef/runtime drift."""
+    from octomil.runtime.native.loader import _get_lib
+
+    ffi, lib = _get_lib()
+    cffi_size = ffi.sizeof("oct_event_t")
+    runtime_size = int(lib.oct_event_size())
+    assert cffi_size == runtime_size, f"oct_event_t v0.4 step 2 drift: cffi={cffi_size}, runtime={runtime_size}"
+
+
+def test_oct_session_config_t_v0_4_appended_fields_present():
+    """v0.4 step 2: oct_session_config_t v=2 appends request_id /
+    route_id / trace_id / kv_prefix_key. The cdef and runtime must
+    agree on the new struct size."""
+    from octomil.runtime.native.loader import _get_lib
+
+    ffi, lib = _get_lib()
+    cffi_size = ffi.sizeof("oct_session_config_t")
+    runtime_size = int(lib.oct_session_config_size())
+    assert cffi_size == runtime_size
+
+
+def test_session_config_version_bumped_to_2():
+    """v0.4 step 2 bumps session_config version 1 → 2."""
+    from octomil.runtime.native.loader import OCT_SESSION_CONFIG_VERSION
+
+    assert OCT_SESSION_CONFIG_VERSION == 2
+
+
+def test_event_version_bumped_to_2():
+    """v0.4 step 2 bumps event version 1 → 2."""
+    from octomil.runtime.native.loader import OCT_EVENT_VERSION
+
+    assert OCT_EVENT_VERSION == 2
+
+
+def test_v0_4_step_2_event_type_constants_assigned_correctly():
+    """v0.4 step 2 event-type numeric assignments are STABLE forever."""
+    from octomil.runtime.native.loader import (
+        OCT_EVENT_CACHE_HIT,
+        OCT_EVENT_CACHE_MISS,
+        OCT_EVENT_MEMORY_PRESSURE,
+        OCT_EVENT_METRIC,
+        OCT_EVENT_MODEL_EVICTED,
+        OCT_EVENT_MODEL_LOADED,
+        OCT_EVENT_PREEMPTED,
+        OCT_EVENT_QUEUED,
+        OCT_EVENT_THERMAL_STATE,
+        OCT_EVENT_WATCHDOG_TIMEOUT,
+    )
+
+    assert OCT_EVENT_MODEL_LOADED == 10
+    assert OCT_EVENT_MODEL_EVICTED == 11
+    assert OCT_EVENT_CACHE_HIT == 12
+    assert OCT_EVENT_CACHE_MISS == 13
+    assert OCT_EVENT_QUEUED == 14
+    assert OCT_EVENT_PREEMPTED == 15
+    assert OCT_EVENT_MEMORY_PRESSURE == 16
+    assert OCT_EVENT_THERMAL_STATE == 17
+    assert OCT_EVENT_WATCHDOG_TIMEOUT == 18
+    assert OCT_EVENT_METRIC == 19
+
+
+def test_open_session_with_correlation_ids_stub():
+    """v0.4 step 2: open_session accepts the new correlation kwargs.
+    Stub still returns UNSUPPORTED (slice-2 stub semantics
+    preserved); the kwargs flow through cleanly."""
+    from octomil.runtime.native import (
+        CAPABILITY_AUDIO_REALTIME_SESSION,
+        OCT_STATUS_UNSUPPORTED,
+        NativeRuntime,
+        NativeRuntimeError,
+    )
+
+    with NativeRuntime.open() as rt:
+        with pytest.raises(NativeRuntimeError) as exc_info:
+            rt.open_session(
+                capability=CAPABILITY_AUDIO_REALTIME_SESSION,
+                request_id="req-abc-123",
+                route_id="route-xyz-789",
+                trace_id="00f067aa0ba902b7",
+                kv_prefix_key="app:scribe:system_v3",
+            )
+        assert exc_info.value.status == OCT_STATUS_UNSUPPORTED
+
+
+def test_open_session_rejects_oversized_correlation_ids():
+    """v0.4 step 2 PE review §1.9.5: correlation IDs have explicit
+    length caps. Bindings reject before the FFI call."""
+    from octomil.runtime.native import (
+        CAPABILITY_AUDIO_REALTIME_SESSION,
+        NativeRuntime,
+        NativeRuntimeError,
+    )
+    from octomil.runtime.native.loader import OCT_STATUS_INVALID_INPUT
+
+    with NativeRuntime.open() as rt:
+        # request_id > 128 bytes
+        with pytest.raises(NativeRuntimeError) as exc_info:
+            rt.open_session(
+                capability=CAPABILITY_AUDIO_REALTIME_SESSION,
+                request_id="x" * 129,
+            )
+        assert exc_info.value.status == OCT_STATUS_INVALID_INPUT
+        assert "request_id" in str(exc_info.value)
+
+        # kv_prefix_key > 256 bytes
+        with pytest.raises(NativeRuntimeError) as exc_info:
+            rt.open_session(
+                capability=CAPABILITY_AUDIO_REALTIME_SESSION,
+                kv_prefix_key="y" * 257,
+            )
+        assert exc_info.value.status == OCT_STATUS_INVALID_INPUT
+        assert "kv_prefix_key" in str(exc_info.value)
+
+
+def test_native_event_envelope_populated_on_stub_poll():
+    """v0.4 step 2: stub poll_event populates envelope with empty-
+    string sentinels (NEVER NULL). Bindings can strlen() safely
+    without NULL-checking each field."""
+    from octomil.runtime.native import NativeRuntime
+    from octomil.runtime.native.loader import NativeSession, _get_lib
+
+    ffi, lib = _get_lib()
+    with NativeRuntime.open() as rt:
+        sess = NativeSession(ffi, lib, ffi.NULL, owner=rt)
+        # Stub poll_event raises on UNSUPPORTED. To exercise the
+        # envelope population path directly, call the C poll_event
+        # with a fresh event buffer and inspect.
+        ev = ffi.new("oct_event_t*")
+        ev.size = ffi.sizeof("oct_event_t")
+        ev.version = 2
+        status = int(lib.oct_session_poll_event(ffi.NULL, ev, 0))
+        # Stub returns UNSUPPORTED; envelope is populated regardless
+        # because the population happens in the C-side write path
+        # before the status return.
+        assert status != 0
+        # envelope strings are non-NULL (empty sentinel) on the stub.
+        for field in (
+            "request_id",
+            "route_id",
+            "trace_id",
+            "engine_version",
+            "adapter_version",
+            "accelerator",
+            "artifact_digest",
+        ):
+            ptr = getattr(ev, field)
+            assert ptr != ffi.NULL, f"envelope field {field!r} is NULL (must be empty string)"
+            assert ffi.string(ptr) == b"", f"envelope field {field!r} should be empty string sentinel"
+        assert int(ev.cache_was_hit) == 0
+        # Avoid the no-handle NativeSession close path returning unexpected status.
+        sess.close()
+
+
+def test_native_event_class_exposes_envelope_fields():
+    """v0.4 step 2: NativeEvent class carries the envelope as Python
+    attributes — no NULL handling required at the binding edge."""
+    from octomil.runtime.native import OCT_EVENT_NONE, NativeEvent
+
+    ev = NativeEvent(
+        type=OCT_EVENT_NONE,
+        version=2,
+        monotonic_ns=12345,
+        user_data_ptr=0,
+        request_id="req-1",
+        route_id="route-1",
+        trace_id="trace-1",
+        engine_version="moshi-mlx@0.2.6",
+        adapter_version="adapter-sha-deadbeef",
+        accelerator="metal",
+        artifact_digest="sha256:" + "a" * 64,
+        cache_was_hit=True,
+    )
+    assert ev.request_id == "req-1"
+    assert ev.route_id == "route-1"
+    assert ev.trace_id == "trace-1"
+    assert ev.engine_version == "moshi-mlx@0.2.6"
+    assert ev.accelerator == "metal"
+    assert ev.cache_was_hit is True
+
+
+def test_v0_4_step_2_envelope_slots_are_pinned():
+    """Privacy invariant from PE review §2: the operational envelope
+    fields are id/version/digest strings ONLY. No prompts, audio
+    bytes, transcript text, file paths, or PHI/PII may be carried
+    via the envelope.
+
+    Codex R2 nit: pin the envelope SUBSET, not the full __slots__.
+    Future legitimate payload-parsing fields (audio_chunk pcm,
+    transcript_chunk utf8, model_loaded engine, etc.) are NOT
+    envelope fields and should NOT trip this guard. This test
+    asserts only that:
+      (a) every named envelope slot exists (no accidental removal)
+      (b) any net-new field with an envelope-like name shape (id,
+          version, digest, accelerator) was reviewed.
+    Privacy gates on payload fields live in their own per-payload
+    tests once those payloads ship."""
+    from octomil.runtime.native import NativeEvent
+
+    expected_envelope_slots = {
+        "request_id",
+        "route_id",
+        "trace_id",
+        "engine_version",
+        "adapter_version",
+        "accelerator",
+        "artifact_digest",
+        "cache_was_hit",
+    }
+    actual_slots = set(NativeEvent.__slots__)
+    # (a) every expected envelope slot MUST exist (no removal).
+    missing = expected_envelope_slots - actual_slots
+    assert not missing, f"envelope slots missing from NativeEvent: {missing}"
+    # (b) base slots (id/version) are part of the structure too.
+    base_slots = {"type", "version", "monotonic_ns", "user_data_ptr"}
+    documented = expected_envelope_slots | base_slots
+    # If a future PR wants to ADD a new envelope-class field
+    # (id-shaped / version-shaped / digest-shaped), it must update
+    # expected_envelope_slots here AND get explicit PE review since
+    # that broadens the privacy surface. Other (payload) slots may
+    # come and go without this test failing.
+    envelope_like_extras = {
+        s for s in actual_slots - documented if any(token in s for token in ("_id", "version", "digest", "accelerator"))
+    }
+    assert not envelope_like_extras, (
+        f"NativeEvent grew envelope-class slots without PE review: "
+        f"{envelope_like_extras}. Privacy boundary requires explicit "
+        f"approval for any new id/version/digest field."
+    )
+
+
+def test_open_session_rejects_correlation_ids_with_whitespace():
+    """Codex R1 fix: ABI contract requires ASCII-printable
+    (0x21..0x7E), no whitespace, no control chars. Bindings reject
+    pre-FFI."""
+    from octomil.runtime.native import (
+        CAPABILITY_AUDIO_REALTIME_SESSION,
+        NativeRuntime,
+        NativeRuntimeError,
+    )
+    from octomil.runtime.native.loader import OCT_STATUS_INVALID_INPUT
+
+    with NativeRuntime.open() as rt:
+        # whitespace
+        for bad in ("with space", "tab\there", "line\nbreak"):
+            with pytest.raises(NativeRuntimeError) as exc_info:
+                rt.open_session(
+                    capability=CAPABILITY_AUDIO_REALTIME_SESSION,
+                    request_id=bad,
+                )
+            assert exc_info.value.status == OCT_STATUS_INVALID_INPUT
+            assert "request_id" in str(exc_info.value)
+
+
+def test_open_session_rejects_correlation_ids_with_control_chars():
+    """Codex R1 fix: control chars (codepoints < 0x21) rejected."""
+    from octomil.runtime.native import (
+        CAPABILITY_AUDIO_REALTIME_SESSION,
+        NativeRuntime,
+        NativeRuntimeError,
+    )
+    from octomil.runtime.native.loader import OCT_STATUS_INVALID_INPUT
+
+    with NativeRuntime.open() as rt:
+        # control chars
+        for bad in ("\x00null", "bell\x07here", "del\x7fchar"):
+            with pytest.raises(NativeRuntimeError) as exc_info:
+                rt.open_session(
+                    capability=CAPABILITY_AUDIO_REALTIME_SESSION,
+                    route_id=bad,
+                )
+            assert exc_info.value.status == OCT_STATUS_INVALID_INPUT
+            assert "route_id" in str(exc_info.value)
+
+
+def test_open_session_rejects_correlation_ids_with_non_ascii():
+    """Codex R1 fix: non-ASCII codepoints (> 0x7E) rejected — the
+    envelope is a bounded-cardinality label surface, not a
+    user-string carrier."""
+    from octomil.runtime.native import (
+        CAPABILITY_AUDIO_REALTIME_SESSION,
+        NativeRuntime,
+        NativeRuntimeError,
+    )
+    from octomil.runtime.native.loader import OCT_STATUS_INVALID_INPUT
+
+    with NativeRuntime.open() as rt:
+        for bad in ("café", "日本語", "\u202erlt-override"):
+            with pytest.raises(NativeRuntimeError) as exc_info:
+                rt.open_session(
+                    capability=CAPABILITY_AUDIO_REALTIME_SESSION,
+                    trace_id=bad,
+                )
+            assert exc_info.value.status == OCT_STATUS_INVALID_INPUT
+            assert "trace_id" in str(exc_info.value)
+
+
+def test_open_session_accepts_canonical_correlation_id_shapes():
+    """Sanity: canonical W3C-style trace ids and URL-safe IDs pass.
+    Stub still returns UNSUPPORTED but the validator allows the
+    well-formed cases through."""
+    from octomil.runtime.native import (
+        CAPABILITY_AUDIO_REALTIME_SESSION,
+        OCT_STATUS_UNSUPPORTED,
+        NativeRuntime,
+        NativeRuntimeError,
+    )
+
+    with NativeRuntime.open() as rt:
+        for good in (
+            "00f067aa0ba902b7",  # 16-char hex
+            "abcdef12-3456-7890-abcd-ef1234567890",
+            "req:scribe:2026-05-04T00:00:00Z",
+            "app/scribe/system_v3",
+        ):
+            with pytest.raises(NativeRuntimeError) as exc_info:
+                rt.open_session(
+                    capability=CAPABILITY_AUDIO_REALTIME_SESSION,
+                    request_id=good,
+                )
+            assert (
+                exc_info.value.status == OCT_STATUS_UNSUPPORTED
+            ), f"valid id {good!r} should reach the C ABI and stub return UNSUPPORTED, not be rejected client-side"
+
+
+def test_v0_4_step_2_event_constants_exported_publicly():
+    """Codex R1 missed-case: every new OCT_EVENT_* constant must be
+    importable from `octomil.runtime.native` (the public surface)
+    not just `loader.py`."""
+    import octomil.runtime.native as native
+
+    for name in (
+        "OCT_EVENT_MODEL_LOADED",
+        "OCT_EVENT_MODEL_EVICTED",
+        "OCT_EVENT_CACHE_HIT",
+        "OCT_EVENT_CACHE_MISS",
+        "OCT_EVENT_QUEUED",
+        "OCT_EVENT_PREEMPTED",
+        "OCT_EVENT_MEMORY_PRESSURE",
+        "OCT_EVENT_THERMAL_STATE",
+        "OCT_EVENT_WATCHDOG_TIMEOUT",
+        "OCT_EVENT_METRIC",
+    ):
+        assert hasattr(native, name), f"public surface missing {name}"
+
+
+def test_open_session_translates_unicode_encode_error():
+    """Codex R2 nit: lone surrogates / unencodable strings should
+    raise NativeRuntimeError(INVALID_INPUT), not raw
+    UnicodeEncodeError. Callers handle one exception type for
+    'bad correlation ID', not two."""
+    from octomil.runtime.native import (
+        CAPABILITY_AUDIO_REALTIME_SESSION,
+        NativeRuntime,
+        NativeRuntimeError,
+    )
+    from octomil.runtime.native.loader import OCT_STATUS_INVALID_INPUT
+
+    with NativeRuntime.open() as rt:
+        # Lone surrogate is unencodable as UTF-8 (without surrogateescape).
+        bad = "\ud800"  # high surrogate alone
+        with pytest.raises(NativeRuntimeError) as exc_info:
+            rt.open_session(
+                capability=CAPABILITY_AUDIO_REALTIME_SESSION,
+                request_id=bad,
+            )
+        assert exc_info.value.status == OCT_STATUS_INVALID_INPUT
+        assert "request_id" in str(exc_info.value)

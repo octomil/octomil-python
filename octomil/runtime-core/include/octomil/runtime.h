@@ -69,7 +69,7 @@ extern "C" {
 /* Bumped on breaking changes. Bindings inspect this at runtime via
  * `oct_runtime_abi_version()` to fail-fast on incompatible dylibs. */
 #define OCT_RUNTIME_ABI_VERSION_MAJOR 0
-#define OCT_RUNTIME_ABI_VERSION_MINOR 4  /* v0.4 step 1 (PE review octomil-workspace#27): +oct_model_t lifecycle (open/warm/evict/close — stubs); +oct_error_code_t typedef + 13 constants; +6 capability constants (audio.diarization, audio.speaker.embedding, audio.vad, embeddings.image, embeddings.text, index.vector.query). Additive only; reads stay 0.3-compat. Future v0.4 steps: oct_event_t operational envelope; oct_index_t; generic send_json/blob/control; capability descriptors; installed_artifact introspection. */
+#define OCT_RUNTIME_ABI_VERSION_MINOR 5  /* v0.4 step 2 (PE review octomil-workspace#27 §1.5/§1.6/§1.9.5): +operational envelope on oct_event_t (request_id/route_id/trace_id/engine_version/adapter_version/accelerator/artifact_digest/cache_was_hit — APPENDED after union per the slice-2A append-only rule); +error_code field on OCT_EVENT_ERROR (APPENDED inside the inner struct); +10 runtime-scope event types (MODEL_LOADED/EVICTED, CACHE_HIT/MISS, QUEUED, PREEMPTED, MEMORY_PRESSURE, THERMAL_STATE, WATCHDOG_TIMEOUT, METRIC); +oct_session_config_t v2 with appended correlation IDs (request_id/route_id/trace_id/kv_prefix_key). Additive only; reads stay 0.3/0.4-compat. Future v0.4 steps: session-scope events (TEXT_DELTA, EMBEDDING_VECTOR, VAD_SEGMENT, etc.); oct_index_t; generic send_json/blob/control; capability descriptors; installed_artifact introspection. */
 #define OCT_RUNTIME_ABI_VERSION_PATCH 0
 
 /* Versions of versioned config structs. Bumped lockstep with the
@@ -87,8 +87,17 @@ extern "C" {
  * are read-only from the runtime's perspective, so version alone
  * suffices there. */
 #define OCT_RUNTIME_CONFIG_VERSION   1
-#define OCT_SESSION_CONFIG_VERSION   1
-#define OCT_EVENT_VERSION            1
+/* v0.4 step 2 bump 1→2: appended request_id, route_id, trace_id,
+ * kv_prefix_key (caller-owned correlation IDs; runtime echoes on
+ * every event). v0.3 bindings setting version=1 stay compatible
+ * because the new fields are read past the v=1 cutoff and treated
+ * as NULL/empty. */
+#define OCT_SESSION_CONFIG_VERSION   2
+/* v0.4 step 2 bump 1→2: appended operational envelope after the
+ * union. Versioned-output `size` handshake makes v0.3/v0.4-step-1
+ * bindings (which set out->size = older sizeof) invisible to the
+ * envelope writes — runtime stops at out->size. */
+#define OCT_EVENT_VERSION            2
 #define OCT_CAPABILITIES_VERSION     1
 
 /* v0.4 (PE review octomil-workspace#27 §1.1) — model lifecycle handle.
@@ -538,6 +547,30 @@ typedef struct {
     uint32_t    sample_rate_out;     /* 0 = engine preferred output rate */
     oct_priority_t priority;         /* OCT_PRIORITY_*; codegen-friendlier than bare uint32_t */
     void*       user_data;           /* opaque, echoed verbatim on every event */
+
+    /* ──────── v0.4 step 2 — session_config v=2 appended fields ────
+     * Correlation IDs set by Layer 2b at oct_session_open; runtime
+     * echoes on every event from this session. Caller-owned strings
+     * copied at open per the slice-2A STRING LIFETIME contract.
+     * NULL = "no correlation for this slot"; runtime echoes empty
+     * string ("") on events.
+     *
+     * v=1 bindings stop at user_data; runtime treats their config
+     * as if NULL was passed for these fields. v=2 bindings populate
+     * them.
+     *
+     * LENGTH LIMITS (PE review octomil-workspace#27 §1.9.5):
+     *   - kv_prefix_key  ≤ 256 B UTF-8
+     *   - request_id     ≤ 128 B
+     *   - route_id       ≤ 128 B
+     *   - trace_id       ≤ 128 B
+     * ASCII-printable characters only, no whitespace, no control
+     * chars. Out-of-bounds returns OCT_STATUS_INVALID_INPUT.
+     * ─────────────────────────────────────────────────────────── */
+    const char* request_id;          /* per-session correlation; NULL ok */
+    const char* route_id;            /* set by Layer 2b at session_open; NULL ok */
+    const char* trace_id;            /* W3C-compatible if present; NULL ok */
+    const char* kv_prefix_key;       /* KV-prefix cache key (system prompt + tool schemas); NULL = no prefix-cache lookup */
 } oct_session_config_t;
 /*
  * RESERVED FIELDS POLICY (Codex R3): all `_reserved*` fields in
@@ -694,6 +727,22 @@ typedef uint32_t oct_event_type_t;
 #define OCT_EVENT_SESSION_COMPLETED     ((oct_event_type_t)8)
 #define OCT_EVENT_INPUT_DROPPED         ((oct_event_type_t)9)  /* realtime backpressure; see strategy/realtime-architecture.md */
 
+/* v0.4 step 2 — runtime-scope events (delivered via the
+ * oct_telemetry_sink_fn callback, NOT oct_session_poll_event).
+ * Empty correlation envelope strings — these are TRULY runtime-
+ * scoped, no session in scope. Bindings forward to traces/audit
+ * log per the slice-2A telemetry-sink reentrancy rules. */
+#define OCT_EVENT_MODEL_LOADED          ((oct_event_type_t)10)  /* engine + model_id + artifact_digest + load_ms + warm_ms + policy_preset + user_data + source */
+#define OCT_EVENT_MODEL_EVICTED         ((oct_event_type_t)11)  /* engine + model_id + artifact_digest + freed_bytes + reason ∈ {memory_pressure, ttl, manual} + user_data */
+#define OCT_EVENT_CACHE_HIT             ((oct_event_type_t)12)  /* layer ∈ {kv-prefix, phoneme, voice, phrase, route} + saved_tokens */
+#define OCT_EVENT_CACHE_MISS            ((oct_event_type_t)13)  /* same payload as CACHE_HIT (saved_tokens=0); separate type for filterability */
+#define OCT_EVENT_QUEUED                ((oct_event_type_t)14)  /* queue_position + queue_depth */
+#define OCT_EVENT_PREEMPTED             ((oct_event_type_t)15)  /* preempted_by_priority + reason ∈ closed enum */
+#define OCT_EVENT_MEMORY_PRESSURE       ((oct_event_type_t)16)  /* ram_available_bytes + severity ∈ {0=warn, 1=critical} */
+#define OCT_EVENT_THERMAL_STATE         ((oct_event_type_t)17)  /* state ∈ {0=nominal, 1=fair, 2=serious, 3=critical} */
+#define OCT_EVENT_WATCHDOG_TIMEOUT      ((oct_event_type_t)18)  /* timeout_ms + phase ∈ closed enum */
+#define OCT_EVENT_METRIC                ((oct_event_type_t)19)  /* name from runtime_metric.json closed enum + value (double). Free-form names forbidden by-construction. */
+
 /*
  * Sample format codes for audio_chunk payload (Codex R1 — pcm +
  * n_bytes + sample_rate is insufficient; bindings need format /
@@ -731,8 +780,16 @@ struct oct_event {
             uint32_t    n_bytes;
         } transcript_chunk;
         struct {
-            const char* code;          /* runtime-owned */
+            const char* code;          /* runtime-owned (slice-2A free-form string; kept for human context) */
             const char* message;       /* runtime-owned */
+            /* v0.4 step 2 APPENDED — bounded enum form for telemetry
+             * labels. Drawn from runtime_error_code.json. v0.3/0.4-step-1
+             * bindings allocating the smaller struct never read this
+             * field; runtime respects out->size. Unknown values map to
+             * OCT_ERR_UNKNOWN at receive time per the forward-compat
+             * sentinel rule. */
+            oct_error_code_t error_code;
+            uint32_t         _reserved0;     /* padding; always 0 */
         } error;
         struct {
             const char* engine;
@@ -762,7 +819,100 @@ struct oct_event {
             const char*  reason;            /* runtime-owned. "queue_full" | "session_busy" | "engine_lagging" */
             uint64_t     dropped_at_ns;     /* monotonic timestamp of the drop */
         } input_dropped;
+
+        /* ──────── v0.4 step 2 — runtime-scope event payloads ──────── *
+         * All inner pointer fields are runtime-owned static strings
+         * drawn from closed enums declared in this header / contracts.
+         * Lifetime: callback duration only (slice-2A telemetry-sink
+         * reentrancy rules). Bindings copy if they need durability.
+         * ─────────────────────────────────────────────────────────── */
+        struct {
+            const char* engine;             /* runtime-owned: "moshi-mlx@<ver>" | "llama.cpp@<ver>" | ... */
+            const char* model_id;           /* runtime-owned */
+            const char* artifact_digest;    /* sha256 of prepared artifact */
+            uint64_t    load_ms;
+            uint64_t    warm_ms;
+            const char* policy_preset;      /* echoed from oct_model_config_t.policy_preset */
+            void*       config_user_data;   /* echoed from oct_model_config_t.user_data */
+            const char* source;             /* closed enum: "bench-cache-recommended" | "engine-hint" | "auto" */
+        } model_loaded;
+        struct {
+            const char* engine;
+            const char* model_id;
+            const char* artifact_digest;
+            uint64_t    freed_bytes;
+            const char* reason;             /* closed enum: "memory_pressure" | "ttl" | "manual" */
+            void*       config_user_data;
+        } model_evicted;
+        struct {
+            const char* layer;              /* closed enum: "kv-prefix" | "phoneme" | "voice" | "phrase" | "route" */
+            uint32_t    saved_tokens;       /* 0 for CACHE_MISS */
+            uint32_t    _reserved0;
+        } cache;
+        struct {
+            uint32_t    queue_position;
+            uint32_t    queue_depth;
+        } queued;
+        struct {
+            uint32_t    preempted_by_priority;     /* OCT_PRIORITY_* */
+            uint32_t    _reserved0;
+            const char* reason;             /* runtime-owned closed enum */
+        } preempted;
+        struct {
+            uint64_t    ram_available_bytes;
+            uint8_t     severity;           /* 0 = warn, 1 = critical */
+            uint8_t     _reserved0;
+            uint16_t    _reserved1;
+            uint32_t    _reserved2;
+        } memory_pressure;
+        struct {
+            uint8_t     state;              /* 0=nominal, 1=fair, 2=serious, 3=critical */
+            uint8_t     _reserved0;
+            uint16_t    _reserved1;
+            uint32_t    _reserved2;
+        } thermal_state;
+        struct {
+            uint32_t    timeout_ms;
+            uint32_t    _reserved0;
+            const char* phase;              /* runtime-owned closed enum: "load" | "warm" | "first_audio" | "session_step" */
+        } watchdog_timeout;
+        struct {
+            const char* name;               /* runtime-owned; MUST be a value from runtime_metric.json closed enum */
+            double      value;
+        } metric;
     } data;
+
+    /* ──────── v0.4 step 2 — operational envelope (APPENDED) ─────────
+     * Per ABI v0.4 PE review (octomil-workspace#27 §1.6 + R1 fix):
+     * envelope APPENDS after the union, NOT before, so v0.3 / v0.4
+     * step 1 bindings reading event payloads at the same offsets
+     * stay compatible. The runtime writes envelope fields ONLY when
+     * out->size is large enough to cover them (versioned-output
+     * size handshake from slice-2A).
+     *
+     * Runtime-owned strings, lifetime = until next poll (for
+     * session-scope events) or callback duration (for runtime-scope
+     * events). The runtime ALWAYS writes non-NULL pointers; when
+     * `oct_session_config_t` passed NULL for a correlation slot
+     * (or the event is runtime-scope, no session in scope), the
+     * runtime echoes an EMPTY STRING ("") rather than NULL. Bindings
+     * can `strlen()` safely without a NULL check.
+     *
+     * The runtime NEVER mints correlation IDs — Layer 2b sets them
+     * at session_open and the runtime echoes. Empty strings on
+     * runtime-scope events are TRULY runtime-scoped (no session).
+     * ─────────────────────────────────────────────────────────── */
+    const char*        request_id;          /* per-session correlation; "" for runtime-scope */
+    const char*        route_id;            /* set by Layer 2b at session_open; "" for runtime-scope */
+    const char*        trace_id;            /* W3C-compatible if present; "" for runtime-scope */
+    const char*        engine_version;      /* e.g. "moshi-mlx@0.2.6"; "" if not engine-attributable */
+    const char*        adapter_version;     /* runtime adapter SHA; "" if not adapter-attributable */
+    const char*        accelerator;         /* "metal" | "cuda" | "cpu" | "ane" | "" */
+    const char*        artifact_digest;     /* sha256 of model artifact; "" if not artifact-attributable */
+    uint8_t            cache_was_hit;       /* 0/1 — was this fed by cache? */
+    uint8_t            _reserved0;
+    uint16_t           _reserved1;
+    uint32_t           _reserved2;
 };
 
 /*
