@@ -38,58 +38,96 @@ import pytest
 cffi = pytest.importorskip("cffi", reason="cffi extra not installed")  # noqa: F841
 
 
-@pytest.fixture(scope="session")
-def runtime_dylib() -> Path:
-    """Resolve an external ``liboctomil-runtime`` dylib from the
-    operator override or the dev cache. Skip cleanly if neither
-    is populated — the runtime source is no longer in this repo,
-    so we cannot build one on demand.
+def _resolve_external_dylib() -> Path | None:
+    """Return the dylib path resolved via env override or dev cache,
+    or None when neither is populated. Used by test gates without
+    forcing a session-wide skip — see the comment on the fixture
+    restructure below."""
+    from octomil.runtime.native import loader as _loader
 
-    To populate the dev cache locally:
-
-        python scripts/fetch_runtime_dev.py
-
-    To pin an explicit binary in CI / dev environments:
-
-        export OCTOMIL_RUNTIME_DYLIB=/abs/path/to/liboctomil-runtime.dylib
-    """
-    # Import inside the fixture so missing-cffi skips the module
-    # cleanly without importing the loader at collection time.
-    from octomil.runtime.native import loader
-
-    override = os.environ.get(loader.ENV_DYLIB_OVERRIDE)
+    override = os.environ.get(_loader.ENV_DYLIB_OVERRIDE)
     if override:
         path = Path(override)
         if not path.is_file():
             pytest.fail(
-                f"{loader.ENV_DYLIB_OVERRIDE}={override!r} does not exist; " f"operator override is authoritative."
+                f"{_loader.ENV_DYLIB_OVERRIDE}={override!r} does not exist; " f"operator override is authoritative."
             )
         return path
-
-    candidates = loader._fetched_dylib_candidates()
+    candidates = _loader._fetched_dylib_candidates()
     if candidates:
-        # Pick the most-recently-fetched cached release.
         return candidates[-1]
-
-    pytest.skip(
-        "no external liboctomil-runtime available — set "
-        f"{loader.ENV_DYLIB_OVERRIDE} or run "
-        "`python scripts/fetch_runtime_dev.py` to populate "
-        "~/.cache/octomil-runtime/."
-    )
-    raise AssertionError("unreachable: pytest.skip raises")  # type narrower for mypy
+    return None
 
 
+# Module-level resolution: do this once per session and cache so
+# every fixture sees the same answer.
+_EXTERNAL_DYLIB: Path | None = None
+
+
+def _external_dylib() -> Path | None:
+    global _EXTERNAL_DYLIB
+    if _EXTERNAL_DYLIB is not None:
+        return _EXTERNAL_DYLIB
+    _EXTERNAL_DYLIB = _resolve_external_dylib()
+    return _EXTERNAL_DYLIB
+
+
+# Codex R1 blocker fix: previously the autouse `_isolate_loader`
+# fixture took `runtime_dylib` as a parameter, so a `pytest.skip`
+# in `runtime_dylib` cascaded to EVERY test — including the
+# structural regression guards (no in-tree subtree, error-message
+# regression, version sort key) that don't actually need a dylib.
+# CI without a fetched dylib silently skipped the whole boundary
+# enforcement. Now: tests that need a working runtime carry the
+# `requires_runtime` marker (or are auto-marked by the heuristic
+# in `pytest_collection_modifyitems` below); the autouse only
+# applies env override + FFI reset for those.
+@pytest.fixture(scope="session")
+def runtime_dylib() -> Path:
+    """Resolve an external ``liboctomil-runtime`` dylib. Skip cleanly
+    when neither the env override nor the dev cache is populated.
+
+    Populate the dev cache:    python scripts/fetch_runtime_dev.py
+    Or pin a specific binary:  export OCTOMIL_RUNTIME_DYLIB=...
+    """
+    path = _external_dylib()
+    if path is None:
+        pytest.skip(
+            "no external liboctomil-runtime available — set "
+            "OCTOMIL_RUNTIME_DYLIB or run "
+            "`python scripts/fetch_runtime_dev.py` to populate "
+            "~/.cache/octomil-runtime/."
+        )
+        raise AssertionError("unreachable: pytest.skip raises")
+    return path
+
+
+# NOTE: marker registration + collection auto-marker live in
+# tests/conftest.py — pytest doesn't run the relevant hooks from
+# test modules. The autouse fixture below reads the marker.
 @pytest.fixture(autouse=True)
-def _isolate_loader(monkeypatch, runtime_dylib: Path):
-    """Ensure each test gets a fresh FFI/lib pair pointed at the
-    session-built dylib. Resets the loader's module-level singletons
-    so the override env var takes effect."""
-    monkeypatch.setenv("OCTOMIL_RUNTIME_DYLIB", str(runtime_dylib))
-    import octomil.runtime.native.loader as loader
+def _isolate_loader(request, monkeypatch):
+    """Tests carrying ``@pytest.mark.requires_runtime`` (or
+    auto-marked above) get the FFI/Lib singletons reset and the env
+    override pointed at the resolved dylib; if no dylib is available
+    they skip cleanly. Tests without the marker run unmodified —
+    structural guards run regardless of whether a dylib is staged."""
+    if request.node.get_closest_marker("requires_runtime") is None:
+        yield
+        return
+    dylib = _external_dylib()
+    if dylib is None:
+        pytest.skip(
+            "no external liboctomil-runtime available — set "
+            "OCTOMIL_RUNTIME_DYLIB or run "
+            "`python scripts/fetch_runtime_dev.py`."
+        )
+        return
+    monkeypatch.setenv("OCTOMIL_RUNTIME_DYLIB", str(dylib))
+    import octomil.runtime.native.loader as _loader
 
-    monkeypatch.setattr(loader, "_FFI", None)
-    monkeypatch.setattr(loader, "_LIB", None)
+    monkeypatch.setattr(_loader, "_FFI", None)
+    monkeypatch.setattr(_loader, "_LIB", None)
     yield
 
 
@@ -424,6 +462,26 @@ def test_no_in_tree_runtime_core_subtree(monkeypatch):
         f"Layer 2a runtime is owned by the private octomil-runtime "
         f"repo and consumed via OCTOMIL_RUNTIME_DYLIB / dev-cache."
     )
+
+
+def test_version_sort_key_handles_double_digit_minor(tmp_path: Path):
+    """Codex R1 missed-case: lexicographic sort would put v0.0.10
+    BEFORE v0.0.2 and the most-recently-fetched-wins rule would
+    pick the wrong release. Pin the parsed-tuple sort here so a
+    revert to lex sort fails loudly."""
+    from octomil.runtime.native.loader import _version_sort_key
+
+    versions = [
+        tmp_path / "v0.0.2",
+        tmp_path / "v0.0.10",
+        tmp_path / "v0.1.0",
+        tmp_path / "v0.0.1-rc1",
+        tmp_path / "v0.0.1",
+    ]
+    sorted_paths = sorted(versions, key=_version_sort_key)
+    sorted_names = [p.name for p in sorted_paths]
+    # v0.0.1-rc1 sorts before v0.0.1; v0.0.10 sorts AFTER v0.0.2.
+    assert sorted_names == ["v0.0.1-rc1", "v0.0.1", "v0.0.2", "v0.0.10", "v0.1.0"], sorted_names
 
 
 # ---------------------------------------------------------------------------

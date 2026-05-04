@@ -230,6 +230,35 @@ _RUNTIME_LIBNAMES = (
 )
 
 
+def _version_sort_key(p: Path) -> tuple:
+    """Parse ``v0.0.1`` / ``v0.10.2`` / ``v1.2.3-rc1`` style cache
+    directory names into a sortable tuple. Falls back to a string
+    sort for unparseable names so the function never raises.
+
+    Codex R1 fix: lexicographic sort would put ``v0.0.10`` BEFORE
+    ``v0.0.2`` and the most-recently-fetched-wins rule would pick
+    the wrong release. Parse numeric components when possible."""
+    name = p.name
+    if name.startswith("v"):
+        name = name[1:]
+    parts = name.split("-", 1)
+    core = parts[0]
+    suffix = parts[1] if len(parts) > 1 else ""
+    nums: list[int] = []
+    for chunk in core.split("."):
+        try:
+            nums.append(int(chunk))
+        except ValueError:
+            # Bail on first non-numeric chunk; everything after is
+            # alphabetic (release suffix) and gets compared as string.
+            return (0, p.name)
+    # Pre-release suffix sorts BEFORE the release of the same core
+    # (e.g. v0.0.1-rc1 < v0.0.1). Empty suffix is "release" and gets
+    # the high sentinel.
+    suffix_key = suffix if suffix else "\uffff"
+    return (1, tuple(nums), suffix_key)
+
+
 def _fetched_dylib_candidates() -> list[Path]:
     """Return any dev-cache dylibs found under ``~/.cache/octomil-runtime``.
 
@@ -239,7 +268,7 @@ def _fetched_dylib_candidates() -> list[Path]:
     if not _FETCH_CACHE_ROOT.is_dir():
         return []
     out: list[Path] = []
-    for version_dir in sorted(_FETCH_CACHE_ROOT.iterdir()):
+    for version_dir in sorted(_FETCH_CACHE_ROOT.iterdir(), key=_version_sort_key):
         if not version_dir.is_dir():
             continue
         for name in _RUNTIME_LIBNAMES:

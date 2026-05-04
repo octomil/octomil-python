@@ -7,9 +7,61 @@ just enough to satisfy the models referenced in the test suite.
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 import pytest
+
+# ---------------------------------------------------------------------------
+# Native-runtime test gating
+#
+# Tests in `test_runtime_native_loader.py` need a real liboctomil-runtime
+# dylib (resolved via OCTOMIL_RUNTIME_DYLIB or the dev cache populated
+# by scripts/fetch_runtime_dev.py). Those tests carry an auto-applied
+# `requires_runtime` marker; the test file's autouse fixture skips them
+# when no dylib is available. Tests that exercise structural guards
+# (no in-tree subtree, error-message regression, version sort key) do
+# NOT get the marker and run unconditionally.
+#
+# The marker registration + auto-marker collection hook MUST live in
+# this conftest because pytest doesn't run pytest_configure /
+# pytest_collection_modifyitems hooks from inside test modules.
+# Codex R1 blocker fix (octomil-python extraction PR).
+# ---------------------------------------------------------------------------
+
+_RUNTIME_LOADER_TEST = (Path(__file__).resolve().parent / "test_runtime_native_loader.py").resolve()
+
+_RUNTIME_NO_MARKER_TESTS: frozenset[str] = frozenset(
+    {
+        "test_dylib_override_env_var_used",
+        "test_dylib_resolution_message_when_nothing_resolves",
+        "test_no_in_tree_runtime_core_subtree",
+        "test_version_sort_key_handles_double_digit_minor",
+    }
+)
+
+
+def pytest_configure(config: pytest.Config) -> None:
+    config.addinivalue_line(
+        "markers",
+        "requires_runtime: test exercises a real liboctomil-runtime; "
+        "skips when neither OCTOMIL_RUNTIME_DYLIB nor the dev cache is set.",
+    )
+
+
+def pytest_collection_modifyitems(config: pytest.Config, items: list) -> None:
+    for item in items:
+        try:
+            item_path = Path(str(item.fspath)).resolve()
+        except (OSError, ValueError):
+            continue
+        if item_path != _RUNTIME_LOADER_TEST:
+            continue
+        if item.name in _RUNTIME_NO_MARKER_TESTS:
+            continue
+        if item.get_closest_marker("requires_runtime") is None:
+            item.add_marker(pytest.mark.requires_runtime)
+
 
 # ---------------------------------------------------------------------------
 # OTLP telemetry helpers (used across multiple test files)

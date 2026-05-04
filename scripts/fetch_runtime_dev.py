@@ -115,6 +115,35 @@ def _sha256(path: Path) -> str:
     return h.hexdigest()
 
 
+def _is_appledouble(name: str) -> bool:
+    """macOS xattr ``._*`` files in tar bundles. Filter out so they
+    don't pollute the dev cache. (Bundles are produced on the
+    runtime-repo CI runner; the AppleDouble entries appear when the
+    tarball is built from a working tree that has xattrs.)"""
+    base = name.rsplit("/", 1)[-1]
+    return base.startswith("._")
+
+
+def _safe_extract(tarball: Path, target_dir: Path) -> None:
+    """Extract ``tarball`` into ``target_dir``, skipping AppleDouble
+    metadata and refusing path-traversal entries.
+
+    Compatible with Python 3.9+. The ``filter="data"`` keyword landed
+    in 3.12; we don't depend on it because the package's
+    ``requires-python = ">=3.9"`` floor is still active. The manual
+    member loop here gives us identical safety (no absolute paths,
+    no ``..`` traversal) without the version dependency."""
+    with tarfile.open(tarball) as tf:
+        for member in tf.getmembers():
+            mname = member.name
+            if _is_appledouble(mname):
+                continue
+            # Refuse path traversal / absolute paths.
+            if mname.startswith("/") or ".." in Path(mname).parts:
+                raise SystemExit(f"error: refusing to extract suspicious tar entry {mname!r} " f"from {tarball.name}")
+            tf.extract(member, target_dir)
+
+
 def _verify_sha256(path: Path, sums_file: Path) -> None:
     expected: dict[str, str] = {}
     with sums_file.open() as fh:
@@ -174,43 +203,48 @@ def main() -> int:
     work.mkdir(exist_ok=True)
 
     try:
-        assets = _release_assets_via_api(version, token)
-    except urllib.error.HTTPError as e:
-        body = e.read().decode("utf-8", errors="replace")[:500]
-        raise SystemExit(
-            f"HTTP {e.code} listing release {version}.\nResponse: {body}\n"
-            f"Confirm the tag exists and the token has access."
-        ) from e
+        try:
+            assets = _release_assets_via_api(version, token)
+        except urllib.error.HTTPError as e:
+            body = e.read().decode("utf-8", errors="replace")[:500]
+            raise SystemExit(
+                f"HTTP {e.code} listing release {version}.\nResponse: {body}\n"
+                f"Confirm the tag exists and the token has access."
+            ) from e
 
-    bin_name = _platform_asset_name(version)
-    headers_name = f"octomil-runtime-headers-{version}.tar.gz"
-    sums_name = "SHA256SUMS"
+        bin_name = _platform_asset_name(version)
+        headers_name = f"octomil-runtime-headers-{version}.tar.gz"
+        sums_name = "SHA256SUMS"
 
-    for required in (bin_name, headers_name, sums_name):
-        if required not in assets:
-            raise SystemExit(f"error: release {version} missing asset {required}")
-        _download(assets[required]["url"], work / required, token)
+        for required in (bin_name, headers_name, sums_name):
+            if required not in assets:
+                raise SystemExit(f"error: release {version} missing asset {required}")
+            _download(assets[required]["url"], work / required, token)
 
-    _verify_sha256(work / bin_name, work / sums_name)
-    _verify_sha256(work / headers_name, work / sums_name)
+        _verify_sha256(work / bin_name, work / sums_name)
+        _verify_sha256(work / headers_name, work / sums_name)
 
-    if lib_dir.exists():
-        shutil.rmtree(lib_dir)
-    if inc_dir.exists():
-        shutil.rmtree(inc_dir)
+        if lib_dir.exists():
+            shutil.rmtree(lib_dir)
+        if inc_dir.exists():
+            shutil.rmtree(inc_dir)
 
-    with tarfile.open(work / bin_name) as tf:
-        # The bundle is rooted at `lib/`; extract into target_dir.
-        tf.extractall(target_dir, filter="data")
-    with tarfile.open(work / headers_name) as tf:
-        tf.extractall(target_dir, filter="data")
+        for tarball in (work / bin_name, work / headers_name):
+            _safe_extract(tarball, target_dir)
 
-    if not dylib.exists():
-        raise SystemExit(
-            f"error: extracted {bin_name} but {dylib} is not present.\n" f"Bundle layout may have changed."
-        )
+        if not dylib.exists():
+            raise SystemExit(
+                f"error: extracted {bin_name} but {dylib} is not present.\n" f"Bundle layout may have changed."
+            )
+    finally:
+        # Clean up the download scratch dir whether we succeeded or
+        # bailed on a sha256 mismatch / missing asset / extraction
+        # error. Codex R1 missed-case fix: previously a partial run
+        # could leave _download/ on disk and a subsequent --force run
+        # would overwrite into it without noticing.
+        if work.exists():
+            shutil.rmtree(work, ignore_errors=True)
 
-    shutil.rmtree(work)
     print(f"runtime ready: {dylib}")
     return 0
 
