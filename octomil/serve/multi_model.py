@@ -495,6 +495,18 @@ def create_multi_model_app(
 
             try:
                 text, _metrics = backend.generate(gen_req)
+            except OctomilError:
+                # Cutover follow-up #70 (Codex R2 B1): bounded SDK
+                # errors (UNSUPPORTED_MODALITY for grammar / json_mode
+                # / streaming etc.) MUST propagate, not be swallowed
+                # into a 200-OK sub-task response. Pre-fix the
+                # decomposed `--auto-route` path on multi-model
+                # would return a successful JSONResponse with the
+                # text "[Error processing sub-task N]" — completely
+                # bypassing the 4xx mapping the cutover wired in.
+                # Re-raise so the FastAPI exception handler maps
+                # via the shared status_map.
+                raise
             except Exception as exc:
                 logger.warning(
                     "Sub-task %d failed on model %s: %s",

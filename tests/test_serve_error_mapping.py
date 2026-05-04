@@ -249,6 +249,42 @@ def test_multi_model_all_models_failed_preserves_bounded_code() -> None:
     )
 
 
+def test_multi_model_decomposed_subtask_propagates_octomil_error() -> None:
+    """Codex R2 B1: the decomposed sub-task path on the multi-model
+    handler used to swallow ALL exceptions (including
+    OctomilError) and return a 200 with a "[Error processing
+    sub-task N]" placeholder text. A grammar / json_mode /
+    streaming / unknown-role request that hit the auto-route
+    decomposition logic would surface as 200 OK with the error in
+    the body — completely bypassing the 4xx mapping.
+
+    Textual contract guard: the production source MUST contain a
+    distinct ``except OctomilError: ... raise`` arm BEFORE the
+    catch-all ``except Exception`` arm in ``_execute_subtask``.
+    A future refactor that drops it fails this test.
+    """
+    import inspect
+    import re
+
+    from octomil.serve import multi_model
+
+    source = inspect.getsource(multi_model.create_multi_model_app)
+    # Match the explicit re-raise arm: `except OctomilError:`
+    # followed by `raise` somewhere on a subsequent line.
+    pattern = re.compile(
+        r"except\s+OctomilError\s*:\s*\n.*?\braise\b",
+        re.DOTALL,
+    )
+    matches = pattern.findall(source)
+    # We expect at least one such arm in _execute_subtask.
+    assert matches, (
+        "_execute_subtask MUST have an `except OctomilError: ... raise` "
+        "branch BEFORE the catch-all `except Exception`. Without it, "
+        "bounded native rejects (UNSUPPORTED_MODALITY) get swallowed "
+        "into a 200 sub-task response — bypassing the 4xx mapping."
+    )
+
+
 # ---------------------------------------------------------------------------
 # Reverse direction: HTTP → ErrorCode (used when the SDK consumes upstream
 # APIs; cutover follow-up #70 added 413, 422, 429, 499, 504, 507).
