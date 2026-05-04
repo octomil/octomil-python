@@ -37,10 +37,11 @@ description = "Octomil-internal Rust shim around moshi-core for Slice 2C"
 publish = false
 
 [lib]
-# Build a static library — the C++ adapter links it directly into
-# liboctomil-runtime.dylib. A cdylib would force a separate runtime
-# load step and complicate symbol-visibility rules.
-crate-type = ["staticlib"]
+# Build a static library for the C++ adapter to link into
+# liboctomil-runtime.dylib. The `rlib` crate-type is also produced
+# so cargo's integration tests (in tests/) can use the public
+# Rust API.
+crate-type = ["staticlib", "rlib"]
 
 [dependencies]
 # `moshi` (= the moshi-core crate) is the upstream Rust streaming
@@ -53,6 +54,8 @@ candle-nn = { version = "0.9.1", default-features = false, features = ["metal"] 
 candle-transformers = { version = "0.9.1", default-features = false, features = ["metal"] }
 sentencepiece = "0.11"
 anyhow = "1"
+serde_json = "1"
+toml = "0.8"
 
 [profile.release]
 # C++ runtime is built with -O2 + symbol visibility hidden; match

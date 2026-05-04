@@ -1,34 +1,22 @@
 //! Octomil Slice 2C — Moshi engine Rust shim (private internal C ABI).
 //!
-//! This crate exposes a tiny `extern "C"` surface that the Octomil
-//! C++ adapter (in `runtime-core/src/adapters/moshi_rs/`) calls.
-//! Symbol prefix is `octomil_moshi_rs_*` to namespace from any
-//! future engine shim. Public Octomil C ABI (in
-//! `include/octomil/runtime.h`) is unchanged — this file does NOT
-//! introduce an ABI delta.
+//! Wraps upstream `moshi-core` (kyutai-labs/moshi @ 0.6.4) with the
+//! candle-rs `metal` backend on Apple Silicon. The C++ adapter in
+//! `runtime-core/src/adapters/moshi_rs/` is the only consumer; SDKs
+//! and Layer-2b never see this surface.
 //!
-//! Streaming model:
-//!   * The C++ adapter calls `engine_open` once at runtime-open
-//!     (after artifact SHA-256 verification, which is the C++
-//!     adapter's responsibility).
-//!   * For each session, the C++ adapter calls `session_open`. We
-//!     spawn one Rust worker thread per session that pulls audio
-//!     frames from a queue, runs Mimi encode → LM step → Mimi
-//!     decode, and pushes events into an output queue.
-//!   * The C++ adapter's `oct_session_poll_event` calls
-//!     `session_pop_event` (non-blocking dequeue).
-//!   * Cancel: C++ adapter calls `session_cancel`, which flips
-//!     an `AtomicBool` checked at every 80 ms frame boundary.
+//! Lifetime model:
+//!   * `Engine`: process-scope. Holds device + dtype + resolved
+//!     artifact paths + sentencepiece tokenizer + lm config. Cheap.
+//!   * `Session`: request-scope. The session_worker thread loads
+//!     the LM and Mimi from the engine's paths, runs the streaming
+//!     loop, and drops them on close. One concurrent session is
+//!     supported in Slice 2C; multi-session is Slice 3b's domain.
 //!
-//! Owned-vs-borrowed convention:
-//!   * Engine and Session are opaque; opaque pointers come from
-//!     `Box::into_raw` and must be released with the matching
-//!     `*_close` function.
-//!   * Strings (paths, error messages) on input are borrowed for
-//!     the duration of the call.
-//!   * Strings (error messages, transcript) on output are owned by
-//!     the session; their lifetimes extend until the next call
-//!     into that session.
+//! Cancel: `Session.cancelled` is an AtomicBool checked at every
+//! 80-ms frame boundary inside the worker. session_cancel flips it.
+//! session_close additionally drops the audio sender (signaling
+//! graceful exit) and joins the worker.
 
 #![deny(unsafe_op_in_unsafe_fn)]
 
@@ -39,9 +27,14 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread::JoinHandle;
 
+use anyhow::{Context, Result};
+use candle::{DType, Device, IndexOp, Tensor};
+use candle_transformers::generation::{LogitsProcessor, Sampling};
+use moshi::lm_generate_multistream;
+use moshi::{lm, mimi};
+
 // -----------------------------------------------------------------------
-// Public C status codes (internal to the shim — C++ adapter maps
-// these to OCT_ERR_* before they reach Layer 2a's public ABI).
+// Public C status / event enums
 // -----------------------------------------------------------------------
 
 #[repr(u32)]
@@ -71,24 +64,13 @@ pub enum EventType {
     Error = 5,
 }
 
-// -----------------------------------------------------------------------
-// Engine config — populated by the C++ adapter from the v0.4 step 2
-// `oct_model_config_t` after artifact resolution. Strings are NOT
-// owned by Rust; they must outlive the call.
-// -----------------------------------------------------------------------
-
 #[repr(C)]
 pub struct EngineConfig {
     pub lm_weights_path: *const c_char,
     pub mimi_weights_path: *const c_char,
     pub text_tokenizer_path: *const c_char,
-    /// Optional; NULL means use the built-in moshi-mlx v0.2 config (the
-    /// shape the slice-2B probe verified). The only path the probe
-    /// validated.
+    /// Optional; NULL = built-in `Config::v0_1_streaming(8)`.
     pub lm_config_path: *const c_char,
-    /// 1 = Metal (Apple Silicon), 0 = CPU. Slice 2C is darwin-arm64
-    /// only; CPU is for the unit tests that exercise the shim
-    /// without weights.
     pub use_metal: u8,
 }
 
@@ -128,9 +110,7 @@ impl CEvent {
 }
 
 // -----------------------------------------------------------------------
-// Rust-side event representation. Owns its strings/buffers; the C
-// `pop_event` call vends pointers into the live RustEvent stored
-// inside the session. Pointers are valid until the next pop_event.
+// Internal Rust event queue
 // -----------------------------------------------------------------------
 
 enum RustEvent {
@@ -142,46 +122,62 @@ enum RustEvent {
 }
 
 // -----------------------------------------------------------------------
-// Engine — process-scope; holds resolved paths + device + the
-// already-loaded LM and Mimi handles. Loading happens in
-// `engine_open` so session_open can be cheap.
+// Engine — holds only the lightweight, share-across-sessions state.
+// LM and Mimi are loaded in the session worker so each session gets
+// its own KV cache + Mimi state without locking.
 // -----------------------------------------------------------------------
 
 pub struct Engine {
-    lm_weights_path: PathBuf,
-    mimi_weights_path: PathBuf,
-    text_tokenizer_path: PathBuf,
-    lm_config_path: Option<PathBuf>,
-    use_metal: bool,
-    /// Lazily populated on first session_open OR eagerly during
-    /// engine_open's verification path. Slice 2C: eager. Wrapped
-    /// in a Mutex to keep `Engine: Send + Sync` for the rare case
-    /// the C++ adapter shares the engine across worker threads.
-    inner: Mutex<Option<EngineInner>>,
+    inner: Arc<EngineInner>,
 }
 
 struct EngineInner {
-    /// Reserved for the real moshi-core integration. The shim does
-    /// not yet construct an `LmModel`/`Mimi`/`SentencePieceProcessor`
-    /// here because the candle build pulls in ~1 GB of dependencies
-    /// and a 5–10 minute first compile. Slice 2C lands in two
-    /// commits:
-    ///   1. (this commit) shim scaffolding with the C ABI surface,
-    ///      thread plumbing, cancel, event flow, NO real inference.
-    ///      Capability is NOT advertised by the C++ adapter.
-    ///   2. (follow-up) wire `moshi::lm::load_lm_model` +
-    ///      `moshi::mimi::load` + `lm_generate_multistream::State`.
-    ///      Capability is advertised.
-    /// This split is allowed by the user directive: "A
-    /// scaffolding/stub PR is acceptable only if it never
-    /// advertises audio.realtime.session and is explicitly labeled
-    /// as internal adapter plumbing, not Slice 2C complete."
-    _placeholder: (),
+    paths: ResolvedPaths,
+    use_metal: bool,
+    /// Loaded once at engine_open; cloned by reference into each
+    /// session's tokenizer. SentencePieceProcessor is `Sync`.
+    text_tokenizer: Arc<sentencepiece::SentencePieceProcessor>,
+    lm_cfg: lm::Config,
+    generated_audio_codebooks: usize,
+    /// Slice 2C: one session at a time. The lock is acquired by
+    /// session_open and released on session_close.
+    session_lock: Mutex<()>,
+}
+
+#[derive(Clone)]
+struct ResolvedPaths {
+    lm_weights: PathBuf,
+    mimi_weights: PathBuf,
+    text_tokenizer: PathBuf,
+    lm_config: Option<PathBuf>,
+}
+
+fn open_device(use_metal: bool) -> Result<Device> {
+    if use_metal {
+        Device::new_metal(0).context("candle: failed to open Metal device 0")
+    } else {
+        Ok(Device::Cpu)
+    }
+}
+
+fn read_lm_config(path: Option<&PathBuf>) -> Result<lm::Config> {
+    match path {
+        Some(p) => {
+            let s = std::fs::read_to_string(p)
+                .with_context(|| format!("read lm_config at {}", p.display()))?;
+            let trimmed = s.trim_start();
+            if trimmed.starts_with('{') {
+                serde_json::from_str(&s).context("parse lm_config as JSON")
+            } else {
+                toml::from_str(&s).context("parse lm_config as TOML")
+            }
+        }
+        None => Ok(lm::Config::v0_1_streaming(8)),
+    }
 }
 
 // -----------------------------------------------------------------------
-// Session — request-scope; owns the worker thread, the cancel
-// atomic, and the audio/event channels.
+// Session
 // -----------------------------------------------------------------------
 
 pub struct Session {
@@ -189,21 +185,19 @@ pub struct Session {
     audio_tx: Option<mpsc::Sender<Vec<f32>>>,
     event_rx: Mutex<mpsc::Receiver<RustEvent>>,
     worker: Option<JoinHandle<()>>,
-    /// The currently-vended RustEvent backing the C-visible pointers
-    /// returned by pop_event. Held until the next pop_event call.
     last_event: Mutex<Option<RustEvent>>,
-    /// CString storage for the message pointer in the last vended
-    /// event. Must outlive the C caller's read.
     last_message_cstr: Mutex<Option<CString>>,
-    /// Same for transcript text.
     last_transcript_cstr: Mutex<Option<CString>>,
+    /// Held for the session's lifetime so a second session_open
+    /// while one is active fails loudly. Released in session_close
+    /// via drop order.
+    _engine_session_lock: Option<std::sync::MutexGuard<'static, ()>>,
 }
 
 // -----------------------------------------------------------------------
 // Helpers
 // -----------------------------------------------------------------------
 
-/// SAFETY: `s` must be a valid C string pointer or NULL.
 unsafe fn cstr_to_string(s: *const c_char) -> Option<String> {
     if s.is_null() {
         return None;
@@ -211,25 +205,19 @@ unsafe fn cstr_to_string(s: *const c_char) -> Option<String> {
     unsafe { CStr::from_ptr(s).to_str().ok().map(str::to_owned) }
 }
 
-/// SAFETY: `buf` is a writeable buffer of `buflen` bytes. Writes a
-/// nul-terminated copy of `msg` truncated to fit. No-op on
-/// `buflen == 0`.
 unsafe fn write_err(buf: *mut c_char, buflen: usize, msg: &str) {
     if buf.is_null() || buflen == 0 {
         return;
     }
     let bytes = msg.as_bytes();
     let n = bytes.len().min(buflen - 1);
-    // SAFETY: caller's contract on (buf, buflen).
     unsafe {
         std::ptr::copy_nonoverlapping(bytes.as_ptr(), buf as *mut u8, n);
         *buf.add(n) = 0;
     }
 }
 
-fn check_artifacts(cfg: &EngineConfig) -> Result<(PathBuf, PathBuf, PathBuf, Option<PathBuf>), String> {
-    // SAFETY: The C++ adapter's contract requires these strings to
-    // be valid for the duration of the call.
+fn check_artifacts(cfg: &EngineConfig) -> Result<ResolvedPaths, String> {
     let lm = unsafe { cstr_to_string(cfg.lm_weights_path) }
         .ok_or_else(|| "lm_weights_path is NULL or non-UTF-8".to_string())?;
     let mimi = unsafe { cstr_to_string(cfg.mimi_weights_path) }
@@ -253,19 +241,227 @@ fn check_artifacts(cfg: &EngineConfig) -> Result<(PathBuf, PathBuf, PathBuf, Opt
             return Err(format!("lm_config not found at {}", p.display()));
         }
     }
-    Ok((lm, mimi, tok, lm_cfg))
+    Ok(ResolvedPaths {
+        lm_weights: lm,
+        mimi_weights: mimi,
+        text_tokenizer: tok,
+        lm_config: lm_cfg,
+    })
+}
+
+// -----------------------------------------------------------------------
+// Streaming worker
+// -----------------------------------------------------------------------
+
+const FRAME_SAMPLES: usize = 1920; // 80 ms @ 24 kHz
+
+fn session_worker(
+    engine: Arc<EngineInner>,
+    sess_cfg: SessionConfig,
+    audio_rx: mpsc::Receiver<Vec<f32>>,
+    event_tx: mpsc::Sender<RustEvent>,
+    cancelled: Arc<AtomicBool>,
+) {
+    if let Err(e) = run_session(engine, sess_cfg, audio_rx, event_tx.clone(), cancelled.clone()) {
+        let msg = format!("{e:#}");
+        let _ = event_tx.send(RustEvent::Error {
+            status: Status::Internal,
+            message: msg.clone(),
+        });
+        let _ = event_tx.send(RustEvent::SessionCompleted {
+            status: Status::Internal,
+            message: msg,
+        });
+    }
+}
+
+fn run_session(
+    engine: Arc<EngineInner>,
+    sess_cfg: SessionConfig,
+    audio_rx: mpsc::Receiver<Vec<f32>>,
+    event_tx: mpsc::Sender<RustEvent>,
+    cancelled: Arc<AtomicBool>,
+) -> Result<()> {
+    let t0 = std::time::Instant::now();
+    eprintln!("[moshi-rs] worker: opening device (use_metal={})", engine.use_metal);
+    let device = open_device(engine.use_metal)?;
+    let dtype = device.bf16_default_to_f32();
+    eprintln!("[moshi-rs] worker: device ok in {:?}, dtype={:?}", t0.elapsed(), dtype);
+
+    let t1 = std::time::Instant::now();
+    let mut mimi_model = mimi::load(
+        engine.paths.mimi_weights.to_string_lossy().as_ref(),
+        Some(8),
+        &device,
+    )
+    .context("moshi::mimi::load")?;
+    eprintln!("[moshi-rs] worker: mimi loaded in {:?}", t1.elapsed());
+
+    let t2 = std::time::Instant::now();
+    let lm_model = lm::load_lm_model(engine.lm_cfg.clone(), &engine.paths.lm_weights, dtype, &device)
+        .context("moshi::lm::load_lm_model")?;
+    eprintln!("[moshi-rs] worker: lm loaded in {:?}", t2.elapsed());
+
+    let audio_lp = LogitsProcessor::from_sampling(
+        sess_cfg.seed,
+        Sampling::TopK { k: 250, temperature: 0.8 },
+    );
+    let text_lp = LogitsProcessor::from_sampling(
+        sess_cfg.seed,
+        Sampling::TopK { k: 250, temperature: 0.8 },
+    );
+
+    let max_steps = sess_cfg.max_steps.max(1) as usize;
+
+    let mut state = lm_generate_multistream::State::new(
+        lm_model,
+        max_steps + 20,
+        audio_lp,
+        text_lp,
+        None,
+        None,
+        None,
+        lm_generate_multistream::Config {
+            acoustic_delay: 2,
+            audio_vocab_size: engine.lm_cfg.audio_vocab_size,
+            generated_audio_codebooks: engine.generated_audio_codebooks,
+            input_audio_codebooks: engine.lm_cfg.audio_codebooks - engine.generated_audio_codebooks,
+            text_start_token: engine.lm_cfg.text_out_vocab_size as u32,
+            text_eop_token: 0,
+            text_pad_token: 3,
+        },
+    );
+
+    let mut prev_text_token = state.config().text_start_token;
+    eprintln!("[moshi-rs] worker: state ready, entering streaming loop");
+
+    loop {
+        if cancelled.load(Ordering::Acquire) {
+            event_tx
+                .send(RustEvent::SessionCompleted {
+                    status: Status::Preempted,
+                    message: "cancelled by caller".to_owned(),
+                })
+                .ok();
+            return Ok(());
+        }
+
+        let pcm = match audio_rx.recv_timeout(std::time::Duration::from_millis(50)) {
+            Ok(v) => v,
+            Err(mpsc::RecvTimeoutError::Timeout) => continue,
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                event_tx
+                    .send(RustEvent::SessionCompleted {
+                        status: Status::Ok,
+                        message: "input channel closed".to_owned(),
+                    })
+                    .ok();
+                return Ok(());
+            }
+        };
+        if pcm.len() != FRAME_SAMPLES {
+            event_tx
+                .send(RustEvent::Error {
+                    status: Status::InvalidInput,
+                    message: format!(
+                        "session_worker: expected {FRAME_SAMPLES} samples, got {}",
+                        pcm.len()
+                    ),
+                })
+                .ok();
+            continue;
+        }
+
+        // Mimi encode: 80 ms PCM → audio tokens.
+        let frame_started = std::time::Instant::now();
+        let pcm_tensor = Tensor::from_vec(pcm, (1, 1, FRAME_SAMPLES), &device)
+            .context("Tensor::from_vec input pcm")?;
+        let in_codes = mimi_model
+            .encode_step(&pcm_tensor.into(), &().into())
+            .context("mimi.encode_step")?;
+        let in_codes_t = match in_codes.as_option() {
+            Some(t) => t.clone(),
+            None => {
+                eprintln!("[moshi-rs] worker: encode_step returned None (frame ignored, encoder warming)");
+                continue;
+            }
+        };
+        eprintln!(
+            "[moshi-rs] worker: encode_step returned codes, encode took {:?}",
+            frame_started.elapsed()
+        );
+
+        // The encoder may emit multiple steps per call; iterate.
+        let (_b, _codebooks, steps) = in_codes_t.dims3().context("in_codes dims3")?;
+        for step in 0..steps {
+            if cancelled.load(Ordering::Acquire) {
+                event_tx
+                    .send(RustEvent::SessionCompleted {
+                        status: Status::Preempted,
+                        message: "cancelled by caller".to_owned(),
+                    })
+                    .ok();
+                return Ok(());
+            }
+            let codes = in_codes_t
+                .i((.., .., step..step + 1))
+                .context("index in_codes step")?;
+            let codes = codes.i((0, .., 0)).context("squeeze in_codes")?;
+            let codes = codes.to_vec1::<u32>().context("to_vec1 in_codes")?;
+
+            let lm_started = std::time::Instant::now();
+            prev_text_token = state
+                .step_(Some(prev_text_token), &codes, None, None, None)
+                .context("state.step_")?;
+            eprintln!(
+                "[moshi-rs] worker: state.step_ took {:?} (text_tok={})",
+                lm_started.elapsed(),
+                prev_text_token
+            );
+
+            // Emit transcript chunk if we got a real text token.
+            if prev_text_token != state.config().text_pad_token
+                && prev_text_token != state.config().text_start_token
+                && prev_text_token != state.config().text_eop_token
+            {
+                if let Ok(piece) = engine.text_tokenizer.decode_piece_ids(&[prev_text_token]) {
+                    if !piece.is_empty() {
+                        event_tx
+                            .send(RustEvent::TranscriptChunk { text: piece, is_final: false })
+                            .ok();
+                    }
+                }
+            }
+
+            // Decode audio tokens for this step.
+            if let Some(audio_tokens) = state.last_audio_tokens() {
+                let audio_tokens =
+                    Tensor::new(&audio_tokens[..engine.generated_audio_codebooks], &device)
+                        .context("Tensor::new audio_tokens")?
+                        .reshape((1, 1, ()))
+                        .context("reshape audio_tokens")?
+                        .t()
+                        .context("transpose audio_tokens")?;
+                let out_pcm_t = mimi_model
+                    .decode_step(&audio_tokens.into(), &().into())
+                    .context("mimi.decode_step")?;
+                if let Some(t) = out_pcm_t.as_option() {
+                    let pcm_out = t
+                        .i((0, 0))
+                        .context("index decode_step output")?
+                        .to_vec1::<f32>()
+                        .context("to_vec1 pcm_out")?;
+                    event_tx.send(RustEvent::AudioChunk(pcm_out)).ok();
+                }
+            }
+        }
+    }
 }
 
 // -----------------------------------------------------------------------
 // C ABI — engine
 // -----------------------------------------------------------------------
 
-/// Verify on-disk presence of the configured artifacts. Cheap
-/// pre-flight; SHA-256 verification is the C++ adapter's job.
-///
-/// SAFETY: All `cfg` string pointers must be valid C strings or NULL.
-/// `err_buf` must be a writeable buffer of `err_buflen` bytes (or
-/// NULL with `err_buflen == 0`).
 #[no_mangle]
 pub unsafe extern "C" fn octomil_moshi_rs_engine_check_artifacts(
     cfg: *const EngineConfig,
@@ -276,7 +472,6 @@ pub unsafe extern "C" fn octomil_moshi_rs_engine_check_artifacts(
         unsafe { write_err(err_buf, err_buflen, "engine_check_artifacts: cfg is NULL") };
         return Status::InvalidInput;
     }
-    // SAFETY: caller's contract on cfg.
     let cfg = unsafe { &*cfg };
     match check_artifacts(cfg) {
         Ok(_) => Status::Ok,
@@ -287,9 +482,6 @@ pub unsafe extern "C" fn octomil_moshi_rs_engine_check_artifacts(
     }
 }
 
-/// SAFETY: `cfg` must be a valid `EngineConfig` for the call's
-/// duration. `out_engine` must be non-NULL. `err_buf`/`err_buflen`
-/// see above.
 #[no_mangle]
 pub unsafe extern "C" fn octomil_moshi_rs_engine_open(
     cfg: *const EngineConfig,
@@ -301,39 +493,51 @@ pub unsafe extern "C" fn octomil_moshi_rs_engine_open(
         unsafe { write_err(err_buf, err_buflen, "engine_open: NULL argument") };
         return Status::InvalidInput;
     }
-    // SAFETY: caller's contract on cfg.
     let cfg = unsafe { &*cfg };
-    let (lm, mimi, tok, lm_cfg) = match check_artifacts(cfg) {
-        Ok(t) => t,
+    let paths = match check_artifacts(cfg) {
+        Ok(p) => p,
         Err(msg) => {
             unsafe { write_err(err_buf, err_buflen, &msg) };
             return Status::ArtifactMissing;
         }
     };
-
-    let engine = Engine {
-        lm_weights_path: lm,
-        mimi_weights_path: mimi,
-        text_tokenizer_path: tok,
-        lm_config_path: lm_cfg,
-        use_metal: cfg.use_metal != 0,
-        inner: Mutex::new(None),
+    let lm_cfg = match read_lm_config(paths.lm_config.as_ref()) {
+        Ok(c) => c,
+        Err(e) => {
+            let msg = format!("{e:#}");
+            unsafe { write_err(err_buf, err_buflen, &msg) };
+            return Status::LoadFailed;
+        }
+    };
+    let generated_audio_codebooks = lm_cfg.depformer.as_ref().map_or(8, |v| v.num_slices);
+    let text_tokenizer = match sentencepiece::SentencePieceProcessor::open(&paths.text_tokenizer) {
+        Ok(t) => Arc::new(t),
+        Err(e) => {
+            let msg = format!("sentencepiece open {}: {e:#}", paths.text_tokenizer.display());
+            unsafe { write_err(err_buf, err_buflen, &msg) };
+            return Status::LoadFailed;
+        }
     };
 
+    let inner = EngineInner {
+        paths,
+        use_metal: cfg.use_metal != 0,
+        text_tokenizer,
+        lm_cfg,
+        generated_audio_codebooks,
+        session_lock: Mutex::new(()),
+    };
+    let engine = Engine { inner: Arc::new(inner) };
     let boxed = Box::new(engine);
-    // SAFETY: out_engine non-NULL per caller's contract.
     unsafe { *out_engine = Box::into_raw(boxed) };
     Status::Ok
 }
 
-/// SAFETY: `engine` must be a pointer previously returned by
-/// `engine_open` and not yet closed. NULL is a no-op.
 #[no_mangle]
 pub unsafe extern "C" fn octomil_moshi_rs_engine_close(engine: *mut Engine) {
     if engine.is_null() {
         return;
     }
-    // SAFETY: caller's contract.
     drop(unsafe { Box::from_raw(engine) });
 }
 
@@ -341,8 +545,6 @@ pub unsafe extern "C" fn octomil_moshi_rs_engine_close(engine: *mut Engine) {
 // C ABI — session
 // -----------------------------------------------------------------------
 
-/// SAFETY: `engine` is a valid open Engine. `cfg` and `out_session`
-/// are non-NULL.
 #[no_mangle]
 pub unsafe extern "C" fn octomil_moshi_rs_session_open(
     engine: *mut Engine,
@@ -355,19 +557,32 @@ pub unsafe extern "C" fn octomil_moshi_rs_session_open(
         unsafe { write_err(err_buf, err_buflen, "session_open: NULL argument") };
         return Status::InvalidInput;
     }
-    // SAFETY: caller's contract.
-    let _engine = unsafe { &*engine };
-    let _cfg = unsafe { &*cfg };
+    let engine = unsafe { &*engine };
+    let cfg = unsafe { &*cfg };
+
+    // Single-session enforcement.
+    let session_lock_static = unsafe {
+        std::mem::transmute::<&Mutex<()>, &'static Mutex<()>>(&engine.inner.session_lock)
+    };
+    let guard = match session_lock_static.try_lock() {
+        Ok(g) => g,
+        Err(_) => {
+            unsafe { write_err(err_buf, err_buflen, "session_open: another session is already active (Slice 2C is single-session)") };
+            return Status::InitFailed;
+        }
+    };
 
     let cancelled = Arc::new(AtomicBool::new(false));
     let (audio_tx, audio_rx) = mpsc::channel::<Vec<f32>>();
     let (event_tx, event_rx) = mpsc::channel::<RustEvent>();
 
     let cancel_for_worker = Arc::clone(&cancelled);
+    let engine_for_worker = Arc::clone(&engine.inner);
+    let sess_cfg = SessionConfig { seed: cfg.seed, max_steps: cfg.max_steps };
     let worker = std::thread::Builder::new()
         .name("octomil-moshi-rs-session".into())
         .spawn(move || {
-            session_worker(audio_rx, event_tx, cancel_for_worker);
+            session_worker(engine_for_worker, sess_cfg, audio_rx, event_tx, cancel_for_worker);
         })
         .expect("spawn session worker");
 
@@ -379,61 +594,13 @@ pub unsafe extern "C" fn octomil_moshi_rs_session_open(
         last_event: Mutex::new(None),
         last_message_cstr: Mutex::new(None),
         last_transcript_cstr: Mutex::new(None),
+        _engine_session_lock: Some(guard),
     };
     let boxed = Box::new(session);
     unsafe { *out_session = Box::into_raw(boxed) };
     Status::Ok
 }
 
-fn session_worker(
-    audio_rx: mpsc::Receiver<Vec<f32>>,
-    event_tx: mpsc::Sender<RustEvent>,
-    cancelled: Arc<AtomicBool>,
-) {
-    // Slice 2C scaffolding: pulls audio frames, ignores them, emits
-    // a SESSION_COMPLETED with InitFailed once the input channel
-    // closes OR cancel flips. The follow-up commit replaces the
-    // body with `moshi::mimi::encode_step` → `lm_generate_multistream`
-    // → `moshi::mimi::decode_step` and emits real AUDIO_CHUNK and
-    // TRANSCRIPT_CHUNK events.
-    //
-    // This deliberately produces NO output events on the streaming
-    // path so the C++ adapter cannot accidentally claim to be
-    // serving audio in the scaffolding state. Capability honesty is
-    // also enforced at the C++ adapter level: the scaffolding adapter
-    // does not advertise `audio.realtime.session`.
-    loop {
-        if cancelled.load(Ordering::Acquire) {
-            let _ = event_tx.send(RustEvent::SessionCompleted {
-                status: Status::Preempted,
-                message: "cancelled by caller".to_owned(),
-            });
-            return;
-        }
-        match audio_rx.recv_timeout(std::time::Duration::from_millis(50)) {
-            Ok(_pcm) => {
-                // Drop the frame on the floor in scaffolding mode.
-                // The follow-up commit feeds it into Mimi.
-                continue;
-            }
-            Err(mpsc::RecvTimeoutError::Timeout) => continue,
-            Err(mpsc::RecvTimeoutError::Disconnected) => {
-                let _ = event_tx.send(RustEvent::SessionCompleted {
-                    status: Status::InitFailed,
-                    message: "moshi-rs scaffolding: real inference path not yet wired (Slice 2C follow-up)".to_owned(),
-                });
-                return;
-            }
-        }
-    }
-}
-
-/// Push one audio frame into the session. Frame must be 1920
-/// float32 samples (80 ms @ 24 kHz mono); other shapes return
-/// InvalidInput.
-///
-/// SAFETY: `session` is a valid open Session. `pcm` points to at
-/// least `n_samples` floats.
 #[no_mangle]
 pub unsafe extern "C" fn octomil_moshi_rs_session_send_audio(
     session: *mut Session,
@@ -443,10 +610,9 @@ pub unsafe extern "C" fn octomil_moshi_rs_session_send_audio(
     if session.is_null() || pcm.is_null() {
         return Status::InvalidInput;
     }
-    if n_samples != 1920 {
+    if n_samples != FRAME_SAMPLES {
         return Status::InvalidInput;
     }
-    // SAFETY: caller's contract on session and pcm.
     let session = unsafe { &*session };
     let frame = unsafe { std::slice::from_raw_parts(pcm, n_samples) }.to_vec();
     let Some(tx) = session.audio_tx.as_ref() else {
@@ -458,11 +624,6 @@ pub unsafe extern "C" fn octomil_moshi_rs_session_send_audio(
     }
 }
 
-/// Non-blocking event dequeue. Returns `Again` if the queue is
-/// empty. The vended pointers in `out_event` are valid until the
-/// next pop_event call on the same session.
-///
-/// SAFETY: `session` and `out_event` are valid pointers.
 #[no_mangle]
 pub unsafe extern "C" fn octomil_moshi_rs_session_pop_event(
     session: *mut Session,
@@ -471,25 +632,21 @@ pub unsafe extern "C" fn octomil_moshi_rs_session_pop_event(
     if session.is_null() || out_event.is_null() {
         return Status::InvalidInput;
     }
-    // SAFETY: caller's contract.
     let session = unsafe { &*session };
-    let mut last_event = session.last_event.lock().expect("session.last_event poisoned");
-    let mut last_message = session.last_message_cstr.lock().expect("session.last_message_cstr poisoned");
-    let mut last_transcript = session.last_transcript_cstr.lock().expect("session.last_transcript_cstr poisoned");
+    let mut last_event = session.last_event.lock().expect("last_event poisoned");
+    let mut last_message = session.last_message_cstr.lock().expect("last_message_cstr poisoned");
+    let mut last_transcript = session.last_transcript_cstr.lock().expect("last_transcript_cstr poisoned");
 
-    let rx = session.event_rx.lock().expect("session.event_rx poisoned");
-    let next = match rx.try_recv() {
-        Ok(ev) => ev,
-        Err(mpsc::TryRecvError::Empty) => {
-            unsafe { *out_event = CEvent::empty() };
-            return Status::Again;
-        }
-        Err(mpsc::TryRecvError::Disconnected) => {
-            unsafe { *out_event = CEvent::empty() };
-            return Status::Again;
+    let next = {
+        let rx = session.event_rx.lock().expect("event_rx poisoned");
+        match rx.try_recv() {
+            Ok(ev) => ev,
+            Err(mpsc::TryRecvError::Empty) | Err(mpsc::TryRecvError::Disconnected) => {
+                unsafe { *out_event = CEvent::empty() };
+                return Status::Again;
+            }
         }
     };
-    drop(rx);
 
     let mut c_event = CEvent::empty();
     match &next {
@@ -500,8 +657,7 @@ pub unsafe extern "C" fn octomil_moshi_rs_session_pop_event(
         }
         RustEvent::TranscriptChunk { text, is_final } => {
             c_event.event_type = EventType::TranscriptChunk;
-            let bytes = text.as_bytes();
-            *last_transcript = Some(CString::new(bytes).unwrap_or_default());
+            *last_transcript = Some(CString::new(text.as_bytes()).unwrap_or_default());
             if let Some(c) = last_transcript.as_ref() {
                 c_event.transcript_utf8 = c.as_ptr();
                 c_event.transcript_n_bytes = c.as_bytes().len();
@@ -534,48 +690,32 @@ pub unsafe extern "C" fn octomil_moshi_rs_session_pop_event(
     Status::Ok
 }
 
-/// Flip the cancel atomic. Worker thread checks at every 80 ms
-/// frame boundary.
-///
-/// SAFETY: `session` is a valid open Session.
 #[no_mangle]
 pub unsafe extern "C" fn octomil_moshi_rs_session_cancel(session: *mut Session) -> Status {
     if session.is_null() {
         return Status::InvalidInput;
     }
-    // SAFETY: caller's contract.
     let session = unsafe { &*session };
     session.cancelled.store(true, Ordering::Release);
     Status::Ok
 }
 
-/// Drop the audio input channel, signal cancel, join the worker.
-/// Idempotent on NULL.
-///
-/// SAFETY: `session` is a pointer previously returned by
-/// `session_open` (or NULL).
 #[no_mangle]
 pub unsafe extern "C" fn octomil_moshi_rs_session_close(session: *mut Session) {
     if session.is_null() {
         return;
     }
-    // SAFETY: caller's contract.
     let mut session = unsafe { Box::from_raw(session) };
-    // Drop the audio sender so the worker's recv_timeout loop sees
-    // Disconnected and exits cleanly.
     session.audio_tx.take();
     session.cancelled.store(true, Ordering::Release);
     if let Some(worker) = session.worker.take() {
-        // Join — at most one frame's worth of compute (≤ 81 ms per
-        // probe + 50 ms timeout) before the worker observes the
-        // disconnect.
         let _ = worker.join();
     }
+    // Engine session lock released on drop.
 }
 
 #[no_mangle]
 pub extern "C" fn octomil_moshi_rs_version() -> *const c_char {
-    // 'static literal; pointer is stable for the dylib's lifetime.
     concat!("octomil-moshi-rs/", env!("CARGO_PKG_VERSION"), "\0").as_ptr() as *const c_char
 }
 
@@ -587,7 +727,6 @@ mod tests {
     fn version_is_nul_terminated_static() {
         let p = octomil_moshi_rs_version();
         assert!(!p.is_null());
-        // SAFETY: the version function returns a static nul-terminated literal.
         let s = unsafe { CStr::from_ptr(p) };
         assert!(s.to_str().unwrap().starts_with("octomil-moshi-rs/"));
     }
