@@ -1,0 +1,70 @@
+# Octomil Slice 2C — Moshi engine Rust shim.
+#
+# This crate is BELOW Layer 2a. It is not part of the public C ABI — it
+# exposes a small private C entrypoint surface that ONLY the Octomil
+# C++ adapter (in src/adapters/moshi_rs/) is allowed to call. Symbols
+# are namespaced `octomil_moshi_rs_*` so they cannot collide with any
+# other engine's shim if/when more land.
+#
+# Why a Rust shim and not C++ directly:
+#   * Upstream `moshi-core` (kyutai-labs/moshi crates `moshi`) is the
+#     canonical native streaming Moshi implementation, built on
+#     `candle` with a `metal` feature for Apple Silicon. There is no
+#     C++ equivalent.
+#   * `rustymimi` (the Python class the slice-2B probe used) is a
+#     pyo3 wrapper around `moshi-core`. It exposes no stable C ABI;
+#     `nm -gU rustymimi.cpython-312-darwin.so` shows only
+#     `_PyInit_rustymimi`. So a Python-free path required either
+#     (a) reimplementing Moshi in C++ (weeks of work, parity risk)
+#     or (b) wrapping `moshi-core` in a small Rust crate that
+#     exposes a stable C ABI. We chose (b).
+#
+# What this crate is NOT:
+#   * It is NOT an Octomil ABI delta — the public C ABI in
+#     include/octomil/runtime.h is unchanged.
+#   * It is NOT loadable by SDKs directly. The Octomil C++ runtime
+#     is the only consumer.
+#   * It does NOT advertise its own capabilities — capability
+#     advertisement happens in the C++ adapter against the public
+#     `oct_runtime_capabilities` contract.
+
+[package]
+name = "octomil-moshi-rs"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+description = "Octomil-internal Rust shim around moshi-core for Slice 2C"
+publish = false
+
+[lib]
+# Build a static library — the C++ adapter links it directly into
+# liboctomil-runtime.dylib. A cdylib would force a separate runtime
+# load step and complicate symbol-visibility rules.
+crate-type = ["staticlib"]
+
+[dependencies]
+# `moshi` (= the moshi-core crate) is the upstream Rust streaming
+# implementation. Pinned to the same workspace version the Python
+# probe used (the moshi-mlx==0.2.6 weights match moshi-core 0.6.4
+# config shapes — verified by the slice-2B probe).
+moshi = { version = "0.6.4", default-features = false, features = ["metal"] }
+candle = { version = "0.9.1", package = "candle-core", default-features = false, features = ["metal"] }
+candle-nn = { version = "0.9.1", default-features = false, features = ["metal"] }
+candle-transformers = { version = "0.9.1", default-features = false, features = ["metal"] }
+sentencepiece = "0.11"
+anyhow = "1"
+
+[profile.release]
+# C++ runtime is built with -O2 + symbol visibility hidden; match
+# the optimization level. opt-level=3 here costs build time but
+# lights up vectorized matmul/softmax in candle.
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = "symbols"
+
+# Slice 2C is darwin-arm64-only. Other platforms compile-skip the
+# adapter entirely via CMake. This crate is never built on those
+# platforms.
+[package.metadata.octomil]
+target_triples = ["aarch64-apple-darwin"]

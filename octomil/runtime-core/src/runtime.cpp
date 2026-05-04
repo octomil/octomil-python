@@ -29,6 +29,11 @@
 
 #include "octomil/runtime.h"
 
+#include "adapters/adapter_base.h"
+#if defined(OCT_ENABLE_ENGINE_MOSHI_RS)
+#include "adapters/moshi_rs/moshi_rs_adapter.h"
+#endif
+
 #include <atomic>
 #include <cstring>
 #include <mutex>
@@ -36,6 +41,7 @@
 #include <string>
 #include <thread>
 #include <unordered_map>
+#include <vector>
 
 namespace {
 
@@ -74,6 +80,15 @@ struct oct_runtime {
     uint32_t version;        /* echo of config.version */
     std::string last_error;  /* human-readable diag for last failed call */
     std::mutex error_mutex;  /* guards last_error */
+
+    /* Capability snapshot, populated at runtime-open from the
+     * adapter registry. The C ABI vends `const char**` lists; we
+     * keep the strings owned by the runtime and a parallel pointer
+     * array whose elements are stable for the runtime's lifetime. */
+    std::vector<std::string> capability_strings;
+    std::vector<std::string> engine_strings;
+    std::vector<const char*> capability_ptrs;  /* NULL-terminated */
+    std::vector<const char*> engine_ptrs;      /* NULL-terminated */
 
     void set_error(const std::string& msg) {
         std::lock_guard<std::mutex> lock(error_mutex);
@@ -168,6 +183,39 @@ OCT_API oct_status_t oct_runtime_open(
     }
     rt->version = config->version;
     rt->last_error.clear();
+
+    /* Adapter registration. Each adapter constructor performs its
+     * own platform + artifact gates and contributes a capability
+     * IFF it can actually serve a session right now. The registry
+     * filters by `is_loadable_now()` — see adapters/adapter_base.cpp.
+     *
+     * Slice 2C: the Moshi-rs adapter's `is_loadable_now()` returns
+     * false in scaffolding state, so `audio.realtime.session` does
+     * NOT appear in `oct_runtime_capabilities` even though the
+     * adapter object code is linked. The follow-up commit flips the
+     * flag once the Rust shim wires the real moshi-core streaming
+     * pipeline. */
+#if defined(OCT_ENABLE_ENGINE_MOSHI_RS)
+    octomil::adapters::moshi_rs::register_with_runtime();
+#endif
+
+    /* Snapshot the registry into the runtime. Per-runtime ownership
+     * of the strings means a future per-runtime capability override
+     * (e.g., disable an engine for a specific runtime) is local to
+     * this struct, not a global mutation. */
+    rt->capability_strings = octomil::adapters::CapabilityRegistry::instance().snapshot_capabilities();
+    rt->engine_strings = octomil::adapters::CapabilityRegistry::instance().snapshot_engines();
+    rt->capability_ptrs.clear();
+    for (const auto& s : rt->capability_strings) {
+        rt->capability_ptrs.push_back(s.c_str());
+    }
+    rt->capability_ptrs.push_back(nullptr);
+    rt->engine_ptrs.clear();
+    for (const auto& s : rt->engine_strings) {
+        rt->engine_ptrs.push_back(s.c_str());
+    }
+    rt->engine_ptrs.push_back(nullptr);
+
     *out = rt;
     return OCT_STATUS_OK;
 }
@@ -231,9 +279,17 @@ OCT_API oct_status_t oct_runtime_capabilities(
     staged.version = OCT_CAPABILITIES_VERSION;
     staged.size = caller_size;
     /* Empty-list convention: non-NULL pointer to a single-element NULL-
-     * terminated array. Bindings iterate without an outer NULL check. */
-    staged.supported_engines = k_empty_string_array;
-    staged.supported_capabilities = k_empty_string_array;
+     * terminated array. Bindings iterate without an outer NULL check.
+     * Slice 2C: we vend the per-runtime snapshot taken at open
+     * time. The pointer array is owned by `oct_runtime`; lifetime
+     * is the runtime's. Falls back to `k_empty_string_array` only
+     * when the snapshot is empty (e.g., no adapters registered). */
+    staged.supported_engines = runtime->engine_ptrs.empty()
+        ? k_empty_string_array
+        : runtime->engine_ptrs.data();
+    staged.supported_capabilities = runtime->capability_ptrs.empty()
+        ? k_empty_string_array
+        : runtime->capability_ptrs.data();
     staged.supported_archs = k_empty_string_array;
     staged.ram_total_bytes = 0;
     staged.ram_available_bytes = 0;
