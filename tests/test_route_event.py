@@ -48,6 +48,51 @@ def test_build_route_event_uses_canonical_fields() -> None:
     assert payload["attempt_details"][0]["failure_reason"] == "runtime missing"
 
 
+def test_build_route_event_persists_ttft_and_throughput() -> None:
+    """Latency telemetry surfaces from the inference adapter through
+    ``RuntimeResponse.ttft_ms`` / ``tokens_per_second`` into the
+    persisted route event. The dashboard's ``Avg TTFT`` /
+    ``Avg throughput`` cards aggregate over these — pre-fix every
+    event posted them as ``None`` and the cards rendered em-dashes.
+
+    Regression test: builds a ``RouteEvent`` with explicit ttft +
+    tps values and asserts they survive both the dataclass and the
+    ``to_dict()`` serialization."""
+    event = build_route_event(
+        request_id="req_ttft",
+        capability="responses",
+        final_locality="local",
+        engine="mlx-lm",
+        ttft_ms=42.5,
+        tokens_per_second=128.3,
+    )
+
+    assert event.ttft_ms == 42.5
+    assert event.tokens_per_second == 128.3
+
+    payload = event.to_dict()
+    assert payload["ttft_ms"] == 42.5
+    assert payload["tokens_per_second"] == 128.3
+
+
+def test_build_route_event_omits_ttft_when_unknown() -> None:
+    """When the backend can't measure latency (cloud routes that
+    don't surface per-token timings, or local engines whose
+    ``InferenceMetrics`` returned 0.0), the SDK passes ``None`` and
+    the event keeps the field unset. Pre-fix this was the only
+    behavior; post-fix we want it to remain valid for partial
+    coverage during rollout."""
+    event = build_route_event(
+        request_id="req_no_ttft",
+        capability="responses",
+        final_locality="local",
+        engine="mlx-lm",
+    )
+
+    assert event.ttft_ms is None
+    assert event.tokens_per_second is None
+
+
 def test_emit_route_event_uses_route_decision_and_json_attempt_details() -> None:
     reporter = _Reporter()
     event = build_route_event(

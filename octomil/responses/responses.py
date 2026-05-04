@@ -260,8 +260,19 @@ def _emit_route_decision_if_needed(
     selection: Any | None = None,
     attempt_loop: AttemptLoopResult | None = None,
     routing_policy: Optional[RoutingPolicy] = None,
+    runtime_response: Optional[_RuntimeResponse] = None,
 ) -> None:
-    """Emit canonical route telemetry for a completed response, best-effort."""
+    """Emit canonical route telemetry for a completed response, best-effort.
+
+    ``runtime_response`` is the unwrapped backend response that carries
+    per-request latency telemetry (``ttft_ms`` + ``tokens_per_second``,
+    populated by the inference adapter from ``InferenceMetrics``). Both
+    fields are optional — older callers that don't pass it produce
+    events with the latency fields nulled, exactly matching the
+    pre-fix behavior. The dashboard's ``Avg TTFT`` / ``Avg throughput``
+    cards average over non-null events, so partial coverage during
+    rollout is harmless.
+    """
     if telemetry is None or route is None or route.execution is None:
         return
 
@@ -303,6 +314,16 @@ def _emit_route_decision_if_needed(
             artifact_id=route.artifact.id if route.artifact is not None else None,
             cache_status=route.artifact.cache.status if route.artifact is not None else None,
             total_tokens=response.usage.total_tokens if response.usage is not None else None,
+            # Latency telemetry from the inference adapter — fixes the
+            # dashboard's ``Avg TTFT`` / ``Avg throughput`` cards
+            # rendering em-dashes (server averaged over zero non-null
+            # events). ``runtime_response`` is None for some legacy
+            # call paths; the route event tolerates the absence by
+            # leaving the fields null.
+            ttft_ms=(getattr(runtime_response, "ttft_ms", None) if runtime_response is not None else None),
+            tokens_per_second=(
+                getattr(runtime_response, "tokens_per_second", None) if runtime_response is not None else None
+            ),
         )
         _emit_route_decision_event(event, telemetry)
     except Exception:
@@ -642,6 +663,7 @@ class OctomilResponses:
                 route=runner_result.route,
                 selection=runner_result.selection,
                 attempt_loop=runner_result.attempt_loop,
+                runtime_response=runner_result.response,
             )
             self._response_cache[response.id] = response
             return response
@@ -679,6 +701,7 @@ class OctomilResponses:
             model_id=model_id,
             route=route,
             routing_policy=routing_policy,
+            runtime_response=runtime_response,
         )
         self._response_cache[response.id] = response
         return response

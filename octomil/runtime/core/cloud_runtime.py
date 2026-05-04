@@ -120,6 +120,16 @@ class CloudModelRuntime(ModelRuntime):
         tools = _tools_to_openai(request)
         gc = request.generation_config
 
+        # Best-effort end-to-end latency for the cloud route. The cloud
+        # provider doesn't surface per-token timings, so we report the
+        # full request duration as ``ttft_ms`` for the route event —
+        # the dashboard's ``Avg TTFT`` card aggregates across local and
+        # cloud, so a cloud latency proxy is more useful than ``None``.
+        # Per-token throughput stays None for cloud; the proxy doesn't
+        # generalize cleanly without streaming chunk timings.
+        import time
+
+        _start = time.monotonic()
         result = await self._client.chat(
             messages,
             max_tokens=gc.max_tokens,
@@ -128,6 +138,7 @@ class CloudModelRuntime(ModelRuntime):
             tools=tools,
             model=request.model,  # Per-request model override
         )
+        _latency_ms = (time.monotonic() - _start) * 1000.0
 
         choice = result.get("choices", [{}])[0]
         message = choice.get("message", {})
@@ -163,6 +174,8 @@ class CloudModelRuntime(ModelRuntime):
             tool_calls=tool_calls,
             finish_reason=finish_reason,
             usage=usage,
+            ttft_ms=_latency_ms,
+            tokens_per_second=None,
         )
 
     async def stream(self, request: RuntimeRequest) -> AsyncIterator[RuntimeChunk]:

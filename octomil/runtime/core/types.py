@@ -146,6 +146,15 @@ class RuntimeResponse:
     finish_reason: str = "stop"
     usage: Optional[RuntimeUsage] = None
     raw_text: Optional[str] = None
+    # Per-request inference latency surfaced from the backend
+    # (``InferenceMetrics`` for local engines; cloud-provider latency
+    # for cloud routes). The Layer-2 emit path (``responses.py``)
+    # reads these into the ``RuntimeRouteEvent`` payload so the
+    # dashboard's ``Avg TTFT`` / ``Avg throughput`` cards stop
+    # rendering em-dashes. Default ``None`` keeps every existing
+    # constructor that omits these fields backwards-compatible.
+    ttft_ms: Optional[float] = None
+    tokens_per_second: Optional[float] = None
 
 
 @dataclass
