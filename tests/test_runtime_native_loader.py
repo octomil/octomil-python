@@ -102,33 +102,13 @@ def runtime_dylib() -> Path:
     return path
 
 
-# NOTE: marker registration + collection auto-marker live in
-# tests/conftest.py — pytest doesn't run the relevant hooks from
-# test modules. The autouse fixture below reads the marker.
-@pytest.fixture(autouse=True)
-def _isolate_loader(request, monkeypatch):
-    """Tests carrying ``@pytest.mark.requires_runtime`` (or
-    auto-marked above) get the FFI/Lib singletons reset and the env
-    override pointed at the resolved dylib; if no dylib is available
-    they skip cleanly. Tests without the marker run unmodified —
-    structural guards run regardless of whether a dylib is staged."""
-    if request.node.get_closest_marker("requires_runtime") is None:
-        yield
-        return
-    dylib = _external_dylib()
-    if dylib is None:
-        pytest.skip(
-            "no external liboctomil-runtime available — set "
-            "OCTOMIL_RUNTIME_DYLIB or run "
-            "`python scripts/fetch_runtime_dev.py`."
-        )
-        return
-    monkeypatch.setenv("OCTOMIL_RUNTIME_DYLIB", str(dylib))
-    import octomil.runtime.native.loader as _loader
-
-    monkeypatch.setattr(_loader, "_FFI", None)
-    monkeypatch.setattr(_loader, "_LIB", None)
-    yield
+# NOTE: marker registration + collection auto-marker + the
+# autouse skip-when-no-dylib gate ALL live in tests/conftest.py
+# now (Codex R1 fix on octomil-python#526). The previous local
+# `_isolate_loader` autouse here was redundant with the conftest
+# one AND scoped to this file only — meaning marked tests in
+# OTHER modules (e.g. test_runtime_chat_completion_conformance.py)
+# never got skip-when-no-dylib behavior.
 
 
 # ---------------------------------------------------------------------------

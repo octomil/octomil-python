@@ -54,8 +54,17 @@ def test_chat_completion_capability_advertised_when_gguf_staged():
     with NativeRuntime.open() as rt:
         caps = rt.capabilities()
         if not gguf or not os.path.isfile(gguf):
+            # Negative-case assertions. Both must hold per the
+            # runtime's structural capability-honesty rule:
+            # registry drops engines that contributed zero
+            # loadable capabilities. Codex R1 missed-case fix:
+            # also assert llama_cpp is absent (was implicit only).
             assert CHAT_COMPLETION not in caps.supported_capabilities, (
                 "chat.completion advertised without a valid GGUF " "— capability honesty filter regression"
+            )
+            assert "llama_cpp" not in caps.supported_engines, (
+                "llama_cpp engine advertised without a valid GGUF "
+                "— registry should drop engines with zero loadable capabilities"
             )
             return
         # Otherwise the file exists; the runtime's own GGUF magic-
@@ -118,10 +127,24 @@ def test_chat_completion_event_sequence_against_real_gguf():
                 ev = _drain_one(sess, timeout_ms=200)
                 if ev.type_name == "TRANSCRIPT_CHUNK":
                     n_chunks += 1
-                    # Envelope echoed on every event.
+                    # Codex R1 missed-case fix: pin the FULL
+                    # envelope on every chunk, not just request_id.
+                    # Verifies the runtime echoes verbatim across
+                    # every event type, not just SESSION_STARTED.
                     assert ev.request_id == "conf-req-001"
+                    assert ev.route_id == "conf-route-001"
+                    assert ev.trace_id == "0123456789abcdef0123456789abcdef"
+                    assert ev.engine_version.startswith("llama_cpp@")
                 elif ev.type_name == "SESSION_COMPLETED":
                     saw_completed = True
+                    # Same envelope-echo assertions on the
+                    # terminal event. A regression that drops the
+                    # envelope on the terminal frame would lose
+                    # observability for cancelled / errored
+                    # sessions.
+                    assert ev.request_id == "conf-req-001"
+                    assert ev.route_id == "conf-route-001"
+                    assert ev.trace_id == "0123456789abcdef0123456789abcdef"
                     # OCT_STATUS_OK = 0
                     assert ev.terminal_status == 0, f"expected terminal OK, got {ev.terminal_status}"
                     break

@@ -66,6 +66,57 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list) -> None:
             item.add_marker(pytest.mark.requires_runtime)
 
 
+# Codex R1 (octomil-python#526) blocker: the `requires_runtime`
+# marker must produce skip-when-no-dylib behavior across ALL test
+# modules that carry it, not just `test_runtime_native_loader.py`.
+# The autouse fixture below replaces the local one previously in
+# that file. Tests not carrying the marker run unmodified —
+# structural-guard tests that don't need a dylib are unaffected.
+@pytest.fixture(autouse=True)
+def _runtime_marker_gate(request, monkeypatch):
+    if request.node.get_closest_marker("requires_runtime") is None:
+        yield
+        return
+    # Local import keeps the conftest free of `octomil` import at
+    # collection time when cffi isn't installed.
+    try:
+        from octomil.runtime.native import loader as _loader
+    except Exception:
+        pytest.skip("octomil.runtime.native loader not importable")
+        return
+    # Resolution path: env override OR dev cache. Mirrors the
+    # `runtime_dylib` fixture in `test_runtime_native_loader.py`
+    # (kept there for backwards compat; this autouse subsumes it
+    # for tests that don't take the named fixture).
+    import os
+
+    override = os.environ.get(_loader.ENV_DYLIB_OVERRIDE)
+    dylib_path = None
+    if override:
+        if not Path(override).is_file():
+            pytest.fail(
+                f"{_loader.ENV_DYLIB_OVERRIDE}={override!r} does not exist; " f"operator override is authoritative."
+            )
+        dylib_path = override
+    else:
+        candidates = _loader._fetched_dylib_candidates()
+        if candidates:
+            dylib_path = str(candidates[-1])
+
+    if dylib_path is None:
+        pytest.skip(
+            "no external liboctomil-runtime available — set "
+            "OCTOMIL_RUNTIME_DYLIB or run "
+            "`python scripts/fetch_runtime_dev.py`."
+        )
+        return
+
+    monkeypatch.setenv("OCTOMIL_RUNTIME_DYLIB", dylib_path)
+    monkeypatch.setattr(_loader, "_FFI", None)
+    monkeypatch.setattr(_loader, "_LIB", None)
+    yield
+
+
 # ---------------------------------------------------------------------------
 # OTLP telemetry helpers (used across multiple test files)
 # ---------------------------------------------------------------------------
