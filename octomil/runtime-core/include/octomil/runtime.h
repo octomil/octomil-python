@@ -69,7 +69,7 @@ extern "C" {
 /* Bumped on breaking changes. Bindings inspect this at runtime via
  * `oct_runtime_abi_version()` to fail-fast on incompatible dylibs. */
 #define OCT_RUNTIME_ABI_VERSION_MAJOR 0
-#define OCT_RUNTIME_ABI_VERSION_MINOR 2  /* +oct_runtime_config_size, +oct_capabilities_size (additive; reads stay 0.1-compat) */
+#define OCT_RUNTIME_ABI_VERSION_MINOR 3  /* +oct_session_config_size, +oct_audio_view_size, +oct_event_size; capability comment uses canonical contract names (additive; reads stay 0.2-compat) */
 #define OCT_RUNTIME_ABI_VERSION_PATCH 0
 
 /* Versions of versioned config structs. Bumped lockstep with the
@@ -338,6 +338,18 @@ OCT_API uint64_t oct_runtime_abi_version_packed(void);
 OCT_API size_t oct_runtime_config_size(void);
 OCT_API size_t oct_capabilities_size(void);
 
+/*
+ * Slice 2A: introspection for the session-level structs that bindings
+ * marshal across the ABI. Same purpose as the runtime/capabilities
+ * variants — pin struct-layout parity between the cdef / Swift / JNI
+ * declaration and the C compiler's view, so cdef drift fails the
+ * binding's regression suite immediately rather than producing a
+ * runtime crash on the first non-version field touch.
+ */
+OCT_API size_t oct_session_config_size(void);
+OCT_API size_t oct_audio_view_size(void);
+OCT_API size_t oct_event_size(void);
+
 /* ------------------------------------------------------------------- *
  * Diagnostic strings                                                  *
  * ------------------------------------------------------------------- *
@@ -409,7 +421,23 @@ typedef struct {
      * mutate buffers immediately after open returns.
      */
     const char* model_uri;           /* "@app/eternum/realtime" | "kokoro-82m" | ...; copied at open */
-    const char* capability;          /* "realtime" | "tts" | "stt" | "chat" | "embed"; copied at open */
+    /*
+     * Canonical capability identifier — MUST be one of the strings
+     * defined by `octomil-contracts/schemas/core/runtime_capability.json`
+     * (mirrored in Python as `octomil.runtime.native.capabilities.RUNTIME_CAPABILITIES`):
+     *
+     *   "audio.realtime.session"
+     *   "audio.tts.stream" | "audio.tts.batch"
+     *   "audio.stt.stream" | "audio.stt.batch"
+     *   "audio.transcription"
+     *   "chat.completion" | "chat.stream"
+     *
+     * The runtime applies the strict-reject rule on this field: any
+     * value not in the canonical enum returns OCT_STATUS_UNSUPPORTED.
+     * `embeddings.text` is intentionally NOT a runtime capability —
+     * embeddings stay above this ABI. Copied at open.
+     */
+    const char* capability;
     /*
      * Locality the control plane resolved to. INFORMATIONAL ONLY.
      * The runtime acts on "on_device" only; any other value returns

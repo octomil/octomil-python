@@ -126,6 +126,19 @@ OCT_API size_t oct_capabilities_size(void) {
     return sizeof(oct_capabilities_t);
 }
 
+/* Slice 2A — session-level struct-layout introspection. */
+OCT_API size_t oct_session_config_size(void) {
+    return sizeof(oct_session_config_t);
+}
+
+OCT_API size_t oct_audio_view_size(void) {
+    return sizeof(oct_audio_view_t);
+}
+
+OCT_API size_t oct_event_size(void) {
+    return sizeof(oct_event_t);
+}
+
 /* -------------------------------------------------------------------------
  * Runtime lifecycle
  * ------------------------------------------------------------------------- */

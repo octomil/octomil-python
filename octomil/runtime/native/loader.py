@@ -9,7 +9,7 @@ Embedded host (in-process) binding. Locates the dylib via:
   3. ``ImportError`` with a message pointing at
      ``octomil/runtime-core/BUILD.md``.
 
-This module exposes ONLY:
+This module exposes:
 
   * Version inspection (``oct_runtime_abi_version_*``).
   * Runtime open/close (``oct_runtime_open``, ``oct_runtime_close``).
@@ -17,12 +17,13 @@ This module exposes ONLY:
     ``oct_runtime_capabilities_free``).
   * Last-error (``oct_runtime_last_error``,
     ``oct_last_thread_error``).
-
-Session entry points (``oct_session_*``) are intentionally NOT
-exposed in slice 3 PR1 — the slice-2 stub returns
-``OCT_STATUS_UNSUPPORTED`` for all of them and there is no behavior
-to bind against. They land alongside slice 2-proper (or its first
-real session adapter).
+  * Slice 2A — session lifecycle bindings: ``NativeSession`` wraps
+    ``oct_session_open / send_audio / send_text / poll_event /
+    cancel / close``. The stub returns ``OCT_STATUS_UNSUPPORTED``
+    for every call until slice 2-proper lands a real session
+    adapter; the wrapper exists so bindings, conformance tests, and
+    higher-level routing code can compile against the real surface
+    NOW and have it auto-skip on capability advertisement.
 
 **Forward-compat advertisement parsing:** capabilities returned by
 the runtime that do NOT appear in :data:`RUNTIME_CAPABILITIES` are
@@ -74,6 +75,32 @@ _STATUS_NAMES: dict[int, str] = {
     OCT_STATUS_INTERNAL: "OCT_STATUS_INTERNAL",
     OCT_STATUS_VERSION_MISMATCH: "OCT_STATUS_VERSION_MISMATCH",
 }
+
+
+# ---------------------------------------------------------------------------
+# Priority + event-type constants (slice 2A) — mirror runtime.h.
+# ---------------------------------------------------------------------------
+
+OCT_PRIORITY_SPECULATIVE: int = 0
+OCT_PRIORITY_PREFETCH: int = 1
+OCT_PRIORITY_FOREGROUND: int = 2
+
+OCT_EVENT_NONE: int = 0
+OCT_EVENT_SESSION_STARTED: int = 1
+OCT_EVENT_AUDIO_CHUNK: int = 2
+OCT_EVENT_TRANSCRIPT_CHUNK: int = 3
+OCT_EVENT_USER_SPEECH_DETECTED: int = 4
+OCT_EVENT_TURN_ENDED: int = 5
+OCT_EVENT_CAPABILITY_VERIFIED: int = 6
+OCT_EVENT_ERROR: int = 7
+OCT_EVENT_SESSION_COMPLETED: int = 8
+OCT_EVENT_INPUT_DROPPED: int = 9
+
+OCT_SAMPLE_FORMAT_PCM_S16LE: int = 1
+OCT_SAMPLE_FORMAT_PCM_F32LE: int = 2
+
+OCT_SESSION_CONFIG_VERSION: int = 1
+OCT_EVENT_VERSION: int = 1
 
 
 def _status_name(code: int) -> str:
@@ -168,12 +195,17 @@ def _resolve_dylib() -> Path:
 # cffi cdef + lib singleton
 # ---------------------------------------------------------------------------
 
-# Keeping the cdef minimal — only the symbols slice 3 PR1 binds.
-# Slice 2-proper / 3 PR2 will extend this when session entries land.
+# Mirrors runtime.h. ANY drift caught by the size-parity tests in
+# tests/test_runtime_native_loader.py — every struct in the cdef has
+# a corresponding `oct_<struct>_size()` helper that the runtime
+# returns; the test asserts cdef sizeof matches dylib sizeof.
 _CDEF: str = """
 typedef uint32_t oct_status_t;
+typedef uint32_t oct_priority_t;
+typedef uint32_t oct_event_type_t;
 
 typedef struct oct_runtime oct_runtime_t;
+typedef struct oct_session oct_session_t;
 
 typedef struct {
     uint32_t      version;
@@ -189,21 +221,66 @@ typedef struct {
     uint8_t       _reserved0;
 } oct_capabilities_t;
 
-/* Forward decl so oct_telemetry_sink_fn can take const oct_event_t*.
- * This cdef binding never invokes the callback (telemetry is set
- * to NULL until slice 2-proper); the parameter type only matters
- * for sizeof of the runtime_config struct (which is pointer-sized
- * either way) and for future-proofing when slice 2-proper adds
- * a Python-side telemetry sink. Codex R2 fix. */
-typedef struct oct_event oct_event_t;
+/* Slice 2A: full event-envelope cdef. Mirrors runtime.h verbatim;
+ * if the C compiler reorders or pads any inner field differently
+ * than cffi computes, the size-parity test in test_runtime_native_loader
+ * fails immediately. */
+typedef struct oct_event {
+    uint32_t           version;
+    size_t             size;
+    oct_event_type_t   type;
+    uint64_t           monotonic_ns;
+    void*              user_data;
+    union {
+        struct {
+            const uint8_t* pcm;
+            uint32_t       n_bytes;
+            uint32_t       sample_rate;
+            uint32_t       sample_format;
+            uint16_t       channels;
+            uint8_t        is_final;
+            uint8_t        _reserved0;
+        } audio_chunk;
+        struct {
+            const char* utf8;
+            uint32_t    n_bytes;
+        } transcript_chunk;
+        struct {
+            const char* code;
+            const char* message;
+        } error;
+        struct {
+            const char* engine;
+            const char* model_digest;
+            const char* locality;
+            const char* streaming_mode;
+            const char* runtime_build_tag;
+        } session_started;
+        struct {
+            float        setup_ms;
+            float        engine_first_chunk_ms;
+            float        e2e_first_chunk_ms;
+            float        total_latency_ms;
+            float        queued_ms;
+            uint32_t     observed_chunks;
+            uint8_t      capability_verified;
+            uint8_t      _reserved0;
+            uint16_t     _reserved1;
+            oct_status_t terminal_status;
+        } session_completed;
+        struct {
+            uint32_t     n_frames_dropped;
+            uint32_t     sample_rate;
+            uint16_t     channels;
+            uint16_t     _reserved0;
+            const char*  reason;
+            uint64_t     dropped_at_ns;
+        } input_dropped;
+    } data;
+} oct_event_t;
+
 typedef void (*oct_telemetry_sink_fn)(const oct_event_t* event, void* user_data);
 
-/* Mirrors oct_runtime_config_t in runtime.h verbatim — Codex R1 fix.
- * The previous cdef invented `cache_root` + `runtime_build_tag` fields
- * that don't exist in the header, so a runtime that reads
- * `artifact_root` would interpret garbage. cffi ABI mode does NOT
- * catch struct-layout mismatch; only the runtime-side reader would,
- * and only when it touched a non-version field. */
 typedef struct {
     uint32_t              version;
     const char*           artifact_root;
@@ -211,6 +288,27 @@ typedef struct {
     void*                 telemetry_user_data;
     uint32_t              max_sessions;
 } oct_runtime_config_t;
+
+typedef struct {
+    uint32_t       version;
+    const char*    model_uri;
+    const char*    capability;
+    const char*    locality;
+    const char*    policy_preset;
+    const char*    speaker_id;
+    uint32_t       sample_rate_in;
+    uint32_t       sample_rate_out;
+    oct_priority_t priority;
+    void*          user_data;
+} oct_session_config_t;
+
+typedef struct {
+    const float* samples;
+    uint32_t     n_frames;
+    uint32_t     sample_rate;
+    uint16_t     channels;
+    uint16_t     _reserved0;
+} oct_audio_view_t;
 
 uint32_t oct_runtime_abi_version_major(void);
 uint32_t oct_runtime_abi_version_minor(void);
@@ -239,12 +337,38 @@ int oct_last_thread_error(
     size_t buflen
 );
 
-/* ABI-parity introspection — returns sizeof(oct_runtime_config_t) as
- * computed by the C compiler. Used by the cffi binding's regression
- * test to assert struct-layout parity between the cdef above and
- * runtime.h. Codex R1 fix. */
+/* Slice 2A — session lifecycle entry points. The stub returns
+ * OCT_STATUS_UNSUPPORTED for everything until slice 2-proper lands. */
+oct_status_t oct_session_open(
+    oct_runtime_t* runtime,
+    const oct_session_config_t* config,
+    oct_session_t** out
+);
+void oct_session_close(oct_session_t* session);
+
+oct_status_t oct_session_send_audio(
+    oct_session_t* session,
+    const oct_audio_view_t* audio
+);
+oct_status_t oct_session_send_text(
+    oct_session_t* session,
+    const char* utf8
+);
+oct_status_t oct_session_poll_event(
+    oct_session_t* session,
+    oct_event_t* out,
+    uint32_t timeout_ms
+);
+oct_status_t oct_session_cancel(oct_session_t* session);
+
+/* ABI-parity introspection — sizeof as computed by the dylib's C
+ * compiler. The cffi cdef declarations above MUST round-trip
+ * through these getters; drift fails the size-parity test. */
 size_t oct_runtime_config_size(void);
 size_t oct_capabilities_size(void);
+size_t oct_session_config_size(void);
+size_t oct_audio_view_size(void);
+size_t oct_event_size(void);
 """
 
 
@@ -328,6 +452,15 @@ class NativeRuntime:
         self._lib = lib
         self._handle = handle  # cffi `oct_runtime_t*`
         self._closed = False
+        # Track live child sessions via weakref so NativeRuntime.close()
+        # can mark them closed before the dylib's `oct_runtime_close`
+        # implicitly tears them down. Without this, a Python wrapper
+        # would call into a freed `oct_session_t*` on its next
+        # send_audio / poll_event / __del__.
+        # Codex R1 blocker fix.
+        import weakref
+
+        self._sessions: "weakref.WeakSet[NativeSession]" = weakref.WeakSet()
 
     @classmethod
     def open(
@@ -375,9 +508,21 @@ class NativeRuntime:
         return cls(ffi, lib, out[0])
 
     def close(self) -> None:
-        """Close the handle. Idempotent."""
+        """Close the handle. Idempotent.
+
+        Codex R1 blocker: per `runtime.h`, live sessions are
+        CANCELLED and closed implicitly by `oct_runtime_close`. We
+        tell every Python wrapper "the C handle behind you is gone"
+        BEFORE the dylib closes the runtime, so any later call on
+        a stale `NativeSession` raises NativeRuntimeError instead of
+        dereferencing freed memory."""
         if self._closed:
             return
+        # Snapshot first; closing each wrapper removes itself from
+        # the WeakSet which would mutate during iteration.
+        for sess in list(self._sessions):
+            sess._invalidate_after_runtime_close()  # noqa: SLF001
+        self._sessions.clear()
         self._lib.oct_runtime_close(self._handle)
         self._closed = True
 
@@ -465,6 +610,79 @@ class NativeRuntime:
         finally:
             lib.oct_runtime_capabilities_free(caps)
 
+    def open_session(
+        self,
+        *,
+        capability: str,
+        model_uri: str = "",
+        locality: str = "on_device",
+        policy_preset: str = "",
+        speaker_id: str = "",
+        sample_rate_in: int = 0,
+        sample_rate_out: int = 0,
+        priority: int = OCT_PRIORITY_FOREGROUND,
+    ) -> "NativeSession":
+        """Open a session against this runtime.
+
+        Slice 2A: this is the canonical embedded-host entry point for
+        every realtime / TTS / STT / chat capability. The runtime
+        applies strict-reject on ``capability``: any value not in
+        :data:`octomil.runtime.native.capabilities.RUNTIME_CAPABILITIES`
+        returns ``OCT_STATUS_UNSUPPORTED``. Against the slice-2 stub
+        EVERY call returns UNSUPPORTED — bindings should treat that
+        as the design state until a runtime advertises the capability
+        via :meth:`capabilities`.
+
+        ``capability`` MUST be one of the canonical strings
+        (``audio.realtime.session``, ``audio.tts.stream`` etc.); the
+        wrapper does NOT validate client-side because the runtime is
+        the source of truth on what its build supports.
+
+        ``locality`` is informational (only ``on_device`` is honored;
+        anything else returns UNSUPPORTED). Cloud routing happens
+        above this ABI.
+
+        Strings are copied by the runtime during open; caller is free
+        to drop the references on return.
+        """
+        self._check_open()
+        ffi = self._ffi
+        lib = self._lib
+        cfg = ffi.new("oct_session_config_t*")
+        cfg.version = OCT_SESSION_CONFIG_VERSION
+        # Keep the encoded buffers alive across the FFI call. The
+        # runtime copies internally per the header's STRING LIFETIME
+        # contract; the local refs satisfy that.
+        keepalive: list[Any] = []
+
+        def _cstr(s: str) -> Any:
+            buf = ffi.new("char[]", s.encode("utf-8"))
+            keepalive.append(buf)
+            return buf
+
+        cfg.model_uri = _cstr(model_uri)
+        cfg.capability = _cstr(capability)
+        cfg.locality = _cstr(locality)
+        cfg.policy_preset = _cstr(policy_preset)
+        cfg.speaker_id = _cstr(speaker_id) if speaker_id else ffi.NULL
+        cfg.sample_rate_in = sample_rate_in
+        cfg.sample_rate_out = sample_rate_out
+        cfg.priority = priority
+        cfg.user_data = ffi.NULL
+        out = ffi.new("oct_session_t**")
+        status = int(lib.oct_session_open(self._handle, cfg, out))
+        if status != OCT_STATUS_OK:
+            raise NativeRuntimeError(
+                status,
+                f"oct_session_open(capability={capability!r}) failed",
+                last_error=self.last_error(),
+            )
+        sess = NativeSession(ffi, lib, out[0], owner=self)
+        # Register so NativeRuntime.close() can pre-invalidate the
+        # wrapper before the dylib implicitly closes its handle.
+        self._sessions.add(sess)
+        return sess
+
 
 def _read_string_array(ffi: Any, ptr: Any) -> list[str]:
     """Walk a NULL-terminated ``const char**`` from the runtime.
@@ -550,10 +768,266 @@ class RuntimeCapabilities:
         )
 
 
+# ---------------------------------------------------------------------------
+# NativeSession — slice 2A
+# ---------------------------------------------------------------------------
+
+
+class NativeEvent:
+    """Parsed snapshot of an ``oct_event_t``.
+
+    The cffi event buffer is reused across :meth:`NativeSession.poll_event`
+    calls (the runtime's lifetime contract makes the inner pointer
+    fields valid only until the next poll). This view extracts the
+    primitive fields the binding cares about into Python-owned data
+    so callers can hold onto it across polls.
+
+    Slice 2A: the stub never produces a non-NONE event; this class
+    exists so the slice-2-proper session adapter has a stable
+    surface to write tests against immediately."""
+
+    __slots__ = ("type", "version", "monotonic_ns", "user_data_ptr")
+
+    def __init__(self, *, type: int, version: int, monotonic_ns: int, user_data_ptr: int) -> None:
+        self.type = type
+        self.version = version
+        self.monotonic_ns = monotonic_ns
+        self.user_data_ptr = user_data_ptr
+
+    @property
+    def is_none(self) -> bool:
+        return self.type == OCT_EVENT_NONE
+
+    def __repr__(self) -> str:
+        return f"NativeEvent(type={self.type}, monotonic_ns={self.monotonic_ns})"
+
+
+class NativeSession:
+    """RAII-style wrapper over ``oct_session_t``.
+
+    Lifetime is bound to the parent :class:`NativeRuntime`; closing
+    the runtime implicitly cancels and closes any live sessions, but
+    bindings should call :meth:`close` explicitly for clean drain.
+
+    Single-thread-affine: ``send_audio``, ``send_text``, ``poll_event``
+    MUST NOT race against each other on the same session. ``cancel``
+    is the only entry point safe from any thread.
+
+    Against the slice-2 stub every method returns
+    ``OCT_STATUS_UNSUPPORTED`` (raised as :class:`NativeRuntimeError`).
+    The wrapper exists so:
+      * Conformance tests have a stable target NOW.
+      * The Layer-2b session adapter can be written against the real
+        surface without further binding churn.
+      * Capability-gated tests auto-skip on the stub via
+        :meth:`NativeRuntime.capabilities` rather than crashing.
+    """
+
+    def __init__(self, ffi: Any, lib: Any, handle: Any, *, owner: NativeRuntime) -> None:
+        self._ffi = ffi
+        self._lib = lib
+        self._handle = handle
+        self._owner = owner
+        self._closed = False
+        # Set by NativeRuntime.close() right before it calls
+        # `oct_runtime_close()`. Once flipped, every entry point
+        # raises rather than dereferencing the now-freed handle, and
+        # session_close becomes a no-op (dylib already closed it).
+        # Codex R1 blocker fix.
+        self._handle_invalid = False
+        # Reusable event buffer — runtime fills the same struct on every
+        # poll; the inner pointer fields are valid only until the next
+        # poll call per the header's lifetime contract.
+        self._event_buf: Any = ffi.new("oct_event_t*")
+        self._event_buf.size = ffi.sizeof("oct_event_t")
+
+    def _check_open(self) -> None:
+        if self._handle_invalid:
+            raise NativeRuntimeError(
+                OCT_STATUS_INVALID_INPUT,
+                "session handle invalidated by parent NativeRuntime.close()",
+            )
+        if self._closed:
+            raise NativeRuntimeError(
+                OCT_STATUS_INVALID_INPUT,
+                "session handle is closed",
+            )
+
+    def send_audio(
+        self,
+        samples: bytes,
+        *,
+        sample_rate: int,
+        channels: int = 1,
+    ) -> None:
+        """Push interleaved float32 PCM to the session's input queue.
+
+        ``samples`` is a Python ``bytes`` (or buffer-protocol object)
+        containing interleaved float32 values; total float count is
+        ``len(samples) // 4``, frames per channel is that count divided
+        by ``channels``. Caller-owned; the runtime copies internally
+        if it needs to retain.
+
+        Returns on OCT_STATUS_OK; raises on any non-OK status —
+        OCT_STATUS_BUSY surfaces as a NativeRuntimeError so the
+        caller can decide drop-vs-retry, mirroring the C contract."""
+        self._check_open()
+        ffi = self._ffi
+        # Reject malformed float32 buffers explicitly. Codex+Gemini R2
+        # nit: `len(samples) // 4` would silently truncate a trailing
+        # byte (e.g. len==5 → 1 float + dropped byte), letting a
+        # misaligned buffer cross the FFI.
+        if len(samples) % 4 != 0:
+            raise NativeRuntimeError(
+                OCT_STATUS_INVALID_INPUT,
+                f"send_audio: buffer length {len(samples)} is not a multiple of float32 size (4)",
+            )
+        n_floats = len(samples) // 4
+        if channels <= 0 or n_floats == 0 or n_floats % channels != 0:
+            raise NativeRuntimeError(
+                OCT_STATUS_INVALID_INPUT,
+                f"send_audio: bad shape (len={len(samples)}, channels={channels})",
+            )
+        n_frames = n_floats // channels
+        view = ffi.new("oct_audio_view_t*")
+        # cffi: cast a bytes-like object directly to const float*.
+        view.samples = ffi.cast("const float*", ffi.from_buffer(samples))
+        view.n_frames = n_frames
+        view.sample_rate = sample_rate
+        view.channels = channels
+        view._reserved0 = 0
+        status = int(self._lib.oct_session_send_audio(self._handle, view))
+        if status != OCT_STATUS_OK:
+            raise NativeRuntimeError(
+                status,
+                "oct_session_send_audio failed",
+                last_error=self._owner.last_error(),
+            )
+
+    def send_text(self, utf8: str) -> None:
+        """Push a UTF-8 text turn to the session.
+
+        Caller-owned and copied by the runtime. Same error surface as
+        :meth:`send_audio`."""
+        self._check_open()
+        ffi = self._ffi
+        encoded = ffi.new("char[]", utf8.encode("utf-8"))
+        status = int(self._lib.oct_session_send_text(self._handle, encoded))
+        if status != OCT_STATUS_OK:
+            raise NativeRuntimeError(
+                status,
+                "oct_session_send_text failed",
+                last_error=self._owner.last_error(),
+            )
+
+    def poll_event(self, timeout_ms: int = 0) -> NativeEvent:
+        """Wait up to ``timeout_ms`` for the next event from the session.
+
+        Slice 2A: the stub returns OCT_STATUS_UNSUPPORTED but still
+        zeros the event buffer respecting the versioned-output-struct
+        contract. We translate UNSUPPORTED into a raise; OCT_STATUS_OK
+        with type==OCT_EVENT_NONE is the documented timeout shape."""
+        self._check_open()
+        ffi = self._ffi
+        ev = self._event_buf
+        ev.size = ffi.sizeof("oct_event_t")
+        ev.version = OCT_EVENT_VERSION
+        status = int(self._lib.oct_session_poll_event(self._handle, ev, timeout_ms))
+        if status == OCT_STATUS_TIMEOUT:
+            return NativeEvent(
+                type=OCT_EVENT_NONE,
+                version=int(ev.version),
+                monotonic_ns=int(ev.monotonic_ns),
+                user_data_ptr=int(ffi.cast("uintptr_t", ev.user_data)),
+            )
+        if status != OCT_STATUS_OK:
+            raise NativeRuntimeError(
+                status,
+                "oct_session_poll_event failed",
+                last_error=self._owner.last_error(),
+            )
+        return NativeEvent(
+            type=int(ev.type),
+            version=int(ev.version),
+            monotonic_ns=int(ev.monotonic_ns),
+            user_data_ptr=int(ffi.cast("uintptr_t", ev.user_data)),
+        )
+
+    def cancel(self) -> int:
+        """Request cancellation. Safe from any thread.
+
+        Returns the raw status code (OCT_STATUS_OK on first call,
+        OCT_STATUS_CANCELLED on idempotent re-cancel) — these are NOT
+        treated as errors. Any other code raises."""
+        if self._handle_invalid or self._closed:
+            return OCT_STATUS_CANCELLED
+        status = int(self._lib.oct_session_cancel(self._handle))
+        if status not in (OCT_STATUS_OK, OCT_STATUS_CANCELLED, OCT_STATUS_UNSUPPORTED):
+            raise NativeRuntimeError(
+                status,
+                "oct_session_cancel failed",
+                last_error=self._owner.last_error(),
+            )
+        return status
+
+    def close(self) -> None:
+        """Close the session. Idempotent.
+
+        If the parent runtime has already been closed, the underlying
+        ``oct_session_t*`` was implicitly closed by the dylib (per
+        the runtime.h contract); we MUST NOT call ``oct_session_close``
+        on a freed handle. ``_invalidate_after_runtime_close`` flips
+        this flag so the cleanup path becomes a no-op."""
+        if self._closed:
+            return
+        if not self._handle_invalid:
+            self._lib.oct_session_close(self._handle)
+        self._closed = True
+
+    def _invalidate_after_runtime_close(self) -> None:
+        """Marker called by NativeRuntime.close() before the dylib
+        tears down the runtime. Subsequent operations on this session
+        raise (via _check_open); subsequent close() is a no-op (the
+        dylib already freed the handle implicitly)."""
+        self._handle_invalid = True
+        self._closed = True
+
+    def __enter__(self) -> "NativeSession":
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> None:
+        self.close()
+
+    def __del__(self) -> None:
+        try:
+            self.close()
+        except Exception:
+            pass
+
+
 __all__ = [
     "ENV_DYLIB_OVERRIDE",
+    "NativeEvent",
     "NativeRuntime",
     "NativeRuntimeError",
+    "NativeSession",
+    "OCT_EVENT_AUDIO_CHUNK",
+    "OCT_EVENT_CAPABILITY_VERIFIED",
+    "OCT_EVENT_ERROR",
+    "OCT_EVENT_INPUT_DROPPED",
+    "OCT_EVENT_NONE",
+    "OCT_EVENT_SESSION_COMPLETED",
+    "OCT_EVENT_SESSION_STARTED",
+    "OCT_EVENT_TRANSCRIPT_CHUNK",
+    "OCT_EVENT_TURN_ENDED",
+    "OCT_EVENT_USER_SPEECH_DETECTED",
+    "OCT_EVENT_VERSION",
+    "OCT_PRIORITY_FOREGROUND",
+    "OCT_PRIORITY_PREFETCH",
+    "OCT_PRIORITY_SPECULATIVE",
+    "OCT_SAMPLE_FORMAT_PCM_F32LE",
+    "OCT_SAMPLE_FORMAT_PCM_S16LE",
+    "OCT_SESSION_CONFIG_VERSION",
     "OCT_STATUS_BUSY",
     "OCT_STATUS_CANCELLED",
     "OCT_STATUS_INTERNAL",
