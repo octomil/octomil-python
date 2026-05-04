@@ -1,24 +1,25 @@
 """Conformance test for `chat.completion` against an external
-runtime (octomil-runtime v0.1.0+).
+runtime (octomil-runtime v0.1.1+).
+
+v0.1.1 capability honesty is **structural**: chat.completion is
+advertised whenever the runtime build linked llama.cpp and the
+platform is supported. The env var `OCTOMIL_LLAMA_CPP_GGUF` no
+longer affects capability advertisement — it's a developer
+convenience that points the test at a real artifact for the
+end-to-end paths.
 
 Layered gate:
 
   1. Skip cleanly when the cffi binding can't load a runtime
      (matches the existing `requires_runtime` pattern).
-  2. Skip cleanly when `chat.completion` is NOT advertised — i.e.,
-     when `OCTOMIL_LLAMA_CPP_GGUF` is unset OR points at a missing
-     / non-GGUF file. The runtime's structural capability-honesty
-     filter is the source of truth; this test reads
-     `RuntimeCapabilities.supported` and skips when the capability
-     is absent.
-  3. When the capability IS advertised, run the full event-sequence
-     pin: SESSION_STARTED → TRANSCRIPT_CHUNK+ → SESSION_COMPLETED
-     with `terminal_status = OCT_STATUS_OK`.
+  2. With the v0.1.1 dylib loaded, chat.completion IS advertised
+     even without a model warmed; this test asserts that.
+  3. Open + warm a model and run the full event-sequence pin
+     (SESSION_STARTED → TRANSCRIPT_CHUNK+ → SESSION_COMPLETED with
+     `terminal_status = OCT_STATUS_OK`) when `OCTOMIL_LLAMA_CPP_GGUF`
+     points at a valid GGUF.
 
-Per the engineering-debate consensus on octomil-runtime#3, the
-runtime ships v0.1.0 with `chat.completion` dev-gated. CI without
-a staged GGUF hits the skip path at gate (2). Operators with a
-small GGUF run the test by setting:
+Operators run the artifact-present paths by setting:
 
     OCTOMIL_LLAMA_CPP_GGUF=/path/to/small-model.gguf
 """
@@ -40,67 +41,111 @@ CHAT_COMPLETION = "chat.completion"
 
 
 @pytest.mark.requires_runtime
-def test_chat_completion_capability_advertised_when_gguf_staged():
-    """When `OCTOMIL_LLAMA_CPP_GGUF` points at a valid GGUF, the
-    runtime MUST advertise `chat.completion` AND `llama_cpp` in
-    its capability list. When unset / invalid, both must be
-    absent.
+def test_chat_completion_capability_advertised_structurally():
+    """v0.1.1: chat.completion is advertised whenever the engine is
+    built and the platform is supported. The env var has no effect on
+    capability advertisement; artifact identity / integrity / warm-
+    readiness move to oct_model_open / oct_model_warm.
 
-    This test reflects the runtime's structural capability-honesty
-    rule into the SDK side."""
-    from octomil.runtime.native import NativeRuntime
+    A binding that calls `oct_session_open(capability='chat.completion',
+    model=None)` should observe `OCT_STATUS_INVALID_INPUT` — capability
+    is honest, but session-open requires a model handle."""
+    from octomil.runtime.native import (
+        OCT_STATUS_INVALID_INPUT,
+        NativeRuntime,
+        NativeRuntimeError,
+    )
 
-    gguf = os.environ.get("OCTOMIL_LLAMA_CPP_GGUF", "")
     with NativeRuntime.open() as rt:
         caps = rt.capabilities()
-        if not gguf or not os.path.isfile(gguf):
-            # Negative-case assertions. Both must hold per the
-            # runtime's structural capability-honesty rule:
-            # registry drops engines that contributed zero
-            # loadable capabilities. Codex R1 missed-case fix:
-            # also assert llama_cpp is absent (was implicit only).
-            assert CHAT_COMPLETION not in caps.supported_capabilities, (
-                "chat.completion advertised without a valid GGUF " "— capability honesty filter regression"
-            )
-            assert "llama_cpp" not in caps.supported_engines, (
-                "llama_cpp engine advertised without a valid GGUF "
-                "— registry should drop engines with zero loadable capabilities"
-            )
-            return
-        # Otherwise the file exists; the runtime's own GGUF magic-
-        # byte check is the authority on whether the capability
-        # actually advertises. If the file isn't a real GGUF the
-        # runtime drops it and we still skip.
-        if CHAT_COMPLETION not in caps.supported_capabilities:
-            pytest.skip(
-                f"OCTOMIL_LLAMA_CPP_GGUF={gguf!r} does not pass the "
-                f"runtime's GGUF magic-byte check; capability not "
-                f"advertised"
-            )
         assert (
-            "llama_cpp" in caps.supported_engines
-        ), "chat.completion advertised but llama_cpp not in supported_engines"
+            CHAT_COMPLETION in caps.supported_capabilities
+        ), "chat.completion should be advertised structurally in v0.1.1"
+        assert "llama_cpp" in caps.supported_engines, "llama_cpp engine should be advertised in v0.1.1"
+
+        # session_open without a model -> INVALID_INPUT (capability
+        # advertised, but precondition unmet).
+        with pytest.raises(NativeRuntimeError) as exc_info:
+            rt.open_session(capability=CHAT_COMPLETION, locality="on_device")
+        assert exc_info.value.status == OCT_STATUS_INVALID_INPUT
+        # last_error names the missing-model condition.
+        msg = exc_info.value.last_error.lower()
+        assert "model" in msg, f"last_error should mention model: {msg!r}"
+
+
+@pytest.mark.requires_runtime
+def test_chat_completion_open_model_rejects_non_gguf():
+    """oct_model_open validates the GGUF magic before computing
+    sha256. A file that exists but isn't a GGUF returns
+    OCT_STATUS_INVALID_INPUT with a precise diagnostic."""
+    import tempfile
+
+    from octomil.runtime.native import (
+        OCT_STATUS_INVALID_INPUT,
+        NativeRuntime,
+        NativeRuntimeError,
+    )
+
+    with tempfile.NamedTemporaryFile(suffix=".bin", delete=False) as f:
+        f.write(b"NOT_A_GGUF_FILE")
+        bad_path = f.name
+    try:
+        with NativeRuntime.open() as rt:
+            with pytest.raises(NativeRuntimeError) as exc_info:
+                rt.open_model(model_uri=bad_path)
+            assert exc_info.value.status == OCT_STATUS_INVALID_INPUT
+            assert "gguf" in exc_info.value.last_error.lower()
+    finally:
+        os.unlink(bad_path)
+
+
+@pytest.mark.requires_runtime
+def test_chat_completion_open_model_rejects_digest_mismatch():
+    """oct_model_open with an explicit `artifact_digest` rejects
+    when the computed sha256 doesn't match. Skipped without a
+    staged GGUF (need a valid file to even reach digest verification)."""
+    from octomil.runtime.native import (
+        OCT_STATUS_INVALID_INPUT,
+        NativeRuntime,
+        NativeRuntimeError,
+    )
+
+    gguf = os.environ.get("OCTOMIL_LLAMA_CPP_GGUF", "")
+    if not gguf or not os.path.isfile(gguf):
+        pytest.skip("OCTOMIL_LLAMA_CPP_GGUF unset or missing")
+
+    with NativeRuntime.open() as rt:
+        # Bogus digest — runtime computes the real sha256, compares,
+        # rejects.
+        with pytest.raises(NativeRuntimeError) as exc_info:
+            rt.open_model(
+                model_uri=gguf,
+                artifact_digest="sha256:" + ("0" * 64),
+            )
+        assert exc_info.value.status == OCT_STATUS_INVALID_INPUT
+        assert "digest" in exc_info.value.last_error.lower()
 
 
 @pytest.mark.requires_runtime
 @pytest.mark.timeout(90)
 def test_chat_completion_event_sequence_against_real_gguf():
-    """End-to-end conformance pin: SESSION_STARTED →
-    TRANSCRIPT_CHUNK+ → SESSION_COMPLETED, with the operational
-    envelope echoed verbatim from the session config.
+    """End-to-end conformance pin (v0.1.1):
 
-    Skipped unless `OCTOMIL_LLAMA_CPP_GGUF` points at a real GGUF
-    AND the runtime is advertising `chat.completion`.
+      open_runtime → open_model → warm → open_session(model=mdl)
+      → SESSION_STARTED → send_text → TRANSCRIPT_CHUNK+ →
+      SESSION_COMPLETED with terminal_status=OK
+      → close_session → close_model → close_runtime
 
-    Codex R2 fix: uses the actual `NativeEvent` API
-    (numeric `event.type` matched against the exported
-    `OCT_EVENT_*` constants). The wrapper does NOT today expose
-    `terminal_status` or `error_message` accessors — those
-    live in the inner-payload union and aren't yet parsed by
-    the Python binding. The runtime-side
-    `test_llama_cpp_chat_smoke` already pins terminal_status +
-    error payload at the C ABI level. Here we pin only what
-    the SDK wrapper exposes: event type + operational envelope."""
+    Skipped unless `OCTOMIL_LLAMA_CPP_GGUF` points at a real GGUF.
+
+    Pins:
+      - Event sequence (SESSION_STARTED first; ≥1 chunk; clean
+        SESSION_COMPLETED).
+      - Operational envelope echoed verbatim on every event
+        (request_id / route_id / trace_id / engine_version).
+      - Artifact digest set on the envelope (v0.1.1: ALWAYS populated
+        for chat.completion sessions because the model handle has it).
+    """
     from octomil.runtime.native import (
         OCT_EVENT_ERROR,
         OCT_EVENT_NONE,
@@ -115,79 +160,125 @@ def test_chat_completion_event_sequence_against_real_gguf():
         pytest.skip("OCTOMIL_LLAMA_CPP_GGUF unset or missing")
 
     with NativeRuntime.open() as rt:
-        caps = rt.capabilities()
-        if CHAT_COMPLETION not in caps.supported_capabilities:
-            pytest.skip("runtime does not advertise chat.completion " "(GGUF magic-byte check failed?)")
+        # v0.1.1 lifecycle: open + warm before session_open.
+        mdl = rt.open_model(model_uri=gguf)
+        try:
+            mdl.warm()
+            sess = rt.open_session(
+                capability=CHAT_COMPLETION,
+                locality="on_device",
+                policy_preset="private",
+                request_id="conf-req-001",
+                route_id="conf-route-001",
+                trace_id="0123456789abcdef0123456789abcdef",
+                model=mdl,
+            )
+            try:
 
+                def assert_envelope(ev):
+                    """Pin envelope echoed verbatim on every event."""
+                    assert ev.request_id == "conf-req-001"
+                    assert ev.route_id == "conf-route-001"
+                    assert ev.trace_id == "0123456789abcdef0123456789abcdef"
+                    assert ev.engine_version.startswith("llama_cpp@")
+                    # v0.1.1: artifact_digest always populated as
+                    # "sha256:<64-hex>" on chat.completion sessions.
+                    assert ev.artifact_digest.startswith("sha256:"), (
+                        f"artifact_digest must be 'sha256:<hex>', got " f"{ev.artifact_digest!r}"
+                    )
+                    assert len(ev.artifact_digest) == 7 + 64
+
+                # Single overall deadline for the whole sequence —
+                # SESSION_STARTED + send_text + chunks +
+                # SESSION_COMPLETED. 60s easily covers a small-GGUF
+                # cold-load + first-token latency on CPU; the
+                # @pytest.mark.timeout(90) override gives a 30s
+                # margin over this internal deadline so the test
+                # reports its own AssertionError before pytest's
+                # repo-wide 60s watchdog fires.
+                import time
+
+                overall_deadline = time.monotonic() + 60.0
+
+                # SESSION_STARTED — first event after open.
+                ev = _wait_event(sess, overall_deadline)
+                assert ev.type == OCT_EVENT_SESSION_STARTED, f"first event must be SESSION_STARTED, got type={ev.type}"
+                assert_envelope(ev)
+
+                # send_text in the canonical chat-messages JSON shape.
+                sess.send_text('[{"role":"user","content":"hi"}]')
+
+                n_chunks = 0
+                saw_completed = False
+                while time.monotonic() < overall_deadline:
+                    ev = sess.poll_event(timeout_ms=200)
+                    if ev is None or ev.type == OCT_EVENT_NONE:
+                        # Drained timeout on this poll cycle. Slow
+                        # first-token / cold cache paths land here;
+                        # the overall deadline is the real budget.
+                        continue
+                    if ev.type == OCT_EVENT_TRANSCRIPT_CHUNK:
+                        n_chunks += 1
+                        assert_envelope(ev)
+                    elif ev.type == OCT_EVENT_SESSION_COMPLETED:
+                        saw_completed = True
+                        assert_envelope(ev)
+                        break
+                    elif ev.type == OCT_EVENT_ERROR:
+                        pytest.fail(
+                            f"unexpected ERROR event "
+                            f"(monotonic_ns={ev.monotonic_ns}); "
+                            f"see runtime last_error for details"
+                        )
+                    else:
+                        pytest.fail(f"unexpected event type {ev.type} in " f"chat.completion sequence")
+                assert n_chunks >= 1, "no transcript chunks produced before overall deadline"
+                assert saw_completed, "no SESSION_COMPLETED before overall deadline"
+            finally:
+                sess.close()
+        finally:
+            # Close model AFTER the session — order matters in v0.1.1
+            # (model_close returns BUSY if any session still borrows).
+            close_status = mdl.close()
+            from octomil.runtime.native import OCT_STATUS_OK
+
+            assert close_status == OCT_STATUS_OK, f"model.close after session.close should be OK, got {close_status}"
+
+
+@pytest.mark.requires_runtime
+def test_chat_completion_model_close_returns_busy_when_session_live():
+    """v0.1.1: oct_model_close returns OCT_STATUS_BUSY when any
+    session still borrows the model. The handle remains valid;
+    the binding closes its sessions and retries close. Skipped
+    without a staged GGUF (need a real warmed model)."""
+    from octomil.runtime.native import (
+        OCT_STATUS_BUSY,
+        OCT_STATUS_OK,
+        NativeRuntime,
+    )
+
+    gguf = os.environ.get("OCTOMIL_LLAMA_CPP_GGUF", "")
+    if not gguf or not os.path.isfile(gguf):
+        pytest.skip("OCTOMIL_LLAMA_CPP_GGUF unset or missing")
+
+    with NativeRuntime.open() as rt:
+        mdl = rt.open_model(model_uri=gguf)
+        mdl.warm()
         sess = rt.open_session(
             capability=CHAT_COMPLETION,
             locality="on_device",
             policy_preset="private",
-            request_id="conf-req-001",
-            route_id="conf-route-001",
-            trace_id="0123456789abcdef0123456789abcdef",
+            model=mdl,
         )
         try:
-
-            def assert_envelope(ev):
-                """Pin envelope echoed verbatim on every event."""
-                assert ev.request_id == "conf-req-001"
-                assert ev.route_id == "conf-route-001"
-                assert ev.trace_id == "0123456789abcdef0123456789abcdef"
-                assert ev.engine_version.startswith("llama_cpp@")
-
-            # Single overall deadline for the whole sequence —
-            # SESSION_STARTED + send_text + chunks + SESSION_COMPLETED.
-            # 60s easily covers a small-GGUF cold-load + first-token
-            # latency on CPU; the @pytest.mark.timeout(90) override
-            # gives a 30s margin over this internal deadline so the
-            # test reports its own AssertionError before pytest's
-            # repo-wide 60s watchdog fires.
-            import time
-
-            overall_deadline = time.monotonic() + 60.0
-
-            # SESSION_STARTED — first event after open.
-            ev = _wait_event(sess, overall_deadline)
-            assert ev.type == OCT_EVENT_SESSION_STARTED, f"first event must be SESSION_STARTED, got type={ev.type}"
-            assert_envelope(ev)
-
-            # send_text in the canonical chat-messages JSON shape.
-            sess.send_text('[{"role":"user","content":"hi"}]')
-
-            n_chunks = 0
-            saw_completed = False
-            while time.monotonic() < overall_deadline:
-                ev = sess.poll_event(timeout_ms=200)
-                if ev is None or ev.type == OCT_EVENT_NONE:
-                    # Drained timeout on this poll cycle. Slow
-                    # first-token / cold cache paths land here;
-                    # the overall deadline is the real budget.
-                    continue
-                if ev.type == OCT_EVENT_TRANSCRIPT_CHUNK:
-                    n_chunks += 1
-                    assert_envelope(ev)
-                elif ev.type == OCT_EVENT_SESSION_COMPLETED:
-                    saw_completed = True
-                    assert_envelope(ev)
-                    break
-                elif ev.type == OCT_EVENT_ERROR:
-                    # The current Python wrapper doesn't surface
-                    # the inner error payload; failing with the
-                    # event's monotonic_ns is enough for diagnostic
-                    # context. The runtime-side test pins the
-                    # error_code mapping precisely.
-                    pytest.fail(
-                        f"unexpected ERROR event "
-                        f"(monotonic_ns={ev.monotonic_ns}); "
-                        f"see runtime last_error for details"
-                    )
-                else:
-                    pytest.fail(f"unexpected event type {ev.type} in " f"chat.completion sequence")
-            assert n_chunks >= 1, "no transcript chunks produced before overall deadline"
-            assert saw_completed, "no SESSION_COMPLETED before overall deadline"
+            # Close MUST return BUSY — session is still borrowing.
+            assert mdl.close() == OCT_STATUS_BUSY, "model.close while session live should return BUSY"
+            # evict has the same contract.
+            assert mdl.evict() == OCT_STATUS_BUSY, "model.evict while session live should return BUSY"
         finally:
             sess.close()
+        # After session close, model.close returns OK.
+        assert mdl.close() == OCT_STATUS_OK, "model.close after session drain should return OK"
 
 
 def _wait_event(sess, overall_deadline: float):

@@ -123,16 +123,13 @@ def test_abi_version_returns_three_tuple():
     assert isinstance(major, int)
     assert isinstance(minor, int)
     assert isinstance(patch, int)
-    # ABI v0.4 step 2: header bumped to MINOR=5 (additive — added
-    # operational envelope on oct_event_t (APPENDED after union);
-    # error_code field on OCT_EVENT_ERROR (APPENDED inside inner
-    # struct); 10 runtime-scope event types (MODEL_LOADED/EVICTED,
-    # CACHE_HIT/MISS, QUEUED, PREEMPTED, MEMORY_PRESSURE,
-    # THERMAL_STATE, WATCHDOG_TIMEOUT, METRIC); session_config v=2
-    # with appended request_id/route_id/trace_id/kv_prefix_key.
-    # Existing readers stay 0.3/0.4-step-1-compat via versioned-
-    # output size handshake.
-    assert (major, minor) == (0, 5)
+    # v0.1.1: ABI MINOR bumped 5→6. Real oct_model_open/_warm/
+    # _evict/_close lifecycle for llama.cpp; oct_session_config_t
+    # v=3 with appended `oct_model_t* model` (chat.completion
+    # REQUIRES non-NULL config.model); oct_model_close return
+    # changes void→oct_status_t; oct_runtime_close refuses with
+    # last_error when models are still open.
+    assert (major, minor) == (0, 6)
     assert patch == 0
 
 
@@ -266,26 +263,30 @@ def test_capabilities_after_close_raises():
 # ---------------------------------------------------------------------------
 
 
-def test_capabilities_returns_empty_known_set_against_stub():
-    """The slice-2 stub advertises NO capabilities. The harness MUST
-    see an empty `supported_capabilities` tuple (forward-compat
-    parsing — unknown advertised strings drop from the parsed view,
-    but the stub doesn't advertise anything)."""
+def test_capabilities_returns_known_set_against_v011_runtime():
+    """v0.1.1: capability honesty is structural. With the engine
+    linked at build time and the platform supported, chat.completion
+    is advertised even without a model warmed. Version field
+    round-trips. The forward-compat parser still drops any unknown
+    advertised strings, so .supported_capabilities is bounded to the
+    canonical RUNTIME_CAPABILITIES set."""
     from octomil.runtime.native import NativeRuntime
 
     with NativeRuntime.open() as rt:
         caps = rt.capabilities()
-        assert caps.supported_capabilities == ()
-        assert caps.supported_engines == ()
-        assert caps.supported_archs == ()
+        # chat.completion is the only advertised capability for
+        # the v0.1.1 dev build; future engines append.
+        assert "chat.completion" in caps.supported_capabilities
+        assert "llama_cpp" in caps.supported_engines
         # Version field round-trips.
         assert caps.version == 1
 
 
-def test_capabilities_claims_check_returns_false_for_canonical_names():
-    """`requires_capability(CAPABILITY_AUDIO_REALTIME_SESSION)` is
-    the slice-3 PR2 marker pattern. Against the stub, every check
-    must return False — no native capabilities yet."""
+def test_capabilities_claims_chat_completion_against_v011_runtime():
+    """`requires_capability(CAPABILITY_CHAT_COMPLETION)` is the
+    slice-3 PR2 marker pattern. v0.1.1 advertises chat.completion
+    structurally; non-llama capabilities still return False until
+    their engines ship."""
     from octomil.runtime.native import (
         CAPABILITY_AUDIO_REALTIME_SESSION,
         CAPABILITY_AUDIO_TTS_STREAM,
@@ -295,9 +296,10 @@ def test_capabilities_claims_check_returns_false_for_canonical_names():
 
     with NativeRuntime.open() as rt:
         caps = rt.capabilities()
+        assert caps.claims(CAPABILITY_CHAT_COMPLETION)
+        # Engines that haven't shipped yet are still negative.
         assert not caps.claims(CAPABILITY_AUDIO_REALTIME_SESSION)
         assert not caps.claims(CAPABILITY_AUDIO_TTS_STREAM)
-        assert not caps.claims(CAPABILITY_CHAT_COMPLETION)
 
 
 # ---------------------------------------------------------------------------
@@ -857,17 +859,21 @@ def test_oct_model_config_t_size_matches_runtime():
     ), f"oct_model_config_t struct-layout drift: cffi cdef sizeof={cffi_size}, C compiler sizeof={runtime_size}."
 
 
-def test_open_model_against_stub_returns_unsupported():
-    """v0.4 step 1: every model entry point returns UNSUPPORTED on
-    the stub. NativeRuntime.open_model raises NativeRuntimeError."""
-    from octomil.runtime.native import OCT_STATUS_UNSUPPORTED, NativeRuntime, NativeRuntimeError
+def test_open_model_rejects_missing_path_with_not_found():
+    """v0.1.1: oct_model_open is no longer a stub. A non-existent
+    model file maps to OCT_STATUS_NOT_FOUND with a precise diagnostic
+    in last_error."""
+    from octomil.runtime.native import (
+        OCT_STATUS_NOT_FOUND,
+        NativeRuntime,
+        NativeRuntimeError,
+    )
 
     with NativeRuntime.open() as rt:
         with pytest.raises(NativeRuntimeError) as exc_info:
-            rt.open_model(model_uri="local:///tmp/does-not-exist")
-        assert exc_info.value.status == OCT_STATUS_UNSUPPORTED
-        assert "model_open" in exc_info.value.last_error.lower()
-        assert "v0.4 step 1" in exc_info.value.last_error.lower()
+            rt.open_model(model_uri="/tmp/octomil-v011-no-such-file.gguf")
+        assert exc_info.value.status == OCT_STATUS_NOT_FOUND
+        assert "not found" in exc_info.value.last_error.lower()
 
 
 def test_open_model_after_runtime_close_raises():
@@ -1085,11 +1091,13 @@ def test_oct_session_config_t_v0_4_appended_fields_present():
     assert cffi_size == runtime_size
 
 
-def test_session_config_version_bumped_to_2():
-    """v0.4 step 2 bumps session_config version 1 → 2."""
+def test_session_config_version_bumped_to_3():
+    """v0.1.1 bumps session_config version 2 → 3 (appended
+    `oct_model_t* model`). chat.completion REQUIRES non-NULL model
+    on v=3 sessions; runtime returns INVALID_INPUT otherwise."""
     from octomil.runtime.native.loader import OCT_SESSION_CONFIG_VERSION
 
-    assert OCT_SESSION_CONFIG_VERSION == 2
+    assert OCT_SESSION_CONFIG_VERSION == 3
 
 
 def test_event_version_bumped_to_2():

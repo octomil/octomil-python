@@ -117,11 +117,14 @@ OCT_EVENT_METRIC: int = 19
 OCT_SAMPLE_FORMAT_PCM_S16LE: int = 1
 OCT_SAMPLE_FORMAT_PCM_F32LE: int = 2
 
-# v0.4 step 2 — bumped lockstep with runtime.h.
-OCT_SESSION_CONFIG_VERSION: int = 2
+# v0.1.1 — bumped lockstep with runtime.h. session_config v=3 adds
+# the appended `oct_model_t* model` field; chat.completion sessions
+# REQUIRE non-NULL config.model on v=3 (runtime returns INVALID_INPUT
+# otherwise — bindings MUST upgrade or stay on non-chat capabilities).
+OCT_SESSION_CONFIG_VERSION: int = 3
 OCT_EVENT_VERSION: int = 2
 
-# v0.4 step 1 — model lifecycle.
+# v0.4 step 1 — model lifecycle config struct (unchanged in v0.1.1).
 OCT_MODEL_CONFIG_VERSION: int = 1
 
 OCT_ACCEL_AUTO: int = 0
@@ -361,6 +364,9 @@ typedef uint32_t oct_error_code_t;  /* v0.4 step 2 — used inside oct_event_t.d
 
 typedef struct oct_runtime oct_runtime_t;
 typedef struct oct_session oct_session_t;
+/* v0.1.1: forward-decl so oct_session_config_t.model can name the
+ * type. Full struct is opaque to bindings; the runtime owns layout. */
+typedef struct oct_model   oct_model_t;
 
 typedef struct {
     uint32_t      version;
@@ -533,6 +539,13 @@ typedef struct {
     const char*    route_id;
     const char*    trace_id;
     const char*    kv_prefix_key;
+    /* v0.1.1 (session_config v=3) — pre-warmed model handle from
+     * oct_model_open + oct_model_warm. chat.completion REQUIRES
+     * non-NULL model on v=3; runtime returns INVALID_INPUT
+     * otherwise. Other capabilities still resolve via model_uri.
+     * Caller retains ownership; the binding MUST keep the model
+     * alive until the session has been closed. */
+    oct_model_t*   model;
 } oct_session_config_t;
 
 typedef struct {
@@ -603,12 +616,10 @@ size_t oct_session_config_size(void);
 size_t oct_audio_view_size(void);
 size_t oct_event_size(void);
 
-/* v0.4 step 1 — model lifecycle. Stubs return OCT_STATUS_UNSUPPORTED.
- * Engine adapters (Slice 2C and following) replace these. */
-typedef struct oct_model oct_model_t;
+/* v0.1.1 — model lifecycle (oct_model_t forward-declared earlier).
+ * Real implementation; no longer stubs. Engine adapters
+ * (Slice 2C and following) extend the engine_hint matrix. */
 typedef uint32_t oct_accelerator_pref_t;
-/* oct_error_code_t typedef moved to top of cdef in v0.4 step 2 (must
- * appear before oct_event_t inner struct uses it). */
 
 typedef struct {
     uint32_t              version;
@@ -628,7 +639,11 @@ oct_status_t oct_model_open(
 );
 oct_status_t oct_model_warm(oct_model_t* model);
 oct_status_t oct_model_evict(oct_model_t* model);
-void         oct_model_close(oct_model_t* model);
+/* v0.1.1: return type changed void→oct_status_t. Returns BUSY when
+ * sessions still borrow the model (handle remains valid; binding
+ * retries after closing sessions); INVALID_INPUT on NULL or already-
+ * closed handle; OK on successful free. */
+oct_status_t oct_model_close(oct_model_t* model);
 size_t       oct_model_config_size(void);
 """
 
@@ -639,7 +654,7 @@ size_t       oct_model_config_size(void);
 # rather than a typed compatibility error. Codex R1 fix: fail fast
 # at load time with NativeRuntimeError(VERSION_MISMATCH).
 _REQUIRED_ABI_MAJOR: int = 0
-_REQUIRED_ABI_MINOR: int = 5
+_REQUIRED_ABI_MINOR: int = 6  # v0.1.1: real oct_model lifecycle + session_config v=3
 
 
 def _build_lib() -> tuple[Any, Any]:
@@ -812,26 +827,38 @@ class NativeRuntime:
     def close(self) -> None:
         """Close the handle. Idempotent.
 
-        Codex R1 blocker: per `runtime.h`, live sessions are
-        CANCELLED and closed implicitly by `oct_runtime_close`. We
-        tell every Python wrapper "the C handle behind you is gone"
-        BEFORE the dylib closes the runtime, so any later call on
-        a stale `NativeSession` raises NativeRuntimeError instead of
-        dereferencing freed memory."""
+        v0.1.1: oct_runtime_close REFUSES (with last_error) when any
+        model is still open. The binding therefore MUST drain
+        sessions (decrement model.in_use) and close models BEFORE
+        runtime_close. We do this in three ordered passes:
+
+          1. oct_session_close every live session — drops the
+             borrowed model refcount.
+          2. oct_model_close every live model — frees engine state.
+             A model that returns BUSY despite the session drain
+             above is a binding bug; we surface it via last_error
+             and continue (the runtime_close will refuse).
+          3. oct_runtime_close — frees the runtime allocation IFF
+             open_models is now empty.
+
+        Slice-2A invalidation pattern preserved: every wrapper is
+        marked invalid AFTER the C close call so any racing user
+        code raises NativeRuntimeError instead of dereferencing
+        freed memory.
+        """
         if self._closed:
             return
-        # Snapshot first; closing each wrapper removes itself from
-        # the WeakSet which would mutate during iteration.
+        # 1. Close sessions first — drops their model in_use ref.
         for sess in list(self._sessions):
+            try:
+                sess.close()
+            except Exception:  # noqa: BLE001 — best-effort drain
+                pass
             sess._invalidate_after_runtime_close()  # noqa: SLF001
         self._sessions.clear()
-        # v0.4 step 1: explicit model close BEFORE invalidation. Codex
-        # R2 fix: oct_runtime_close documents implicit model cleanup
-        # (defense at C ABI), but we also close handles binding-side
-        # so engine adapters with expensive resources (mmap'd weights,
-        # KV buffers, accelerator contexts) get the explicit close
-        # path. Order matters: close (real C call) first, THEN
-        # invalidate the wrapper so subsequent operations raise.
+        # 2. Close models. Status is observed best-effort: BUSY
+        # means a session somehow survived the drain above (binding
+        # bug); the runtime_close below will refuse.
         for mdl in list(self._models):
             try:
                 mdl.close()
@@ -839,6 +866,11 @@ class NativeRuntime:
                 pass
             mdl._invalidate_after_runtime_close()  # noqa: SLF001
         self._models.clear()
+        # 3. Close runtime. v0.1.1 docstring: void return preserved;
+        # the runtime sets last_error if it refused (open_models
+        # non-empty). The wrapper marks itself closed regardless —
+        # if the C side leaked, the binding's last_error is the
+        # diagnostic, not a hung wrapper.
         self._lib.oct_runtime_close(self._handle)
         self._closed = True
 
@@ -946,6 +978,10 @@ class NativeRuntime:
         route_id: str | None = None,
         trace_id: str | None = None,
         kv_prefix_key: str | None = None,
+        # v0.1.1 — pre-warmed model handle. chat.completion REQUIRES
+        # non-NULL model on a v=3 session_config. Other capabilities
+        # may pass model=None and resolve via model_uri (slice-2A).
+        model: "NativeModel | None" = None,
     ) -> "NativeSession":
         """Open a session against this runtime.
 
@@ -1006,6 +1042,19 @@ class NativeRuntime:
         cfg.route_id = _cstr(route_id) if route_id else ffi.NULL
         cfg.trace_id = _cstr(trace_id) if trace_id else ffi.NULL
         cfg.kv_prefix_key = _cstr(kv_prefix_key) if kv_prefix_key else ffi.NULL
+        # v0.1.1 — wire the warmed model handle. The model's lifetime
+        # MUST extend past oct_session_close; we register the session
+        # → model edge below so NativeRuntime.close() can invalidate
+        # the session before the model goes away.
+        if model is not None:
+            if model._closed or model._handle_invalid:
+                raise NativeRuntimeError(
+                    OCT_STATUS_INVALID_INPUT,
+                    "open_session: model handle is closed or invalidated",
+                )
+            cfg.model = model._handle
+        else:
+            cfg.model = ffi.NULL
         out = ffi.new("oct_session_t**")
         status = int(lib.oct_session_open(self._handle, cfg, out))
         if status != OCT_STATUS_OK:
@@ -1539,14 +1588,45 @@ class NativeModel:
             )
         return status
 
-    def close(self) -> None:
-        """Close the model. Idempotent. No-op if parent runtime
-        already closed (mirrors NativeSession's invalidation pattern)."""
+    def close(self) -> int:
+        """Close the model. v0.1.1: status-bearing.
+
+        Returns the raw ``oct_status_t`` so the binding can observe
+        ``OCT_STATUS_BUSY`` when sessions still borrow the handle.
+        On BUSY: the model is NOT freed; the binding closes its
+        sessions and retries. On OK: handle freed; this wrapper marks
+        itself closed.
+
+        Idempotent on the wrapper side: a second call after OK or
+        after a parent runtime close returns ``OCT_STATUS_OK``
+        without re-entering the dylib. Slice-2A invalidation pattern
+        preserved (parent runtime close pre-invalidates).
+
+        Mirrors :meth:`evict`'s status-return shape so cleanup
+        contexts can call ``model.close()`` without try/except —
+        BUSY is recoverable, not exceptional.
+        """
         if self._closed:
-            return
-        if not self._handle_invalid:
-            self._lib.oct_model_close(self._handle)
-        self._closed = True
+            return OCT_STATUS_OK
+        if self._handle_invalid:
+            self._closed = True
+            return OCT_STATUS_OK
+        status = int(self._lib.oct_model_close(self._handle))
+        if status == OCT_STATUS_OK:
+            self._closed = True
+            return status
+        if status == OCT_STATUS_BUSY:
+            # Handle is still alive on the runtime side. Do NOT mark
+            # _closed; the binding can retry after closing sessions.
+            return status
+        # Anything else (INVALID_INPUT, INTERNAL) — surface as a
+        # typed error. The handle's runtime-side state is ambiguous
+        # but our wrapper stays unmarked so the binding can decide.
+        raise NativeRuntimeError(
+            status,
+            "oct_model_close failed",
+            last_error=self._owner.last_error(),
+        )
 
     def _invalidate_after_runtime_close(self) -> None:
         self._handle_invalid = True
