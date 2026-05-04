@@ -435,10 +435,19 @@ class TestResponses3StepResolution:
         assert runtime is stub
 
     def test_raises_when_no_runtime(self) -> None:
-        from octomil.responses.responses import OctomilResponses
+        from octomil.responses.responses import (
+            NoRuntimeAvailableError,
+            OctomilResponses,
+        )
 
         responses = OctomilResponses()
-        with pytest.raises(RuntimeError, match="No ModelRuntime"):
+        # The error type was upgraded to ``NoRuntimeAvailableError`` (a
+        # ``RuntimeError`` subclass) so existing ``except RuntimeError``
+        # blocks still catch it. The new message replaces the bare
+        # ``"No ModelRuntime registered"`` string with a structured,
+        # actionable diagnostic — see ``test_responses_api.py`` for the
+        # full message-shape regression tests.
+        with pytest.raises(NoRuntimeAvailableError, match="No runtime available"):
             responses._resolve_runtime("nonexistent")
 
     def test_catalog_takes_priority_over_custom(self) -> None:

@@ -150,7 +150,7 @@ async def test_no_runtime_error_for_app_alias_is_actionable():
     both branches and the concrete fix for each.
 
     Regression for the ``@app/test-model/chat`` failure mode in a fresh
-    venv with no ``[mlx]``/``[litert]``/``[onnxruntime]`` extra.
+    venv with no ``[mlx]``/``[onnx]``/``[llama]`` extra installed.
     """
     from octomil.responses import NoRuntimeAvailableError
 
@@ -165,13 +165,20 @@ async def test_no_runtime_error_for_app_alias_is_actionable():
     assert err.model_id == "@app/test-model/chat"
     msg = str(err)
     # Names every install path plus the cloud-auth path so the user
-    # doesn't have to guess which branch they're in.
+    # doesn't have to guess which branch they're in. Extra names MUST
+    # match the keys in ``pyproject.toml [project.optional-dependencies]``.
     assert "octomil[mlx]" in msg
-    assert "octomil[litert]" in msg
-    assert "octomil[onnxruntime]" in msg
+    assert "octomil[onnx]" in msg
+    assert "octomil[llama]" in msg
     assert "OCTOMIL_SERVER_KEY" in msg
     # Echoes the slug so the user can find the app in the dashboard.
     assert "test-model" in msg
+    # Sanity: the message MUST NOT mention extras that don't exist in
+    # this repo (Codex caught ``litert``/``onnxruntime``/``llamacpp``
+    # in R1 — those are different ecosystems).
+    assert "litert" not in msg
+    assert "onnxruntime" not in msg
+    assert "llamacpp" not in msg
 
 
 @pytest.mark.asyncio
@@ -193,6 +200,11 @@ async def test_no_runtime_error_for_raw_model_id_does_not_claim_alias():
     msg = str(err)
     assert "octomil[mlx]" in msg
     assert "OCTOMIL_SERVER_KEY" in msg
+    # The "Verify the alias exists" line is alias-only — raw model ids
+    # MUST NOT see it (Codex R1 caught the original PR shipping it
+    # unconditionally).
+    assert "Verify the alias exists" not in msg
+    assert "/dashboard/apps and confirm" not in msg
 
 
 @pytest.mark.asyncio

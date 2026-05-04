@@ -161,17 +161,21 @@ class NoRuntimeAvailableError(RuntimeError):
             ]
         lines += [
             "Likely fixes:",
-            "  • Install a local engine extra:",
-            "      pip install 'octomil[mlx]'         # macOS Apple Silicon (Gemma, Llama, etc.)",
-            "      pip install 'octomil[litert]'      # Linux/Android via TFLite",
-            "      pip install 'octomil[onnxruntime]' # cross-platform via ONNX Runtime",
-            "      pip install 'octomil[llamacpp]'    # cross-platform GGUF",
+            "  • Install a local engine extra (names match pyproject.toml):",
+            "      pip install 'octomil[mlx]'     # macOS Apple Silicon (mlx-lm)",
+            "      pip install 'octomil[onnx]'    # cross-platform via ONNX Runtime",
+            "      pip install 'octomil[llama]'   # cross-platform GGUF (llama-cpp-python)",
+            "      pip install 'octomil[whisper]' # speech-to-text",
+            "      pip install 'octomil[tts]'     # speech synthesis (sherpa-onnx)",
             "  • Verify cloud auth: OCTOMIL_SERVER_KEY (oct_app_live_… or oct_org_live_…) is set",
             "    and your org has at least one cloud provider connection configured at",
             "    /dashboard/settings/providers.",
-            f"  • Verify the alias exists: open /dashboard/apps and confirm '{self._slug_or_id()}'",
-            "    has at least one capability slot.",
         ]
+        if self.is_alias:
+            lines += [
+                f"  • Verify the alias exists: open /dashboard/apps and confirm '{self._slug_or_id()}'",
+                "    has at least one capability slot.",
+            ]
         return "\n".join(lines)
 
     def _slug_or_id(self) -> str:
