@@ -48,6 +48,28 @@ serve = [
 mlx = [
   "mlx-lm>=0.10.0",
 ]
+# Slice 2B viability probe — Moshi/MLX realtime evaluation. Pulls
+# the Apple-Silicon-only `moshi-mlx` package + its `mlx` dep. NOT a
+# production extra; never imported from `octomil/` proper. See
+# `probes/moshi_mlx/README.md` for usage. Marker keeps the resolver
+# from attempting the install on non-arm64-mac hosts.
+moshi-probe = [
+  # moshi-mlx requires Python 3.10+; mlx 0.24.x ships wheels for
+  # CPython 3.10–3.13 only (no 3.14 wheel as of authoring). Marker
+  # caps below 3.14 explicitly so a 3.14 operator gets a clear
+  # resolver error instead of a confusing post-install crash.
+  # Codex R6 missed-case fix.
+  'moshi-mlx==0.2.6 ; sys_platform == "darwin" and platform_machine == "arm64" and python_version >= "3.10" and python_version < "3.14"',
+  'mlx>=0.24,<0.25 ; sys_platform == "darwin" and platform_machine == "arm64" and python_version >= "3.10" and python_version < "3.14"',
+  'huggingface-hub>=0.24 ; sys_platform == "darwin" and platform_machine == "arm64" and python_version >= "3.10" and python_version < "3.14"',
+  # tomllib lands in stdlib at 3.11; declare tomli for the 3.10 case.
+  'tomli ; sys_platform == "darwin" and platform_machine == "arm64" and python_version == "3.10"',
+  # Explicit transitive deps so upstream pruning surfaces at install
+  # time instead of probe-runtime ImportError.
+  'rustymimi ; sys_platform == "darwin" and platform_machine == "arm64" and python_version >= "3.10" and python_version < "3.14"',
+  'sentencepiece ; sys_platform == "darwin" and platform_machine == "arm64" and python_version >= "3.10" and python_version < "3.14"',
+  'numpy ; sys_platform == "darwin" and platform_machine == "arm64" and python_version >= "3.10" and python_version < "3.14"',
+]
 llama = [
   "llama-cpp-python>=0.2.0",
 ]
