@@ -1526,6 +1526,13 @@ class NativeSession:
         if not self._handle_invalid:
             self._lib.oct_session_close(self._handle)
         self._closed = True
+        # Codex R2 nit: drop the strong ref to the borrowed model so
+        # the model wrapper can be reaped now (rather than waiting
+        # for NativeRuntime.close() or wrapper GC). The C-side in_use
+        # decrement happened inside oct_session_close above; releasing
+        # the Python ref releases the wrapper for the WeakSet to
+        # observe. Tighter "session lifetime" for resource hygiene.
+        self._borrowed_model = None
 
     def _invalidate_after_runtime_close(self) -> None:
         """Marker called by NativeRuntime.close() before the dylib
@@ -1534,6 +1541,9 @@ class NativeSession:
         dylib already freed the handle implicitly)."""
         self._handle_invalid = True
         self._closed = True
+        # Match the close()-path behavior so the borrowed-model ref
+        # doesn't keep the wrapper alive past the runtime cascade.
+        self._borrowed_model = None
 
     def __enter__(self) -> "NativeSession":
         return self
