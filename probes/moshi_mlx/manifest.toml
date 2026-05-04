@@ -165,6 +165,64 @@ abi_event = "OCT_EVENT_INPUT_DROPPED { n_frames_dropped, sample_rate=24000, chan
 delta_required = false
 
 # -----------------------------------------------------------------------
+# v0.4 step 2 ABI mapping — operational envelope + runtime-scope events
+# (PR octomil-python#521).
+# -----------------------------------------------------------------------
+
+[abi_mapping.operational_envelope]
+moshi_op = "Layer 2b stamps request_id/route_id/trace_id at oct_session_open; Slice 2C adapter echoes them on every emitted event"
+abi_event = "Every OCT_EVENT_* carries the v0.4 step 2 envelope: request_id, route_id, trace_id, engine_version='moshi-mlx@<ver>', adapter_version, accelerator='metal', artifact_digest=sha256(model.q4.safetensors), cache_was_hit"
+delta_required = false
+
+[abi_mapping.model_loaded]
+moshi_op = "Moshiko weight load + Mimi tokenizer load + lm.warmup(ct) completes; first KV slot ready"
+abi_event = "OCT_EVENT_MODEL_LOADED { engine='moshi-mlx@<ver>', model_id='kyutai/moshiko-mlx-q4', artifact_digest=<sha256>, load_ms, warm_ms, policy_preset, config_user_data, source ∈ {bench-cache-recommended, engine-hint, auto} }"
+delta_required = false
+
+[abi_mapping.model_evicted]
+moshi_op = "Operator-driven oct_model_evict() OR scheduler memory-pressure eviction (RAM headroom drops below threshold)"
+abi_event = "OCT_EVENT_MODEL_EVICTED { engine, model_id, artifact_digest, freed_bytes, reason ∈ {memory_pressure, ttl, manual}, config_user_data }"
+delta_required = false
+
+[abi_mapping.cache_hit_kv_prefix]
+moshi_op = "Moshi/MLX prefix-cache hit on system prompt + tool schemas (kv_prefix_key matches a previously-warmed prefix). Materially reduces TTFT."
+abi_event = "OCT_EVENT_CACHE_HIT { layer='kv-prefix', saved_tokens }"
+delta_required = false
+notes = "Slice 2C adapter wires this when MLX KV-prefix cache support lands. Fallback: emit CACHE_MISS with saved_tokens=0 on miss."
+
+[abi_mapping.queued_preempted]
+moshi_op = "Slice 3b daemon scheduler when multiple sessions compete; foreground supplants prefetch/speculative"
+abi_event = "OCT_EVENT_QUEUED { queue_position, queue_depth } and OCT_EVENT_PREEMPTED { preempted_by_priority, reason }"
+delta_required = false
+notes = "Slice 2C single-session adapter doesn't emit these; Slice 3b daemon scheduler does."
+
+[abi_mapping.memory_pressure]
+moshi_op = "macOS jetsam pressure / RAM headroom drops; Slice 2C samples via mach_host_statistics64 or sysctl vm.page_pageable_internal_count"
+abi_event = "OCT_EVENT_MEMORY_PRESSURE { ram_available_bytes, severity ∈ {0=warn, 1=critical} }"
+delta_required = false
+
+[abi_mapping.thermal_state]
+moshi_op = "macOS NSProcessInfo.thermalState polled by the runtime (or watchdog thread)"
+abi_event = "OCT_EVENT_THERMAL_STATE { state ∈ {0=nominal, 1=fair, 2=serious, 3=critical} }"
+delta_required = false
+
+[abi_mapping.watchdog_timeout]
+moshi_op = "Slice 2C watchdog: fires when load > 8s OR warmup > 1.5s OR first-audio > 1.2s OR session-step > 160ms"
+abi_event = "OCT_EVENT_WATCHDOG_TIMEOUT { timeout_ms, phase ∈ {load, warm, first_audio, session_step} }"
+delta_required = false
+
+[abi_mapping.metric]
+moshi_op = "Slice 2C emits the 15 canonical metrics (kv_prefix.cache_hit_rate, gpu.active_pct, gpu.power_w, mimi.frames_dropped_total, mimi.frames_encoded_total, model.load_ms, model.warm_ms, etc.) per the runtime_metric.json closed enum"
+abi_event = "OCT_EVENT_METRIC { name (closed enum), value (double) }"
+delta_required = false
+notes = "Free-form metric names FORBIDDEN by-construction. Slice 2C MUST draw names from runtime_metric.json (octomil-contracts#99)."
+
+[abi_mapping.error_code]
+moshi_op = "Slice 2C maps adapter-side failures to OCT_ERR_* taxonomy: weight load fail → OCT_ERR_MODEL_LOAD_FAILED; sha256 mismatch → OCT_ERR_ARTIFACT_DIGEST_MISMATCH; OOM → OCT_ERR_RAM_INSUFFICIENT; Metal context fail → OCT_ERR_ACCELERATOR_UNAVAILABLE; >8s load → OCT_ERR_TIMEOUT"
+abi_event = "OCT_EVENT_ERROR { code (free-form human str), message (free-form human str), error_code (oct_error_code_t — bounded enum for telemetry labels) }"
+delta_required = false
+
+# -----------------------------------------------------------------------
 # Fallback candidates — only consulted if probe goes RED.
 # -----------------------------------------------------------------------
 

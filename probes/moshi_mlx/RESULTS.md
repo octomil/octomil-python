@@ -127,7 +127,10 @@ stub-behavior tests today.
 
 ## Acceptance #6 — ABI sufficiency
 
-**Status: PASSED.** All 5 mapping rows declare `delta_required = false`:
+**Status: PASSED.** Mapping table grew from 5 rows (slice-2A) to 14
+rows (v0.4 step 2). All declare `delta_required = false`:
+
+### Slice 2A baseline (5 rows)
 
 | Mapping row              | Result                                                                                                  |
 | ------------------------ | ------------------------------------------------------------------------------------------------------- |
@@ -137,10 +140,31 @@ stub-behavior tests today.
 | `cancel`                 | atomic-flag-flip on next 80ms boundary maps to `oct_session_cancel` semantics                           |
 | `input_dropped`          | encoder backpressure maps to existing `input_dropped` payload                                           |
 
-**No ABI delta required.** The slice-2A header is sufficient for
-Slice 2C. If the dev-box run uncovers a gap (e.g., a new event type
-needed for Mimi-specific telemetry), the probe halts with
-`ABI_DELTA_REQUIRED` and the gap is debated before any code change.
+### ABI v0.4 step 2 additions (9 new rows)
+
+Per octomil-python#521 (merged), the production-debugging surface
+landed and Moshi/MLX has explicit fits documented in
+`event_mapping.md`:
+
+| Mapping row            | Result                                                                                                                                      |
+| ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| `operational_envelope` | request_id/route_id/trace_id/engine_version/adapter_version/accelerator/artifact_digest/cache_was_hit echoed on every event                 |
+| `model_loaded`         | engine + model_id + artifact_digest + load_ms + warm_ms + policy_preset + user_data + source ∈ {bench-cache-recommended, engine-hint, auto} |
+| `model_evicted`        | engine + model_id + freed_bytes + reason ∈ {memory_pressure, ttl, manual}                                                                   |
+| `cache_hit_kv_prefix`  | layer ∈ {kv-prefix, phoneme, voice, phrase, route} + saved_tokens                                                                           |
+| `queued_preempted`     | queue_position/queue_depth + preempted_by_priority/reason (Slice 3b daemon scheduler emits)                                                 |
+| `memory_pressure`      | ram_available_bytes + severity ∈ {warn, critical}                                                                                           |
+| `thermal_state`        | state ∈ {nominal, fair, serious, critical}                                                                                                  |
+| `watchdog_timeout`     | timeout_ms + phase ∈ {load, warm, first_audio, session_step}                                                                                |
+| `metric`               | name (closed runtime_metric.json enum) + value (double); free-form names FORBIDDEN by-construction                                          |
+| `error_code`           | OCT*ERR*\* taxonomy bound to OCT_EVENT_ERROR.error_code (slice-2A code+message strings stay for human context)                              |
+
+**No ABI delta required for Moshi.** The v0.4 step 2 header is
+sufficient for Slice 2C. The probe re-asserts no row flips on at
+startup. If a future Moshi-specific requirement forces an ABI delta
+(e.g., Moshika voice change mid-session needs a SPEAKER_CHANGED
+event), the slice halts with `ABI_DELTA_REQUIRED` and the gap is
+debated before any code change.
 
 ## Verdict (provisional)
 
