@@ -199,6 +199,75 @@ async def test_native_chat_backend_generate_stream_end_to_end():
             backend.close()
 
 
+@pytest.mark.asyncio
+async def test_native_chat_backend_streaming_uses_self_executor_for_session_calls():
+    """Cutover follow-up #72 (R1 Codex): NativeSession is single-
+    thread-affine per the loader contract. ``generate_stream`` must
+    dispatch ``send_chat`` / ``poll_event`` / ``close`` through
+    ``self._executor`` (max_workers=1) so they all run on the same
+    thread. Pre-fix this used ``run_in_executor(None, ...)`` which
+    dispatches successive calls to potentially-different default-
+    executor worker threads, violating the affinity contract and
+    causing intermittent session-state corruption.
+
+    No runtime required: stub a session whose calls record their
+    thread identity, bypass open_session via __dict__ override, and
+    confirm all three calls (send_chat, poll_event, close) run on
+    the same thread."""
+    from threading import get_ident
+
+    from octomil.runtime.native.chat_backend import NativeChatBackend
+    from octomil.runtime.native.loader import OCT_EVENT_SESSION_COMPLETED, OCT_STATUS_OK
+    from octomil.serve.types import GenerationRequest
+
+    class _FakeEvent:
+        type = OCT_EVENT_SESSION_COMPLETED  # terminate the loop
+        terminal_status = OCT_STATUS_OK
+        text = ""
+
+    threads: list[int] = []
+
+    class _FakeSession:
+        def send_chat(self, *_a: Any, **_k: Any) -> None:
+            threads.append(get_ident())
+
+        def poll_event(self, *_a: Any, **_k: Any) -> Any:
+            threads.append(get_ident())
+            return _FakeEvent()
+
+        def close(self) -> None:
+            threads.append(get_ident())
+
+    class _FakeRuntime:
+        def open_session(self, **_k: Any) -> Any:
+            return _FakeSession()
+
+        def last_error(self) -> str:
+            return ""
+
+    backend = NativeChatBackend()
+    backend._runtime = _FakeRuntime()  # type: ignore[assignment]
+    backend._model = object()  # type: ignore[assignment]
+
+    req = GenerationRequest(
+        model="x.gguf",
+        messages=[{"role": "user", "content": "hi"}],
+        max_tokens=8,
+        stream=True,
+    )
+
+    chunks: list[Any] = []
+    async for c in backend.generate_stream(req):
+        chunks.append(c)
+
+    # All session calls (send_chat, poll_event, close) must run on the
+    # same thread — that's the executor's single worker.
+    assert len(threads) >= 3, f"expected send_chat/poll_event/close to all run; got {len(threads)} calls"
+    assert all(t == threads[0] for t in threads), f"NativeSession thread affinity violated: threads={threads}"
+    # Final marker chunk produced.
+    assert chunks and chunks[-1].finish_reason == "stop"
+
+
 @pytest.mark.requires_runtime
 def test_native_chat_backend_reuses_cached_model_across_requests():
     """The cached ``NativeModel`` MUST be reused across requests on

@@ -526,7 +526,7 @@ class NativeChatBackend(InferenceBackend):
                 )
             try:
                 await loop.run_in_executor(
-                    None, lambda: sess.send_chat(clean_messages, max_tokens=int(request.max_tokens))
+                    self._executor, lambda: sess.send_chat(clean_messages, max_tokens=int(request.max_tokens))
                 )
             except NativeRuntimeError as exc:
                 raise _runtime_status_to_sdk_error(
@@ -544,7 +544,7 @@ class NativeChatBackend(InferenceBackend):
             error_message = ""
             deadline = time.monotonic() + 300.0
             while time.monotonic() < deadline:
-                ev = await loop.run_in_executor(None, lambda: sess.poll_event(timeout_ms=200))
+                ev = await loop.run_in_executor(self._executor, lambda: sess.poll_event(timeout_ms=200))
                 if ev is None or ev.type == OCT_EVENT_NONE:
                     continue
                 if ev.type == OCT_EVENT_SESSION_STARTED:
@@ -577,7 +577,21 @@ class NativeChatBackend(InferenceBackend):
             # Final marker chunk so callers can detect terminal cleanly.
             yield GenerationChunk(text="", finish_reason="stop")
         finally:
-            sess.close()
+            # Cutover follow-up #72 (R1 Codex): NativeSession is single-
+            # thread-affine per the loader contract. send_chat / poll_event
+            # ran on `self._executor` (max_workers=1, so all work serializes
+            # on one thread); close() MUST run on the same thread.
+            try:
+                await loop.run_in_executor(self._executor, sess.close)
+            except Exception:  # noqa: BLE001
+                # Generator-close paths can run after the loop has been
+                # shut down (e.g., test teardown). Fall back to a direct
+                # sync close — the session destructor will still cleanly
+                # tear down in that path.
+                try:
+                    sess.close()
+                except Exception:  # noqa: BLE001
+                    logger.warning("NativeChatBackend.generate_stream: session close failed", exc_info=True)
 
     def list_models(self) -> list[str]:
         """The v0.1.2 native runtime doesn't enumerate models; the
