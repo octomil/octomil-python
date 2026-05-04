@@ -250,13 +250,53 @@ class NativeChatBackend(InferenceBackend):
         attention_backend="native",
     )
 
-    def __init__(self, *, model_dir: str | None = None) -> None:
+    # Cutover follow-up #74: configurable per-request deadline.
+    # 5 minutes is the backend-wide default; overridable per
+    # construction (test/CI tuning) or per request via
+    # ``GenerationRequest.deadline_ms``.
+    DEFAULT_DEADLINE_MS: int = 300_000
+
+    def __init__(
+        self,
+        *,
+        model_dir: str | None = None,
+        default_deadline_ms: int | None = None,
+    ) -> None:
         super().__init__()
         self._model_dir: str | None = model_dir
         self._model_name: str = ""
         self._gguf_path: str = ""
         self._runtime: NativeRuntime | None = None
         self._model: Any | None = None  # NativeModel
+        # Cutover follow-up #74: instance default for the per-request
+        # deadline. Tests / CI inject a smaller value to exercise the
+        # timeout path without waiting 5 minutes.
+        self._default_deadline_ms: int = (
+            default_deadline_ms if default_deadline_ms is not None else self.DEFAULT_DEADLINE_MS
+        )
+
+    def _resolve_deadline_seconds(self, request: GenerationRequest) -> float:
+        """Cutover follow-up #74: per-request deadline resolution.
+        Order of precedence:
+          1. ``request.deadline_ms`` if set (explicit per-request).
+          2. ``self._default_deadline_ms`` (backend-instance default,
+             constructor-injectable).
+          3. ``DEFAULT_DEADLINE_MS`` (class-level fallback).
+        Returns seconds (because ``time.monotonic()`` works in seconds).
+        Negative / zero values raise INVALID_INPUT — a 0ms deadline
+        is a configuration error, not an instant timeout.
+        """
+        deadline_ms = request.deadline_ms if request.deadline_ms is not None else self._default_deadline_ms
+        if deadline_ms <= 0:
+            raise OctomilError(
+                code=OctomilErrorCode.INVALID_INPUT,
+                message=(
+                    f"deadline_ms must be > 0; got {deadline_ms}. Use "
+                    f"None to fall back to the backend's default "
+                    f"({self.DEFAULT_DEADLINE_MS}ms)."
+                ),
+            )
+        return deadline_ms / 1000.0
 
     # ------------------------------------------------------------------
     # GGUF resolution — mirrors LlamaCppBackend._resolve_local_gguf_file
@@ -349,6 +389,10 @@ class NativeChatBackend(InferenceBackend):
             )
         _gate_unsupported_request_features(request)
         clean_messages = _validate_messages_for_native(request.messages)
+        # Cutover follow-up #74: validate the deadline BEFORE opening
+        # a session so deadline_ms<=0 fails fast as INVALID_INPUT
+        # without burning a session/model handle.
+        deadline_seconds = self._resolve_deadline_seconds(request)
 
         try:
             sess = self._runtime.open_session(
@@ -417,10 +461,10 @@ class NativeChatBackend(InferenceBackend):
             sc_engine_first_chunk_ms = 0.0
             sc_queued_ms = 0.0
             sc_total_latency_ms = 0.0
-            # Hard wall on session lifetime so a runaway model can't
-            # block the request thread forever. 5 minutes is generous
-            # for any reasonable chat completion.
-            deadline = time.monotonic() + 300.0
+            # Cutover follow-up #74: deadline already validated +
+            # resolved before open_session above so a bad deadline_ms
+            # fails fast without burning a session/model handle.
+            deadline = time.monotonic() + deadline_seconds
             while time.monotonic() < deadline:
                 ev = sess.poll_event(timeout_ms=200)
                 if ev is None or ev.type == OCT_EVENT_NONE:
@@ -519,6 +563,9 @@ class NativeChatBackend(InferenceBackend):
         # is a transient condition.
         _gate_unsupported_request_features(request)
         clean_messages = _validate_messages_for_native(request.messages)
+        # Cutover follow-up #74: deadline-validate before opening
+        # a session (same as generate()).
+        deadline_seconds = self._resolve_deadline_seconds(request)
         if self._runtime is None or self._model is None:
             raise OctomilError(
                 code=OctomilErrorCode.RUNTIME_UNAVAILABLE,
@@ -569,7 +616,9 @@ class NativeChatBackend(InferenceBackend):
             terminal_status: int = OCT_STATUS_OK
             saw_error = False
             error_message = ""
-            deadline = time.monotonic() + 300.0
+            # Cutover follow-up #74: deadline already validated +
+            # resolved before open_session above.
+            deadline = time.monotonic() + deadline_seconds
             while time.monotonic() < deadline:
                 ev = await loop.run_in_executor(self._executor, lambda: sess.poll_event(timeout_ms=200))
                 if ev is None or ev.type == OCT_EVENT_NONE:

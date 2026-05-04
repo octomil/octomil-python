@@ -93,6 +93,15 @@ class GenerationRequest:
     grammar: Optional[str] = None
     json_mode: bool = False
     enable_thinking: Optional[bool] = None
+    # Cutover follow-up #74: configurable per-request deadline. When
+    # set, the backend MUST raise REQUEST_TIMEOUT if no
+    # SESSION_COMPLETED arrives within ``deadline_ms`` of send_chat.
+    # When None, backends apply their own default (NativeChatBackend
+    # uses ``default_deadline_ms`` from its constructor — currently
+    # 300_000 = 5 minutes). Pre-fix the deadline was hardcoded at
+    # 300_000ms inside ``generate``/``generate_stream``; high-traffic
+    # callers couldn't tune it down to fail fast on stuck requests.
+    deadline_ms: Optional[int] = None
 
 
 @dataclass

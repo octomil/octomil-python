@@ -467,6 +467,195 @@ def test_native_chat_backend_get_verbose_metadata_surfaces_telemetry():
     assert meta["ttfc_ms"] == 42.0
 
 
+def test_native_chat_backend_per_request_deadline_overrides_default():
+    """Cutover follow-up #74: ``GenerationRequest.deadline_ms`` is
+    honored over the backend-default deadline. Use a fake session
+    that emits NONE forever so the deadline must fire; pin the
+    bounded ``REQUEST_TIMEOUT`` is raised within the request's
+    deadline window (well below the 300_000ms backend default)."""
+    import time
+
+    from octomil.errors import OctomilError, OctomilErrorCode
+    from octomil.runtime.native.chat_backend import NativeChatBackend
+    from octomil.runtime.native.loader import OCT_EVENT_NONE
+    from octomil.serve.types import GenerationRequest
+
+    class _NoneEv:
+        type = OCT_EVENT_NONE
+        text = ""
+        terminal_status = 0
+
+    class _FakeSession:
+        def send_chat(self, *_a: Any, **_k: Any) -> None:
+            return None
+
+        def poll_event(self, *_a: Any, **_k: Any) -> Any:
+            return _NoneEv()
+
+        def close(self) -> None:
+            return None
+
+    class _FakeRuntime:
+        def open_session(self, **_k: Any) -> Any:
+            return _FakeSession()
+
+        def last_error(self) -> str:
+            return ""
+
+    backend = NativeChatBackend()
+    backend._runtime = _FakeRuntime()  # type: ignore[assignment]
+    backend._model = object()  # type: ignore[assignment]
+
+    req = GenerationRequest(
+        model="x.gguf",
+        messages=[{"role": "user", "content": "hi"}],
+        max_tokens=8,
+        deadline_ms=300,  # 300ms, not the 300_000ms default
+    )
+    t0 = time.monotonic()
+    with pytest.raises(OctomilError) as exc_info:
+        backend.generate(req)
+    elapsed = time.monotonic() - t0
+    assert exc_info.value.code == OctomilErrorCode.REQUEST_TIMEOUT
+    # Deadline of 300ms — allow some slack for the 200ms poll cadence
+    # plus thread/loop overhead. Must be well under the 300_000ms
+    # default; if the override didn't take effect we'd see ~300s.
+    assert elapsed < 5.0, f"deadline={req.deadline_ms}ms but generate ran for {elapsed:.2f}s"
+
+
+def test_native_chat_backend_constructor_default_deadline_overrides_class_default():
+    """Cutover follow-up #74: ``NativeChatBackend(default_deadline_ms=N)``
+    sets the instance-level fallback used when a request doesn't
+    specify ``deadline_ms``. Tests / CI inject a smaller value so the
+    timeout path runs without a 5-minute wait."""
+    import time
+
+    from octomil.errors import OctomilError, OctomilErrorCode
+    from octomil.runtime.native.chat_backend import NativeChatBackend
+    from octomil.runtime.native.loader import OCT_EVENT_NONE
+    from octomil.serve.types import GenerationRequest
+
+    class _NoneEv:
+        type = OCT_EVENT_NONE
+        text = ""
+        terminal_status = 0
+
+    class _FakeSession:
+        def send_chat(self, *_a: Any, **_k: Any) -> None:
+            return None
+
+        def poll_event(self, *_a: Any, **_k: Any) -> Any:
+            return _NoneEv()
+
+        def close(self) -> None:
+            return None
+
+    class _FakeRuntime:
+        def open_session(self, **_k: Any) -> Any:
+            return _FakeSession()
+
+        def last_error(self) -> str:
+            return ""
+
+    # No request deadline; constructor injects a 300ms instance default.
+    backend = NativeChatBackend(default_deadline_ms=300)
+    backend._runtime = _FakeRuntime()  # type: ignore[assignment]
+    backend._model = object()  # type: ignore[assignment]
+
+    req = GenerationRequest(
+        model="x.gguf",
+        messages=[{"role": "user", "content": "hi"}],
+        max_tokens=8,
+        # deadline_ms left None — should fall through to instance default.
+    )
+    t0 = time.monotonic()
+    with pytest.raises(OctomilError) as exc_info:
+        backend.generate(req)
+    elapsed = time.monotonic() - t0
+    assert exc_info.value.code == OctomilErrorCode.REQUEST_TIMEOUT
+    assert elapsed < 5.0, f"instance default deadline=300ms but generate ran for {elapsed:.2f}s"
+
+
+@pytest.mark.asyncio
+async def test_native_chat_backend_streaming_per_request_deadline_overrides_default():
+    """Cutover follow-up #74 R1 Codex: ``generate_stream()`` honors the
+    per-request deadline the same way ``generate()`` does. Pin both
+    paths on the same fast-fail behavior."""
+    import time
+
+    from octomil.errors import OctomilError, OctomilErrorCode
+    from octomil.runtime.native.chat_backend import NativeChatBackend
+    from octomil.runtime.native.loader import OCT_EVENT_NONE
+    from octomil.serve.types import GenerationRequest
+
+    class _NoneEv:
+        type = OCT_EVENT_NONE
+        text = ""
+        terminal_status = 0
+
+    class _FakeSession:
+        def send_chat(self, *_a: Any, **_k: Any) -> None:
+            return None
+
+        def poll_event(self, *_a: Any, **_k: Any) -> Any:
+            return _NoneEv()
+
+        def close(self) -> None:
+            return None
+
+    class _FakeRuntime:
+        def open_session(self, **_k: Any) -> Any:
+            return _FakeSession()
+
+        def last_error(self) -> str:
+            return ""
+
+    backend = NativeChatBackend()
+    backend._runtime = _FakeRuntime()  # type: ignore[assignment]
+    backend._model = object()  # type: ignore[assignment]
+
+    req = GenerationRequest(
+        model="x.gguf",
+        messages=[{"role": "user", "content": "hi"}],
+        max_tokens=8,
+        stream=True,
+        deadline_ms=300,
+    )
+    t0 = time.monotonic()
+    with pytest.raises(OctomilError) as exc_info:
+        async for _chunk in backend.generate_stream(req):
+            pass
+    elapsed = time.monotonic() - t0
+    assert exc_info.value.code == OctomilErrorCode.REQUEST_TIMEOUT
+    assert elapsed < 5.0, f"streaming deadline=300ms but generate_stream ran for {elapsed:.2f}s"
+
+
+def test_native_chat_backend_zero_deadline_raises_invalid_input():
+    """Cutover follow-up #74: deadline_ms <= 0 is a configuration
+    error, not an instant timeout. Raise INVALID_INPUT before opening
+    a session — it's caller misuse, distinguishable from a runaway
+    request."""
+    from octomil.errors import OctomilError, OctomilErrorCode
+    from octomil.runtime.native.chat_backend import NativeChatBackend
+    from octomil.serve.types import GenerationRequest
+
+    backend = NativeChatBackend()
+    backend._runtime = object()  # type: ignore[assignment]
+    backend._model = object()  # type: ignore[assignment]
+
+    for bad in (0, -1, -1000):
+        req = GenerationRequest(
+            model="x.gguf",
+            messages=[{"role": "user", "content": "hi"}],
+            max_tokens=8,
+            deadline_ms=bad,
+        )
+        with pytest.raises(OctomilError) as exc_info:
+            backend.generate(req)
+        assert exc_info.value.code == OctomilErrorCode.INVALID_INPUT
+        assert "deadline_ms" in str(exc_info.value)
+
+
 @pytest.mark.requires_runtime
 def test_native_chat_backend_reuses_cached_model_across_requests():
     """The cached ``NativeModel`` MUST be reused across requests on
