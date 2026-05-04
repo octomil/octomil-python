@@ -32,6 +32,9 @@ from ..types import GenerationChunk, GenerationRequest, InferenceBackend, Infere
 logger = logging.getLogger(__name__)
 
 
+from ..types import BackendCapabilities  # noqa: E402
+
+
 class LlamaCppBackend(InferenceBackend):
     """Cross-platform backend using llama-cpp-python.
 
@@ -44,6 +47,18 @@ class LlamaCppBackend(InferenceBackend):
 
     name = "llama.cpp"
     attention_backend = "flash_attention"
+    # Cutover follow-up #71: legacy llama_cpp.Llama path supports
+    # GBNF grammar internally (via LlamaGrammar.from_string) and
+    # JSON mode via the same machinery. Streaming via
+    # generate_stream is supported. Tools / function-calling are
+    # NOT in this backend's surface.
+    capabilities = BackendCapabilities(
+        grammar_supported=True,
+        json_mode_supported=True,
+        streaming_supported=True,
+        tools_supported=False,
+        attention_backend="flash_attention",
+    )
 
     def __init__(
         self,

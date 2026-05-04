@@ -11,7 +11,6 @@ import uuid
 from typing import TYPE_CHECKING, Any, Optional
 
 from ..errors import OctomilError, OctomilErrorCode
-from .backends.llamacpp import LlamaCppBackend
 from .config import CloudConfig, MoEConfig, ServerState
 from .detection import _detect_backend, _get_cache_manager, _log_startup_error
 from .grammar_helpers import _inject_json_system_prompt, _resolve_grammar
@@ -642,8 +641,13 @@ def create_app(
         _primary_backend = state.backend
         if _routing_decision is not None:
             _primary_backend = _backend_for_locality(state, _routing_decision.primary_locality) or state.backend
-        uses_grammar_natively = _primary_backend is not None and isinstance(
-            unwrap_backend(_primary_backend), LlamaCppBackend
+        # Cutover follow-up #71: capability query replaces the
+        # legacy isinstance(_, LlamaCppBackend) check. The post-
+        # cutover NativeChatBackend declares grammar_supported=False;
+        # legacy LlamaCppBackend declares True. The serve layer
+        # routes accordingly.
+        uses_grammar_natively = (
+            _primary_backend is not None and unwrap_backend(_primary_backend).capabilities.grammar_supported
         )
         schema_for_prompt: Optional[dict[str, Any]] = None
         if is_json and not uses_grammar_natively:

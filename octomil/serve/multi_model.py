@@ -9,7 +9,6 @@ import uuid
 from typing import Any, Optional
 
 from ..errors import OctomilError
-from .backends.llamacpp import LlamaCppBackend
 from .config import MultiModelServerState
 from .detection import _detect_backend, _log_startup_error
 from .grammar_helpers import _inject_json_system_prompt, _resolve_grammar
@@ -224,7 +223,14 @@ def create_multi_model_app(
             grammar_str, is_json = _resolve_grammar(body, state.default_json_mode)
 
             req_messages = list(messages)
-            uses_grammar_natively = isinstance(unwrap_backend(backend), LlamaCppBackend)
+            # Cutover follow-up #71: query the declared capability
+            # rather than backend type identity. Pre-cutover this
+            # was `isinstance(_, LlamaCppBackend)`; post-cutover the
+            # type became `NativeChatBackend` (which does NOT
+            # support grammar) and the isinstance check silently
+            # evaluated False — semantically correct here, but the
+            # type-marker shape is brittle as more backends ship.
+            uses_grammar_natively = unwrap_backend(backend).capabilities.grammar_supported
             schema_for_prompt: Optional[dict[str, Any]] = None
             if is_json and not uses_grammar_natively:
                 rf = body.response_format or {}
@@ -468,7 +474,14 @@ def create_multi_model_app(
             sub_messages.append({"role": "user", "content": task.text})
 
             grammar_str, is_json = _resolve_grammar(body, mm_state.default_json_mode)
-            uses_grammar_natively = isinstance(unwrap_backend(backend), LlamaCppBackend)
+            # Cutover follow-up #71: query the declared capability
+            # rather than backend type identity. Pre-cutover this
+            # was `isinstance(_, LlamaCppBackend)`; post-cutover the
+            # type became `NativeChatBackend` (which does NOT
+            # support grammar) and the isinstance check silently
+            # evaluated False — semantically correct here, but the
+            # type-marker shape is brittle as more backends ship.
+            uses_grammar_natively = unwrap_backend(backend).capabilities.grammar_supported
 
             req_messages = list(sub_messages)
             if is_json and not uses_grammar_natively:
