@@ -145,10 +145,12 @@ test = [
   "cffi>=1.16.0",
 ]
 # Embedded host: cffi binding to liboctomil-runtime. Slice-3 PR1.
-# The dylib itself is built separately (CMake under
-# ``octomil/runtime-core/``); this extra installs only the Python-
-# side cffi runtime. Locate the dylib via ``OCTOMIL_RUNTIME_DYLIB``
-# env var or the sibling ``runtime-core/build/`` dev path.
+# The dylib itself is built and released from the private
+# ``octomil/octomil-runtime`` repo; this extra installs only the
+# Python-side cffi runtime. Locate the dylib via
+# ``OCTOMIL_RUNTIME_DYLIB`` env var, OR run
+# ``python scripts/fetch_runtime_dev.py`` to populate
+# ``~/.cache/octomil-runtime/<version>/lib/`` from a dev release.
 native = [
   "cffi>=1.16.0",
 ]

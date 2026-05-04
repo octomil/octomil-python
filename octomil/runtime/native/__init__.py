@@ -2,8 +2,9 @@
 
 The cffi binding is ONE host path among two. The other is the daemon
 host (slice 3b, gated on slice 2-proper). Both link the same dylib;
-both implement the C ABI defined in
-``octomil/runtime-core/include/octomil/runtime.h``.
+both implement the C ABI mirrored in ``octomil-contracts`` and
+authoritatively defined in the private ``octomil-runtime`` repo's
+``include/octomil/runtime.h``.
 
 Slice 3 PR1 ships the loader + version handshake + last-error
 wrappers + capabilities reader. Session entry points

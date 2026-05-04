@@ -125,22 +125,43 @@ def _is_appledouble(name: str) -> bool:
 
 
 def _safe_extract(tarball: Path, target_dir: Path) -> None:
-    """Extract ``tarball`` into ``target_dir``, skipping AppleDouble
-    metadata and refusing path-traversal entries.
+    """Extract ``tarball`` into ``target_dir`` with the same safety
+    properties as Python 3.12's ``filter="data"`` (which we can't
+    use because the package floor is 3.9). Refuses:
 
-    Compatible with Python 3.9+. The ``filter="data"`` keyword landed
-    in 3.12; we don't depend on it because the package's
-    ``requires-python = ">=3.9"`` floor is still active. The manual
-    member loop here gives us identical safety (no absolute paths,
-    no ``..`` traversal) without the version dependency."""
+      * path-traversal / absolute paths,
+      * symlinks (any),
+      * hardlinks (any),
+      * character / block / fifo device entries,
+      * any link target that escapes ``target_dir``.
+
+    Filters out macOS AppleDouble (``._*``) metadata. The link-target
+    refusal is intentionally strict: SDK dev artifacts don't need
+    them and allowing one creates an arbitrary-write primitive. Codex
+    R2 blocker fix."""
+    target_real = target_dir.resolve()
     with tarfile.open(tarball) as tf:
         for member in tf.getmembers():
             mname = member.name
             if _is_appledouble(mname):
                 continue
-            # Refuse path traversal / absolute paths.
             if mname.startswith("/") or ".." in Path(mname).parts:
                 raise SystemExit(f"error: refusing to extract suspicious tar entry {mname!r} " f"from {tarball.name}")
+            if member.issym() or member.islnk():
+                raise SystemExit(
+                    f"error: refusing to extract link entry {mname!r} "
+                    f"(symlinks/hardlinks not allowed in dev artifacts)."
+                )
+            if member.ischr() or member.isblk() or member.isfifo() or member.isdev():
+                raise SystemExit(f"error: refusing to extract device entry {mname!r} " f"from {tarball.name}")
+            # Final safety: confirm the resolved destination stays
+            # inside target_dir even if the member's name passes the
+            # textual checks above.
+            dest = (target_dir / mname).resolve()
+            try:
+                dest.relative_to(target_real)
+            except ValueError as e:
+                raise SystemExit(f"error: tar entry {mname!r} would escape {target_dir} " f"on resolution") from e
             tf.extract(member, target_dir)
 
 
@@ -185,9 +206,18 @@ def main() -> int:
     inc_dir = target_dir / "include"
     dylib = lib_dir / "liboctomil-runtime.dylib"
 
-    if not args.force and dylib.exists():
+    # Codex R2 missed-case fix: a previous partial run could leave
+    # `dylib.exists()` true with corrupt or stale content (e.g. mid-
+    # write crash); without this gate the next non-force run trusts
+    # it. We check for a sentinel file written ONLY after a complete
+    # extraction succeeds. If absent, treat the cache as suspect and
+    # re-fetch.
+    sentinel = lib_dir / ".extracted-ok"
+    if not args.force and dylib.exists() and sentinel.exists():
         print(f"already cached: {dylib}")
         return 0
+    if dylib.exists() and not sentinel.exists():
+        print(f"cache at {target_dir} looks incomplete; re-fetching")
 
     token = _gh_token()
     if not token:
@@ -236,6 +266,10 @@ def main() -> int:
             raise SystemExit(
                 f"error: extracted {bin_name} but {dylib} is not present.\n" f"Bundle layout may have changed."
             )
+        # Sentinel: indicates a fully-completed extraction. The next
+        # non-force run treats the cache as valid only if this file
+        # exists. Codex R2 missed-case fix.
+        sentinel.write_text(version + "\n", encoding="utf-8")
     finally:
         # Clean up the download scratch dir whether we succeeded or
         # bailed on a sha256 mismatch / missing asset / extraction

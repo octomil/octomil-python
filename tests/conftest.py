@@ -37,6 +37,8 @@ _RUNTIME_NO_MARKER_TESTS: frozenset[str] = frozenset(
         "test_dylib_resolution_message_when_nothing_resolves",
         "test_no_in_tree_runtime_core_subtree",
         "test_version_sort_key_handles_double_digit_minor",
+        "test_resolve_dylib_returns_newest_cached_version",
+        "test_safe_extract_refuses_symlink_member",
     }
 )
 

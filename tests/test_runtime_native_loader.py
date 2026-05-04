@@ -484,6 +484,67 @@ def test_version_sort_key_handles_double_digit_minor(tmp_path: Path):
     assert sorted_names == ["v0.0.1-rc1", "v0.0.1", "v0.0.2", "v0.0.10", "v0.1.0"], sorted_names
 
 
+def test_resolve_dylib_returns_newest_cached_version(monkeypatch, tmp_path: Path):
+    """Codex R2 blocker fix: `_resolve_dylib()` previously took
+    `candidates[0]` (oldest) instead of `[-1]` (newest), defeating
+    the version-tuple sort. Build a fake cache with v0.0.2 and
+    v0.0.10 and confirm `_resolve_dylib()` picks v0.0.10."""
+    monkeypatch.delenv("OCTOMIL_RUNTIME_DYLIB", raising=False)
+    import octomil.runtime.native.loader as loader
+
+    def make_cached_dylib(version: str) -> Path:
+        version_dir = tmp_path / version
+        lib = version_dir / "lib"
+        lib.mkdir(parents=True)
+        dylib = lib / "liboctomil-runtime.dylib"
+        dylib.write_bytes(b"\x00")  # not actually loaded; just must exist
+        return dylib
+
+    older = make_cached_dylib("v0.0.2")
+    newer = make_cached_dylib("v0.0.10")
+    monkeypatch.setattr(loader, "_FETCH_CACHE_ROOT", tmp_path)
+
+    resolved = loader._resolve_dylib()
+    assert resolved == newer, (
+        f"_resolve_dylib should pick the newest cached version, got {resolved}; "
+        f"older was {older}, newer was {newer}"
+    )
+
+
+def test_safe_extract_refuses_symlink_member(tmp_path: Path):
+    """Codex R2 blocker fix: `_safe_extract` must refuse symlinks,
+    hardlinks, and device entries (parity with Python 3.12's
+    `filter='data'`). Pin via a synthetic tar containing a symlink
+    that targets `/etc/passwd` — extraction must SystemExit."""
+    import sys
+
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
+    import importlib
+
+    spec = importlib.util.spec_from_file_location(
+        "fetch_runtime_dev",
+        Path(__file__).resolve().parent.parent / "scripts" / "fetch_runtime_dev.py",
+    )
+    assert spec is not None and spec.loader is not None
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+
+    import tarfile as _tarfile
+
+    bad_tar = tmp_path / "evil.tar.gz"
+    with _tarfile.open(bad_tar, "w:gz") as tf:
+        info = _tarfile.TarInfo("evil-link")
+        info.type = _tarfile.SYMTYPE
+        info.linkname = "/etc/passwd"
+        tf.addfile(info)
+
+    target = tmp_path / "extract"
+    target.mkdir()
+    with pytest.raises(SystemExit) as exc_info:
+        mod._safe_extract(bad_tar, target)
+    assert "link entry" in str(exc_info.value).lower() or "symlinks" in str(exc_info.value).lower()
+
+
 # ---------------------------------------------------------------------------
 # Slice 2A — NativeSession stub behavior
 #

@@ -2,12 +2,18 @@
 
 Embedded host (in-process) binding. Locates the dylib via:
 
-  1. ``OCTOMIL_RUNTIME_DYLIB`` env var (operator override).
-  2. Sibling ``runtime-core/build/liboctomil-runtime.{dylib,so,dll}``
-     (dev path; works when the user ran ``cmake --build build`` in
-     ``octomil/runtime-core/``).
-  3. ``ImportError`` with a message pointing at
-     ``octomil/runtime-core/BUILD.md``.
+  1. ``OCTOMIL_RUNTIME_DYLIB`` env var (operator override). Wins if set.
+  2. Most-recently-fetched dev artifact under
+     ``~/.cache/octomil-runtime/<version>/lib/``, populated by
+     ``scripts/fetch_runtime_dev.py``.
+  3. ``ImportError`` naming both resolution paths.
+
+The runtime SOURCE lives in the private ``octomil-runtime`` repo.
+This module never builds from source and never searches for an
+in-tree ``runtime-core`` subtree (that subtree was extracted out of
+this repo). SDK builds consume the runtime via a binary release
+artifact; the fetch script + env override ARE the supported
+resolution paths.
 
 This module exposes:
 
@@ -304,8 +310,12 @@ def _resolve_dylib() -> Path:
             f"env var to use the dev-cache fallback.\n"
             f"For local dev, run: python scripts/fetch_runtime_dev.py"
         )
+    # `_fetched_dylib_candidates()` returns oldest-version-first.
+    # Iterate in reverse so the most-recently-fetched release wins —
+    # otherwise the version-tuple sort fix is defeated by the
+    # iteration order. Codex R2 blocker fix.
     tried: list[str] = []
-    for path in _fetched_dylib_candidates():
+    for path in reversed(_fetched_dylib_candidates()):
         if path.is_file():
             return path
         tried.append(str(path))
