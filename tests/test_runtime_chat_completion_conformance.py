@@ -89,8 +89,25 @@ def test_chat_completion_event_sequence_against_real_gguf():
     envelope echoed verbatim from the session config.
 
     Skipped unless `OCTOMIL_LLAMA_CPP_GGUF` points at a real GGUF
-    AND the runtime is advertising `chat.completion`."""
-    from octomil.runtime.native import NativeRuntime
+    AND the runtime is advertising `chat.completion`.
+
+    Codex R2 fix: uses the actual `NativeEvent` API
+    (numeric `event.type` matched against the exported
+    `OCT_EVENT_*` constants). The wrapper does NOT today expose
+    `terminal_status` or `error_message` accessors — those
+    live in the inner-payload union and aren't yet parsed by
+    the Python binding. The runtime-side
+    `test_llama_cpp_chat_smoke` already pins terminal_status +
+    error payload at the C ABI level. Here we pin only what
+    the SDK wrapper exposes: event type + operational envelope."""
+    from octomil.runtime.native import (
+        OCT_EVENT_ERROR,
+        OCT_EVENT_NONE,
+        OCT_EVENT_SESSION_COMPLETED,
+        OCT_EVENT_SESSION_STARTED,
+        OCT_EVENT_TRANSCRIPT_CHUNK,
+        NativeRuntime,
+    )
 
     gguf = os.environ.get("OCTOMIL_LLAMA_CPP_GGUF", "")
     if not gguf or not os.path.isfile(gguf):
@@ -99,7 +116,7 @@ def test_chat_completion_event_sequence_against_real_gguf():
     with NativeRuntime.open() as rt:
         caps = rt.capabilities()
         if CHAT_COMPLETION not in caps.supported_capabilities:
-            pytest.skip("runtime does not advertise chat.completion (GGUF " "magic-byte check failed?)")
+            pytest.skip("runtime does not advertise chat.completion " "(GGUF magic-byte check failed?)")
 
         sess = rt.open_session(
             capability=CHAT_COMPLETION,
@@ -110,13 +127,18 @@ def test_chat_completion_event_sequence_against_real_gguf():
             trace_id="0123456789abcdef0123456789abcdef",
         )
         try:
+
+            def assert_envelope(ev):
+                """Pin envelope echoed verbatim on every event."""
+                assert ev.request_id == "conf-req-001"
+                assert ev.route_id == "conf-route-001"
+                assert ev.trace_id == "0123456789abcdef0123456789abcdef"
+                assert ev.engine_version.startswith("llama_cpp@")
+
             # SESSION_STARTED — first event after open.
             ev = _drain_one(sess, timeout_ms=500)
-            assert ev.type_name == "SESSION_STARTED", ev.type_name
-            assert ev.request_id == "conf-req-001"
-            assert ev.route_id == "conf-route-001"
-            assert ev.trace_id == "0123456789abcdef0123456789abcdef"
-            assert ev.engine_version.startswith("llama_cpp@")
+            assert ev.type == OCT_EVENT_SESSION_STARTED, f"first event must be SESSION_STARTED, got type={ev.type}"
+            assert_envelope(ev)
 
             # send_text in the canonical chat-messages JSON shape.
             sess.send_text('[{"role":"user","content":"hi"}]')
@@ -125,31 +147,29 @@ def test_chat_completion_event_sequence_against_real_gguf():
             saw_completed = False
             for _ in range(10_000):
                 ev = _drain_one(sess, timeout_ms=200)
-                if ev.type_name == "TRANSCRIPT_CHUNK":
+                if ev.type == OCT_EVENT_TRANSCRIPT_CHUNK:
                     n_chunks += 1
-                    # Codex R1 missed-case fix: pin the FULL
-                    # envelope on every chunk, not just request_id.
-                    # Verifies the runtime echoes verbatim across
-                    # every event type, not just SESSION_STARTED.
-                    assert ev.request_id == "conf-req-001"
-                    assert ev.route_id == "conf-route-001"
-                    assert ev.trace_id == "0123456789abcdef0123456789abcdef"
-                    assert ev.engine_version.startswith("llama_cpp@")
-                elif ev.type_name == "SESSION_COMPLETED":
+                    assert_envelope(ev)
+                elif ev.type == OCT_EVENT_SESSION_COMPLETED:
                     saw_completed = True
-                    # Same envelope-echo assertions on the
-                    # terminal event. A regression that drops the
-                    # envelope on the terminal frame would lose
-                    # observability for cancelled / errored
-                    # sessions.
-                    assert ev.request_id == "conf-req-001"
-                    assert ev.route_id == "conf-route-001"
-                    assert ev.trace_id == "0123456789abcdef0123456789abcdef"
-                    # OCT_STATUS_OK = 0
-                    assert ev.terminal_status == 0, f"expected terminal OK, got {ev.terminal_status}"
+                    assert_envelope(ev)
                     break
-                elif ev.type_name == "ERROR":
-                    pytest.fail(f"unexpected ERROR event: {ev.error_message}")
+                elif ev.type == OCT_EVENT_ERROR:
+                    # The current Python wrapper doesn't surface
+                    # the inner error payload; failing with the
+                    # event's monotonic_ns is enough for diagnostic
+                    # context. The runtime-side test pins the
+                    # error_code mapping precisely.
+                    pytest.fail(
+                        f"unexpected ERROR event "
+                        f"(monotonic_ns={ev.monotonic_ns}); "
+                        f"see runtime last_error for details"
+                    )
+                elif ev.type == OCT_EVENT_NONE:
+                    # Drained timeout — keep polling.
+                    continue
+                else:
+                    pytest.fail(f"unexpected event type {ev.type} in " f"chat.completion sequence")
             assert n_chunks >= 1, "no transcript chunks produced"
             assert saw_completed, "no SESSION_COMPLETED before iter cap"
         finally:
@@ -161,10 +181,12 @@ def _drain_one(sess, timeout_ms: int = 100):
     arrives, or timeout."""
     import time
 
+    from octomil.runtime.native import OCT_EVENT_NONE
+
     deadline = time.monotonic() + (timeout_ms / 1000.0)
     while time.monotonic() < deadline:
         ev = sess.poll_event(timeout_ms=10)
-        if ev is None or ev.type_name == "NONE":
+        if ev is None or ev.type == OCT_EVENT_NONE:
             continue
         return ev
     raise AssertionError(f"no event within {timeout_ms} ms")
