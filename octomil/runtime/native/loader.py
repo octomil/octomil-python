@@ -145,6 +145,41 @@ def _status_name(code: int) -> str:
     return _STATUS_NAMES.get(code, f"OCT_STATUS_UNKNOWN({code})")
 
 
+def _validate_correlation_id(
+    label: str,
+    value: str | None,
+    *,
+    max_bytes: int,
+) -> None:
+    """Validate a v0.4-step-2 correlation ID against the
+    runtime.h contract: caller-owned UTF-8 string, ≤ max_bytes,
+    ASCII-printable (codepoints 0x21..0x7E), no whitespace, no
+    control characters. NULL/None is allowed (runtime echoes ""
+    on events for un-correlated slots).
+
+    Codex R1 fix: previous version only length-checked; the
+    full contract is enforced here so invalid IDs cannot land
+    in trace/audit envelope labels."""
+    if value is None:
+        return
+    encoded = value.encode("utf-8")
+    if len(encoded) > max_bytes:
+        raise NativeRuntimeError(
+            OCT_STATUS_INVALID_INPUT,
+            f"{label} exceeds {max_bytes}-byte limit ({len(encoded)} bytes)",
+        )
+    # ASCII-printable, no whitespace, no control chars.
+    for i, ch in enumerate(value):
+        cp = ord(ch)
+        if cp < 0x21 or cp > 0x7E:
+            raise NativeRuntimeError(
+                OCT_STATUS_INVALID_INPUT,
+                f"{label} contains invalid character at offset {i} "
+                f"(codepoint U+{cp:04X}); ABI requires ASCII-printable "
+                f"(0x21..0x7E), no whitespace, no control chars",
+            )
+
+
 # ---------------------------------------------------------------------------
 # Errors
 # ---------------------------------------------------------------------------
@@ -878,24 +913,14 @@ class NativeRuntime:
         cfg.sample_rate_out = sample_rate_out
         cfg.priority = priority
         cfg.user_data = ffi.NULL
-        # v0.4 step 2 — appended correlation IDs. Length limits enforced
-        # client-side before crossing the FFI (runtime also enforces
-        # per the strict-validate rule).
-        for label, value in (
-            ("request_id", request_id),
-            ("route_id", route_id),
-            ("trace_id", trace_id),
-        ):
-            if value is not None and len(value.encode("utf-8")) > 128:
-                raise NativeRuntimeError(
-                    OCT_STATUS_INVALID_INPUT,
-                    f"{label} exceeds 128-byte limit ({len(value.encode('utf-8'))} bytes)",
-                )
-        if kv_prefix_key is not None and len(kv_prefix_key.encode("utf-8")) > 256:
-            raise NativeRuntimeError(
-                OCT_STATUS_INVALID_INPUT,
-                f"kv_prefix_key exceeds 256-byte limit ({len(kv_prefix_key.encode('utf-8'))} bytes)",
-            )
+        # v0.4 step 2 — appended correlation IDs. Codex R1 fix:
+        # validate the FULL contract from runtime.h (length AND
+        # ASCII-printable, no whitespace, no control chars), not
+        # just byte length. Shared validator for all four slots.
+        _validate_correlation_id("request_id", request_id, max_bytes=128)
+        _validate_correlation_id("route_id", route_id, max_bytes=128)
+        _validate_correlation_id("trace_id", trace_id, max_bytes=128)
+        _validate_correlation_id("kv_prefix_key", kv_prefix_key, max_bytes=256)
         cfg.request_id = _cstr(request_id) if request_id else ffi.NULL
         cfg.route_id = _cstr(route_id) if route_id else ffi.NULL
         cfg.trace_id = _cstr(trace_id) if trace_id else ffi.NULL
@@ -1486,16 +1511,26 @@ __all__ = [
     "OCT_ERR_UNKNOWN",
     "OCT_MODEL_CONFIG_VERSION",
     "OCT_EVENT_AUDIO_CHUNK",
+    "OCT_EVENT_CACHE_HIT",
+    "OCT_EVENT_CACHE_MISS",
     "OCT_EVENT_CAPABILITY_VERIFIED",
     "OCT_EVENT_ERROR",
     "OCT_EVENT_INPUT_DROPPED",
+    "OCT_EVENT_MEMORY_PRESSURE",
+    "OCT_EVENT_METRIC",
+    "OCT_EVENT_MODEL_EVICTED",
+    "OCT_EVENT_MODEL_LOADED",
     "OCT_EVENT_NONE",
+    "OCT_EVENT_PREEMPTED",
+    "OCT_EVENT_QUEUED",
     "OCT_EVENT_SESSION_COMPLETED",
     "OCT_EVENT_SESSION_STARTED",
+    "OCT_EVENT_THERMAL_STATE",
     "OCT_EVENT_TRANSCRIPT_CHUNK",
     "OCT_EVENT_TURN_ENDED",
     "OCT_EVENT_USER_SPEECH_DETECTED",
     "OCT_EVENT_VERSION",
+    "OCT_EVENT_WATCHDOG_TIMEOUT",
     "OCT_PRIORITY_FOREGROUND",
     "OCT_PRIORITY_PREFETCH",
     "OCT_PRIORITY_SPECULATIVE",

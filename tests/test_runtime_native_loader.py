@@ -1092,3 +1092,118 @@ def test_v0_4_step_2_no_payload_data_in_envelope():
         f"NativeEvent grew unexpected slots beyond the bounded envelope: "
         f"{extra}. New fields require explicit PE review (privacy boundary)."
     )
+
+
+def test_open_session_rejects_correlation_ids_with_whitespace():
+    """Codex R1 fix: ABI contract requires ASCII-printable
+    (0x21..0x7E), no whitespace, no control chars. Bindings reject
+    pre-FFI."""
+    from octomil.runtime.native import (
+        CAPABILITY_AUDIO_REALTIME_SESSION,
+        NativeRuntime,
+        NativeRuntimeError,
+    )
+    from octomil.runtime.native.loader import OCT_STATUS_INVALID_INPUT
+
+    with NativeRuntime.open() as rt:
+        # whitespace
+        for bad in ("with space", "tab\there", "line\nbreak"):
+            with pytest.raises(NativeRuntimeError) as exc_info:
+                rt.open_session(
+                    capability=CAPABILITY_AUDIO_REALTIME_SESSION,
+                    request_id=bad,
+                )
+            assert exc_info.value.status == OCT_STATUS_INVALID_INPUT
+            assert "request_id" in str(exc_info.value)
+
+
+def test_open_session_rejects_correlation_ids_with_control_chars():
+    """Codex R1 fix: control chars (codepoints < 0x21) rejected."""
+    from octomil.runtime.native import (
+        CAPABILITY_AUDIO_REALTIME_SESSION,
+        NativeRuntime,
+        NativeRuntimeError,
+    )
+    from octomil.runtime.native.loader import OCT_STATUS_INVALID_INPUT
+
+    with NativeRuntime.open() as rt:
+        # control chars
+        for bad in ("\x00null", "bell\x07here", "del\x7fchar"):
+            with pytest.raises(NativeRuntimeError) as exc_info:
+                rt.open_session(
+                    capability=CAPABILITY_AUDIO_REALTIME_SESSION,
+                    route_id=bad,
+                )
+            assert exc_info.value.status == OCT_STATUS_INVALID_INPUT
+            assert "route_id" in str(exc_info.value)
+
+
+def test_open_session_rejects_correlation_ids_with_non_ascii():
+    """Codex R1 fix: non-ASCII codepoints (> 0x7E) rejected — the
+    envelope is a bounded-cardinality label surface, not a
+    user-string carrier."""
+    from octomil.runtime.native import (
+        CAPABILITY_AUDIO_REALTIME_SESSION,
+        NativeRuntime,
+        NativeRuntimeError,
+    )
+    from octomil.runtime.native.loader import OCT_STATUS_INVALID_INPUT
+
+    with NativeRuntime.open() as rt:
+        for bad in ("café", "日本語", "\u202erlt-override"):
+            with pytest.raises(NativeRuntimeError) as exc_info:
+                rt.open_session(
+                    capability=CAPABILITY_AUDIO_REALTIME_SESSION,
+                    trace_id=bad,
+                )
+            assert exc_info.value.status == OCT_STATUS_INVALID_INPUT
+            assert "trace_id" in str(exc_info.value)
+
+
+def test_open_session_accepts_canonical_correlation_id_shapes():
+    """Sanity: canonical W3C-style trace ids and URL-safe IDs pass.
+    Stub still returns UNSUPPORTED but the validator allows the
+    well-formed cases through."""
+    from octomil.runtime.native import (
+        CAPABILITY_AUDIO_REALTIME_SESSION,
+        OCT_STATUS_UNSUPPORTED,
+        NativeRuntime,
+        NativeRuntimeError,
+    )
+
+    with NativeRuntime.open() as rt:
+        for good in (
+            "00f067aa0ba902b7",  # 16-char hex
+            "abcdef12-3456-7890-abcd-ef1234567890",
+            "req:scribe:2026-05-04T00:00:00Z",
+            "app/scribe/system_v3",
+        ):
+            with pytest.raises(NativeRuntimeError) as exc_info:
+                rt.open_session(
+                    capability=CAPABILITY_AUDIO_REALTIME_SESSION,
+                    request_id=good,
+                )
+            assert (
+                exc_info.value.status == OCT_STATUS_UNSUPPORTED
+            ), f"valid id {good!r} should reach the C ABI and stub return UNSUPPORTED, not be rejected client-side"
+
+
+def test_v0_4_step_2_event_constants_exported_publicly():
+    """Codex R1 missed-case: every new OCT_EVENT_* constant must be
+    importable from `octomil.runtime.native` (the public surface)
+    not just `loader.py`."""
+    import octomil.runtime.native as native
+
+    for name in (
+        "OCT_EVENT_MODEL_LOADED",
+        "OCT_EVENT_MODEL_EVICTED",
+        "OCT_EVENT_CACHE_HIT",
+        "OCT_EVENT_CACHE_MISS",
+        "OCT_EVENT_QUEUED",
+        "OCT_EVENT_PREEMPTED",
+        "OCT_EVENT_MEMORY_PRESSURE",
+        "OCT_EVENT_THERMAL_STATE",
+        "OCT_EVENT_WATCHDOG_TIMEOUT",
+        "OCT_EVENT_METRIC",
+    ):
+        assert hasattr(native, name), f"public surface missing {name}"
