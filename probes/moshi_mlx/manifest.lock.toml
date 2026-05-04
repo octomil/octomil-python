@@ -1,0 +1,30 @@
+# probes/moshi_mlx/probe.py
+# Auto-generated. Do not edit by hand. Re-run probe to regenerate.
+
+manifest_version_seen = "moshi-mlx-viability"
+
+[upstream.moshi_mlx_pkg]
+pypi = "moshi-mlx"
+version_seen = "0.2.6"
+
+[upstream.mlx_core]
+pypi = "mlx"
+version_seen = "0.24.2"
+
+[[artifacts.moshiko_mlx_q4.files]]
+role = "weights"
+path = "model.q4.safetensors"
+size_bytes = 4805545317
+sha256 = "7959d590e23c1ebc78cfa3501344a6ff331561aa0cadc4429b733b890bbc919c"
+
+[[artifacts.moshiko_mlx_q4.files]]
+role = "tokenizer"
+path = "tokenizer_spm_32k_3.model"
+size_bytes = 552778
+sha256 = "78d4336533ddc26f9acf7250d7fb83492152196c6ea4212c841df76933f18d2d"
+
+[[artifacts.moshiko_mlx_q4.files]]
+role = "mimi_weights"
+path = "tokenizer-e351c8d8-checkpoint125.safetensors"
+size_bytes = 384644900
+sha256 = "09b782f0629851a271227fb9d36db65c041790365f11bbe5d3d59369cf863f50"
