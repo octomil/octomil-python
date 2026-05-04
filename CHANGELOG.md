@@ -2,6 +2,41 @@
 
 ## Unreleased
 
+## 4.17.0 (2026-05-04)
+
+### Features
+
+- runtime selection bench cache R/W skeleton (v0.5 PR A) (#497)
+- C ABI header stub — slice-1 of runtime-architecture-v2 (#508)
+- runtime selection bench cache R/W skeleton (v0.5 PR A) (#507)
+- TTS bench harness skeleton — v0.5 PR B (#509)
+- bench scheduler + env-var gate (v0.5 PR C) (#511)
+- octomil bench CLI verbs (v0.5 PR D) (#512)
+- build system + ABI stubs (slice-2 dependency) (#510)
+- cffi loader for liboctomil-runtime (slice 3 PR1) (#515)
+- capability-aware conformance harness (slice 3 PR2) (#516)
+- slice 2A — runtime ABI closure before Moshi (#517)
+- slice 2B — Moshi/MLX viability probe (after R16 consensus) (#519)
+- ABI v0.4 step 1 — model lifecycle + error_code + 6 capabilities (#520)
+- ABI v0.4 step 2 — operational envelope + 10 runtime-scope events (#521)
+- probe verdict GREEN — Moshi/MLX viable on Apple M5 (#523)
+- extract Layer 2a runtime to private octomil-runtime repo (#525)
+- conformance against octomil-runtime v0.1.0 chat.completion (#526)
+- SDK conformance against octomil-runtime v0.1.1 (#527)
+- v0.1.2 SDK conformance + hard-cutover local chat to native runtime (#528)
+- map UNSUPPORTED_MODALITY + peer codes to clean 4xx (#529)
+- BackendCapabilities replaces isinstance(LlamaCppBackend) (#530)
+- native chat.stream capability (#72) (#531)
+- cache + latency telemetry to InferenceMetrics + verbose metadata (#73) (#532)
+- configurable per-request deadline (#74) (#533)
+
+### Fixes
+
+- drop misleading fail-fast comment from nightly-floor (#506)
+- worker-exception backoff in scheduler (#513)
+- cap pytest-xdist + fail-fast diagnostics for worker death (#514)
+- replace cryptic "No ModelRuntime registered" with NoRuntimeAvailableError (#534)
+
 ## 4.16.1 (2026-05-02)
 
 ### Fixes
