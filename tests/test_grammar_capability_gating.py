@@ -165,6 +165,64 @@ def test_serve_app_does_not_forward_json_mode_after_prompt_fallback() -> None:
     )
 
 
+def _extract_retry_req_block(source: str) -> str:
+    """Slice the ``retry_req = GenerationRequest(...)`` constructor body
+    by paren-balancing — the literal first ``)`` belongs to an inner
+    call (e.g., ``max(gen_req.temperature - 0.2, 0.0)``)."""
+    start = source.find("retry_req = GenerationRequest(")
+    assert start > -1, "retry_req block must exist"
+    open_paren = source.find("(", start)
+    depth = 0
+    for i, ch in enumerate(source[open_paren:], start=open_paren):
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+            if depth == 0:
+                return source[start : i + 1]
+    raise AssertionError("unbalanced parens in retry_req constructor")
+
+
+def test_serve_app_retry_path_does_not_forward_json_mode() -> None:
+    """Cutover follow-up #71 (R2 Codex): the JSON-mode retry block in
+    ``serve/app.py`` only fires in the ``is_json and not
+    uses_grammar_natively`` branch — by construction the non-grammar
+    fallback. Pre-fix the retry hard-coded ``json_mode=True``, which
+    forwarded the flag to a backend that just rejected it on the
+    first attempt — every JSON request that needed a retry on native
+    would 422. The retry MUST send ``json_mode=False`` so the system-
+    prompt nudging carries the constraint."""
+    import inspect
+
+    from octomil.serve import app as serve_app
+
+    source = inspect.getsource(serve_app.create_app)
+    retry_block = _extract_retry_req_block(source)
+    assert "json_mode=False" in retry_block, (
+        "serve/app.py retry block MUST send json_mode=False — the retry only "
+        "fires for non-grammar backends, and json_mode=True 422s native "
+        "(cutover follow-up #71 R2 Codex)"
+    )
+    assert "json_mode=True" not in retry_block, "serve/app.py retry block MUST NOT send json_mode=True"
+
+
+def test_serve_multi_model_retry_path_does_not_forward_json_mode() -> None:
+    """Same retry-block gating in multi_model.py's standard fallback
+    loop — the only place a retry is wired in the multi-model
+    handler. ``_execute_subtask`` (decomposed path) does not have a
+    retry block; the standard fallback loop does."""
+    import inspect
+
+    from octomil.serve import multi_model
+
+    source = inspect.getsource(multi_model.create_multi_model_app)
+    retry_block = _extract_retry_req_block(source)
+    assert (
+        "json_mode=False" in retry_block
+    ), "multi_model.py retry block MUST send json_mode=False (cutover follow-up #71 R2 Codex)"
+    assert "json_mode=True" not in retry_block
+
+
 def test_serve_multi_model_does_not_forward_json_mode_after_prompt_fallback_at_both_sites() -> None:
     """Same json_mode gating must apply in both multi-model call
     sites. >=2 occurrences pinned."""

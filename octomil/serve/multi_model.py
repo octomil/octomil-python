@@ -335,6 +335,10 @@ def create_multi_model_app(
                         text = json.dumps(extracted)
                     else:
                         retry_messages = _inject_json_system_prompt(messages, schema_for_prompt)
+                        # Cutover follow-up #71 (R2 Codex): retry block only fires
+                        # in the non-grammar fallback branch; system prompt is doing
+                        # the JSON constraining. Forwarding json_mode=True would 422
+                        # native with UNSUPPORTED_MODALITY, breaking the retry.
                         retry_req = GenerationRequest(
                             model=model_name,
                             messages=retry_messages,
@@ -342,7 +346,7 @@ def create_multi_model_app(
                             temperature=max(gen_req.temperature - 0.2, 0.0),
                             top_p=gen_req.top_p,
                             stream=False,
-                            json_mode=True,
+                            json_mode=False,
                         )
                         text, metrics = backend.generate(retry_req)
                         if not validate_json_output(text):

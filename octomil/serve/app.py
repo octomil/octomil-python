@@ -860,6 +860,13 @@ def create_app(
                 else:
                     # Retry once with a stronger system prompt
                     retry_messages = _inject_json_system_prompt(messages, schema_for_prompt)
+                    # Cutover follow-up #71 (R2 Codex): the retry block
+                    # only fires in the `is_json and not uses_grammar_natively`
+                    # branch — by construction the non-grammar fallback. The
+                    # system prompt is doing the JSON constraining; forwarding
+                    # `json_mode=True` to a non-grammar backend (e.g., native)
+                    # would 422 with UNSUPPORTED_MODALITY, so the retry would
+                    # always fail instead of producing a corrected response.
                     retry_req = GenerationRequest(
                         model=gen_req.model,
                         messages=retry_messages,
@@ -867,7 +874,7 @@ def create_app(
                         temperature=max(gen_req.temperature - 0.2, 0.0),
                         top_p=gen_req.top_p,
                         stream=False,
-                        json_mode=True,
+                        json_mode=False,
                     )
                     if _routing_decision is not None:
                         text, metrics, _, _ = await _generate_with_routing(state, retry_req, _routing_decision)
