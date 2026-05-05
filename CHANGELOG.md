@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 4.17.2 (2026-05-05)
+
+### Fixes
+
+- Register full device profiles in the background when telemetry indicates the server only has a stub device.
+
 ## 4.17.1 (2026-05-05)
 
 ### Fixes
