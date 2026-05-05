@@ -7,6 +7,7 @@ from unittest.mock import patch
 from octomil.auth_config import AnonymousAuth, BootstrapTokenAuth, PublishableKeyAuth
 from octomil.configure import (
     _background_register,
+    _do_register,
     _should_auto_register,
     configure,
     get_device_context,
@@ -88,6 +89,51 @@ class TestBackgroundRegister(unittest.TestCase):
         _background_register(ctx, auth, "https://api.test.com", max_retries=3)
         self.assertEqual(ctx.registration_state, RegistrationState.REGISTERED)
         self.assertEqual(mock_register.call_count, 2)
+
+
+class TestRegisterPayload(unittest.TestCase):
+    @patch("octomil.configure.is_charging", return_value=None)
+    @patch("octomil.configure.get_battery_level", return_value=None)
+    @patch("octomil.configure.DeviceInfo.collect_device_info")
+    @patch("octomil.configure.httpx.Client")
+    def test_register_sends_device_identifier_from_installation_id(
+        self, mock_client_cls, mock_collect_device_info, mock_battery, mock_charging
+    ):
+        class FakeResponse:
+            def raise_for_status(self):
+                return None
+
+            def json(self):
+                return {"id": "server-device-123", "org_id": "org-123"}
+
+        class FakeClient:
+            def __init__(self):
+                self.posts = []
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def post(self, url, json, headers):
+                self.posts.append((url, json, headers))
+                return FakeResponse()
+
+        fake_client = FakeClient()
+        mock_client_cls.return_value = fake_client
+        mock_collect_device_info.return_value = {}
+        ctx = DeviceContext(org_id="org-123", app_id="app-123", _installation_id="install-123")
+
+        _do_register(ctx, PublishableKeyAuth(key="oct_pub_test_abc"), "https://api.test.com")
+
+        _, payload, headers = fake_client.posts[0]
+        self.assertEqual(payload["device_identifier"], "install-123")
+        self.assertEqual(payload["installation_id"], "install-123")
+        self.assertEqual(payload["org_id"], "org-123")
+        self.assertEqual(payload["app_id"], "app-123")
+        self.assertEqual(headers["Authorization"], "Bearer oct_pub_test_abc")
+        self.assertEqual(ctx.server_device_id, "server-device-123")
 
 
 class TestMonitoringConfig(unittest.TestCase):

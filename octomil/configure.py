@@ -161,6 +161,7 @@ def _do_register(
 
     hw = DeviceInfo().collect_device_info()
     payload: dict[str, object] = {
+        "device_identifier": ctx.installation_id,
         "installation_id": ctx.installation_id,
         "platform": "python",
         "sdk_version": _get_sdk_version(),
