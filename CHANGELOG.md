@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## 4.17.4 (2026-05-05)
+
+### Fixes
+
+- flush shadow registration on shutdown (#541)
+- report battery in telemetry resource (#543)
+
 ## 4.17.3 (2026-05-05)
 
 ### Fixes
