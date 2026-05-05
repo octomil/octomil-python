@@ -6,6 +6,7 @@ for device monitoring and training eligibility.
 """
 
 import platform
+import re
 import socket
 import subprocess
 from typing import Any, Dict, Optional
@@ -92,6 +93,62 @@ def is_charging() -> bool:
     except (AttributeError, OSError, RuntimeError):
         pass
     return False
+
+
+def _thermal_state_from_pressure(pressure: int) -> str:
+    if pressure <= 0:
+        return "nominal"
+    if pressure == 1:
+        return "fair"
+    if pressure == 2:
+        return "serious"
+    return "critical"
+
+
+def get_thermal_state() -> Optional[str]:
+    """
+    Get current OS thermal pressure.
+
+    Returns:
+        One of nominal/fair/serious/critical, or None when unavailable.
+    """
+    if platform.system() != "Darwin":
+        return None
+
+    try:
+        out = subprocess.check_output(
+            ["sysctl", "-n", "kern.thermal_pressure"],
+            stderr=subprocess.DEVNULL,
+            text=True,
+            timeout=2,
+        )  # noqa: S603,S607
+        return _thermal_state_from_pressure(int(out.strip()))
+    except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired, ValueError):
+        pass
+
+    try:
+        out = subprocess.check_output(
+            ["pmset", "-g", "therm"],
+            stderr=subprocess.DEVNULL,
+            text=True,
+            timeout=2,
+        )  # noqa: S603,S607
+    except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
+        return None
+
+    lowered = out.lower()
+    match = re.search(r"thermal warning level\D+(\d+)", lowered)
+    if match:
+        return _thermal_state_from_pressure(int(match.group(1)))
+    if "no thermal warning level has been recorded" in lowered:
+        return "nominal"
+    if "critical" in lowered:
+        return "critical"
+    if "serious" in lowered:
+        return "serious"
+    if "fair" in lowered or "warning" in lowered:
+        return "fair"
+    return None
 
 
 def get_network_type() -> str:

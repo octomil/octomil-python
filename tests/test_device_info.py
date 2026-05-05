@@ -14,6 +14,7 @@ try:
         get_network_type,
         get_stable_device_id,
         get_storage_info,
+        get_thermal_state,
         get_timezone,
     )
 
@@ -123,6 +124,92 @@ class TestGetBatteryLevel(unittest.TestCase):
             result = get_battery_level()
 
         self.assertIsNone(result)
+
+
+# ---------------------------------------------------------------------------
+# get_thermal_state
+# ---------------------------------------------------------------------------
+@unittest.skipUnless(HAS_DEVICE_INFO, "octomil.device_info not available in this install")
+class TestGetThermalState(unittest.TestCase):
+    @patch("octomil.device_info.platform.system", return_value="Linux")
+    def test_non_macos_returns_none(self, mock_system):
+        self.assertIsNone(get_thermal_state())
+
+    @patch("octomil.device_info.platform.system", return_value="Darwin")
+    @patch("octomil.device_info.subprocess.check_output", return_value="0\n")
+    def test_macos_sysctl_nominal(self, mock_check_output, mock_system):
+        self.assertEqual(get_thermal_state(), "nominal")
+
+    @patch("octomil.device_info.platform.system", return_value="Darwin")
+    @patch("octomil.device_info.subprocess.check_output", return_value="1\n")
+    def test_macos_sysctl_fair(self, mock_check_output, mock_system):
+        self.assertEqual(get_thermal_state(), "fair")
+
+    @patch("octomil.device_info.platform.system", return_value="Darwin")
+    @patch("octomil.device_info.subprocess.check_output", return_value="2\n")
+    def test_macos_sysctl_serious(self, mock_check_output, mock_system):
+        self.assertEqual(get_thermal_state(), "serious")
+
+    @patch("octomil.device_info.platform.system", return_value="Darwin")
+    @patch("octomil.device_info.subprocess.check_output", return_value="3\n")
+    def test_macos_sysctl_critical(self, mock_check_output, mock_system):
+        self.assertEqual(get_thermal_state(), "critical")
+
+    @patch("octomil.device_info.platform.system", return_value="Darwin")
+    @patch("octomil.device_info.subprocess.check_output")
+    def test_macos_pmset_no_warning_is_nominal(self, mock_check_output, mock_system):
+        mock_check_output.side_effect = [
+            subprocess.CalledProcessError(1, "sysctl"),
+            "Note: No thermal warning level has been recorded\n",
+        ]
+
+        self.assertEqual(get_thermal_state(), "nominal")
+
+    @patch("octomil.device_info.platform.system", return_value="Darwin")
+    @patch("octomil.device_info.subprocess.check_output")
+    def test_macos_pmset_warning_level(self, mock_check_output, mock_system):
+        mock_check_output.side_effect = [
+            subprocess.CalledProcessError(1, "sysctl"),
+            "Thermal Warning Level: 3\n",
+        ]
+
+        self.assertEqual(get_thermal_state(), "critical")
+
+    @patch("octomil.device_info.platform.system", return_value="Darwin")
+    @patch("octomil.device_info.subprocess.check_output")
+    def test_macos_pmset_keyword_fallbacks(self, mock_check_output, mock_system):
+        cases = [
+            ("thermal status: critical", "critical"),
+            ("thermal status: serious", "serious"),
+            ("thermal warning active", "fair"),
+        ]
+
+        for output, expected in cases:
+            mock_check_output.side_effect = [
+                subprocess.CalledProcessError(1, "sysctl"),
+                output,
+            ]
+            self.assertEqual(get_thermal_state(), expected)
+
+    @patch("octomil.device_info.platform.system", return_value="Darwin")
+    @patch("octomil.device_info.subprocess.check_output")
+    def test_macos_unavailable_returns_none(self, mock_check_output, mock_system):
+        mock_check_output.side_effect = [
+            subprocess.CalledProcessError(1, "sysctl"),
+            subprocess.CalledProcessError(1, "pmset"),
+        ]
+
+        self.assertIsNone(get_thermal_state())
+
+    @patch("octomil.device_info.platform.system", return_value="Darwin")
+    @patch("octomil.device_info.subprocess.check_output")
+    def test_macos_unrecognized_pmset_returns_none(self, mock_check_output, mock_system):
+        mock_check_output.side_effect = [
+            subprocess.CalledProcessError(1, "sysctl"),
+            "thermal data unavailable",
+        ]
+
+        self.assertIsNone(get_thermal_state())
 
 
 # ---------------------------------------------------------------------------
