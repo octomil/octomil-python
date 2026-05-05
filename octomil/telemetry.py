@@ -569,6 +569,7 @@ class TelemetryReporter:
 
         self._queue.put(None)  # sentinel
         self._worker.join(timeout=5.0)
+        self._join_registration_worker(timeout=5.0)
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -655,6 +656,12 @@ class TelemetryReporter:
                 name="octomil-shadow-register",
             )
             self._registration_worker.start()
+
+    def _join_registration_worker(self, *, timeout: float) -> None:
+        with self._registration_lock:
+            worker = self._registration_worker
+        if worker is not None and worker.is_alive():
+            worker.join(timeout=timeout)
 
     @staticmethod
     def _response_requests_registration(response: httpx.Response) -> bool:
