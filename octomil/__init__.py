@@ -9,7 +9,7 @@ Submodules are aliased here so ``from octomil.secagg import …`` works.
 
 from __future__ import annotations
 
-__version__ = "4.17.0"
+__version__ = "4.17.1"
 
 import importlib as _importlib
 import logging as _logging

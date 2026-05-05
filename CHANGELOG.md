@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## 4.17.1 (2026-05-05)
+
+### Fixes
+
+- surface local runtime TTFT and tokens-per-second telemetry in route events so app monitoring can populate latency and throughput metrics (#536)
+- harden telemetry and CLI tests that were crashing or hanging under xdist CI (#536)
+
 ## 4.17.0 (2026-05-04)
 
 ### Features
