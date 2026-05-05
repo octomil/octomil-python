@@ -794,6 +794,39 @@ class TestTelemetryBestEffort:
         assert calls == ["registered"]
         reporter.close()
 
+    def test_close_waits_for_shadow_registration_worker(self):
+        """Short-lived scripts should not drop a profile post during process exit."""
+        import httpx
+
+        reporter = TelemetryReporter(
+            api_key="key",
+            api_base="https://api.test.com/api/v1",
+            org_id="org-1",
+            device_id="dev-1",
+        )
+        started = threading.Event()
+        release = threading.Event()
+        calls = []
+
+        def fake_register():
+            calls.append("registered")
+            started.set()
+            assert release.wait(timeout=1.0)
+
+        reporter._do_shadow_register = fake_register  # type: ignore[method-assign]
+        response = httpx.Response(
+            200,
+            headers={"X-Device-Needs-Registration": "true"},
+        )
+
+        reporter._maybe_start_shadow_registration(response)
+        assert started.wait(timeout=1.0)
+        release.set()
+        reporter.close()
+
+        assert calls == ["registered"]
+        assert reporter._registration_complete is True
+
     def test_shadow_registration_posts_profile_for_install_id(self):
         captured = {}
 
