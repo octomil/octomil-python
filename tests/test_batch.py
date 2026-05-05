@@ -469,9 +469,10 @@ class TestQueueOverflow:
             await queue.submit_generate("overflow", blocking_gen)
 
         unblock.set()
+        await asyncio.wait_for(task, timeout=1.0)
         await queue.stop()
-        for t in [task, task2]:
+        for t in [task2]:
             try:
-                await t
-            except Exception:
+                await asyncio.wait_for(t, timeout=1.0)
+            except (QueueTimeoutError, asyncio.CancelledError, asyncio.TimeoutError):
                 pass
