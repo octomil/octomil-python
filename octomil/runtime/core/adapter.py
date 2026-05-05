@@ -56,8 +56,10 @@ class InferenceBackendAdapter(ModelRuntime):
         # Default 0.0 from the backend is treated as "no signal" and
         # surfaced as None — better than reporting 0ms latency for a
         # request that took half a second.
-        ttft_ms = metrics.ttfc_ms if metrics.ttfc_ms > 0 else None
-        tps = metrics.tokens_per_second if metrics.tokens_per_second > 0 else None
+        metrics_ttfc_ms = float(getattr(metrics, "ttfc_ms", 0.0) or 0.0)
+        metrics_tokens_per_second = float(getattr(metrics, "tokens_per_second", 0.0) or 0.0)
+        ttft_ms = metrics_ttfc_ms if metrics_ttfc_ms > 0 else None
+        tps = metrics_tokens_per_second if metrics_tokens_per_second > 0 else None
 
         # Only attempt extraction for TEXT_JSON tier when tools are declared
         if request.tool_definitions and self._capabilities.tool_call_tier == ToolCallTier.TEXT_JSON:
