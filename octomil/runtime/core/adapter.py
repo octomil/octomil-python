@@ -49,6 +49,18 @@ class InferenceBackendAdapter(ModelRuntime):
             total_tokens=metrics.total_tokens,
         )
 
+        # Surface latency telemetry through the runtime response so the
+        # Layer-2 emit path (``responses.py``) can include them in the
+        # route event posted to the server. ``InferenceMetrics.ttfc_ms``
+        # is time-to-first-CHUNK (= TTFT for the non-streaming path).
+        # Default 0.0 from the backend is treated as "no signal" and
+        # surfaced as None — better than reporting 0ms latency for a
+        # request that took half a second.
+        metrics_ttfc_ms = float(getattr(metrics, "ttfc_ms", 0.0) or 0.0)
+        metrics_tokens_per_second = float(getattr(metrics, "tokens_per_second", 0.0) or 0.0)
+        ttft_ms = metrics_ttfc_ms if metrics_ttfc_ms > 0 else None
+        tps = metrics_tokens_per_second if metrics_tokens_per_second > 0 else None
+
         # Only attempt extraction for TEXT_JSON tier when tools are declared
         if request.tool_definitions and self._capabilities.tool_call_tier == ToolCallTier.TEXT_JSON:
             from octomil.runtime.core.tool_parser import extract_tool_call_with_validation
@@ -74,6 +86,8 @@ class InferenceBackendAdapter(ModelRuntime):
                     finish_reason="tool_calls",
                     usage=usage,
                     raw_text=text,
+                    ttft_ms=ttft_ms,
+                    tokens_per_second=tps,
                 )
 
             # Log parse failure if text looked like it might be a tool call attempt
@@ -90,6 +104,8 @@ class InferenceBackendAdapter(ModelRuntime):
             finish_reason="stop",
             usage=usage,
             raw_text=text if request.tool_definitions else None,
+            ttft_ms=ttft_ms,
+            tokens_per_second=tps,
         )
 
     async def stream(self, request: RuntimeRequest) -> AsyncIterator[RuntimeChunk]:  # type: ignore[override]

@@ -423,11 +423,17 @@ class TestTrainStartCommand:
             min_devices=2,
         )
 
-    def test_train_start_requires_api_key(self, monkeypatch):
+    @patch("octomil.commands.enterprise._browser_login")
+    def test_train_start_requires_api_key(self, mock_browser_login, monkeypatch, tmp_path):
         monkeypatch.delenv("OCTOMIL_API_KEY", raising=False)
+        monkeypatch.setattr(
+            "octomil.cli_helpers.os.path.expanduser",
+            lambda x: str(tmp_path / ".octomil" / "credentials"),
+        )
         runner = CliRunner()
         result = runner.invoke(main, ["train", "start", "model"])
         assert result.exit_code != 0
+        mock_browser_login.assert_called_once()
 
     @patch("octomil.commands.enterprise._get_client")
     def test_train_start_with_group(self, mock_get_client, monkeypatch):
