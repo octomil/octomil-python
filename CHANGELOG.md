@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 4.17.3 (2026-05-05)
+
+### Fixes
+
+- flush shadow registration on shutdown (#541)
+
 ## 4.17.2 (2026-05-05)
 
 ### Fixes
