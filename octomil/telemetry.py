@@ -27,7 +27,7 @@ from typing import Any, Optional
 import httpx
 
 from octomil._generated import otlp_resource_attributes as _res_attrs
-from octomil.device_info import DeviceInfo
+from octomil.device_info import DeviceInfo, get_battery_level, is_charging
 from octomil.install_id import get_install_id
 
 logger = logging.getLogger(__name__)
@@ -214,21 +214,24 @@ class TelemetryReporter:
     def _resource(self) -> dict[str, Any]:
         """Build the OTLP Resource with KeyValue attributes."""
         sdk_version = _get_sdk_version()
+        attrs: dict[str, Any] = {
+            _res_attrs.SERVICE_NAME: "octomil",
+            _res_attrs.SERVICE_VERSION: sdk_version,
+            _res_attrs.TELEMETRY_SDK_NAME: "octomil",
+            _res_attrs.TELEMETRY_SDK_LANGUAGE: "python",
+            _res_attrs.TELEMETRY_SDK_VERSION: sdk_version,
+            _res_attrs.OCTOMIL_ORG_ID: self.org_id,
+            _res_attrs.OCTOMIL_DEVICE_ID: self.device_id,
+            _res_attrs.OCTOMIL_PLATFORM: sys.platform,
+            _res_attrs.OCTOMIL_SDK_SURFACE: "python",
+            _res_attrs.OCTOMIL_INSTALL_ID: self._install_id,
+        }
+        battery_pct = get_battery_level()
+        if battery_pct is not None:
+            attrs["octomil.battery_pct"] = battery_pct
+            attrs["octomil.charging"] = is_charging()
         return {
-            "attributes": _to_kv_list(
-                {
-                    _res_attrs.SERVICE_NAME: "octomil",
-                    _res_attrs.SERVICE_VERSION: sdk_version,
-                    _res_attrs.TELEMETRY_SDK_NAME: "octomil",
-                    _res_attrs.TELEMETRY_SDK_LANGUAGE: "python",
-                    _res_attrs.TELEMETRY_SDK_VERSION: sdk_version,
-                    _res_attrs.OCTOMIL_ORG_ID: self.org_id,
-                    _res_attrs.OCTOMIL_DEVICE_ID: self.device_id,
-                    _res_attrs.OCTOMIL_PLATFORM: sys.platform,
-                    _res_attrs.OCTOMIL_SDK_SURFACE: "python",
-                    _res_attrs.OCTOMIL_INSTALL_ID: self._install_id,
-                }
-            ),
+            "attributes": _to_kv_list(attrs),
         }
 
     # ------------------------------------------------------------------

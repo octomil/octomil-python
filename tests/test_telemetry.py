@@ -141,7 +141,11 @@ class TestTelemetryV2Envelope:
         def mock_send(client, url, headers, payload):
             sent.append(payload)
 
-        with patch.object(TelemetryReporter, "_send", side_effect=mock_send):
+        with (
+            patch.object(TelemetryReporter, "_send", side_effect=mock_send),
+            patch("octomil.telemetry.get_battery_level", return_value=39),
+            patch("octomil.telemetry.is_charging", return_value=False),
+        ):
             reporter = TelemetryReporter(
                 api_key="key",
                 api_base="https://api.test.com/api/v1",
@@ -165,6 +169,8 @@ class TestTelemetryV2Envelope:
         assert attrs["octomil.device.id"] == "dev-abc"
         assert attrs["octomil.platform"] == sys.platform
         assert attrs["octomil.org.id"] == "test-org"
+        assert attrs["octomil.battery_pct"] == 39
+        assert attrs["octomil.charging"] is False
         assert "telemetry.sdk.version" in attrs
 
     def test_v2_endpoint_used(self):
