@@ -27,7 +27,12 @@ from typing import Any, Optional
 import httpx
 
 from octomil._generated import otlp_resource_attributes as _res_attrs
-from octomil.device_info import DeviceInfo, get_battery_level, is_charging
+from octomil.device_info import (
+    DeviceInfo,
+    get_battery_level,
+    get_thermal_state,
+    is_charging,
+)
 from octomil.install_id import get_install_id
 
 logger = logging.getLogger(__name__)
@@ -230,6 +235,9 @@ class TelemetryReporter:
         if battery_pct is not None:
             attrs["octomil.battery_pct"] = battery_pct
             attrs["octomil.charging"] = is_charging()
+        thermal_state = get_thermal_state()
+        if thermal_state is not None:
+            attrs["octomil.thermal_state"] = thermal_state
         return {
             "attributes": _to_kv_list(attrs),
         }

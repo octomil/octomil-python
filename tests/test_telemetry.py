@@ -145,6 +145,7 @@ class TestTelemetryV2Envelope:
             patch.object(TelemetryReporter, "_send", side_effect=mock_send),
             patch("octomil.telemetry.get_battery_level", return_value=39),
             patch("octomil.telemetry.is_charging", return_value=False),
+            patch("octomil.telemetry.get_thermal_state", return_value="nominal"),
         ):
             reporter = TelemetryReporter(
                 api_key="key",
@@ -171,6 +172,7 @@ class TestTelemetryV2Envelope:
         assert attrs["octomil.org.id"] == "test-org"
         assert attrs["octomil.battery_pct"] == 39
         assert attrs["octomil.charging"] is False
+        assert attrs["octomil.thermal_state"] == "nominal"
         assert "telemetry.sdk.version" in attrs
 
     def test_v2_endpoint_used(self):
