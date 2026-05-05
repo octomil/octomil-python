@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import os
 import sys
+import threading
 import time
 from unittest.mock import MagicMock, patch
 
@@ -13,6 +14,7 @@ from httpx import ASGITransport, AsyncClient
 
 from octomil.telemetry import (
     TelemetryReporter,
+    _device_register_url,
     _generate_device_id,
     _v2_url,
 )
@@ -762,6 +764,86 @@ class TestTelemetryBestEffort:
         )
         client.close()
 
+    def test_registration_signal_starts_one_background_worker(self):
+        """Server registration hints should trigger exactly one lazy profile post."""
+        import httpx
+
+        reporter = TelemetryReporter(
+            api_key="key",
+            api_base="https://api.test.com/api/v1",
+            org_id="org-1",
+            device_id="dev-1",
+        )
+        event = threading.Event()
+        calls = []
+
+        def fake_register():
+            calls.append("registered")
+            event.set()
+
+        reporter._do_shadow_register = fake_register  # type: ignore[method-assign]
+        response = httpx.Response(
+            200,
+            headers={"X-Device-Needs-Registration": "true"},
+        )
+
+        reporter._maybe_start_shadow_registration(response)
+        reporter._maybe_start_shadow_registration(response)
+
+        assert event.wait(timeout=1.0)
+        assert calls == ["registered"]
+        reporter.close()
+
+    def test_shadow_registration_posts_profile_for_install_id(self):
+        captured = {}
+
+        class FakeResponse:
+            def raise_for_status(self):
+                return None
+
+        class FakeClient:
+            def __init__(self, timeout):
+                self.timeout = timeout
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return None
+
+            def post(self, url, json, headers):
+                captured["url"] = url
+                captured["json"] = json
+                captured["headers"] = headers
+                return FakeResponse()
+
+        with patch("octomil.telemetry.get_install_id", return_value="install-xyz"):
+            reporter = TelemetryReporter(
+                api_key="key",
+                api_base="https://api.test.com/api/v1",
+                org_id="org-1",
+                device_id="dev-1",
+            )
+
+        with (
+            patch("octomil.telemetry.httpx.Client", FakeClient),
+            patch("octomil.telemetry.DeviceInfo") as device_info_cls,
+        ):
+            device_info_cls.return_value.to_registration_dict.return_value = {
+                "device_identifier": "hardware-id",
+                "platform": "macos",
+                "gpu_available": True,
+            }
+            reporter._do_shadow_register()
+
+        assert captured["url"] == "https://api.test.com/api/v1/devices/register"
+        assert captured["headers"]["Authorization"] == "Bearer key"
+        assert captured["json"]["device_identifier"] == "install-xyz"
+        assert captured["json"]["installation_id"] == "install-xyz"
+        assert captured["json"]["platform"] == "macos"
+        assert captured["json"]["gpu_available"] is True
+        reporter.close()
+
     def test_queue_full_drops_event(self):
         """When the queue is full, enqueue should drop silently."""
         reporter = TelemetryReporter(
@@ -778,6 +860,11 @@ class TestTelemetryBestEffort:
         for i in range(1100):
             reporter.report_inference_started(model_id="m", version="v", session_id=f"s{i}")
         # Should not raise
+
+
+def test_device_register_url_derives_from_v1_and_v2_bases():
+    assert _device_register_url("https://api.test.com/api/v1") == "https://api.test.com/api/v1/devices/register"
+    assert _device_register_url("https://api.test.com/api/v2") == "https://api.test.com/api/v1/devices/register"
 
 
 # ---------------------------------------------------------------------------

@@ -19,6 +19,7 @@ import platform
 import queue
 import sys
 import threading
+import time
 import uuid
 from datetime import datetime, timezone
 from typing import Any, Optional
@@ -26,11 +27,13 @@ from typing import Any, Optional
 import httpx
 
 from octomil._generated import otlp_resource_attributes as _res_attrs
+from octomil.device_info import DeviceInfo
 from octomil.install_id import get_install_id
 
 logger = logging.getLogger(__name__)
 
 _DEFAULT_API_BASE = "https://api.octomil.com/api/v1"
+_DEVICE_NEEDS_REGISTRATION_HEADER = "x-device-needs-registration"
 
 
 def _generate_device_id() -> str:
@@ -94,6 +97,16 @@ def _v2_url(api_base: str) -> str:
         return base[: -len("/api/v1")] + "/api/v2/telemetry/events"
     # Fallback: append v2 path
     return base + "/v2/telemetry/events"
+
+
+def _device_register_url(api_base: str) -> str:
+    """Derive the v1 device registration endpoint URL from api_base."""
+    base = api_base.rstrip("/")
+    if base.endswith("/api/v1"):
+        return base + "/devices/register"
+    if base.endswith("/api/v2"):
+        return base[: -len("/api/v2")] + "/api/v1/devices/register"
+    return base + "/api/v1/devices/register"
 
 
 def _to_kv_list(attrs: dict[str, Any]) -> list[dict[str, Any]]:
@@ -181,10 +194,15 @@ class TelemetryReporter:
         self.api_base = api_base.rstrip("/")
         self.org_id = org_id
         self.device_id = device_id or _generate_device_id()
+        self._install_id = get_install_id()
 
         self._queue: queue.Queue[Optional[dict[str, Any]]] = queue.Queue(maxsize=1024)
         self._closed = False
         self._close_lock = threading.Lock()
+        self._registration_lock = threading.Lock()
+        self._registration_started = False
+        self._registration_complete = False
+        self._registration_worker: threading.Thread | None = None
         self._worker = threading.Thread(target=self._dispatch_loop, daemon=True)
         self._worker.start()
         atexit.register(self.close)
@@ -208,7 +226,7 @@ class TelemetryReporter:
                     _res_attrs.OCTOMIL_DEVICE_ID: self.device_id,
                     _res_attrs.OCTOMIL_PLATFORM: sys.platform,
                     _res_attrs.OCTOMIL_SDK_SURFACE: "python",
-                    _res_attrs.OCTOMIL_INSTALL_ID: get_install_id(),
+                    _res_attrs.OCTOMIL_INSTALL_ID: self._install_id,
                 }
             ),
         }
@@ -596,10 +614,12 @@ class TelemetryReporter:
                             remaining.append(item)
                     if remaining:
                         envelope = _build_otlp_envelope(resource, remaining)
-                        self._send(client, url, headers, envelope)
+                        resp = self._send(client, url, headers, envelope)
+                        self._maybe_start_shadow_registration(resp)
                     break
                 envelope = _build_otlp_envelope(resource, [record])
-                self._send(client, url, headers, envelope)
+                resp = self._send(client, url, headers, envelope)
+                self._maybe_start_shadow_registration(resp)
         finally:
             client.close()
 
@@ -609,9 +629,79 @@ class TelemetryReporter:
         url: str,
         headers: dict[str, str],
         payload: dict[str, Any],
-    ) -> None:
+    ) -> httpx.Response | None:
         """POST a single payload — best-effort, never raises."""
         try:
-            client.post(url, json=payload, headers=headers)
+            return client.post(url, json=payload, headers=headers)
         except Exception as exc:  # noqa: BLE001
             logger.warning("Telemetry event dispatch failed: %s", exc)
+            return None
+
+    def _maybe_start_shadow_registration(
+        self,
+        response: httpx.Response | None,
+    ) -> None:
+        if response is None:
+            return
+        if not self._response_requests_registration(response):
+            return
+        with self._registration_lock:
+            if self._registration_started or self._registration_complete:
+                return
+            self._registration_started = True
+            self._registration_worker = threading.Thread(
+                target=self._shadow_register_loop,
+                daemon=True,
+                name="octomil-shadow-register",
+            )
+            self._registration_worker.start()
+
+    @staticmethod
+    def _response_requests_registration(response: httpx.Response) -> bool:
+        needs_registration = response.headers.get(
+            _DEVICE_NEEDS_REGISTRATION_HEADER,
+            "",
+        )
+        if needs_registration.lower() == "true":
+            return True
+        try:
+            body = response.json()
+        except Exception:  # noqa: BLE001
+            return False
+        return bool(isinstance(body, dict) and body.get("needs_registration") is True)
+
+    def _shadow_register_loop(self, *, max_retries: int = 3) -> None:
+        for attempt in range(max_retries):
+            try:
+                self._do_shadow_register()
+                with self._registration_lock:
+                    self._registration_complete = True
+                return
+            except Exception:
+                logger.debug(
+                    "Shadow device registration attempt %d failed",
+                    attempt + 1,
+                    exc_info=True,
+                )
+                if attempt < max_retries - 1:
+                    time.sleep(min(2**attempt, 8))
+        with self._registration_lock:
+            self._registration_started = False
+
+    def _do_shadow_register(self) -> None:
+        payload = DeviceInfo().to_registration_dict()
+        payload["device_identifier"] = self._install_id
+        payload["installation_id"] = self._install_id
+        payload["sdk_version"] = _get_sdk_version()
+
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+        }
+        with httpx.Client(timeout=10.0) as client:
+            resp = client.post(
+                _device_register_url(self.api_base),
+                json=payload,
+                headers=headers,
+            )
+            resp.raise_for_status()
