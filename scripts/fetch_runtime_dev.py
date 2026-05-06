@@ -39,7 +39,7 @@ import urllib.request
 from pathlib import Path
 
 REPO = "octomil/octomil-runtime"
-DEFAULT_VERSION = "v0.1.2"  # v0.1.2: generation options (max_tokens / temperature / top_p) on chat.completion send_text
+DEFAULT_VERSION = "v0.1.3-rc1"  # v0.1.3-rc1: native embeddings.text capability (OCT_EVENT_EMBEDDING_VECTOR + LlamaCppEmbeddingsSession + per-context pooling-type gate)
 CACHE_ROOT = Path.home() / ".cache" / "octomil-runtime"
 
 
@@ -146,14 +146,14 @@ def _safe_extract(tarball: Path, target_dir: Path) -> None:
             if _is_appledouble(mname):
                 continue
             if mname.startswith("/") or ".." in Path(mname).parts:
-                raise SystemExit(f"error: refusing to extract suspicious tar entry {mname!r} " f"from {tarball.name}")
+                raise SystemExit(f"error: refusing to extract suspicious tar entry {mname!r} from {tarball.name}")
             if member.issym() or member.islnk():
                 raise SystemExit(
                     f"error: refusing to extract link entry {mname!r} "
                     f"(symlinks/hardlinks not allowed in dev artifacts)."
                 )
             if member.ischr() or member.isblk() or member.isfifo() or member.isdev():
-                raise SystemExit(f"error: refusing to extract device entry {mname!r} " f"from {tarball.name}")
+                raise SystemExit(f"error: refusing to extract device entry {mname!r} from {tarball.name}")
             # Final safety: confirm the resolved destination stays
             # inside target_dir even if the member's name passes the
             # textual checks above.
@@ -161,7 +161,7 @@ def _safe_extract(tarball: Path, target_dir: Path) -> None:
             try:
                 dest.relative_to(target_real)
             except ValueError as e:
-                raise SystemExit(f"error: tar entry {mname!r} would escape {target_dir} " f"on resolution") from e
+                raise SystemExit(f"error: tar entry {mname!r} would escape {target_dir} on resolution") from e
             tf.extract(member, target_dir)
 
 
@@ -264,7 +264,7 @@ def main() -> int:
 
         if not dylib.exists():
             raise SystemExit(
-                f"error: extracted {bin_name} but {dylib} is not present.\n" f"Bundle layout may have changed."
+                f"error: extracted {bin_name} but {dylib} is not present.\nBundle layout may have changed."
             )
         # Sentinel: indicates a fully-completed extraction. The next
         # non-force run treats the cache as valid only if this file
