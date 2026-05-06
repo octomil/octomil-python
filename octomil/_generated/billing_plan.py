@@ -51,7 +51,7 @@ class PlanPricing(NamedTuple):
     overage_per_device_cents: int | None
 
 
-class SupportTier(str, Enum):
+class PlanSupportLevel(str, Enum):
     COMMUNITY = "community"
     EMAIL = "email"
     DEDICATED = "dedicated"
@@ -62,7 +62,7 @@ class PlanConfig(NamedTuple):
     limits: PlanLimits
     features: PlanFeatures
     pricing: PlanPricing
-    support: SupportTier
+    support: PlanSupportLevel
 
 
 PLAN_CONFIG: dict[BillingPlan, PlanConfig] = {
@@ -98,7 +98,7 @@ PLAN_CONFIG: dict[BillingPlan, PlanConfig] = {
             annual_cents=0,
             overage_per_device_cents=0,
         ),
-        support=SupportTier.COMMUNITY,
+        support=PlanSupportLevel.COMMUNITY,
     ),
     BillingPlan.TEAM: PlanConfig(
         display_name="Team",
@@ -132,7 +132,7 @@ PLAN_CONFIG: dict[BillingPlan, PlanConfig] = {
             annual_cents=1152000,
             overage_per_device_cents=5,
         ),
-        support=SupportTier.EMAIL,
+        support=PlanSupportLevel.EMAIL,
     ),
     BillingPlan.ENTERPRISE: PlanConfig(
         display_name="Enterprise",
@@ -166,7 +166,7 @@ PLAN_CONFIG: dict[BillingPlan, PlanConfig] = {
             annual_cents=None,
             overage_per_device_cents=None,
         ),
-        support=SupportTier.DEDICATED,
+        support=PlanSupportLevel.DEDICATED,
     ),
 }
 
