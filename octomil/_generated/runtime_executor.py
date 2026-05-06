@@ -32,3 +32,5 @@ class RuntimeExecutor(str, Enum):
     """Meta ExecuTorch runtime"""
     ECHO = "echo"
     """Stub engine for testing only. Never shipped."""
+    SHERPA_ONNX = "sherpa-onnx"
+    """sherpa-onnx (k2-fsa) audio engine. Streaming ASR today; VITS/Piper/Kokoro TTS in 1.15.0+."""

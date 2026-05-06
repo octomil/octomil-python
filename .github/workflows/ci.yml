@@ -179,6 +179,8 @@ jobs:
 
       - name: Run pip-audit
         run: |
+          # CVE-2026-6357 affects the runner's pip toolchain; fixed in 26.1.
+          python -m pip install --upgrade 'pip>=26.1'
           pip install pip-audit
           pip install -e .
           # CVE-2026-3219 is reported against the runner's pip toolchain with

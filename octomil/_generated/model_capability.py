@@ -20,3 +20,5 @@ class ModelCapability(str, Enum):
     """Chain-of-thought reasoning with separable thinking tokens (e.g. Qwen3, DeepSeek-R1)."""
     VISION = "vision"
     """Image and video understanding. Accepts visual input alongside text for multimodal chat."""
+    TTS = "tts"
+    """Text-to-speech synthesis. Accepts text input and produces audio output. Used by speech pipeline."""

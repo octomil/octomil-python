@@ -20,6 +20,8 @@ class FallbackTriggerStage(str, Enum):
     """Candidate failed a planner or SDK gate"""
     INFERENCE = "inference"
     """Candidate failed before producing inference output"""
+    OUTPUT_QUALITY = "output_quality"
+    """Candidate failed a post-inference output quality gate"""
     TIMEOUT = "timeout"
     """Candidate timed out before output was committed"""
     NOT_APPLICABLE = "not_applicable"
