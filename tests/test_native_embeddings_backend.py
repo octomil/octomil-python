@@ -83,25 +83,244 @@ def test_zero_deadline_raises_invalid_input():
         assert "deadline_ms" in str(exc_info.value)
 
 
-def test_bad_input_type_raises_type_error_before_runtime_call():
-    """``inputs`` must be ``str | list[str]``. Anything else
-    raises ``TypeError`` at the binding boundary BEFORE the runtime
-    is touched. This catches caller-side bugs early; runtime-side
-    JSON validation only sees correctly-typed inputs."""
+def test_send_embed_source_pins_type_check_for_bad_input_type():
+    """R1 Codex/Claude both flagged the original placeholder test
+    was empty. The full type-check is in
+    ``NativeSession.send_embed``; we pin its source-level shape
+    rather than constructing a real session (which requires a cffi
+    handle). The type check rejects non-str/non-list inputs with
+    ``TypeError`` BEFORE any runtime contact, so caller-side bugs
+    fail at the binding boundary."""
+    import inspect
+
+    from octomil.runtime.native.loader import NativeSession
+
+    src = inspect.getsource(NativeSession.send_embed)
+    assert "isinstance(inputs, str)" in src, "send_embed must check str"
+    assert "isinstance(inputs, list)" in src, "send_embed must check list"
+    assert "raise TypeError" in src, "send_embed must raise TypeError on bad type"
+    assert '"input"' in src, 'send_embed must emit the wrapped {"input": ...} shape'
+
+
+def test_native_embeddings_backend_drain_emits_vectors_in_order_via_fake_session():
+    """Fake-session drain test (no runtime required). Pins the
+    event-stream contract: SESSION_STARTED → 3× EMBEDDING_VECTOR
+    (with index 0/1/2) → SESSION_COMPLETED(OK). R1 Codex flagged
+    that event-drain invariants needed coverage that doesn't
+    require a staged GGUF; this fills the gap."""
     from octomil.runtime.native.embeddings_backend import NativeEmbeddingsBackend
+    from octomil.runtime.native.loader import (
+        OCT_EVENT_EMBEDDING_VECTOR,
+        OCT_EVENT_NONE,
+        OCT_EVENT_SESSION_COMPLETED,
+        OCT_EVENT_SESSION_STARTED,
+        OCT_STATUS_OK,
+    )
+
+    class _FakeEvent:
+        def __init__(self, **kw: Any) -> None:
+            self.type = kw["type"]
+            self.values = kw.get("values", [])
+            self.n_dim = kw.get("n_dim", 0)
+            self.n_input_tokens = kw.get("n_input_tokens", 0)
+            self.index = kw.get("index", 0)
+            self.pooling_type = kw.get("pooling_type", 0)
+            self.is_normalized = kw.get("is_normalized", False)
+            self.terminal_status = kw.get("terminal_status", 0)
+            self.text = ""
+
+    events = iter(
+        [
+            _FakeEvent(type=OCT_EVENT_SESSION_STARTED),
+            _FakeEvent(
+                type=OCT_EVENT_EMBEDDING_VECTOR,
+                values=[1.0, 0.0, 0.0],
+                n_dim=3,
+                n_input_tokens=4,
+                index=0,
+                pooling_type=1,
+                is_normalized=True,
+            ),
+            _FakeEvent(
+                type=OCT_EVENT_EMBEDDING_VECTOR,
+                values=[0.0, 1.0, 0.0],
+                n_dim=3,
+                n_input_tokens=2,
+                index=1,
+                pooling_type=1,
+                is_normalized=True,
+            ),
+            _FakeEvent(
+                type=OCT_EVENT_EMBEDDING_VECTOR,
+                values=[0.0, 0.0, 1.0],
+                n_dim=3,
+                n_input_tokens=5,
+                index=2,
+                pooling_type=1,
+                is_normalized=True,
+            ),
+            _FakeEvent(type=OCT_EVENT_SESSION_COMPLETED, terminal_status=OCT_STATUS_OK),
+        ]
+    )
+
+    class _FakeSession:
+        def send_embed(self, *_a: Any, **_k: Any) -> None:
+            return None
+
+        def poll_event(self, *_a: Any, **_k: Any) -> Any:
+            try:
+                return next(events)
+            except StopIteration:
+                return _FakeEvent(type=OCT_EVENT_NONE)
+
+        def close(self) -> None:
+            return None
+
+    class _FakeRuntime:
+        def open_session(self, **_k: Any) -> Any:
+            return _FakeSession()
+
+        def last_error(self) -> str:
+            return ""
 
     backend = NativeEmbeddingsBackend()
-    backend._runtime = object()  # type: ignore[assignment]
+    backend._runtime = _FakeRuntime()  # type: ignore[assignment]
+    backend._model = object()  # type: ignore[assignment]
+    backend._model_name = "fake-bge-mini"
+
+    r = backend.embed(["a", "b", "c"])
+    assert r.embeddings == [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]
+    assert r.n_dim == 3
+    assert r.pooling_type == 1
+    assert r.is_normalized is True
+    assert r.prompt_tokens == 11
+    assert r.total_tokens == r.prompt_tokens
+    assert r.model == "fake-bge-mini"
+
+
+def test_native_embeddings_backend_out_of_order_index_raises_inference_failed():
+    """Defensive invariant: if the runtime ever emits
+    EMBEDDING_VECTOR events out of input order, the SDK MUST raise
+    INFERENCE_FAILED rather than silently shuffle results."""
+    from octomil.errors import OctomilError, OctomilErrorCode
+    from octomil.runtime.native.embeddings_backend import NativeEmbeddingsBackend
+    from octomil.runtime.native.loader import (
+        OCT_EVENT_EMBEDDING_VECTOR,
+        OCT_EVENT_NONE,
+        OCT_EVENT_SESSION_COMPLETED,
+        OCT_STATUS_OK,
+    )
+
+    class _FakeEvent:
+        def __init__(self, **kw: Any) -> None:
+            self.type = kw["type"]
+            self.values = kw.get("values", [])
+            self.n_dim = kw.get("n_dim", 0)
+            self.n_input_tokens = kw.get("n_input_tokens", 0)
+            self.index = kw.get("index", 0)
+            self.pooling_type = kw.get("pooling_type", 0)
+            self.is_normalized = kw.get("is_normalized", False)
+            self.terminal_status = kw.get("terminal_status", 0)
+            self.text = ""
+
+    events = iter(
+        [
+            _FakeEvent(type=OCT_EVENT_EMBEDDING_VECTOR, values=[1.0, 0.0], n_dim=2, index=2),  # OUT OF ORDER
+            _FakeEvent(type=OCT_EVENT_SESSION_COMPLETED, terminal_status=OCT_STATUS_OK),
+        ]
+    )
+
+    class _FakeSession:
+        def send_embed(self, *_a: Any, **_k: Any) -> None:
+            return None
+
+        def poll_event(self, *_a: Any, **_k: Any) -> Any:
+            try:
+                return next(events)
+            except StopIteration:
+                return _FakeEvent(type=OCT_EVENT_NONE)
+
+        def close(self) -> None:
+            return None
+
+    class _FakeRuntime:
+        def open_session(self, **_k: Any) -> Any:
+            return _FakeSession()
+
+        def last_error(self) -> str:
+            return ""
+
+    backend = NativeEmbeddingsBackend()
+    backend._runtime = _FakeRuntime()  # type: ignore[assignment]
     backend._model = object()  # type: ignore[assignment]
 
-    # The runtime check would catch these too, but the binding
-    # raises TypeError first because send_embed validates the type.
-    # Note: passing 42/None/dict would fail at send_embed; here we
-    # exercise the path explicitly.
-    # We can't actually call .embed() because it would try
-    # open_session on the stub object; instead test send_embed
-    # via a minimal path. Skip — this is exercised at runtime by
-    # the input-contract tests in the runtime repo.
+    with pytest.raises(OctomilError) as exc_info:
+        backend.embed(["a", "b", "c"])
+    assert exc_info.value.code == OctomilErrorCode.INFERENCE_FAILED
+    assert "out-of-order" in str(exc_info.value).lower() or "index" in str(exc_info.value).lower()
+
+
+def test_native_embeddings_backend_n_dim_drift_raises_inference_failed():
+    """Stable n_dim across the batch is part of the contract. If
+    the runtime ever emits a vector with a different dimension
+    mid-batch, the SDK raises INFERENCE_FAILED."""
+    from octomil.errors import OctomilError, OctomilErrorCode
+    from octomil.runtime.native.embeddings_backend import NativeEmbeddingsBackend
+    from octomil.runtime.native.loader import (
+        OCT_EVENT_EMBEDDING_VECTOR,
+        OCT_EVENT_NONE,
+        OCT_EVENT_SESSION_COMPLETED,
+        OCT_STATUS_OK,
+    )
+
+    class _FakeEvent:
+        def __init__(self, **kw: Any) -> None:
+            self.type = kw["type"]
+            self.values = kw.get("values", [])
+            self.n_dim = kw.get("n_dim", 0)
+            self.n_input_tokens = kw.get("n_input_tokens", 0)
+            self.index = kw.get("index", 0)
+            self.pooling_type = kw.get("pooling_type", 0)
+            self.is_normalized = kw.get("is_normalized", False)
+            self.terminal_status = kw.get("terminal_status", 0)
+            self.text = ""
+
+    events = iter(
+        [
+            _FakeEvent(type=OCT_EVENT_EMBEDDING_VECTOR, values=[1.0, 0.0, 0.0], n_dim=3, index=0),
+            _FakeEvent(type=OCT_EVENT_EMBEDDING_VECTOR, values=[1.0, 0.0], n_dim=2, index=1),  # DRIFT
+            _FakeEvent(type=OCT_EVENT_SESSION_COMPLETED, terminal_status=OCT_STATUS_OK),
+        ]
+    )
+
+    class _FakeSession:
+        def send_embed(self, *_a: Any, **_k: Any) -> None:
+            return None
+
+        def poll_event(self, *_a: Any, **_k: Any) -> Any:
+            try:
+                return next(events)
+            except StopIteration:
+                return _FakeEvent(type=OCT_EVENT_NONE)
+
+        def close(self) -> None:
+            return None
+
+    class _FakeRuntime:
+        def open_session(self, **_k: Any) -> Any:
+            return _FakeSession()
+
+        def last_error(self) -> str:
+            return ""
+
+    backend = NativeEmbeddingsBackend()
+    backend._runtime = _FakeRuntime()  # type: ignore[assignment]
+    backend._model = object()  # type: ignore[assignment]
+
+    with pytest.raises(OctomilError) as exc_info:
+        backend.embed(["a", "b"])
+    assert exc_info.value.code == OctomilErrorCode.INFERENCE_FAILED
+    assert "n_dim" in str(exc_info.value).lower() or "drift" in str(exc_info.value).lower()
 
 
 def test_runtime_advertises_embeddings_text_helper_returns_false_on_failure():

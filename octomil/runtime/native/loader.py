@@ -41,6 +41,7 @@ from __future__ import annotations
 
 import logging
 import os
+import struct as _emb_struct  # used by poll_event for OCT_EVENT_EMBEDDING_VECTOR
 from pathlib import Path
 from typing import Any, Optional
 
@@ -1763,12 +1764,11 @@ class NativeSession:
             emb_is_normalized = bool(emb.is_normalized)
             if emb.values != ffi.NULL and emb_n_dim > 0:
                 # Each fp32 = 4 bytes; copy via cffi.buffer slice +
-                # struct.unpack. unpack_from is faster but requires
-                # a bytes-like object — buffer[:] gets us bytes.
-                import struct as _struct
-
+                # struct.unpack. R1 Codex/Claude nit: ``struct`` is
+                # imported at module level (`_emb_struct`) so the
+                # poll hot path doesn't pay lazy-import overhead.
                 buf = ffi.buffer(emb.values, emb_n_dim * 4)[:]
-                emb_values = list(_struct.unpack(f"{emb_n_dim}f", buf))
+                emb_values = list(_emb_struct.unpack(f"{emb_n_dim}f", buf))
         return NativeEvent(
             type=ev_type,
             version=int(ev.version),
