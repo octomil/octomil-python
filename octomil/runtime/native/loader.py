@@ -113,9 +113,28 @@ OCT_EVENT_MEMORY_PRESSURE: int = 16
 OCT_EVENT_THERMAL_STATE: int = 17
 OCT_EVENT_WATCHDOG_TIMEOUT: int = 18
 OCT_EVENT_METRIC: int = 19
+# v0.1.3 — embeddings.text result event. Payload is `data.embedding_vector`
+# { values, n_dim, n_input_tokens, index, pooling_type, is_normalized }.
+# `values` is a runtime-owned float32 buffer with `n_dim` elements;
+# lifetime = until next poll on this session (same contract as
+# transcript_chunk text). Bindings MUST copy before issuing another poll.
+OCT_EVENT_EMBEDDING_VECTOR: int = 20
 
 OCT_SAMPLE_FORMAT_PCM_S16LE: int = 1
 OCT_SAMPLE_FORMAT_PCM_F32LE: int = 2
+
+# v0.1.3 — pooling-type discriminator carried on
+# data.embedding_vector.pooling_type. Mirrors llama.cpp's
+# LLAMA_POOLING_TYPE_* enum 1:1. UNKNOWN(0) is a forward-compat
+# sentinel for any value the runtime doesn't recognize. The runtime
+# REJECTS NONE/UNSPECIFIED (decoder-only chat models) and RANK
+# (re-rankers; output is n_cls_out, not n_embd) at session_open with
+# OCT_STATUS_UNSUPPORTED — see the per-context pooling-type gate.
+OCT_EMBED_POOLING_UNKNOWN: int = 0
+OCT_EMBED_POOLING_MEAN: int = 1
+OCT_EMBED_POOLING_CLS: int = 2
+OCT_EMBED_POOLING_LAST: int = 3
+OCT_EMBED_POOLING_RANK: int = 4
 
 # v0.1.1 — bumped lockstep with runtime.h. session_config v=3 adds
 # the appended `oct_model_t* model` field; chat.completion sessions
@@ -497,6 +516,20 @@ typedef struct oct_event {
             const char* name;
             double      value;
         } metric;
+        /* v0.1.3 — embeddings.text pooled vector payload. Emitted
+         * once per input string in input order. `values` lifetime
+         * = until next poll on this session. Bindings copy before
+         * the next poll. */
+        struct {
+            const float* values;
+            uint32_t     n_dim;
+            uint32_t     n_input_tokens;
+            uint32_t     index;
+            uint32_t     pooling_type;
+            uint8_t      is_normalized;
+            uint8_t      _reserved0;
+            uint16_t     _reserved1;
+        } embedding_vector;
     } data;
 
     /* ──────── v0.4 step 2 — operational envelope APPENDED ──────── */
@@ -654,7 +687,7 @@ size_t       oct_model_config_size(void);
 # rather than a typed compatibility error. Codex R1 fix: fail fast
 # at load time with NativeRuntimeError(VERSION_MISMATCH).
 _REQUIRED_ABI_MAJOR: int = 0
-_REQUIRED_ABI_MINOR: int = 7  # v0.1.2: chat.completion wrapped-shape with generation options
+_REQUIRED_ABI_MINOR: int = 8  # v0.1.3: embeddings.text capability (OCT_EVENT_EMBEDDING_VECTOR + data.embedding_vector payload + OCT_EMBED_POOLING_* constants)
 
 
 def _build_lib() -> tuple[Any, Any]:
@@ -1281,6 +1314,20 @@ class NativeEvent:
         "e2e_first_chunk_ms",
         "total_latency_ms",
         "queued_ms",
+        # v0.1.3 — embeddings.text payload. Copied out of the cffi
+        # buffer at poll time (lifetime contract: runtime owns the
+        # float buffer only until the next poll). The list itself
+        # is Python-owned and survives across polls. n_dim is the
+        # vector dimension (model's pooled output size); index is
+        # the input position in the batch; pooling_type maps to
+        # OCT_EMBED_POOLING_*; is_normalized is 1 iff the runtime
+        # already L2-normalized.
+        "values",
+        "n_dim",
+        "n_input_tokens",
+        "index",
+        "pooling_type",
+        "is_normalized",
     )
 
     def __init__(
@@ -1308,6 +1355,12 @@ class NativeEvent:
         e2e_first_chunk_ms: float = 0.0,
         total_latency_ms: float = 0.0,
         queued_ms: float = 0.0,
+        values: list[float] | None = None,
+        n_dim: int = 0,
+        n_input_tokens: int = 0,
+        index: int = 0,
+        pooling_type: int = 0,
+        is_normalized: bool = False,
     ) -> None:
         self.type = type
         self.version = version
@@ -1331,6 +1384,12 @@ class NativeEvent:
         self.e2e_first_chunk_ms = e2e_first_chunk_ms
         self.total_latency_ms = total_latency_ms
         self.queued_ms = queued_ms
+        self.values = values if values is not None else []
+        self.n_dim = n_dim
+        self.n_input_tokens = n_input_tokens
+        self.index = index
+        self.pooling_type = pooling_type
+        self.is_normalized = is_normalized
 
     @property
     def is_none(self) -> bool:
@@ -1543,6 +1602,41 @@ class NativeSession:
             payload["options"] = options
         self.send_text(_json.dumps(payload))
 
+    def send_embed(self, inputs: str | list[str]) -> None:
+        """v0.1.3: send an `embeddings.text` request.
+
+        Emits ``{"input": <str | [str, ...]>}`` on
+        ``oct_session_send_text``. The runtime tokenizes, runs
+        ``llama_decode`` in embedding mode, pulls the pooled vector
+        via ``llama_get_embeddings_seq``, L2-normalizes, and emits
+        one ``OCT_EVENT_EMBEDDING_VECTOR`` per input in input order
+        followed by ``OCT_EVENT_SESSION_COMPLETED(OK)``.
+
+        Atomic-batch failure: per-input failure produces one
+        ``OCT_EVENT_ERROR`` followed immediately by
+        ``OCT_EVENT_SESSION_COMPLETED`` with the matching bounded
+        status; subsequent inputs are NOT processed. Bindings derive
+        the failed index from the count of EMBEDDING_VECTOR events
+        received before the ERROR (emission is in input order).
+
+        Parameters
+        ----------
+        inputs
+            Either a single string OR a non-empty list of strings.
+            Empty / whitespace-only strings reject INVALID_INPUT
+            via the runtime-side validator (privacy-preserved error
+            messages — no input bytes echoed).
+        """
+        import json as _json
+
+        if isinstance(inputs, str):
+            payload: dict[str, Any] = {"input": inputs}
+        elif isinstance(inputs, list):
+            payload = {"input": list(inputs)}
+        else:
+            raise TypeError(f"send_embed: inputs must be str or list[str], got {type(inputs).__name__}")
+        self.send_text(_json.dumps(payload))
+
     def poll_event(self, timeout_ms: int = 0) -> NativeEvent:
         """Wait up to ``timeout_ms`` for the next event from the session.
 
@@ -1615,6 +1709,13 @@ class NativeSession:
         e2e_first_chunk_ms = 0.0
         total_latency_ms = 0.0
         queued_ms = 0.0
+        # v0.1.3 — embeddings.text payload defaults.
+        emb_values: list[float] = []
+        emb_n_dim = 0
+        emb_n_input_tokens = 0
+        emb_index = 0
+        emb_pooling_type = 0
+        emb_is_normalized = False
         ev_type = int(ev.type)
         if ev_type == OCT_EVENT_TRANSCRIPT_CHUNK:
             chunk = ev.data.transcript_chunk
@@ -1648,6 +1749,26 @@ class NativeSession:
             cache_saved_tokens = int(cache.saved_tokens)
             if cache.layer != ffi.NULL:
                 cache_layer = ffi.string(cache.layer).decode("utf-8", errors="replace")
+        elif ev_type == OCT_EVENT_EMBEDDING_VECTOR:
+            # v0.1.3 — pooled embedding vector. The runtime owns the
+            # float buffer only until the next poll on this session,
+            # so we MUST copy it out here. ffi.buffer reads n_dim *
+            # sizeof(float) bytes; struct.unpack converts to a
+            # Python list (binding-owned, survives across polls).
+            emb = ev.data.embedding_vector
+            emb_n_dim = int(emb.n_dim)
+            emb_n_input_tokens = int(emb.n_input_tokens)
+            emb_index = int(emb.index)
+            emb_pooling_type = int(emb.pooling_type)
+            emb_is_normalized = bool(emb.is_normalized)
+            if emb.values != ffi.NULL and emb_n_dim > 0:
+                # Each fp32 = 4 bytes; copy via cffi.buffer slice +
+                # struct.unpack. unpack_from is faster but requires
+                # a bytes-like object — buffer[:] gets us bytes.
+                import struct as _struct
+
+                buf = ffi.buffer(emb.values, emb_n_dim * 4)[:]
+                emb_values = list(_struct.unpack(f"{emb_n_dim}f", buf))
         return NativeEvent(
             type=ev_type,
             version=int(ev.version),
@@ -1663,6 +1784,12 @@ class NativeSession:
             e2e_first_chunk_ms=e2e_first_chunk_ms,
             total_latency_ms=total_latency_ms,
             queued_ms=queued_ms,
+            values=emb_values,
+            n_dim=emb_n_dim,
+            n_input_tokens=emb_n_input_tokens,
+            index=emb_index,
+            pooling_type=emb_pooling_type,
+            is_normalized=emb_is_normalized,
             **_envelope(ev),
         )
 
