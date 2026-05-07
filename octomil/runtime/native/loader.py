@@ -120,6 +120,14 @@ OCT_EVENT_METRIC: int = 19
 # lifetime = until next poll on this session (same contract as
 # transcript_chunk text). Bindings MUST copy before issuing another poll.
 OCT_EVENT_EMBEDDING_VECTOR: int = 20
+# v0.1.5 PR-2 — STT events. TRANSCRIPT_SEGMENT carries one timestamped
+# segment (utf8, n_bytes, start_ms, end_ms, segment_index, is_final).
+# TRANSCRIPT_FINAL is the end-of-transcript event with the concatenated
+# UTF-8 plus n_segments + duration_ms; followed immediately by
+# OCT_EVENT_SESSION_COMPLETED(OK). All inner pointer fields are
+# runtime-owned; lifetime = until next poll. Bindings MUST copy.
+OCT_EVENT_TRANSCRIPT_SEGMENT: int = 21
+OCT_EVENT_TRANSCRIPT_FINAL: int = 22
 
 OCT_SAMPLE_FORMAT_PCM_S16LE: int = 1
 OCT_SAMPLE_FORMAT_PCM_F32LE: int = 2
@@ -531,6 +539,65 @@ typedef struct oct_event {
             uint8_t      _reserved0;
             uint16_t     _reserved1;
         } embedding_vector;
+
+        /* v0.1.5 — VAD transition (capability not advertised in PR-2B
+         * SDK consumption path; declared so the union sizeof matches
+         * the dylib's). */
+        struct {
+            uint32_t    transition_kind;
+            uint32_t    timestamp_ms;
+            float       confidence;
+            uint32_t    _reserved0;
+        } vad_transition;
+
+        /* v0.1.5 PR-2 — STT transcript segment. utf8 lifetime = until
+         * next poll. The SDK copies the bytes out at poll time before
+         * returning to the caller. */
+        struct {
+            const char* utf8;
+            uint32_t    n_bytes;
+            uint32_t    start_ms;
+            uint32_t    end_ms;
+            uint32_t    segment_index;
+            uint8_t     is_final;
+            uint8_t     _reserved0;
+            uint16_t    _reserved1;
+        } transcript_segment;
+
+        /* v0.1.5 PR-2 — STT end-of-transcript. Followed by
+         * SESSION_COMPLETED(OK). utf8 lifetime contract identical to
+         * transcript_segment. */
+        struct {
+            const char* utf8;
+            uint32_t    n_bytes;
+            uint32_t    n_segments;
+            uint32_t    duration_ms;
+            uint32_t    _reserved0;
+            uint32_t    _reserved1;
+        } transcript_final;
+
+        /* v0.1.5 — diarization segment (capability not advertised in
+         * PR-2B; declared for union-sizeof parity with the dylib). */
+        struct {
+            uint32_t    start_ms;
+            uint32_t    end_ms;
+            uint16_t    speaker_id;
+            uint16_t    _reserved0;
+            uint32_t    _reserved1;
+            const char* speaker_label;
+        } diarization_segment;
+
+        /* v0.1.5 — TTS audio chunk (capability not advertised in
+         * PR-2B; declared for union-sizeof parity with the dylib). */
+        struct {
+            const uint8_t* pcm;
+            uint32_t       n_bytes;
+            uint32_t       sample_rate;
+            uint32_t       sample_format;
+            uint16_t       channels;
+            uint8_t        is_final;
+            uint8_t        _reserved0;
+        } tts_audio_chunk;
     } data;
 
     /* ──────── v0.4 step 2 — operational envelope APPENDED ──────── */
@@ -688,7 +755,7 @@ size_t       oct_model_config_size(void);
 # rather than a typed compatibility error. Codex R1 fix: fail fast
 # at load time with NativeRuntimeError(VERSION_MISMATCH).
 _REQUIRED_ABI_MAJOR: int = 0
-_REQUIRED_ABI_MINOR: int = 8  # v0.1.3: embeddings.text capability (OCT_EVENT_EMBEDDING_VECTOR + data.embedding_vector payload + OCT_EMBED_POOLING_* constants)
+_REQUIRED_ABI_MINOR: int = 9  # v0.1.5 PR-2: STT events (OCT_EVENT_TRANSCRIPT_SEGMENT/FINAL) + audio.transcription session capability + transcript_segment/transcript_final union arms.
 
 
 def _build_lib() -> tuple[Any, Any]:
@@ -1329,6 +1396,18 @@ class NativeEvent:
         "index",
         "pooling_type",
         "is_normalized",
+        # v0.1.5 PR-2 — STT events. transcript-segment fields are
+        # populated only on OCT_EVENT_TRANSCRIPT_SEGMENT; transcript-
+        # final fields only on OCT_EVENT_TRANSCRIPT_FINAL. `text` is
+        # the segment / final UTF-8 (already copied out of the
+        # runtime-owned buffer at poll time so the caller can hold it
+        # across subsequent polls).
+        "segment_start_ms",
+        "segment_end_ms",
+        "segment_index",
+        "segment_is_final",
+        "final_n_segments",
+        "final_duration_ms",
     )
 
     def __init__(
@@ -1362,6 +1441,12 @@ class NativeEvent:
         index: int = 0,
         pooling_type: int = 0,
         is_normalized: bool = False,
+        segment_start_ms: int = 0,
+        segment_end_ms: int = 0,
+        segment_index: int = 0,
+        segment_is_final: bool = False,
+        final_n_segments: int = 0,
+        final_duration_ms: int = 0,
     ) -> None:
         self.type = type
         self.version = version
@@ -1391,6 +1476,12 @@ class NativeEvent:
         self.index = index
         self.pooling_type = pooling_type
         self.is_normalized = is_normalized
+        self.segment_start_ms = segment_start_ms
+        self.segment_end_ms = segment_end_ms
+        self.segment_index = segment_index
+        self.segment_is_final = segment_is_final
+        self.final_n_segments = final_n_segments
+        self.final_duration_ms = final_duration_ms
 
     @property
     def is_none(self) -> bool:
@@ -1717,6 +1808,13 @@ class NativeSession:
         emb_index = 0
         emb_pooling_type = 0
         emb_is_normalized = False
+        # v0.1.5 PR-2 — STT payload defaults.
+        seg_start_ms = 0
+        seg_end_ms = 0
+        seg_index = 0
+        seg_is_final = False
+        final_n_segments = 0
+        final_duration_ms = 0
         ev_type = int(ev.type)
         if ev_type == OCT_EVENT_TRANSCRIPT_CHUNK:
             chunk = ev.data.transcript_chunk
@@ -1750,6 +1848,25 @@ class NativeSession:
             cache_saved_tokens = int(cache.saved_tokens)
             if cache.layer != ffi.NULL:
                 cache_layer = ffi.string(cache.layer).decode("utf-8", errors="replace")
+        elif ev_type == OCT_EVENT_TRANSCRIPT_SEGMENT:
+            # v0.1.5 PR-2 — STT segment. utf8 + timestamps + ordinal.
+            # Copy bytes out of the runtime-owned buffer NOW per the
+            # "valid until next poll" lifetime contract.
+            seg = ev.data.transcript_segment
+            if seg.utf8 != ffi.NULL and seg.n_bytes > 0:
+                text_payload = ffi.buffer(seg.utf8, int(seg.n_bytes))[:].decode("utf-8", errors="replace")
+            seg_start_ms = int(seg.start_ms)
+            seg_end_ms = int(seg.end_ms)
+            seg_index = int(seg.segment_index)
+            seg_is_final = bool(seg.is_final)
+        elif ev_type == OCT_EVENT_TRANSCRIPT_FINAL:
+            # v0.1.5 PR-2 — STT end-of-transcript. utf8 + n_segments +
+            # duration_ms. Same lifetime rule as segment.
+            fin = ev.data.transcript_final
+            if fin.utf8 != ffi.NULL and fin.n_bytes > 0:
+                text_payload = ffi.buffer(fin.utf8, int(fin.n_bytes))[:].decode("utf-8", errors="replace")
+            final_n_segments = int(fin.n_segments)
+            final_duration_ms = int(fin.duration_ms)
         elif ev_type == OCT_EVENT_EMBEDDING_VECTOR:
             # v0.1.3 — pooled embedding vector. The runtime owns the
             # float buffer only until the next poll on this session,
@@ -1790,6 +1907,12 @@ class NativeSession:
             index=emb_index,
             pooling_type=emb_pooling_type,
             is_normalized=emb_is_normalized,
+            segment_start_ms=seg_start_ms,
+            segment_end_ms=seg_end_ms,
+            segment_index=seg_index,
+            segment_is_final=seg_is_final,
+            final_n_segments=final_n_segments,
+            final_duration_ms=final_duration_ms,
             **_envelope(ev),
         )
 
@@ -2031,6 +2154,8 @@ __all__ = [
     "OCT_EVENT_SESSION_STARTED",
     "OCT_EVENT_THERMAL_STATE",
     "OCT_EVENT_TRANSCRIPT_CHUNK",
+    "OCT_EVENT_TRANSCRIPT_FINAL",
+    "OCT_EVENT_TRANSCRIPT_SEGMENT",
     "OCT_EVENT_TURN_ENDED",
     "OCT_EVENT_USER_SPEECH_DETECTED",
     "OCT_EVENT_VERSION",

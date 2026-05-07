@@ -4096,6 +4096,69 @@ class ExecutionKernel:
         cached = self._lookup_warmed_backend(CAPABILITY_TRANSCRIPTION, model, candidate=planner_candidate)
         if cached is not None:
             return cached
+
+        # v0.1.5 PR-2B: hard-cutover product STT path. When the
+        # request resolves to a whisper model AND the native runtime
+        # advertises ``audio.transcription`` AND OCTOMIL_WHISPER_BIN
+        # is set, return the NativeSttServeAdapter (file-path
+        # `.transcribe(path) -> dict` shape that mirrors the legacy
+        # `_WhisperBackend`). The legacy pywhispercpp engine is no
+        # longer registered, so the registry walk below would return
+        # None and the kernel would (mis)route the request to cloud.
+        # Routing through the native backend here keeps the
+        # local-first contract intact AND honors the no-silent-
+        # fallback rule: if the native runtime can't open the
+        # capability, the adapter's load_model raises typed
+        # OctomilError instead of swallowing-and-returning-None.
+        try:
+            from octomil.runtime.engines.whisper import is_whisper_model
+
+            _looks_like_whisper = is_whisper_model(model)
+        except Exception:  # noqa: BLE001 — defensive; module is in-tree
+            _looks_like_whisper = False
+        if _looks_like_whisper and os.environ.get("OCTOMIL_WHISPER_BIN"):
+            # Codex R1 blocker: only whisper-tiny is wired in v0.1.5.
+            # Other names (whisper-base/small/medium/large-v3) would
+            # silently run tiny otherwise. Mirror NativeSttBackend's
+            # gate at the kernel layer so the cloud-fallback path is
+            # aware (returning None lets the caller's policy gate
+            # decide; the SDK contract says local STT for
+            # whisper-base+ is unavailable until the runtime ships
+            # multi-size support).
+            if model.lower() != "whisper-tiny":
+                logger.debug(
+                    "native STT backend rejected %r — only whisper-tiny is wired in v0.1.5",
+                    model,
+                )
+                return None
+            try:
+                from octomil.serve.stt_serve_adapter import NativeSttServeAdapter
+
+                native = NativeSttServeAdapter()
+                native.load_model(model)
+                return native
+            except OctomilError:
+                # Codex R2 blocker: typed native errors must reach
+                # the public SDK/CLI surface so callers can
+                # disambiguate (e.g. CHECKSUM_MISMATCH triggers a
+                # re-download; RUNTIME_UNAVAILABLE means setup
+                # problem). Swallowing these to None would route
+                # the request to cloud or 503 with a generic
+                # "no runtime" — exactly the failure mode the
+                # cutover is meant to prevent.
+                raise
+            except Exception as exc:  # noqa: BLE001
+                # Truly-unexpected failures (e.g. import-time
+                # problem outside the typed taxonomy): fall
+                # through to None so the caller's policy gate
+                # runs. We log at debug level — no new stderr.
+                logger.debug(
+                    "native STT backend unavailable for %r: %s — kernel returns None",
+                    model,
+                    exc,
+                )
+                return None
+
         try:
             from octomil.runtime.engines import get_registry
 

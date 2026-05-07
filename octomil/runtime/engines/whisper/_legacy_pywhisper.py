@@ -1,12 +1,19 @@
-"""Whisper.cpp engine plugin -- on-device speech-to-text via pywhispercpp.
+"""LEGACY pywhispercpp engine — DO NOT USE on the product path.
 
-Whisper.cpp provides fast, CPU-optimized speech-to-text inference using
-OpenAI's Whisper models compiled with ggml.  This engine plugin wraps
-``pywhispercpp`` to integrate with the octomil engine registry.
+v0.1.5 PR-2B retired this engine from the production registry. The
+product STT path now routes through
+:class:`octomil.runtime.native.stt_backend.NativeSttBackend` (cffi
+bindings into octomil-runtime + whisper.cpp), with a hard-cutover
+contract: no silent fallback to pywhispercpp at runtime.
 
-Unlike LLM engines, Whisper does NOT use ``generate()`` / ``generate_stream()``.
-Instead, the backend exposes a ``transcribe()`` method and the serve layer adds
-an OpenAI-compatible ``/v1/audio/transcriptions`` endpoint.
+This module remains for benchmarking / parity comparison ONLY. It is
+gated behind the opt-in env var ``OCTOMIL_USE_PY_WHISPERCPP_BENCHMARK=1``
+in the parity gate (:mod:`scripts.parity_native_stt`); production code
+must NOT import from here. ``WhisperCppEngine`` is kept as the
+class name so the parity script can construct it without further
+indirection, and ``is_whisper_model`` remains importable from the
+package ``__init__`` because the serve layer still uses it to
+identify whisper models by name.
 """
 
 from __future__ import annotations
