@@ -486,15 +486,18 @@ def create_app(
         if state.reporter is not None:
             state.reporter.close()
 
-        # Graceful shutdown: close native embeddings backend / runtime.
-        # Mirrors the whisper / sherpa pattern — explicit close releases
-        # the cffi runtime + GGUF mmap rather than relying on __del__.
-        if state.embeddings_backend is not None:
-            try:
-                state.embeddings_backend.close()
-            except Exception:  # noqa: BLE001
-                logger.warning("embeddings_backend close failed", exc_info=True)
-            state.embeddings_backend = None
+        # Graceful shutdown: close all warmed embeddings runtimes
+        # via the factory's cache reset. Doing this once at lifespan
+        # exit (after uvicorn has drained the request queue) avoids
+        # the close-during-embed race that would arise from closing
+        # per-request when a model_id swap happens.
+        try:
+            from ..runtime.native.embeddings_runtime import reset_runtime_cache
+
+            reset_runtime_cache()
+        except Exception:  # noqa: BLE001
+            logger.warning("native embeddings runtime cache reset failed", exc_info=True)
+        state.embeddings_backend = None
 
     app = FastAPI(title="Octomil Serve", version="1.0.0", lifespan=lifespan)
 
@@ -1086,18 +1089,14 @@ def create_app(
                 ),
             )
 
-        # Track the active runtime on state so the lifespan teardown
-        # can close it. Replace if the model_id changed (the registry's
-        # cache returns the same instance for repeat ids; a different
-        # id resolves to a different runtime).
-        if state.embeddings_backend is not runtime:
-            previous = state.embeddings_backend
-            state.embeddings_backend = runtime
-            if previous is not None and previous is not runtime:
-                try:
-                    previous.close()
-                except Exception:  # noqa: BLE001
-                    logger.warning("previous embeddings runtime close() failed", exc_info=True)
+        # Track the most-recently-used runtime on state for the
+        # lifespan teardown. We deliberately do NOT close the previous
+        # runtime here — closing while a concurrent request is mid-
+        # ``embed()`` (in a worker thread) would free a backend that's
+        # actively serving an inference. The factory's ``_runtime_cache``
+        # owns runtime lifetime; the lifespan iterates the cache at
+        # shutdown via ``reset_runtime_cache()``.
+        state.embeddings_backend = runtime
 
         state.request_count += 1
         result = await asyncio.to_thread(runtime.embed, inputs)

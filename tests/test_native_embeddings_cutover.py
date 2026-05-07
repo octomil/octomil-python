@@ -467,9 +467,54 @@ def test_serve_app_route_registered():
     assert "asyncio.to_thread(runtime.embed" in src
 
 
-def test_serve_lifespan_closes_embeddings_backend():
-    """Source-pin: lifespan teardown MUST close
-    state.embeddings_backend so the cffi runtime + GGUF mmap are
-    released on server shutdown (matches whisper / sherpa pattern)."""
+def test_serve_route_does_not_close_previous_runtime_in_request_path():
+    """Round-3 fix: the route MUST NOT call ``previous.close()`` when
+    swapping the active runtime. Closing while a concurrent request
+    is mid-embed (in a worker thread) would free a backend that's
+    actively serving inference. Cache reset happens once at lifespan
+    teardown instead."""
     src = (_repo_root() / "octomil/serve/app.py").read_text(encoding="utf-8")
-    assert "state.embeddings_backend.close()" in src
+    # The literal call shape we removed.
+    assert "previous.close()" not in src
+
+
+def test_serve_lifespan_resets_runtime_cache():
+    """Lifespan teardown MUST drain the runtime cache via
+    ``reset_runtime_cache()`` so warmed cffi runtimes / GGUF mmaps
+    are released at shutdown."""
+    src = (_repo_root() / "octomil/serve/app.py").read_text(encoding="utf-8")
+    assert "reset_runtime_cache" in src
+
+
+# ---------------------------------------------------------------------------
+# (12) Registry resolution for HF org-prefixed ids reaches the factory.
+#      Round-3 fix: the registry's literal-prefix matcher needs the
+#      ``<org>/<family>`` variants registered too — without them,
+#      ``BAAI/bge-...`` passes ``is_embedding_model`` but never reaches
+#      the factory and falls through to the chat default.
+# ---------------------------------------------------------------------------
+
+
+def test_registry_reaches_factory_for_hf_org_prefixed_ids(monkeypatch, tmp_path):
+    from octomil.runtime.core.registry import ModelRuntimeRegistry
+    from octomil.runtime.native import embeddings_runtime as emb_rt
+    from octomil.runtime.native.embeddings_runtime import (
+        NativeEmbeddingsRuntime,
+        register_native_embeddings_factory,
+    )
+
+    monkeypatch.setenv("OCTOMIL_NATIVE_EMBEDDINGS_MODEL_DIR", str(tmp_path))
+    monkeypatch.setattr(emb_rt, "_resolve_prepared_model_dir", lambda _mid: None)
+    register_native_embeddings_factory()
+
+    for hf_id in (
+        "BAAI/bge-base-en-v1.5",
+        "nomic-ai/nomic-embed-text-v1.5",
+        "intfloat/e5-mistral-7b-instruct",
+        "mixedbread-ai/mxbai-embed-large-v1",
+        "Snowflake/snowflake-arctic-embed-l-v2.0",
+    ):
+        runtime = ModelRuntimeRegistry.shared().resolve(hf_id)
+        assert isinstance(
+            runtime, NativeEmbeddingsRuntime
+        ), f"HF id {hf_id!r} did not resolve to NativeEmbeddingsRuntime"
