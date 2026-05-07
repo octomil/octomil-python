@@ -72,6 +72,7 @@ class ServerState:
     backend: Optional[InferenceBackend] = None
     whisper_backend: Any = None  # _WhisperBackend instance (speech-to-text)
     sherpa_tts_backend: Any = None  # _SherpaTtsBackend instance (text-to-speech)
+    embeddings_backend: Any = None  # NativeEmbeddingsBackend instance (embeddings.text)
     model_name: str = ""
     engine_name: str = ""
     start_time: float = field(default_factory=time.time)

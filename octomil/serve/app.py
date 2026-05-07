@@ -993,6 +993,87 @@ def create_app(
             "usage": usage,
         }
 
+    @app.post("/v1/embeddings")
+    async def create_embeddings(body: dict[str, Any]) -> dict[str, Any]:
+        """OpenAI-compatible embeddings endpoint.
+
+        Routes embedding-capable GGUF requests through
+        :class:`NativeEmbeddingsBackend` (the hard-cutover native
+        path; no Python embedder fallback).
+
+        Request body::
+
+            {"model": "nomic-embed-text-v1.5",
+             "input": "single string" | ["batch", "of", "strings"]}
+
+        Response (OpenAI shape)::
+
+            {"object": "list",
+             "data": [{"object": "embedding", "embedding": [...], "index": N}],
+             "model": "...",
+             "usage": {"prompt_tokens": N, "total_tokens": N}}
+
+        Errors propagate as bounded :class:`OctomilError`. Chat-only
+        models reject ``UNSUPPORTED_MODALITY``.
+        """
+        from ..runtime.native.embeddings_backend import NativeEmbeddingsBackend
+        from ..runtime.native.embeddings_runtime import is_embedding_model
+
+        model_id = body.get("model") or state.model_name
+        raw_input = body.get("input")
+        if raw_input is None:
+            raise OctomilError(
+                code=OctomilErrorCode.INVALID_INPUT,
+                message="`input` is required (string or list of strings)",
+            )
+        if isinstance(raw_input, str):
+            inputs: list[str] = [raw_input]
+        elif isinstance(raw_input, list) and all(isinstance(x, str) for x in raw_input):
+            inputs = raw_input
+        else:
+            raise OctomilError(
+                code=OctomilErrorCode.INVALID_INPUT,
+                message="`input` must be a string or list of strings",
+            )
+        if not inputs:
+            raise OctomilError(
+                code=OctomilErrorCode.INVALID_INPUT,
+                message="`input` must contain at least one string",
+            )
+
+        if not is_embedding_model(model_id):
+            raise OctomilError(
+                code=OctomilErrorCode.UNSUPPORTED_MODALITY,
+                message=(
+                    f"Model {model_id!r} is not an embedding-capable family. "
+                    f"Supported prefixes: nomic-embed, bge-, e5-, gte-, mxbai-embed, "
+                    f"snowflake-arctic-embed, all-minilm, jina-embed."
+                ),
+            )
+
+        # Lazy-construct the backend on first request — keeps server
+        # startup fast for chat-primary configurations and ensures
+        # backend lifetime is owned by ServerState (closed on shutdown).
+        if state.embeddings_backend is None:
+            backend = NativeEmbeddingsBackend()
+            backend.load_model(model_id)
+            state.embeddings_backend = backend
+
+        state.request_count += 1
+        result = state.embeddings_backend.embed(inputs)
+        return {
+            "object": "list",
+            "data": [
+                {"object": "embedding", "embedding": vector, "index": idx}
+                for idx, vector in enumerate(result.embeddings)
+            ],
+            "model": result.model or model_id,
+            "usage": {
+                "prompt_tokens": result.prompt_tokens,
+                "total_tokens": result.total_tokens,
+            },
+        }
+
     @app.get("/v1/cache/stats")
     async def cache_stats() -> dict[str, Any]:
         """Return KV cache statistics."""
