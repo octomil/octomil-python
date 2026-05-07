@@ -84,20 +84,37 @@ def test_fetch_runtime_dev_pins_expected_version() -> None:
     )
 
 
-def test_capabilities_enum_covers_done_and_blocked_sets() -> None:
-    """The SDK-side capability allowlist (``RUNTIME_CAPABILITIES``) is the
-    forward-compat reader filter. It must include every capability the
-    matrix mentions — DONE rows so the parsed view doesn't silently
-    drop them, BLOCKED rows so request-side strict-reject names the
-    capability instead of failing some unrelated validator."""
+def test_capabilities_partitioning_is_complete() -> None:
+    """Every member of ``RUNTIME_CAPABILITIES`` MUST be classified in
+    the matrix — either as a DONE row served by the runtime or as a
+    BLOCKED row that fails closed at ``oct_session_open``. A capability
+    that's in neither set means the matrix doc lost a row, the test
+    constants drifted, or the contract enum gained a string with no
+    classification. All three are bugs.
+
+    This assertion forces ``DONE ∪ BLOCKED == RUNTIME_CAPABILITIES``
+    AND ``DONE ∩ BLOCKED == ∅``."""
     from octomil.runtime.native.capabilities import RUNTIME_CAPABILITIES
 
-    expected = DONE_CAPABILITIES | BLOCKED_CAPABILITIES
-    missing = expected - RUNTIME_CAPABILITIES
+    overlap = DONE_CAPABILITIES & BLOCKED_CAPABILITIES
+    assert not overlap, (
+        f"DONE_CAPABILITIES and BLOCKED_CAPABILITIES overlap on "
+        f"{sorted(overlap)!r}. A capability is one or the other, never both."
+    )
+
+    classified = DONE_CAPABILITIES | BLOCKED_CAPABILITIES
+    missing = RUNTIME_CAPABILITIES - classified
+    extra = classified - RUNTIME_CAPABILITIES
     assert not missing, (
-        f"RUNTIME_CAPABILITIES is missing {sorted(missing)!r}; either the matrix is "
-        f"out of date or the contract enum was reduced. Bump capabilities.py "
-        f"and the contract schema together."
+        f"RUNTIME_CAPABILITIES contains unclassified entries {sorted(missing)!r}. "
+        f"Add them to either DONE_CAPABILITIES (with a real native adapter + "
+        f"matrix DONE row + parity gate) or BLOCKED_CAPABILITIES (with a "
+        f"BLOCKED matrix row)."
+    )
+    assert not extra, (
+        f"DONE/BLOCKED reference {sorted(extra)!r}, which are NOT in "
+        f"RUNTIME_CAPABILITIES. Either the contract enum lost a string or "
+        f"the test drifted."
     )
 
 
@@ -152,6 +169,17 @@ def test_runtime_advertises_only_done_capabilities() -> None:
     (cutover spec hard rule 3). If the runtime ever advertises a
     capability without a real adapter, ``open_session`` would happily
     accept it and produce undefined behavior; this test trips first.
+
+    Caveat (per Codex review): ``NativeRuntime.capabilities()`` filters
+    advertised strings against the SDK's ``RUNTIME_CAPABILITIES``
+    allowlist, so a runtime that fakedly advertises a string OUTSIDE
+    the contract enum (e.g. ``"made.up.capability"``) would be silently
+    dropped from the parsed view and not fail this test. That is an
+    intentional forward-compat property (newer-runtime + older-SDK
+    upgrades don't crash); the practical attack surface this guard
+    blocks is "runtime fakedly advertises a contract-enum string for
+    which no real adapter exists" — which it does cleanly because the
+    SDK's allowlist necessarily contains every BLOCKED capability.
     """
     from octomil.runtime.native.loader import NativeRuntime
 
