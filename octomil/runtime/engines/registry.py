@@ -255,18 +255,25 @@ def reset_registry() -> None:
 
 
 def _auto_register(registry: EngineRegistry) -> None:
-    """Register stable built-in engines."""
+    """Register stable built-in engines.
+
+    v0.1.5 PR-2B: ``WhisperCppEngine`` is no longer registered. The
+    product STT path runs through
+    :class:`octomil.runtime.native.stt_backend.NativeSttBackend` (cffi
+    bindings into octomil-runtime + whisper.cpp). The legacy
+    pywhispercpp shim under
+    ``octomil.runtime.engines.whisper._legacy_pywhisper`` exists for
+    benchmark parity only — see :mod:`scripts.parity_native_stt`.
+    """
     from octomil.runtime.engines.echo.engine import EchoEngine
     from octomil.runtime.engines.llamacpp.engine import LlamaCppEngine
     from octomil.runtime.engines.mlx.engine import MLXEngine
     from octomil.runtime.engines.ort.engine import ONNXRuntimeEngine
     from octomil.runtime.engines.sherpa.engine import SherpaTtsEngine
-    from octomil.runtime.engines.whisper.engine import WhisperCppEngine
 
     registry.register(MLXEngine())
     registry.register(LlamaCppEngine())
     registry.register(ONNXRuntimeEngine())
-    registry.register(WhisperCppEngine())
     registry.register(SherpaTtsEngine())
     registry.register(EchoEngine())
 

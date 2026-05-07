@@ -349,21 +349,25 @@ def create_app(
                 _m.active_params,
             )
 
-        # Check if this is a whisper (speech-to-text) model
+        # Check if this is a whisper (speech-to-text) model. v0.1.5
+        # PR-2B cutover: the product path uses the NATIVE
+        # `audio.transcription` backend (octomil-runtime + whisper.cpp
+        # via cffi). The legacy pywhispercpp engine is no longer
+        # registered for production use and lives under
+        # `_legacy_pywhisper.py` for benchmarking only.
         from ..runtime.engines.whisper import is_whisper_model
 
         if is_whisper_model(model_name):
-            from ..runtime.engines.whisper import WhisperCppEngine
+            from .stt_serve_adapter import NativeSttServeAdapter
 
-            whisper_engine = WhisperCppEngine()
-            whisper_backend = whisper_engine.create_backend(model_name)
+            whisper_backend = NativeSttServeAdapter()
             try:
                 whisper_backend.load_model(model_name)
             except Exception as exc:
                 _log_startup_error(model_name, exc)
                 raise
             state.whisper_backend = whisper_backend
-            state.engine_name = "whisper.cpp"
+            state.engine_name = "native-whisper-cpp"
         elif _is_sherpa_tts_model(model_name):
             # ``_SherpaTtsBackend._resolve_model_dir`` requires an
             # injected prepared ``model_dir=`` (the PR D cutover
