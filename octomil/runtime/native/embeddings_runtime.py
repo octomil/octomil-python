@@ -273,17 +273,53 @@ def reset_runtime_cache() -> None:
     _runtime_cache.clear()
 
 
+# Known HuggingFace orgs that publish embedding models for each
+# family. Registered as ``<org>/<family>`` prefix variants so the
+# registry's literal-prefix matching reaches the factory for canonical
+# HF ids (BAAI/bge-base-en-v1.5, intfloat/e5-mistral-7b-instruct,
+# etc.) without changing the registry's matching algorithm.
+#
+# This is the round-3 fix for the "registry prefix-matches the raw
+# model id but the factory's family gate strips org prefix" gap
+# Codex flagged in R2: ``is_embedding_model('BAAI/bge-...')`` was
+# True, yet ``registry.resolve('BAAI/bge-...')`` never reached the
+# factory because no registered prefix matched 'baai/'.
+_KNOWN_HF_ORG_PREFIXES: dict[str, tuple[str, ...]] = {
+    "bge-": ("baai/",),
+    "bge_": ("baai/",),
+    "nomic-embed": ("nomic-ai/",),
+    "e5-mistral": ("intfloat/",),
+    "e5-base": ("intfloat/",),
+    "e5-large": ("intfloat/",),
+    "e5-small": ("intfloat/",),
+    "gte-": ("thenlper/", "alibaba-nlp/"),
+    "mxbai-embed": ("mixedbread-ai/",),
+    "snowflake-arctic-embed": ("snowflake/",),
+    "all-minilm": ("sentence-transformers/",),
+    "jina-embed": ("jinaai/",),
+}
+
+
 def register_native_embeddings_factory() -> None:
     """Register :func:`native_embeddings_factory` against every known
-    embedding family prefix in the global :class:`ModelRuntimeRegistry`.
+    embedding family prefix AND the common ``<org>/<family>`` HuggingFace
+    variants in the global :class:`ModelRuntimeRegistry`.
 
     Idempotent — calling twice is a no-op (the registry just overwrites
     with the same factory). Called from a module-level import side
     effect so callers that import :mod:`octomil` automatically get
     embedding routing.
+
+    Why register org/family combos: ``ModelRuntimeRegistry.resolve``
+    matches the lowercased raw model id against registered prefix
+    keys with ``str.startswith``. ``BAAI/bge-base-en-v1.5`` lowers
+    to ``baai/bge-base-en-v1.5`` which does NOT start with ``bge-``,
+    so the factory is never reached without the ``baai/bge-`` entry.
     """
     from ..core.registry import ModelRuntimeRegistry
 
     registry = ModelRuntimeRegistry.shared()
     for prefix in _EMBEDDING_FAMILY_PREFIXES:
         registry.register(prefix, native_embeddings_factory)
+        for org_prefix in _KNOWN_HF_ORG_PREFIXES.get(prefix, ()):
+            registry.register(org_prefix + prefix, native_embeddings_factory)
