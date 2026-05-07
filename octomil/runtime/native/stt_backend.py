@@ -339,8 +339,11 @@ class NativeSttBackend:
             ``CHECKSUM_MISMATCH`` if the artifact's digest doesn't
             match the v0.1.5 runtime-pinned ggml-tiny.bin SHA-256.
         """
-        if self._runtime is not None:
-            return  # idempotent
+        # Codex R2 nit: validate model_name BEFORE the idempotent
+        # short-circuit so a second `load_model("whisper-base")`
+        # call on a backend already warmed for whisper-tiny doesn't
+        # silently no-op (which would let a downstream transcribe
+        # call run tiny against a request labeled base).
         if model_name.lower() != _SUPPORTED_MODEL_NAME:
             raise OctomilError(
                 code=OctomilErrorCode.UNSUPPORTED_MODALITY,
@@ -351,6 +354,9 @@ class NativeSttBackend:
                     "Multi-size whisper support requires a runtime update."
                 ),
             )
+        if self._runtime is not None:
+            # Same canonical name on a re-load is idempotent.
+            return
         self._model_name = model_name
         try:
             self._runtime = NativeRuntime.open()

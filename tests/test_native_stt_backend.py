@@ -308,6 +308,85 @@ class TestLoadModelGate:
             backend.load_model("whisper-tiny")
             open_mock.assert_not_called()
 
+    def test_kernel_resolver_reraises_typed_native_errors(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Codex R2 blocker: kernel native-first branch must re-raise
+        typed OctomilError (CHECKSUM_MISMATCH / RUNTIME_UNAVAILABLE)
+        rather than swallow them to None. Otherwise the public
+        SDK/CLI surface loses the typed signal and routes to
+        cloud or 503 generically."""
+        from octomil.execution.kernel import ExecutionKernel
+
+        monkeypatch.setenv("OCTOMIL_WHISPER_BIN", "/some/fake/path.bin")
+        # Stub NativeSttServeAdapter.load_model to raise the typed error.
+        with patch(
+            "octomil.serve.stt_serve_adapter.NativeSttServeAdapter.load_model",
+            side_effect=OctomilError(
+                code=OctomilErrorCode.CHECKSUM_MISMATCH,
+                message="ggml-tiny.bin digest mismatch",
+            ),
+        ):
+            kernel = ExecutionKernel.__new__(ExecutionKernel)
+            object.__setattr__(kernel, "_warmed_backends", {})
+            object.__setattr__(kernel, "_lookup_warmed_backend", lambda *a, **kw: None)
+            with pytest.raises(OctomilError) as exc_info:
+                kernel._resolve_local_transcription_backend("whisper-tiny")
+            assert exc_info.value.code == OctomilErrorCode.CHECKSUM_MISMATCH
+
+    def test_kernel_resolver_returns_none_on_unexpected_error(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Conversely, a non-typed exception (e.g. ImportError from a
+        broken cffi install) falls through to None so the caller's
+        policy gate decides — preserves the legacy "no native, try
+        registry, else 503" path."""
+        from octomil.execution.kernel import ExecutionKernel
+
+        monkeypatch.setenv("OCTOMIL_WHISPER_BIN", "/some/fake/path.bin")
+        with patch(
+            "octomil.serve.stt_serve_adapter.NativeSttServeAdapter.load_model",
+            side_effect=ImportError("cffi not installed"),
+        ):
+            kernel = ExecutionKernel.__new__(ExecutionKernel)
+            object.__setattr__(kernel, "_warmed_backends", {})
+            object.__setattr__(kernel, "_lookup_warmed_backend", lambda *a, **kw: None)
+            # Patch out the registry-walk fallback so we exercise just
+            # the native branch's None return.
+            with patch("octomil.runtime.engines.get_registry") as reg_mock:
+                reg_mock.return_value.detect_all.return_value = []
+                result = kernel._resolve_local_transcription_backend("whisper-tiny")
+            assert result is None
+
+    def test_kernel_resolver_rejects_non_tiny_whisper_with_none(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Codex R1+R2: when env is set and model is whisper-base/etc.,
+        kernel returns None (caller's cloud-fallback gate decides).
+        The native backend itself raises UNSUPPORTED_MODALITY but
+        the kernel resolver short-circuits to None before
+        constructing the adapter — log-and-skip pattern matches the
+        design where the cloud-eligibility check upstream owns the
+        "is this a typed error or a "no local available" signal?"
+        decision."""
+        from octomil.execution.kernel import ExecutionKernel
+
+        monkeypatch.setenv("OCTOMIL_WHISPER_BIN", "/some/fake/path.bin")
+        kernel = ExecutionKernel.__new__(ExecutionKernel)
+        object.__setattr__(kernel, "_warmed_backends", {})
+        object.__setattr__(kernel, "_lookup_warmed_backend", lambda *a, **kw: None)
+        with patch("octomil.runtime.engines.get_registry") as reg_mock:
+            reg_mock.return_value.detect_all.return_value = []
+            result = kernel._resolve_local_transcription_backend("whisper-base")
+        assert result is None
+
+    def test_already_loaded_rejects_mismatched_model_name(self) -> None:
+        """Codex R2 nit: when the backend is already warmed for
+        whisper-tiny, a second load_model call asking for a
+        different size must reject UNSUPPORTED_MODALITY rather
+        than no-op (which would let the next transcribe call run
+        tiny against a request labeled base)."""
+        backend = NativeSttBackend()
+        backend._runtime = MagicMock()  # type: ignore[assignment]
+        backend._model_name = "whisper-tiny"
+        with pytest.raises(OctomilError) as exc_info:
+            backend.load_model("whisper-base")
+        assert exc_info.value.code == OctomilErrorCode.UNSUPPORTED_MODALITY
+
 
 # ---------------------------------------------------------------------------
 # transcribe pre-flight

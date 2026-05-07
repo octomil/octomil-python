@@ -4137,12 +4137,21 @@ class ExecutionKernel:
                 native = NativeSttServeAdapter()
                 native.load_model(model)
                 return native
+            except OctomilError:
+                # Codex R2 blocker: typed native errors must reach
+                # the public SDK/CLI surface so callers can
+                # disambiguate (e.g. CHECKSUM_MISMATCH triggers a
+                # re-download; RUNTIME_UNAVAILABLE means setup
+                # problem). Swallowing these to None would route
+                # the request to cloud or 503 with a generic
+                # "no runtime" — exactly the failure mode the
+                # cutover is meant to prevent.
+                raise
             except Exception as exc:  # noqa: BLE001
-                # Any failure here is a real product-path error; we
-                # MUST NOT fall through to the legacy registry path
-                # (which is empty post-PR-2B anyway). Surface the
-                # error via None and let the caller's higher-level
-                # cloud-fallback gate decide.
+                # Truly-unexpected failures (e.g. import-time
+                # problem outside the typed taxonomy): fall
+                # through to None so the caller's policy gate
+                # runs. We log at debug level — no new stderr.
                 logger.debug(
                     "native STT backend unavailable for %r: %s — kernel returns None",
                     model,

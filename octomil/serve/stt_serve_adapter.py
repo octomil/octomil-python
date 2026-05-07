@@ -26,10 +26,10 @@ Hard rules:
 from __future__ import annotations
 
 import logging
+import struct
 import wave
+from array import array
 from typing import Any
-
-import numpy as np
 
 from ..errors import OctomilError, OctomilErrorCode
 from ..runtime.native.stt_backend import NativeSttBackend, TranscriptionResult
@@ -40,13 +40,24 @@ logger = logging.getLogger(__name__)
 _WHISPER_SAMPLE_RATE_HZ: int = 16000
 
 
-def _wav_to_pcm_f32(audio_path: str) -> tuple[np.ndarray, int]:
-    """Decode a 16-bit / 24-bit / 32-bit WAV into mono PCM-f32 at
-    16kHz. Multichannel inputs are downmixed by averaging channels.
+def _wav_to_pcm_f32_bytes(audio_path: str) -> tuple[bytes, int]:
+    """Decode a 16-bit / 24-bit / 32-bit WAV into mono PCM-f32 bytes
+    (float32 LE) at 16kHz. Multichannel inputs are downmixed by
+    averaging channels.
+
+    Codex R2 blocker fix: stdlib-only implementation. The earlier
+    version imported ``numpy`` unconditionally; numpy is in optional
+    extras (``ml`` / ``fl`` / ``data``) and is excluded from the
+    PyInstaller binary. Operators on a bare ``octomil[serve,native]``
+    install would have hit an ImportError before reaching the
+    backend. Using ``struct`` + ``array`` keeps the decode path
+    self-contained at zero new dependency cost. The native backend
+    itself only requires numpy when callers pass array-like inputs;
+    bytes inputs (this adapter's path) skip that requirement.
 
     Caller-side resampling is NOT implemented in v0.1.5 — non-16kHz
-    WAVs reject INVALID_INPUT. This is consistent with the runtime's
-    own validator.
+    WAVs reject INVALID_INPUT. This matches the runtime's own
+    validator.
     """
     with wave.open(audio_path, "rb") as wf:
         sample_rate = wf.getframerate()
@@ -66,14 +77,22 @@ def _wav_to_pcm_f32(audio_path: str) -> tuple[np.ndarray, int]:
         )
 
     if sample_width == 2:
-        arr = np.frombuffer(raw, dtype=np.int16).astype(np.float32) / 32768.0
+        # int16 LE → fp32 in [-1, 1).
+        ints = array("h")  # signed 16-bit
+        ints.frombytes(raw)
+        # NOTE: array('h') is host-endian; WAV is LE. On every
+        # supported platform (darwin-arm64, linux-amd64, etc.) the
+        # host is LE, so the values are correct. Add an explicit
+        # byteswap when porting to a BE host.
+        floats = [v / 32768.0 for v in ints]
     elif sample_width == 4:
-        # Could be int32 PCM or float32. WAV files don't tag this in
-        # the basic `wave` module — assume int32 PCM (more common).
-        arr = np.frombuffer(raw, dtype=np.int32).astype(np.float32) / 2147483648.0
+        # int32 LE → fp32. Same host-endian assumption as int16.
+        ints32 = array("i")
+        ints32.frombytes(raw)
+        floats = [v / 2147483648.0 for v in ints32]
     elif sample_width == 1:
         # 8-bit PCM is unsigned [0, 255] with bias 128.
-        arr = (np.frombuffer(raw, dtype=np.uint8).astype(np.float32) - 128.0) / 128.0
+        floats = [(b - 128) / 128.0 for b in raw]
     else:
         raise OctomilError(
             code=OctomilErrorCode.UNSUPPORTED_MODALITY,
@@ -81,12 +100,20 @@ def _wav_to_pcm_f32(audio_path: str) -> tuple[np.ndarray, int]:
         )
 
     if n_channels == 1:
-        return arr, sample_rate
+        return struct.pack(f"<{len(floats)}f", *floats), sample_rate
     if n_channels == 2:
-        # Interleaved LRLR → mono via channel mean.
-        stereo = arr.reshape(-1, 2)
-        mono = stereo.mean(axis=1).astype(np.float32)
-        return mono, sample_rate
+        # Interleaved LRLR → mono via channel mean. We pair samples
+        # in order; with len(floats) odd we'd have a silent
+        # partial-frame at the tail (shouldn't happen for a
+        # well-formed stereo WAV — wave.readframes returns frame-
+        # aligned bytes).
+        if len(floats) % 2 != 0:
+            raise OctomilError(
+                code=OctomilErrorCode.UNSUPPORTED_MODALITY,
+                message="native STT serve: stereo WAV produced odd float count",
+            )
+        mono = [(floats[i] + floats[i + 1]) * 0.5 for i in range(0, len(floats), 2)]
+        return struct.pack(f"<{len(mono)}f", *mono), sample_rate
     raise OctomilError(
         code=OctomilErrorCode.UNSUPPORTED_MODALITY,
         message=f"native STT serve: WAV with {n_channels} channels unsupported (mono / stereo only)",
@@ -122,7 +149,7 @@ class NativeSttServeAdapter:
         match the legacy pywhispercpp shape.
         """
         try:
-            audio, sr = _wav_to_pcm_f32(audio_path)
+            audio, sr = _wav_to_pcm_f32_bytes(audio_path)
         except wave.Error as exc:
             # `wave` raises wave.Error for non-WAV / malformed WAV. Map
             # to UNSUPPORTED_MODALITY so callers know to convert
