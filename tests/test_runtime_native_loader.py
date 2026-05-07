@@ -123,13 +123,11 @@ def test_abi_version_returns_three_tuple():
     assert isinstance(major, int)
     assert isinstance(minor, int)
     assert isinstance(patch, int)
-    # v0.1.2: ABI MINOR bumped 6→7. New wrapped JSON shape on
-    # chat.completion send_text carrying max_tokens / temperature
-    # / top_p options. No struct ABI changes. v0.1.1 lifecycle
-    # semantics (oct_model_open/_warm/_evict/_close,
-    # session_config v=3, oct_model_close as oct_status_t,
-    # oct_runtime_close refuse-with-last-error) all preserved.
-    assert (major, minor) == (0, 7)
+    # v0.1.3: ABI MINOR bumped 7→8 for native embeddings.text.
+    # Adds OCT_EVENT_EMBEDDING_VECTOR + data.embedding_vector and
+    # OCT_EMBED_POOLING_* constants. v0.1.2 chat options and v0.1.1
+    # model lifecycle semantics are preserved.
+    assert (major, minor) == (0, 8)
     assert patch == 0
 
 
