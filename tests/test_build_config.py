@@ -69,7 +69,7 @@ class TestPyInstallerSpec:
             "octomil.runtime.engines.mlx.engine",
             "octomil.runtime.engines.llamacpp.engine",
             "octomil.runtime.engines.ort.engine",
-            "octomil.runtime.engines.whisper.engine",
+            "octomil.runtime.engines.whisper._legacy_pywhisper",
             "octomil.runtime.engines.echo.engine",
             "octomil.runtime.engines.experimental.mnn.engine",
             "octomil.runtime.engines.experimental.executorch.engine",

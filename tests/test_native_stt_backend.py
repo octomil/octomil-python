@@ -199,6 +199,31 @@ class TestRuntimeAdvertises:
 # ---------------------------------------------------------------------------
 
 
+class TestModelNameGate:
+    """Codex R1 blocker: only whisper-tiny is wired in v0.1.5; other
+    names must reject UNSUPPORTED_MODALITY rather than silently
+    substitute tiny."""
+
+    def test_whisper_base_rejects_unsupported_modality(self) -> None:
+        backend = NativeSttBackend()
+        with pytest.raises(OctomilError) as exc_info:
+            backend.load_model("whisper-base")
+        assert exc_info.value.code == OctomilErrorCode.UNSUPPORTED_MODALITY
+        assert "whisper-base" in exc_info.value.error_message
+
+    def test_whisper_small_rejects_unsupported_modality(self) -> None:
+        backend = NativeSttBackend()
+        with pytest.raises(OctomilError) as exc_info:
+            backend.load_model("whisper-small")
+        assert exc_info.value.code == OctomilErrorCode.UNSUPPORTED_MODALITY
+
+    def test_whisper_large_rejects_unsupported_modality(self) -> None:
+        backend = NativeSttBackend()
+        with pytest.raises(OctomilError) as exc_info:
+            backend.load_model("whisper-large-v3")
+        assert exc_info.value.code == OctomilErrorCode.UNSUPPORTED_MODALITY
+
+
 class TestLoadModelGate:
     def test_missing_whisper_bin_raises_runtime_unavailable(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv("OCTOMIL_WHISPER_BIN", raising=False)
@@ -221,6 +246,7 @@ class TestLoadModelGate:
         backend = NativeSttBackend()
         rt = MagicMock()
         rt.capabilities.return_value = MagicMock(supported_capabilities=("chat.completion",))
+        rt.last_error.return_value = "audio.transcription not built in"
         with patch(
             "octomil.runtime.native.stt_backend.NativeRuntime.open",
             return_value=rt,
@@ -231,6 +257,27 @@ class TestLoadModelGate:
             # We MUST surface this rather than fall back to pywhispercpp.
             # The cutover spec is explicit: no silent product-path fallback.
             assert "audio.transcription" in exc_info.value.error_message
+
+    def test_capability_missing_with_digest_in_last_error_raises_checksum_mismatch(self) -> None:
+        """Codex R1 blocker: when the runtime hides ``audio.transcription``
+        from advertisement because the artifact's SHA-256 doesn't
+        match the runtime-pinned digest, surfacing
+        ``RUNTIME_UNAVAILABLE`` is misleading. The runtime writes a
+        diagnostic into thread-local last_error in that case; we
+        disambiguate on the substring ``digest`` and surface
+        ``CHECKSUM_MISMATCH`` instead."""
+        backend = NativeSttBackend()
+        rt = MagicMock()
+        rt.capabilities.return_value = MagicMock(supported_capabilities=("chat.completion",))
+        rt.last_error.return_value = "ggml-tiny.bin digest mismatch (got abc, want xyz)"
+        with patch(
+            "octomil.runtime.native.stt_backend.NativeRuntime.open",
+            return_value=rt,
+        ):
+            with pytest.raises(OctomilError) as exc_info:
+                backend.load_model("whisper-tiny")
+            assert exc_info.value.code == OctomilErrorCode.CHECKSUM_MISMATCH
+            assert "digest" in exc_info.value.error_message.lower()
 
     def test_runtime_open_failure_raises_runtime_unavailable(self) -> None:
         backend = NativeSttBackend()

@@ -123,12 +123,23 @@ def _reset_fakes():
 
 
 @pytest.mark.asyncio
-async def test_transcription_prepare_threads_artifact_dir_into_whisper_backend(tmp_path):
+async def test_transcription_prepare_threads_artifact_dir_into_whisper_backend(tmp_path, monkeypatch):
     """The contract: prepare succeeds → next transcribe call constructs the
     whisper backend with model_dir=<prepared_dir>. If this assertion ever
     fails, transcription has fallen off the inference_consumes_prepared
     rung and the lifecycle_support fixture must be ratcheted DOWN to
-    plan_only or warmup_supported until the wiring is restored."""
+    plan_only or warmup_supported until the wiring is restored.
+
+    v0.1.5 PR-2B: this test exercises the **legacy registry-thread-
+    through** path. The kernel's native-first branch (which routes
+    through ``NativeSttServeAdapter`` instead of the registry) only
+    fires when ``OCTOMIL_WHISPER_BIN`` is set in the env. We
+    explicitly clear it here so this test remains a regression
+    pin for the model_dir-threading contract that the engine-
+    registry-based prepare flow still serves for fakes / future
+    multi-engine paths.
+    """
+    monkeypatch.delenv("OCTOMIL_WHISPER_BIN", raising=False)
     candidate = _local_candidate()
     selection = _Selection(candidates=[candidate])
     artifact_dir = tmp_path / "whisper"
@@ -173,7 +184,7 @@ def test_whisper_resolver_picks_prepare_manager_sentinel_artifact_file(tmp_path)
     earlier resolver only matched ``.bin``/``.gguf``/``.ggml`` and would
     silently fall back to pywhispercpp's HF download when prepared bytes
     were on disk. This test pins the sentinel-file path."""
-    from octomil.runtime.engines.whisper.engine import _WhisperBackend
+    from octomil.runtime.engines.whisper._legacy_pywhisper import _WhisperBackend
 
     artifact_dir = tmp_path / "whisper-tiny"
     artifact_dir.mkdir()
@@ -187,7 +198,7 @@ def test_whisper_resolver_falls_back_to_extension_match(tmp_path):
     """When no sentinel ``artifact`` file exists (multi-file artifact, or
     legacy required_files=['ggml-tiny.bin'] shape), the resolver still
     returns the extension match."""
-    from octomil.runtime.engines.whisper.engine import _WhisperBackend
+    from octomil.runtime.engines.whisper._legacy_pywhisper import _WhisperBackend
 
     artifact_dir = tmp_path / "whisper-tiny"
     artifact_dir.mkdir()
@@ -199,7 +210,7 @@ def test_whisper_resolver_falls_back_to_extension_match(tmp_path):
 
 def test_whisper_resolver_returns_none_without_injected_dir(tmp_path):
     """Without a model_dir kwarg, the resolver must not invent one."""
-    from octomil.runtime.engines.whisper.engine import _WhisperBackend
+    from octomil.runtime.engines.whisper._legacy_pywhisper import _WhisperBackend
 
     backend = _WhisperBackend("whisper-tiny")
     assert backend._resolve_local_model_file() is None

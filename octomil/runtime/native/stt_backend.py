@@ -90,6 +90,12 @@ _WHISPER_SAMPLE_RATE_HZ: int = 16000
 # value so the URI parses AND the digest verification has
 # something concrete to point at when last_error is rendered.
 _WHISPER_BIN_ENV: str = "OCTOMIL_WHISPER_BIN"
+# v0.1.5 wires exactly one whisper variant. Codex R1 blocker:
+# accepting any whisper-* name and silently substituting tiny is a
+# correctness bug (different model identities have different WER /
+# RTF / size profiles). Reject other names with UNSUPPORTED_MODALITY
+# until a runtime release ships multi-size support.
+_SUPPORTED_MODEL_NAME: str = "whisper-tiny"
 
 
 @dataclass
@@ -205,6 +211,26 @@ def _validate_pcm_f32(samples: Sequence[float] | Any, sample_rate_hz: int) -> by
                 code=OctomilErrorCode.INVALID_INPUT,
                 message=(f"native STT: PCM-f32 buffer length {len(buf)} is not a multiple of 4 bytes"),
             )
+        # Codex R1 nit: bytes inputs previously skipped NaN/Inf
+        # checks. The runtime would still reject them with
+        # INVALID_INPUT, but doing it Python-side preserves the
+        # same diagnostic shape across input types and saves a
+        # session round-trip. We reinterpret the buffer as fp32
+        # without copying via numpy.frombuffer, then check
+        # `isfinite`.
+        try:
+            import numpy as _np  # type: ignore[import-not-found]
+        except ImportError:
+            # No numpy — skip the Python-side check; runtime will
+            # still reject. Don't fail the call just because numpy
+            # isn't installed.
+            return buf
+        view = _np.frombuffer(buf, dtype=_np.float32)
+        if not _np.isfinite(view).all():
+            raise OctomilError(
+                code=OctomilErrorCode.INVALID_INPUT,
+                message="native STT: audio contains NaN or Inf samples",
+            )
         return buf
     # numpy / list-of-float path. Avoid a hard numpy dep at module
     # import time; only require it when the caller passes an array-like.
@@ -289,16 +315,42 @@ class NativeSttBackend:
         """Open the runtime and verify ``audio.transcription`` is
         advertised. Idempotent — a second call is a no-op.
 
+        v0.1.5 hard rule: the runtime pins ``whisper-tiny`` (it
+        verifies a specific SHA-256 against the ggml-tiny.bin the
+        operator points ``OCTOMIL_WHISPER_BIN`` at). Other whisper
+        sizes (`whisper-base`, `whisper-small`, etc.) are NOT
+        supported in v0.1.5 — silently substituting tiny would be
+        a correctness bug (different model identity → different
+        WER + RTF profile). Codex R1 blocker fix: explicit reject
+        with ``UNSUPPORTED_MODALITY`` instead of letting the env
+        decide which model actually runs. Future runtime PRs that
+        ship multi-size whisper builds (different env vars +
+        digest constants per size) can relax this gate.
+
         Raises
         ------
         OctomilError
+            ``UNSUPPORTED_MODALITY`` if the requested model name is
+            not ``whisper-tiny``.
             ``RUNTIME_UNAVAILABLE`` if the runtime fails to open or
             does not advertise ``audio.transcription`` (operator
-            forgot ``OCTOMIL_WHISPER_BIN`` or the digest doesn't
-            match the v0.1.5 ggml-tiny.bin SHA-256 the runtime pins).
+            forgot ``OCTOMIL_WHISPER_BIN`` or the dylib was built
+            without ``OCT_ENABLE_ENGINE_WHISPER_CPP=ON``).
+            ``CHECKSUM_MISMATCH`` if the artifact's digest doesn't
+            match the v0.1.5 runtime-pinned ggml-tiny.bin SHA-256.
         """
         if self._runtime is not None:
             return  # idempotent
+        if model_name.lower() != _SUPPORTED_MODEL_NAME:
+            raise OctomilError(
+                code=OctomilErrorCode.UNSUPPORTED_MODALITY,
+                message=(
+                    f"native STT backend: model {model_name!r} is not supported in v0.1.5. "
+                    f"Only {_SUPPORTED_MODEL_NAME!r} is wired in this release "
+                    "(the runtime pins a single ggml-tiny.bin SHA-256). "
+                    "Multi-size whisper support requires a runtime update."
+                ),
+            )
         self._model_name = model_name
         try:
             self._runtime = NativeRuntime.open()
@@ -319,11 +371,30 @@ class NativeSttBackend:
             ) from exc
 
         if not _runtime_advertises_audio_transcription(self._runtime):
-            # Capability not advertised. Operator either didn't set
-            # OCTOMIL_WHISPER_BIN, or the digest doesn't match.
-            # Don't try to disambiguate here — the open_session call
-            # below would fail with last_error pointing at the cause.
+            # Capability not advertised. Two distinct causes (per the
+            # runtime contract): (a) OCTOMIL_WHISPER_BIN unset OR
+            # capability not built into the dylib → RUNTIME_UNAVAILABLE;
+            # (b) env IS set but the artifact's SHA-256 doesn't match
+            # the runtime-pinned digest → CHECKSUM_MISMATCH (the
+            # runtime writes a "digest mismatch" message into the
+            # thread-local last_error when it skips advertising on
+            # this branch). The disambiguation matters because (a)
+            # is a setup problem the operator fixes by pointing at a
+            # real ggml-tiny.bin, while (b) is an integrity-violation
+            # signal that callers route differently (e.g. trigger a
+            # re-download). Codex R1 blocker: previously we flattened
+            # both to RUNTIME_UNAVAILABLE.
+            last_error_lc = (self._runtime.last_error() or "").lower()
             self.close()
+            if "digest" in last_error_lc:
+                raise OctomilError(
+                    code=OctomilErrorCode.CHECKSUM_MISMATCH,
+                    message=(
+                        "native STT backend: ggml-tiny.bin SHA-256 does not "
+                        "match the v0.1.5 runtime-pinned digest "
+                        "(be07e048…6e1b21). Re-download the artifact."
+                    ),
+                )
             raise OctomilError(
                 code=OctomilErrorCode.RUNTIME_UNAVAILABLE,
                 message=(
@@ -365,7 +436,9 @@ class NativeSttBackend:
                 "native STT backend failed to warm whisper-tiny model",
                 last_error=getattr(exc, "last_error", ""),
             ) from exc
-        logger.info("NativeSttBackend: runtime opened + whisper-tiny warmed")
+        # Codex R1 nit: was logger.info; lowered to debug so the
+        # cutover-rule "no new stderr/metric emission" stays clean.
+        logger.debug("NativeSttBackend: runtime opened + whisper-tiny warmed")
 
     def close(self) -> None:
         # Close the model BEFORE the runtime so oct_runtime_close
