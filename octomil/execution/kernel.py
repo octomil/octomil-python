@@ -1464,17 +1464,40 @@ class ExecutionKernel:
         )
 
     async def _local_embed(self, inputs: list[str], model: str, fallback_used: bool = False) -> ExecutionResult:
-        """Dispatch embeddings to a local runtime."""
+        """Dispatch embeddings to a local runtime.
+
+        Hard-cutover discipline: a missing local runtime / a runtime
+        that doesn't expose an embedding interface raises a bounded
+        :class:`OctomilError` (``UNSUPPORTED_MODALITY``) rather than a
+        plain ``RuntimeError`` that callers may catch and silently
+        bridge to a Python embedder. There is no Python fallback.
+        """
+        from octomil.errors import OctomilError, OctomilErrorCode
         from octomil.runtime.core.registry import ModelRuntimeRegistry
 
         registry = ModelRuntimeRegistry.shared()
         runtime = registry.resolve(model)
         if runtime is None:
-            raise RuntimeError(f"No local runtime found for embedding model '{model}'.")
+            raise OctomilError(
+                code=OctomilErrorCode.UNSUPPORTED_MODALITY,
+                message=(
+                    f"No local embedding runtime found for model {model!r}. "
+                    f"Embedding-capable model families are recognized by prefix "
+                    f"(nomic-embed, bge-, e5-, gte-, mxbai-embed, snowflake-arctic-embed, "
+                    f"all-minilm, jina-embed); chat-only models cannot serve embeddings."
+                ),
+            )
 
         embed_fn = getattr(runtime, "embed", None) or getattr(runtime, "create_embeddings", None)
         if embed_fn is None:
-            raise RuntimeError(f"Local runtime for embedding model '{model}' does not expose an embedding interface.")
+            raise OctomilError(
+                code=OctomilErrorCode.UNSUPPORTED_MODALITY,
+                message=(
+                    f"Local runtime resolved for {model!r} does not expose an embedding "
+                    f"interface — the model is likely a chat-only GGUF. Use an embedding "
+                    f"family (nomic-embed-text, bge-base-en-v1.5, etc.)."
+                ),
+            )
 
         maybe_result = embed_fn(inputs)
         if hasattr(maybe_result, "__await__"):
@@ -1489,7 +1512,10 @@ class ExecutionKernel:
             total_tokens = sum(len(text.split()) for text in inputs)
 
         if not isinstance(all_vectors, list):
-            raise RuntimeError(f"Local embedding runtime for '{model}' returned an invalid embedding result.")
+            raise OctomilError(
+                code=OctomilErrorCode.INFERENCE_FAILED,
+                message=f"Local embedding runtime for {model!r} returned an invalid embedding result.",
+            )
 
         dims = len(all_vectors[0]) if all_vectors and all_vectors[0] else 0
         return ExecutionResult(

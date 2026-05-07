@@ -407,6 +407,12 @@ class TestKernelLocalEmbeddings:
 
     @pytest.mark.asyncio
     async def test_local_embed_no_embed_method_raises(self):
+        """v0.1.3 cutover: a runtime without ``.embed()`` MUST raise
+        bounded ``OctomilError(UNSUPPORTED_MODALITY)`` so callers
+        cannot silently catch a plain ``RuntimeError`` and bridge to
+        a Python embedder."""
+        from octomil.errors import OctomilError, OctomilErrorCode
+
         kernel = _make_kernel(policy="private")
 
         mock_runtime = MagicMock(spec=[])  # no embed or create_embeddings
@@ -416,8 +422,9 @@ class TestKernelLocalEmbeddings:
                 mock_registry = MagicMock()
                 mock_registry.resolve.return_value = mock_runtime
                 mock_reg_cls.shared.return_value = mock_registry
-                with pytest.raises(RuntimeError, match="does not expose an embedding interface"):
+                with pytest.raises(OctomilError) as exc_info:
                     await kernel.create_embeddings(["hello"])
+        assert exc_info.value.code == OctomilErrorCode.UNSUPPORTED_MODALITY
 
 
 # ---------------------------------------------------------------------------

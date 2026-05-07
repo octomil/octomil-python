@@ -34,4 +34,23 @@ def _connect_engines() -> None:
         pass  # engines module may not be available in all environments
 
 
+def _connect_native_embeddings() -> None:
+    """Register the native embeddings factory for embedding-capable
+    model families.
+
+    Runs after ``_connect_engines`` so prefix matches (which the
+    embedding factory relies on) take precedence over the
+    chat-oriented default factory. Best-effort: a missing native
+    runtime / lifecycle module yields a silent no-op rather than
+    blocking SDK import.
+    """
+    try:
+        from octomil.runtime.native.embeddings_runtime import register_native_embeddings_factory
+
+        register_native_embeddings_factory()
+    except Exception:
+        pass  # native module unavailable on this platform / build
+
+
 _connect_engines()
+_connect_native_embeddings()

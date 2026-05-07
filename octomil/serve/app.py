@@ -486,6 +486,16 @@ def create_app(
         if state.reporter is not None:
             state.reporter.close()
 
+        # Graceful shutdown: close native embeddings backend / runtime.
+        # Mirrors the whisper / sherpa pattern — explicit close releases
+        # the cffi runtime + GGUF mmap rather than relying on __del__.
+        if state.embeddings_backend is not None:
+            try:
+                state.embeddings_backend.close()
+            except Exception:  # noqa: BLE001
+                logger.warning("embeddings_backend close failed", exc_info=True)
+            state.embeddings_backend = None
+
     app = FastAPI(title="Octomil Serve", version="1.0.0", lifespan=lifespan)
 
     @app.exception_handler(OctomilError)
@@ -991,6 +1001,117 @@ def create_app(
                 }
             ],
             "usage": usage,
+        }
+
+    @app.post("/v1/embeddings")
+    async def create_embeddings(body: dict[str, Any]) -> dict[str, Any]:
+        """OpenAI-compatible embeddings endpoint.
+
+        Routes through ``ModelRuntimeRegistry`` so request resolution
+        uses the same prepared-artifact lookup as the SDK kernel —
+        no direct backend construction in the route, no env-var-only
+        path, no model-id mismatch with a stale cached backend.
+
+        Request body::
+
+            {"model": "nomic-embed-text-v1.5",
+             "input": "single string" | ["batch", "of", "strings"]}
+
+        Response (OpenAI shape)::
+
+            {"object": "list",
+             "data": [{"object": "embedding", "embedding": [...], "index": N}],
+             "model": "...",
+             "usage": {"prompt_tokens": N, "total_tokens": N}}
+
+        Errors propagate as bounded :class:`OctomilError`. Chat-only
+        and unprepared models reject ``UNSUPPORTED_MODALITY`` /
+        ``MODEL_NOT_FOUND`` from the registry / backend.
+
+        The synchronous ``backend.embed(...)`` runs in a worker
+        thread (``asyncio.to_thread``) so a multi-second embedding
+        does not stall the asyncio event loop / chat traffic.
+        """
+        from ..runtime.core.registry import ModelRuntimeRegistry
+        from ..runtime.native.embeddings_runtime import (
+            NativeEmbeddingsRuntime,
+            is_embedding_model,
+        )
+
+        model_id = body.get("model") or state.model_name
+        raw_input = body.get("input")
+        if raw_input is None:
+            raise OctomilError(
+                code=OctomilErrorCode.INVALID_INPUT,
+                message="`input` is required (string or list of strings)",
+            )
+        if isinstance(raw_input, str):
+            inputs: list[str] = [raw_input]
+        elif isinstance(raw_input, list) and all(isinstance(x, str) for x in raw_input):
+            inputs = raw_input
+        else:
+            raise OctomilError(
+                code=OctomilErrorCode.INVALID_INPUT,
+                message="`input` must be a string or list of strings",
+            )
+        if not inputs:
+            raise OctomilError(
+                code=OctomilErrorCode.INVALID_INPUT,
+                message="`input` must contain at least one string",
+            )
+
+        if not is_embedding_model(model_id):
+            raise OctomilError(
+                code=OctomilErrorCode.UNSUPPORTED_MODALITY,
+                message=(
+                    f"Model {model_id!r} is not an embedding-capable family. "
+                    f"Supported families: nomic-embed, bge-, e5-mistral/base/large/small, "
+                    f"gte-, mxbai-embed, snowflake-arctic-embed, all-minilm, jina-embed. "
+                    f"HuggingFace 'org/' prefixes (e.g. BAAI/bge-base-en-v1.5) are accepted."
+                ),
+            )
+
+        runtime = ModelRuntimeRegistry.shared().resolve(model_id)
+        if not isinstance(runtime, NativeEmbeddingsRuntime):
+            # Either the registry returned None (no prepared artifact)
+            # or it returned a chat runtime for a model id that prefix-
+            # matched an embedding family by accident.
+            raise OctomilError(
+                code=OctomilErrorCode.MODEL_NOT_FOUND,
+                message=(
+                    f"No prepared embedding artifact for {model_id!r}. "
+                    f"Run `octomil prepare {model_id}` (or set "
+                    f"OCTOMIL_NATIVE_EMBEDDINGS_MODEL_DIR for dev) before "
+                    f"calling /v1/embeddings."
+                ),
+            )
+
+        # Track the active runtime on state so the lifespan teardown
+        # can close it. Replace if the model_id changed (the registry's
+        # cache returns the same instance for repeat ids; a different
+        # id resolves to a different runtime).
+        if state.embeddings_backend is not runtime:
+            previous = state.embeddings_backend
+            state.embeddings_backend = runtime
+            if previous is not None and previous is not runtime:
+                try:
+                    previous.close()
+                except Exception:  # noqa: BLE001
+                    logger.warning("previous embeddings runtime close() failed", exc_info=True)
+
+        state.request_count += 1
+        result = await asyncio.to_thread(runtime.embed, inputs)
+        return {
+            "object": "list",
+            "data": [
+                {"object": "embedding", "embedding": vector, "index": idx}
+                for idx, vector in enumerate(result.embeddings)
+            ],
+            "model": result.model or model_id,
+            "usage": {
+                "prompt_tokens": result.usage.prompt_tokens,
+                "total_tokens": result.usage.total_tokens,
+            },
         }
 
     @app.get("/v1/cache/stats")
