@@ -118,34 +118,40 @@ def test_capabilities_partitioning_is_complete() -> None:
     )
 
 
-def test_native_embeddings_factory_registered_on_sdk_import() -> None:
-    """``octomil/runtime/__init__.py:_connect_native_embeddings`` runs
-    at import time. Its job is to register a runtime factory for every
-    embedding-family prefix so ``ModelRuntimeRegistry.resolve(model)``
-    returns a ``NativeEmbeddingsRuntime`` for those ids — that is the
-    embeddings.text product wiring. If this hook silently no-ops the
-    cutover regresses.
+def test_native_embeddings_factory_registers_every_family_prefix() -> None:
+    """``register_native_embeddings_factory`` is what
+    ``octomil/runtime/__init__.py:_connect_native_embeddings`` calls at
+    SDK import to wire the embeddings.text product binding. The function
+    must install ``native_embeddings_factory`` for every prefix in
+    ``_EMBEDDING_FAMILY_PREFIXES``; otherwise
+    ``ModelRuntimeRegistry.resolve("bge-…")`` would fall through to the
+    default factory (the chat path), silently mis-routing embedding
+    requests.
 
-    Resolving the runtime end-to-end requires a PrepareManager-materialized
-    artifact (capability honesty: the factory returns ``None`` without one),
-    so we instead pin the factory registration directly: every embedding
-    prefix from ``_EMBEDDING_FAMILY_PREFIXES`` must map to
-    ``native_embeddings_factory`` in the shared registry.
+    The test calls ``register_native_embeddings_factory`` explicitly
+    rather than relying on the import-time side effect, because 11 other
+    tests in the suite call ``ModelRuntimeRegistry.shared().clear()`` —
+    in pytest-xdist that wipes the import-time registrations on the
+    worker before this test runs. Re-invoking the function is the same
+    call ``_connect_native_embeddings`` makes (re-registration is
+    idempotent per the function's docstring), so the assertion still
+    proves the wiring contract.
     """
-    import octomil.runtime as _runtime  # noqa: F401  (triggers _connect calls)
     from octomil.runtime.core.registry import ModelRuntimeRegistry
     from octomil.runtime.native.embeddings_runtime import (
         _EMBEDDING_FAMILY_PREFIXES,
         native_embeddings_factory,
+        register_native_embeddings_factory,
     )
+
+    register_native_embeddings_factory()
 
     families = ModelRuntimeRegistry.shared()._families  # noqa: SLF001
     missing = [p for p in _EMBEDDING_FAMILY_PREFIXES if p.lower() not in families]
     assert not missing, (
         f"Embedding family prefixes not registered in ModelRuntimeRegistry: "
-        f"{missing!r}. _connect_native_embeddings ran but did not install the "
-        f"factory — likely an import-time exception was swallowed by the "
-        f"try/except in octomil/runtime/__init__.py."
+        f"{missing!r}. register_native_embeddings_factory ran but did not "
+        f"install the factory for every prefix in _EMBEDDING_FAMILY_PREFIXES."
     )
     for prefix in _EMBEDDING_FAMILY_PREFIXES:
         registered = families[prefix.lower()]
