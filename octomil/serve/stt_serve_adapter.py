@@ -41,9 +41,14 @@ _WHISPER_SAMPLE_RATE_HZ: int = 16000
 
 
 def _wav_to_pcm_f32_bytes(audio_path: str) -> tuple[bytes, int]:
-    """Decode a 16-bit / 24-bit / 32-bit WAV into mono PCM-f32 bytes
+    """Decode a 16-bit / 32-bit / 8-bit WAV into mono PCM-f32 bytes
     (float32 LE) at 16kHz. Multichannel inputs are downmixed by
-    averaging channels.
+    averaging channels. 24-bit WAVs reject UNSUPPORTED_MODALITY —
+    Codex R3 nit: the previous docstring claimed 24-bit support but
+    the decoder only handles widths 1, 2, 4. Adding 24-bit (3-byte)
+    decode would require manual sign-extension via struct, which
+    is parity-work outside the v0.1.5 cutover scope; callers that
+    need 24-bit can convert upstream (ffmpeg -sample_fmt s16).
 
     Codex R2 blocker fix: stdlib-only implementation. The earlier
     version imported ``numpy`` unconditionally; numpy is in optional
