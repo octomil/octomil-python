@@ -300,15 +300,22 @@ def main() -> int:
         sys.stderr.write(f"already cached: {target_dir}\n")
         sys.stdout.write(str(target_dir) + "\n")
         return 0
-    if target_dir.exists() and not sentinel.exists():
-        sys.stderr.write(f"cache at {target_dir} looks incomplete; re-fetching\n")
-        # Wipe partial state. Codex R2 missed-case fix carry-over.
-        if target_dir.is_dir():
-            for child in target_dir.iterdir():
-                if child.is_dir():
-                    shutil.rmtree(child)
-                else:
-                    child.unlink()
+
+    # Codex R1 G-001 fix: with --force OR a partial cache (sentinel
+    # missing while target exists), drop the sentinel FIRST and wipe
+    # the target before extracting fresh. Without this, a forced
+    # re-fetch that crashes mid-extract leaves the old sentinel +
+    # partial fresh content visible to the next non-force run, which
+    # would then trust the corrupt cache.
+    if target_dir.is_dir():
+        if sentinel.exists():
+            sentinel.unlink()
+        sys.stderr.write(f"cache at {target_dir} stale (force={args.force} sentinel-cleared); wiping\n")
+        for child in target_dir.iterdir():
+            if child.is_dir():
+                shutil.rmtree(child)
+            else:
+                child.unlink()
 
     sys.stderr.write(f"fetching octomil-conformance {version} into {target_dir}\n")
     target_dir.mkdir(parents=True, exist_ok=True)
