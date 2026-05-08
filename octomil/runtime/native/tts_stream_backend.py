@@ -52,7 +52,7 @@ import logging
 import os
 import time
 from dataclasses import dataclass
-from typing import Any, Iterator
+from typing import Any, Iterator, Literal
 
 from ...errors import OctomilError, OctomilErrorCode
 from .capabilities import CAPABILITY_AUDIO_TTS_STREAM
@@ -76,6 +76,18 @@ logger = logging.getLogger(__name__)
 _BACKEND_NAME = "native-sherpa-onnx-tts-stream"
 _DEFAULT_DEADLINE_MS = 300_000  # 5 minutes — same shape as native STT.
 _TTS_MODEL_ENV: str = "OCTOMIL_SHERPA_TTS_MODEL"
+
+# v0.1.9 Lane 4 — documented anchor for the progressive-streaming
+# first-audio-chunk telemetry metric. A future runtime release
+# (Lane 1 + Lane 2) will start emitting ``OCT_EVENT_METRIC`` with
+# ``data.metric.name`` set to this string to mark first-audio-chunk
+# arrival in progressive mode. The SDK does NOT introspect or filter
+# on metric names at the binding boundary (RM-RT-001); this constant
+# is only exposed so consumers + reviewers have a single source of
+# truth to grep for. The Python-side telemetry sink registry, when
+# wired by a follow-up PR, MUST forward ``OCT_EVENT_METRIC`` events
+# regardless of name — no allowlist.
+TTS_FIRST_AUDIO_MS_METRIC_NAME: str = "tts.first_audio_ms"
 
 
 @dataclass
@@ -106,6 +118,21 @@ class TtsAudioChunk:
     chunk_index: int
     is_final: bool
     cumulative_duration_ms: int
+    # v0.1.9 Lane 4 — forward-compatibility marker for progressive
+    # streaming. ALWAYS "coalesced" today against the v0.1.8 sherpa
+    # adapter (synchronous Generate inside one poll_event). The field
+    # exists so callers wiring against ``synthesize_with_chunks`` now
+    # can branch on streaming_mode in their UIs WITHOUT a follow-up
+    # dataclass-shape break when the v0.1.9 worker-thread runtime
+    # release lands. Flip to "progressive" is gated on:
+    #   * Lane 1 (runtime worker-thread Generate) shipping in
+    #     octomil-runtime, AND
+    #   * Lane 2 (runtime release tag bumped + dylib rebuilt + SDK
+    #     binding consumes the release).
+    # Until both are true, the SDK MUST emit "coalesced". A guard test
+    # (tests/test_tts_stream_no_premature_progressive_claim.py) blocks
+    # public-claim flips that precede the runtime release.
+    streaming_mode: Literal["coalesced", "progressive"] = "coalesced"
 
 
 def _runtime_advertises_tts_stream(rt: NativeRuntime) -> bool:
@@ -538,6 +565,15 @@ class NativeTtsStreamBackend:
                         chunk_index=chunk_index,
                         is_final=is_final,
                         cumulative_duration_ms=cumulative_duration_ms,
+                        # v0.1.9 Lane 4 — hardcoded "coalesced" until the
+                        # runtime release (Lane 1 + Lane 2) flips to
+                        # progressive Generate. A follow-up SDK PR will
+                        # change this to read from a runtime capability
+                        # hint, OR detect via inter-chunk wall-clock
+                        # delta (>50 ms gap = progressive). Until then,
+                        # the SDK honestly reports "coalesced" — see
+                        # module docstring + dataclass field comment.
+                        streaming_mode="coalesced",
                     )
                     chunk_index += 1
                     if is_final:

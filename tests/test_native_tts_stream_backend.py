@@ -86,6 +86,44 @@ class TestTtsAudioChunkShape:
         )
         assert chunk.is_final is True
 
+    def test_streaming_mode_default_is_coalesced_honesty_pin(self) -> None:
+        """v0.1.9 Lane 4 honesty pin: ``TtsAudioChunk.streaming_mode``
+        defaults to ``"coalesced"`` until the runtime release proves
+        progressive arrival.
+
+        This test FAILS deliberately AFTER Lane 1 (runtime worker-
+        thread Generate) + Lane 2 (runtime release) land and the SDK
+        flip PR sets per-chunk ``streaming_mode='progressive'`` from
+        the drain. When that follow-up SDK PR lands, update this
+        assertion in lockstep.
+
+        The follow-up SDK flip PR will:
+          1. Change NativeTtsStreamBackend._drain to set
+             streaming_mode based on a runtime capability hint OR
+             via inter-chunk timing detection (>50 ms gap →
+             progressive).
+          2. Update this test to assert the new contract (likely:
+             default still 'coalesced' but per-chunk values are
+             'progressive' on the new runtime).
+          3. Update the X-Octomil-Streaming-Honesty HTTP header to
+             match (gated on a runtime version check).
+          4. Loosen the guard in
+             tests/test_tts_stream_no_premature_progressive_claim.py.
+        """
+        chunk = TtsAudioChunk(
+            pcm_f32=b"",
+            sample_rate_hz=22050,
+            chunk_index=0,
+            is_final=False,
+            cumulative_duration_ms=0,
+        )
+        assert chunk.streaming_mode == "coalesced", (
+            "TtsAudioChunk default streaming_mode is no longer 'coalesced'. "
+            "If you're flipping this in lockstep with the v0.1.9 runtime "
+            "release: update this assertion + the HTTP honesty header "
+            "+ the no-premature-claim guard test in the same PR."
+        )
+
 
 # ---------------------------------------------------------------------------
 # Unit tests — error mapping at the backend boundary
