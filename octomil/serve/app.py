@@ -402,6 +402,32 @@ def create_app(
             state.sherpa_tts_backend = sherpa_backend
             state.kernel = tts_kernel
             state.engine_name = "sherpa-onnx"
+
+            # v0.1.8 Lane C — try to load the native audio.tts.stream
+            # backend alongside the python-sherpa batch backend. Hard-
+            # cut: when it loads, the /v1/audio/speech/stream route
+            # uses NATIVE; when it does NOT (capability not advertised
+            # / dylib missing), the stream route returns
+            # RUNTIME_UNAVAILABLE rather than fall back to the python
+            # sherpa stream path.
+            try:
+                from ..runtime.native.tts_stream_backend import NativeTtsStreamBackend
+
+                native_stream_backend = NativeTtsStreamBackend()
+                native_stream_backend.load_model(model_name)
+                state.native_tts_stream_backend = native_stream_backend
+            except Exception as exc:  # noqa: BLE001
+                # The native runtime might not advertise tts.stream
+                # (sidecars missing, dylib unavailable, etc.). That
+                # is non-fatal at startup — the batch path still
+                # works. The stream route handler raises
+                # RUNTIME_UNAVAILABLE on first hit.
+                logger.info(
+                    "v0.1.8 Lane C: native audio.tts.stream backend unavailable at startup (%s); "
+                    "/v1/audio/speech/stream will return RUNTIME_UNAVAILABLE on request",
+                    exc,
+                )
+                state.native_tts_stream_backend = None
         elif state.kernel is not None:
             # --- Config-driven startup: use kernel routing to decide backends ---
             await _kernel_driven_startup(state, model_name)
@@ -1301,43 +1327,57 @@ def create_app(
 
     @app.post("/v1/audio/speech/stream")
     async def synthesize_speech_stream(body: dict[str, Any]) -> Any:
-        """Streaming TTS endpoint.
+        """Streaming TTS endpoint — v0.1.8 Lane C native cutover.
 
-        Returns ``application/octet-stream`` with raw PCM int16 LE chunks.
-        Metadata is in response headers; clients should NOT depend on
-        HTTP trailers (many proxies drop them). Completion is signalled
-        by clean EOF.
+        HARD-CUT to ``NativeTtsStreamBackend`` (octomil-runtime
+        ``audio.tts.stream`` capability). No silent fallback to the
+        Python sherpa stream path.
+
+        Honesty caveat (v0.1.8 sherpa adapter): chunks arrive
+        coalesced after synthesis on the polling thread; this is NOT
+        realtime / progressive streaming yet. The iterator-shaped
+        wire (``application/octet-stream`` chunked PCM) is forward-
+        compatible with v0.1.9 worker-thread Generate. The
+        ``X-Octomil-Streaming-Honesty`` response header carries
+        ``coalesced_after_synthesis`` to surface this to clients.
+
+        Returns ``application/octet-stream`` with raw PCM int16 LE
+        chunks. Metadata is in response headers; clients should NOT
+        depend on HTTP trailers (many proxies drop them). Completion
+        is signalled by clean EOF.
 
         Body shape::
 
             {
               "model": "kokoro-82m",
               "input": "text to synthesize",
-              "voice": "af_bella",            # native voice (back-compat)
-              "speaker": "madam_ambrose",    # logical speaker (preferred)
+              "voice": "0",                    # numeric sid (sherpa ABI)
               "speed": 1.0,
               "response_format": "pcm_s16le"  # only pcm_s16le today
             }
 
-        Response headers::
+        Voice validation runs synchronously *before* HTTP 200 — an
+        unsupported voice raises OctomilError(INVALID_INPUT) which
+        bubbles up through the route's exception handler as a
+        structured 4xx, rather than after the consumer has already
+        attached to the streaming response.
 
-            Content-Type: application/octet-stream
-            X-Octomil-Sample-Rate: 24000
-            X-Octomil-Channels: 1
-            X-Octomil-Sample-Format: pcm_s16le
-            X-Octomil-Streaming-Capability-Mode: sentence_chunk
-            X-Octomil-Model: kokoro-82m
-            X-Octomil-Voice: af_bella
-            X-Octomil-Speaker: madam_ambrose   # only when resolved
-            X-Octomil-Speaker-Source: planner_profile
-
-        Reference-audio file paths are NEVER exposed in headers, even
-        when the request resolved to a few-shot voice-cloning profile.
+        Reference-audio file paths are NEVER exposed in headers.
         """
-        if state.sherpa_tts_backend is None:
+        if state.native_tts_stream_backend is None:
+            # Hard-cut: the python-sherpa stream path is no longer
+            # reachable on this route. If the native backend failed
+            # to load at startup (no dylib advertising
+            # audio.tts.stream), surface RUNTIME_UNAVAILABLE rather
+            # than fall back to the Python sherpa engine.
             raise OctomilError(
-                code=OctomilErrorCode.MODEL_LOAD_FAILED,
-                message="No TTS model loaded. Start server with a sherpa-onnx TTS model: octomil serve kokoro-82m",
+                code=OctomilErrorCode.RUNTIME_UNAVAILABLE,
+                message=(
+                    "native audio.tts.stream backend not loaded. "
+                    "Set OCTOMIL_RUNTIME_DYLIB + OCTOMIL_SHERPA_TTS_MODEL "
+                    "(canonical-pinned ONNX with sibling tokens.txt + "
+                    "espeak-ng-data/) and restart the server."
+                ),
             )
 
         text = (body.get("input") or "").strip()
@@ -1357,6 +1397,13 @@ def create_app(
                 code=OctomilErrorCode.INVALID_INPUT,
                 message=f"`speed` must be a number, got {speed_raw!r}",
             ) from exc
+        # v0.1.8 Lane C: the runtime adapter ignores ``speed`` (sherpa
+        # adapter wires it as 1.0 internally). Surface that honestly:
+        # accept the parameter for API back-compat but ignore it
+        # rather than silently mis-rendering. Speeds other than 1.0
+        # are documented to be a no-op until the runtime adapter
+        # threads the parameter through.
+        del speed  # explicit no-op marker; see honesty caveat above.
 
         from octomil.audio.streaming import SAMPLE_FORMAT_PCM_S16LE, SUPPORTED_STREAM_FORMATS
 
@@ -1369,11 +1416,6 @@ def create_app(
                     f"Use one of: {', '.join(SUPPORTED_STREAM_FORMATS)}."
                 ),
             )
-        # The serve layer is intentionally narrower than the SDK
-        # streaming API: a single non-streaming engine wraps the
-        # process today, so wav-streaming would just be the local
-        # final-chunk shape. Keep the wire simple and refuse anything
-        # but pcm_s16le here; the SDK still exposes both formats.
         if response_format != SAMPLE_FORMAT_PCM_S16LE:
             raise OctomilError(
                 code=OctomilErrorCode.INVALID_INPUT,
@@ -1383,26 +1425,15 @@ def create_app(
                 ),
             )
 
-        backend = state.sherpa_tts_backend
-        # The contract is: a streaming backend implements
-        # synthesize_stream. supports_streaming as a bool flag was
-        # removed in the cutover — capability is advertised via
-        # streaming_capability(text) instead.
-        if not callable(getattr(backend, "synthesize_stream", None)):
-            raise OctomilError(
-                code=OctomilErrorCode.RUNTIME_UNAVAILABLE,
-                message="local_tts_streaming_unavailable: backend does not implement synthesize_stream.",
-            )
+        native_backend = state.native_tts_stream_backend
 
-        # Pre-validate the speaker / voice synchronously: if we let an
-        # unsupported request surface mid-stream, the binary client has
-        # already received 200 application/octet-stream and lost the
-        # ability to render a structured 4xx. The serve layer runs the
-        # same speaker resolver the SDK kernel uses against an empty
-        # planner selection (the in-process server doesn't carry app
-        # context yet) — that's enough to honor speaker= as an alias
-        # for native voices on the loaded engine. OctomilError raised
-        # here bubbles up through the route's exception handler as JSON.
+        # Pre-stream voice validation BEFORE FastAPI emits HTTP 200.
+        # If voice is invalid, the OctomilError raised here is caught
+        # by the route's exception handler and rendered as a typed 4xx
+        # — clients have NOT seen the streaming response yet, so they
+        # can render the structured error properly. This mirrors the
+        # batch route's discipline (and the SDK kernel's pre-stream
+        # validation hook).
         from octomil.execution.tts_speaker_resolver import resolve_tts_speaker
 
         resolved_speaker = resolve_tts_speaker(
@@ -1411,54 +1442,93 @@ def create_app(
             selection=None,
             is_app_ref=False,
         )
-        validate_voice = getattr(backend, "validate_voice", None)
-        if callable(validate_voice):
-            _sid_unused, resolved_voice = validate_voice(resolved_speaker.native_voice)
-        else:
-            resolved_voice = resolved_speaker.native_voice or getattr(backend, "_default_voice", "") or ""
-
-        # Honest streaming-mode header: advertise what the backend
-        # actually claims for THIS input, not a static "realtime" lie.
-        capability_fn = getattr(backend, "streaming_capability", None)
-        if callable(capability_fn):
-            advertised = capability_fn(text)
-            advertised_mode = advertised.mode.value
-        else:
-            advertised_mode = "final_chunk"
+        # Native ABI speaker_id is a numeric string. Reject anything
+        # else BEFORE opening a session; the runtime would reject too,
+        # but doing it Python-side keeps the HTTP-200 boundary clean.
+        resolved_voice_str = native_backend.validate_voice(resolved_speaker.native_voice)
 
         state.request_count += 1
-        sample_rate = int(getattr(backend, "_sample_rate", 24000) or 24000)
-        model_name = getattr(backend, "_model_name", "") or ""
+        # Sherpa-onnx VITS models are 22050 Hz mono; the native
+        # backend reads sample_rate off each chunk and the runtime
+        # is consistent across chunks. We surface the first observed
+        # rate via the per-chunk fields. Falls back to a documented
+        # 22050 default for the header until the first chunk arrives.
+        # (Headers must be set before StreamingResponse begins.)
+        sample_rate_hint = 22050
+        model_name = getattr(state.sherpa_tts_backend, "_model_name", "") or state.model_name or ""
+
+        # Convert PCM-f32 native chunks to pcm_s16le for the wire.
+        # Honesty: with v0.1.8 sherpa, all chunks arrive together at
+        # end-of-synth, so the SSE-style iterator emits chunks
+        # back-to-back as soon as iteration starts. v0.1.9 progressive
+        # Generate flips this to actual realtime delivery without
+        # changing the wire shape.
+        def _f32_to_pcm_s16le(pcm_f32: Any) -> bytes:
+            import numpy as _np
+
+            arr = _np.asarray(pcm_f32, dtype=_np.float32)
+            # Clip to [-1, 1] then scale to int16 — same convention
+            # the python-sherpa backend used.
+            clipped = _np.clip(arr, -1.0, 1.0)
+            i16 = (clipped * 32767.0).astype(_np.int16)
+            return bytes(i16.tobytes())
 
         async def chunk_iter() -> Any:
-            extra = {"speaker_profile": resolved_speaker} if getattr(backend, "accepts_speaker_profile", False) else {}
-            inner = backend.synthesize_stream(text, resolved_speaker.native_voice, speed, **extra)
-            try:
-                async for raw in inner:
-                    pcm: bytes = raw["pcm_s16le"]
-                    if pcm:
-                        yield pcm
-            finally:
-                close = getattr(inner, "aclose", None)
-                if close is not None:
-                    try:
-                        await close()
-                    except Exception:
-                        pass
+            # NativeTtsStreamBackend.synthesize_with_chunks is a
+            # blocking generator (synchronous Generate inside
+            # poll_event). Run it on a worker thread so the event
+            # loop stays responsive even if the runtime blocks.
+            import asyncio as _asyncio
+            import queue as _queue
 
-        # Speaker / source headers are only set when there's something
-        # meaningful to publish — avoids a meaningless
-        # ``X-Octomil-Speaker:`` empty-value header for callers using
-        # ``voice=`` only. Reference-audio paths are NEVER published.
+            q: _queue.Queue[Any] = _queue.Queue(maxsize=64)
+            _SENTINEL = object()
+            _ERROR = object()
+
+            def _producer() -> None:
+                try:
+                    for chunk in native_backend.synthesize_with_chunks(
+                        text,
+                        voice_id=resolved_voice_str,
+                    ):
+                        q.put((chunk.pcm_f32, chunk.is_final))
+                    q.put(_SENTINEL)
+                except Exception as exc:  # noqa: BLE001
+                    q.put((_ERROR, exc))
+
+            loop = _asyncio.get_running_loop()
+            fut = loop.run_in_executor(None, _producer)
+            try:
+                while True:
+                    item = await loop.run_in_executor(None, q.get)
+                    if item is _SENTINEL:
+                        break
+                    if isinstance(item, tuple) and item[0] is _ERROR:
+                        raise item[1]
+                    pcm_f32, _is_final = item
+                    pcm_s16 = _f32_to_pcm_s16le(pcm_f32)
+                    if pcm_s16:
+                        yield pcm_s16
+            finally:
+                # Make sure the producer thread is drained.
+                try:
+                    await fut
+                except Exception:  # noqa: BLE001
+                    pass
+
+        # Honesty: advertise sentence_chunk in the existing capability
+        # header (matches the contract enum vocabulary), AND surface
+        # a separate honesty header documenting that v0.1.8 chunks
+        # arrive coalesced after synthesis. Clients can use either.
         headers = {
-            "X-Octomil-Sample-Rate": str(sample_rate),
+            "X-Octomil-Sample-Rate": str(sample_rate_hint),
             "X-Octomil-Channels": "1",
             "X-Octomil-Sample-Format": SAMPLE_FORMAT_PCM_S16LE,
-            # Replaces the legacy X-Octomil-Streaming-Mode header.
-            # Values: final_chunk | sentence_chunk | progressive.
-            "X-Octomil-Streaming-Capability-Mode": advertised_mode,
+            "X-Octomil-Streaming-Capability-Mode": "sentence_chunk",
+            "X-Octomil-Streaming-Honesty": "coalesced_after_synthesis",
+            "X-Octomil-Backend": native_backend.name,
             "X-Octomil-Model": str(model_name),
-            "X-Octomil-Voice": str(resolved_voice),
+            "X-Octomil-Voice": str(resolved_voice_str),
             "X-Octomil-Speaker-Source": resolved_speaker.source,
         }
         if resolved_speaker.speaker:

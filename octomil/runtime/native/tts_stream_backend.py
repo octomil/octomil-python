@@ -431,7 +431,7 @@ class NativeTtsStreamBackend:
             raise OctomilError(
                 code=OctomilErrorCode.RUNTIME_UNAVAILABLE,
                 message=(
-                    "native TTS-stream: numpy is required to surface PCM " "chunks as float32 arrays; pip install numpy"
+                    "native TTS-stream: numpy is required to surface PCM chunks as float32 arrays; pip install numpy"
                 ),
             ) from exc
 
@@ -506,7 +506,7 @@ class NativeTtsStreamBackend:
                     if ev.tts_channels != 1:
                         raise OctomilError(
                             code=OctomilErrorCode.INVALID_INPUT,
-                            message=("native TTS-stream: unexpected channels " f"{ev.tts_channels} (expected mono=1)"),
+                            message=(f"native TTS-stream: unexpected channels {ev.tts_channels} (expected mono=1)"),
                         )
                     if ev.tts_sample_rate <= 0:
                         raise OctomilError(
@@ -549,8 +549,7 @@ class NativeTtsStreamBackend:
                 raise OctomilError(
                     code=OctomilErrorCode.REQUEST_TIMEOUT,
                     message=(
-                        "native TTS-stream backend timed out waiting for "
-                        f"SESSION_COMPLETED ({resolved_deadline_ms}ms)"
+                        f"native TTS-stream backend timed out waiting for SESSION_COMPLETED ({resolved_deadline_ms}ms)"
                     ),
                 )
 
@@ -564,8 +563,7 @@ class NativeTtsStreamBackend:
                 raise OctomilError(
                     code=OctomilErrorCode.INFERENCE_FAILED,
                     message=(
-                        "native TTS-stream: SESSION_COMPLETED(OK) without a "
-                        "preceding TTS_AUDIO_CHUNK with is_final=1"
+                        "native TTS-stream: SESSION_COMPLETED(OK) without a preceding TTS_AUDIO_CHUNK with is_final=1"
                     ),
                 )
         finally:
