@@ -287,6 +287,111 @@ async def test_invalid_voice_raises_before_streaming_response(tmp_path: Any) -> 
         assert native_instance.calls == []
 
 
+async def test_out_of_range_sid_raises_before_streaming(tmp_path: Any) -> None:
+    """Codex R1 P1 fix: a syntactically-valid but out-of-range sid
+    (e.g. voice=\"999\" against a single-speaker model) MUST surface
+    as a typed 4xx body, NOT as a mid-stream failure after HTTP 200.
+
+    The fake native backend mimics the real runtime: ``synthesize_with_chunks``
+    raises OctomilError(INVALID_INPUT) synchronously when sid is out
+    of range (the real sherpa adapter rejects inside session_open
+    BEFORE any TTS_AUDIO_CHUNK is emitted). Because the route opens
+    the session SYNCHRONOUSLY (before returning StreamingResponse),
+    the error reaches the exception handler and renders as JSON.
+    """
+    pytest.importorskip("httpx")
+    from httpx import ASGITransport, AsyncClient
+
+    sherpa_backend = _FakePythonSherpaBackend()
+
+    class _RangeCheckingNative(_FakeNativeTtsStreamBackend):
+        def synthesize_with_chunks(self, text: str, *, voice_id: str | None = None) -> Any:
+            sid = int(voice_id or "0")
+            if sid >= 1:  # piper-amy is single-speaker, only sid=0 valid
+                raise OctomilError(
+                    code=OctomilErrorCode.INVALID_INPUT,
+                    message=f"sherpa_onnx_tts_stream: speaker_id={sid} out of range "
+                    f"(model has 1 speaker, valid sid is 0).",
+                )
+            return super().synthesize_with_chunks(text, voice_id=voice_id)
+
+    native_instance = _RangeCheckingNative()
+
+    def native_factory() -> Any:
+        return native_instance
+
+    patches = _make_app(
+        native_factory=native_factory,
+        sherpa_backend=sherpa_backend,
+        tmp_path=tmp_path,
+    )
+    with patches[0], patches[1], patches[2], patches[3]:
+        from octomil.serve.app import create_app
+
+        app = create_app("kokoro-82m")
+        await _start_lifespan(app)
+
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            resp = await client.post(
+                "/v1/audio/speech/stream",
+                json={
+                    "model": "kokoro-82m",
+                    "input": "hi",
+                    "voice": "999",  # numeric — passes validate_voice; out-of-range at session_open.
+                },
+            )
+        assert 400 <= resp.status_code < 500, (
+            f"out-of-range sid must surface as typed 4xx BEFORE 200, " f"got {resp.status_code}: {resp.text}"
+        )
+        body_text = resp.text
+        assert "INVALID_INPUT" in body_text or "out of range" in body_text.lower()
+
+
+async def test_response_sample_rate_header_matches_loaded_model(tmp_path: Any) -> None:
+    """Codex R1 P1 fix: ``X-Octomil-Sample-Rate`` must be the SR the
+    loaded sherpa-onnx model actually emits (24000 Hz for Kokoro,
+    22050 Hz for piper-amy), not a hardcoded constant.
+
+    We verify by injecting a python-sherpa fake whose ``_sample_rate``
+    is 24000 (Kokoro default) and asserting the header matches.
+    """
+    pytest.importorskip("httpx")
+    from httpx import ASGITransport, AsyncClient
+
+    sherpa_backend = _FakePythonSherpaBackend()
+    sherpa_backend._sample_rate = 24000  # mimic Kokoro
+    native_instance = _FakeNativeTtsStreamBackend()
+
+    def native_factory() -> Any:
+        return native_instance
+
+    patches = _make_app(
+        native_factory=native_factory,
+        sherpa_backend=sherpa_backend,
+        tmp_path=tmp_path,
+    )
+    with patches[0], patches[1], patches[2], patches[3]:
+        from octomil.serve.app import create_app
+
+        app = create_app("kokoro-82m")
+        await _start_lifespan(app)
+
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            async with client.stream(
+                "POST",
+                "/v1/audio/speech/stream",
+                json={"model": "kokoro-82m", "input": "hi"},
+            ) as resp:
+                assert resp.status_code == 200, await resp.aread()
+                assert resp.headers["x-octomil-sample-rate"] == "24000", (
+                    f"sample-rate header must reflect the loaded model's "
+                    f"actual SR (Kokoro=24000), got "
+                    f"{resp.headers['x-octomil-sample-rate']!r}"
+                )
+                async for _ in resp.aiter_bytes():
+                    pass
+
+
 async def test_no_python_sherpa_synthesize_stream_in_module_path(tmp_path: Any) -> None:
     """Static / runtime guard: the production /v1/audio/speech/stream
     handler should NOT reach into the python-sherpa

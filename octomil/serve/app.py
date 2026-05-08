@@ -1454,30 +1454,43 @@ def create_app(
         # rate via the per-chunk fields. Falls back to a documented
         # 22050 default for the header until the first chunk arrives.
         # (Headers must be set before StreamingResponse begins.)
-        sample_rate_hint = 22050
+        # Codex R1 P1 fix: read the actual SR from the loaded sherpa
+        # engine (which learned it from the VITS model at startup)
+        # rather than hardcoding 22050. Kokoro is 24 kHz, piper-amy
+        # is 22050 Hz — different models advertise different rates.
+        # The native backend's per-chunk sample_rate matches; this
+        # header serves clients that read headers BEFORE the first
+        # chunk arrives. Falls back to 24000 (Kokoro default) if
+        # sherpa hasn't surfaced an SR yet.
+        observed_sample_rate = int(getattr(state.sherpa_tts_backend, "_sample_rate", 0) or 0) or 24000
         model_name = getattr(state.sherpa_tts_backend, "_model_name", "") or state.model_name or ""
 
+        # Codex R1 P1 fix: open the session SYNCHRONOUSLY here so
+        # that an out-of-range numeric sid (e.g. voice="999" against
+        # a single-speaker piper-amy model) raises BEFORE FastAPI
+        # commits HTTP 200. ``synthesize_with_chunks`` does the
+        # session_open + send_text synchronously and returns a lazy
+        # iterator over the chunk drain — so OctomilError(INVALID_INPUT)
+        # for sid range / send_text / NaN-text lands here as a 4xx
+        # body, not as a mid-stream failure after status/headers
+        # have been committed. The drain itself runs on a worker
+        # thread to keep the event loop responsive while v0.1.8
+        # sherpa Generate is synchronous.
+        chunk_iterator = native_backend.synthesize_with_chunks(
+            text,
+            voice_id=resolved_voice_str,
+        )
+
         # Convert PCM-f32 native chunks to pcm_s16le for the wire.
-        # Honesty: with v0.1.8 sherpa, all chunks arrive together at
-        # end-of-synth, so the SSE-style iterator emits chunks
-        # back-to-back as soon as iteration starts. v0.1.9 progressive
-        # Generate flips this to actual realtime delivery without
-        # changing the wire shape.
         def _f32_to_pcm_s16le(pcm_f32: Any) -> bytes:
             import numpy as _np
 
             arr = _np.asarray(pcm_f32, dtype=_np.float32)
-            # Clip to [-1, 1] then scale to int16 — same convention
-            # the python-sherpa backend used.
             clipped = _np.clip(arr, -1.0, 1.0)
             i16 = (clipped * 32767.0).astype(_np.int16)
             return bytes(i16.tobytes())
 
         async def chunk_iter() -> Any:
-            # NativeTtsStreamBackend.synthesize_with_chunks is a
-            # blocking generator (synchronous Generate inside
-            # poll_event). Run it on a worker thread so the event
-            # loop stays responsive even if the runtime blocks.
             import asyncio as _asyncio
             import queue as _queue
 
@@ -1487,10 +1500,7 @@ def create_app(
 
             def _producer() -> None:
                 try:
-                    for chunk in native_backend.synthesize_with_chunks(
-                        text,
-                        voice_id=resolved_voice_str,
-                    ):
+                    for chunk in chunk_iterator:
                         q.put((chunk.pcm_f32, chunk.is_final))
                     q.put(_SENTINEL)
                 except Exception as exc:  # noqa: BLE001
@@ -1510,7 +1520,6 @@ def create_app(
                     if pcm_s16:
                         yield pcm_s16
             finally:
-                # Make sure the producer thread is drained.
                 try:
                     await fut
                 except Exception:  # noqa: BLE001
@@ -1521,7 +1530,7 @@ def create_app(
         # a separate honesty header documenting that v0.1.8 chunks
         # arrive coalesced after synthesis. Clients can use either.
         headers = {
-            "X-Octomil-Sample-Rate": str(sample_rate_hint),
+            "X-Octomil-Sample-Rate": str(observed_sample_rate),
             "X-Octomil-Channels": "1",
             "X-Octomil-Sample-Format": SAMPLE_FORMAT_PCM_S16LE,
             "X-Octomil-Streaming-Capability-Mode": "sentence_chunk",
