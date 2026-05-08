@@ -115,10 +115,19 @@ def _safe_extract(tarball: Path, target_dir: Path) -> None:
 
     Additionally rejects any member named ``.extracted-ok`` so a tar
     payload cannot inject the sentinel that ``main()`` writes only on
-    successful extraction (Codex R2 G-002)."""
+    successful extraction (Codex R2 G-002).
+
+    Codex R3 G-002 fix: validate ALL members in a first pass before
+    extracting ANY of them. Without this, a tar that lists a benign
+    member before a malicious one would write the benign file to disk
+    before the rejection raised — which on a forced re-fetch + crash
+    chain could leave attacker-controlled content in the cache root.
+    """
     target_real = target_dir.resolve()
     with tarfile.open(tarball) as tf:
-        for member in tf.getmembers():
+        members = tf.getmembers()
+        allowed: list[tarfile.TarInfo] = []
+        for member in members:
             mname = member.name
             if _is_appledouble(mname):
                 continue
@@ -142,6 +151,11 @@ def _safe_extract(tarball: Path, target_dir: Path) -> None:
                 dest.relative_to(target_real)
             except ValueError as e:
                 raise SystemExit(f"error: tar entry {mname!r} would escape " f"{target_dir} on resolution") from e
+            allowed.append(member)
+        # Second pass: every member has cleared validation; extract
+        # only now so a malicious member later in the archive can't
+        # leave earlier benign-looking content on disk.
+        for member in allowed:
             tf.extract(member, target_dir)
 
 
