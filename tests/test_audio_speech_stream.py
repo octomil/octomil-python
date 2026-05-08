@@ -619,8 +619,10 @@ async def test_production_http_speech_stream_route_returns_pcm_with_metadata_hea
             ) as resp:
                 assert resp.status_code == 200, await resp.aread()
                 assert resp.headers["content-type"].startswith("application/octet-stream")
-                # Honesty header pinned post Lane C.
-                assert resp.headers["x-octomil-streaming-honesty"] == "coalesced_after_synthesis"
+                # Honesty header flipped to progressive_during_synthesis in v0.1.9 Lane C.
+                # Proof: /tmp/v019-progressive-proof-20260508T185426Z.json
+                # first_audio_ratio=0.5909, gate < 0.75, gate_pass=true.
+                assert resp.headers["x-octomil-streaming-honesty"] == "progressive_during_synthesis"
                 assert resp.headers["x-octomil-streaming-capability-mode"] == "sentence_chunk"
                 assert resp.headers["x-octomil-channels"] == "1"
                 assert resp.headers["x-octomil-sample-format"] == SAMPLE_FORMAT_PCM_S16LE

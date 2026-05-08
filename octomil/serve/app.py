@@ -1333,13 +1333,11 @@ def create_app(
         ``audio.tts.stream`` capability). No silent fallback to the
         Python sherpa stream path.
 
-        Honesty caveat (v0.1.8 sherpa adapter): chunks arrive
-        coalesced after synthesis on the polling thread; this is NOT
-        realtime / progressive streaming yet. The iterator-shaped
-        wire (``application/octet-stream`` chunked PCM) is forward-
-        compatible with v0.1.9 worker-thread Generate. The
-        ``X-Octomil-Streaming-Honesty`` response header carries
-        ``coalesced_after_synthesis`` to surface this to clients.
+        v0.1.9 progressive flip: worker-thread Generate delivers chunks
+        during synthesis. ``X-Octomil-Streaming-Honesty`` carries
+        ``progressive_during_synthesis``. Proof artifact (first_audio_ratio
+        =0.5909, gate < 0.75, gate_pass=true):
+        /tmp/v019-progressive-proof-20260508T185426Z.json
 
         Returns ``application/octet-stream`` with raw PCM int16 LE
         chunks. Metadata is in response headers; clients should NOT
@@ -1525,16 +1523,17 @@ def create_app(
                 except Exception:  # noqa: BLE001
                     pass
 
-        # Honesty: advertise sentence_chunk in the existing capability
-        # header (matches the contract enum vocabulary), AND surface
-        # a separate honesty header documenting that v0.1.8 chunks
-        # arrive coalesced after synthesis. Clients can use either.
+        # v0.1.9 progressive flip: advertise sentence_chunk in the
+        # capability header (matches contract enum vocabulary), AND surface
+        # progressive_during_synthesis in the honesty header — proven by
+        # first_audio_ratio=0.5909 < 0.75 gate (proof_artifact). Clients
+        # can use either header.
         headers = {
             "X-Octomil-Sample-Rate": str(observed_sample_rate),
             "X-Octomil-Channels": "1",
             "X-Octomil-Sample-Format": SAMPLE_FORMAT_PCM_S16LE,
             "X-Octomil-Streaming-Capability-Mode": "sentence_chunk",
-            "X-Octomil-Streaming-Honesty": "coalesced_after_synthesis",
+            "X-Octomil-Streaming-Honesty": "progressive_during_synthesis",
             "X-Octomil-Backend": native_backend.name,
             "X-Octomil-Model": str(model_name),
             "X-Octomil-Voice": str(resolved_voice_str),
