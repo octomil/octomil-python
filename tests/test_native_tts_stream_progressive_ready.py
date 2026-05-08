@@ -61,7 +61,8 @@ class TestTtsAudioChunkForwardCompatibleShape:
             "callers wired against the v0.1.8 dataclass shape."
         )
 
-    def test_streaming_mode_default_is_coalesced(self) -> None:
+    def test_streaming_mode_default_is_progressive(self) -> None:
+        """v0.1.9 Lane C flip: default is now 'progressive'."""
         chunk = TtsAudioChunk(
             pcm_f32=b"",
             sample_rate_hz=22050,
@@ -69,10 +70,9 @@ class TestTtsAudioChunkForwardCompatibleShape:
             is_final=False,
             cumulative_duration_ms=0,
         )
-        assert chunk.streaming_mode == "coalesced", (
-            "TtsAudioChunk default streaming_mode flipped away from "
-            "'coalesced'. This is the v0.1.9 honesty pin — do NOT "
-            "flip until the runtime release ships progressive Generate."
+        assert chunk.streaming_mode == "progressive", (
+            "TtsAudioChunk default streaming_mode is no longer 'progressive'. "
+            "v0.1.9 Lane C flipped this; revert requires runtime regression evidence."
         )
 
     def test_streaming_mode_accepts_progressive_literal(self) -> None:
@@ -119,7 +119,7 @@ def _chunk_iter(
     """Synthetic drain — yields ``n_chunks`` TtsAudioChunk objects.
     No real-time delay; consumers that want to simulate inter-arrival
     timing should drive a fake clock when consuming the iterator.
-    Chunks are streaming_mode='coalesced' today (honesty pin)."""
+    Chunks are streaming_mode='progressive' (v0.1.9 Lane C flip)."""
     cumulative_samples = 0
     for i in range(n_chunks):
         cumulative_samples += samples_per_chunk
@@ -129,7 +129,7 @@ def _chunk_iter(
             chunk_index=i,
             is_final=(i == n_chunks - 1),
             cumulative_duration_ms=int(cumulative_samples * 1000 // sample_rate_hz),
-            streaming_mode="coalesced",
+            streaming_mode="progressive",
         )
 
 
@@ -146,17 +146,13 @@ class TestIteratorPatternHandlesChunkEmission:
         assert [c.chunk_index for c in chunks] == [0, 1, 2]
         assert [c.is_final for c in chunks] == [False, False, True]
 
-    def test_consumed_chunks_keep_coalesced_streaming_mode(self) -> None:
-        """The dataclass field is set as the helper writes it — i.e.
-        the v0.1.9 follow-up's detection logic isn't yet wired, so
-        chunks still report 'coalesced'. This pins the honesty
-        discipline: per-chunk progressive labelling is a SEPARATE PR
-        gated on the runtime release."""
+    def test_consumed_chunks_report_progressive_streaming_mode(self) -> None:
+        """v0.1.9 Lane C: chunks now report streaming_mode='progressive'
+        per the flipped default. Proof artifact gated the flip."""
         chunks = list(_chunk_iter(n_chunks=2))
-        assert all(c.streaming_mode == "coalesced" for c in chunks), (
-            "A chunk reported streaming_mode='progressive' against "
-            "the v0.1.8/coalesced runtime. The SDK MUST NOT auto-detect "
-            "and label as progressive without the runtime release."
+        assert all(c.streaming_mode == "progressive" for c in chunks), (
+            "A chunk reported streaming_mode != 'progressive'. "
+            "v0.1.9 Lane C flipped the default; revert requires evidence."
         )
 
 

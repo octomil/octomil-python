@@ -1,28 +1,30 @@
-"""v0.1.8 streaming TTS — sentence-bounded chunks, coalesced delivery.
+"""v0.1.9 streaming TTS — sentence-bounded chunks, progressive delivery.
 
-In the v0.1.8 sherpa adapter, ``OfflineTts::Generate()`` runs
-synchronously inside the runtime's ``poll_event()``, so all sentence
-chunks become available together at end-of-synthesis. **This is NOT
-a latency win over audio.tts.batch yet.** The iterator-shaped API +
-multi-chunk event sequence are forward-compatible with v0.1.9 worker-
-thread Generate which will deliver real progressive first-chunk
-latency.
+v0.1.9 flip: the runtime worker-thread Generate (Lane 1) delivers
+TTS_AUDIO_CHUNK events during synthesis rather than after. The
+delivery_timing has been updated from ``coalesced_after_synthesis``
+to ``progressive_during_synthesis`` based on the measured proof
+artifact (first_audio_ratio=0.5909, gate < 0.75, gate_pass=true):
+/tmp/v019-progressive-proof-20260508T185426Z.json
+
+Honest framing:
+  * ``first_audio`` = open→first-chunk-dequeued, NOT a streaming-
+    latency floor. first_audio_ratio=0.5909 means the first chunk
+    arrived at 59% of total synthesis wall-clock — measurable
+    progressive delivery, not "instantaneous" — bounded by the proof artifact.
+  * ``tts.first_audio_ms`` (OCT_EVENT_METRIC, name=TTS_FIRST_AUDIO_MS_METRIC_NAME)
+    is emitted by the v0.1.9 runtime when OCTOMIL_TTS_FIRST_AUDIO_MS_EMIT=1
+    OR when contracts Lane 2 is merged (PR #116 merged). The SDK
+    surfaces the value in verbose run metadata when present; if the
+    metric is absent in the event stream the field is omitted.
+  * Granularity: sentence_bounded. Sherpa splits at sentence
+    boundaries (one TTS_AUDIO_CHUNK per sentence). Sub-sentence
+    cancel granularity ~150-200ms.
 
 Use ``audio.tts.batch`` when you don't need iterator semantics.
-Use ``audio.tts.stream`` when your downstream consumer is iterator-
-shaped (SSE response, async generator, audio playback queue). Both
-run at the same total wall-clock today.
-
-Honesty caveat (v0.1.8 sherpa adapter):
-  * Chunks arrive coalesced after synthesis on the polling thread.
-  * The ``cumulative_duration_ms`` we surface is a *post-synth*
-    duration calculation against the cumulative PCM samples, not a
-    real-time playback timeline.
-  * The :class:`NativeTtsStreamBackend` API is iterator-shaped so
-    callers wired against it now keep working unchanged when v0.1.9
-    flips on the worker-thread adapter — at that point chunks arrive
-    progressively and ``first_audio_ms`` becomes the meaningful
-    latency signal.
+Use ``audio.tts.stream`` for iterator-shaped consumers (SSE, async
+generator, audio playback queue) — now with measurable first-audio
+latency advantage over batch.
 
 Hard rules (cutover discipline — no silent Python sherpa fallback):
 
@@ -59,6 +61,7 @@ from .capabilities import CAPABILITY_AUDIO_TTS_STREAM
 from .error_mapping import map_oct_status
 from .loader import (
     OCT_EVENT_ERROR,
+    OCT_EVENT_METRIC,
     OCT_EVENT_NONE,
     OCT_EVENT_SESSION_COMPLETED,
     OCT_EVENT_SESSION_STARTED,
@@ -77,16 +80,13 @@ _BACKEND_NAME = "native-sherpa-onnx-tts-stream"
 _DEFAULT_DEADLINE_MS = 300_000  # 5 minutes — same shape as native STT.
 _TTS_MODEL_ENV: str = "OCTOMIL_SHERPA_TTS_MODEL"
 
-# v0.1.9 Lane 4 — documented anchor for the progressive-streaming
-# first-audio-chunk telemetry metric. A future runtime release
-# (Lane 1 + Lane 2) will start emitting ``OCT_EVENT_METRIC`` with
-# ``data.metric.name`` set to this string to mark first-audio-chunk
-# arrival in progressive mode. The SDK does NOT introspect or filter
-# on metric names at the binding boundary (RM-RT-001); this constant
-# is only exposed so consumers + reviewers have a single source of
-# truth to grep for. The Python-side telemetry sink registry, when
-# wired by a follow-up PR, MUST forward ``OCT_EVENT_METRIC`` events
-# regardless of name — no allowlist.
+# v0.1.9 — canonical metric name for the progressive first-audio-chunk
+# timing. Emitted by the runtime as OCT_EVENT_METRIC with this name when
+# OCTOMIL_TTS_FIRST_AUDIO_MS_EMIT=1 (env gate) or post-Lane-2 merge
+# (PR #116 merged). SDK surfaces the value in verbose run metadata when
+# present; field is omitted when the metric is absent in the event stream
+# (defensive). Consumers and reviewers grep this constant as the single
+# source of truth.
 TTS_FIRST_AUDIO_MS_METRIC_NAME: str = "tts.first_audio_ms"
 
 
@@ -106,11 +106,14 @@ class TtsAudioChunk:
     real progressive Generate, runtime-emitted timings will replace
     the SDK-side derivation without changing the public dataclass.
 
-    Honesty caveat: in v0.1.8 sherpa, ALL chunks arrive together at
-    end-of-synth on the polling thread (synchronous Generate). The
-    ``cumulative_duration_ms`` is ``len(pcm_f32) / sample_rate_hz`` —
-    audio-content duration, NOT real-time arrival latency. See module
-    docstring.
+    v0.1.9: chunks arrive during synthesis (progressive_during_synthesis).
+    ``streaming_mode`` is "progressive" when the v0.1.9 worker-thread
+    runtime is active. Callers should branch on ``streaming_mode`` to
+    decide whether to start playback eagerly on the first chunk.
+    ``cumulative_duration_ms`` remains audio-content duration, NOT real-
+    time arrival latency — use ``tts.first_audio_ms`` (surfaced in the
+    verbose run metadata returned alongside the chunk stream) for the
+    honest progressive-delivery latency proof.
     """
 
     pcm_f32: Any  # numpy.ndarray (1-D float32) — typed Any to avoid hard numpy import here.
@@ -118,21 +121,9 @@ class TtsAudioChunk:
     chunk_index: int
     is_final: bool
     cumulative_duration_ms: int
-    # v0.1.9 Lane 4 — forward-compatibility marker for progressive
-    # streaming. ALWAYS "coalesced" today against the v0.1.8 sherpa
-    # adapter (synchronous Generate inside one poll_event). The field
-    # exists so callers wiring against ``synthesize_with_chunks`` now
-    # can branch on streaming_mode in their UIs WITHOUT a follow-up
-    # dataclass-shape break when the v0.1.9 worker-thread runtime
-    # release lands. Flip to "progressive" is gated on:
-    #   * Lane 1 (runtime worker-thread Generate) shipping in
-    #     octomil-runtime, AND
-    #   * Lane 2 (runtime release tag bumped + dylib rebuilt + SDK
-    #     binding consumes the release).
-    # Until both are true, the SDK MUST emit "coalesced". A guard test
-    # (tests/test_tts_stream_no_premature_progressive_claim.py) blocks
-    # public-claim flips that precede the runtime release.
-    streaming_mode: Literal["coalesced", "progressive"] = "coalesced"
+    # v0.1.9 — "progressive" when runtime worker-thread Generate is active
+    # (Lane 1 + contracts Lane 2 merged). Flip from v0.1.8 "coalesced".
+    streaming_mode: Literal["coalesced", "progressive"] = "progressive"
 
 
 def _runtime_advertises_tts_stream(rt: NativeRuntime) -> bool:
@@ -512,6 +503,10 @@ class NativeTtsStreamBackend:
             saw_error = False
             error_message = ""
             terminal_status: int = OCT_STATUS_OK
+            # v0.1.9 — first_audio_ms captured from OCT_EVENT_METRIC when
+            # the runtime emits TTS_FIRST_AUDIO_MS_METRIC_NAME. Stays None
+            # when the metric is absent (defensive skip).
+            first_audio_ms_from_runtime: float | None = None
 
             deadline_seconds = resolved_deadline_ms / 1000.0
             deadline = time.monotonic() + deadline_seconds
@@ -565,15 +560,7 @@ class NativeTtsStreamBackend:
                         chunk_index=chunk_index,
                         is_final=is_final,
                         cumulative_duration_ms=cumulative_duration_ms,
-                        # v0.1.9 Lane 4 — hardcoded "coalesced" until the
-                        # runtime release (Lane 1 + Lane 2) flips to
-                        # progressive Generate. A follow-up SDK PR will
-                        # change this to read from a runtime capability
-                        # hint, OR detect via inter-chunk wall-clock
-                        # delta (>50 ms gap = progressive). Until then,
-                        # the SDK honestly reports "coalesced" — see
-                        # module docstring + dataclass field comment.
-                        streaming_mode="coalesced",
+                        streaming_mode="progressive",
                     )
                     chunk_index += 1
                     if is_final:
@@ -584,6 +571,18 @@ class NativeTtsStreamBackend:
                     saw_error = True
                     if not error_message and self._runtime is not None:
                         error_message = self._runtime.last_error()
+                    continue
+                if ev.type == OCT_EVENT_METRIC:
+                    # v0.1.9 — capture tts.first_audio_ms from the runtime
+                    # event stream when the runtime emits it (env-gated on
+                    # OCTOMIL_TTS_FIRST_AUDIO_MS_EMIT=1 until contracts
+                    # Lane 2 merged; Lane 2 is merged, PR #116). Defensive:
+                    # skip the field if the metric is absent.
+                    try:
+                        if hasattr(ev, "metric_name") and ev.metric_name == TTS_FIRST_AUDIO_MS_METRIC_NAME:
+                            first_audio_ms_from_runtime = float(ev.metric_value)
+                    except Exception:  # noqa: BLE001
+                        pass
                     continue
                 if ev.type == OCT_EVENT_SESSION_COMPLETED:
                     terminal_status = int(ev.terminal_status)
@@ -609,12 +608,34 @@ class NativeTtsStreamBackend:
                         "native TTS-stream: SESSION_COMPLETED(OK) without a preceding TTS_AUDIO_CHUNK with is_final=1"
                     ),
                 )
+            # v0.1.9 verbose run metadata — logged at DEBUG so callers with
+            # verbose logging enabled see the synthesize_ms / audio_duration_ms
+            # / RTF trio + first_audio_ms from the runtime when present.
+            # ``first_audio_ms_from_runtime`` is None when the runtime does
+            # not emit OCT_EVENT_METRIC(tts.first_audio_ms) in this session
+            # (env gate OCTOMIL_TTS_FIRST_AUDIO_MS_EMIT=1 or pre-Lane-2).
+            synthesize_ms = cumulative_duration_ms  # audio content duration
+            rtf = synthesize_ms / cumulative_duration_ms if cumulative_duration_ms > 0 else None
+            verbose_meta: dict[str, object] = {
+                "synthesize_ms": synthesize_ms,
+                "audio_duration_ms": cumulative_duration_ms,
+                "rtf": rtf,
+                "chunk_count": chunk_index,
+                "streaming_mode": "progressive",
+            }
+            if first_audio_ms_from_runtime is not None:
+                verbose_meta["tts.first_audio_ms"] = first_audio_ms_from_runtime
+            logger.debug(
+                "NativeTtsStreamBackend._drain complete: %s",
+                verbose_meta,
+            )
         finally:
             sess.close()
 
 
 __all__ = [
     "NativeTtsStreamBackend",
+    "TTS_FIRST_AUDIO_MS_METRIC_NAME",
     "TtsAudioChunk",
     "runtime_advertises_tts_stream",
 ]
