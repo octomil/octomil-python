@@ -52,7 +52,7 @@ import logging
 import os
 import time
 from dataclasses import dataclass
-from typing import Any, Iterator
+from typing import Any, Iterator, Literal
 
 from ...errors import OctomilError, OctomilErrorCode
 from .capabilities import CAPABILITY_AUDIO_TTS_STREAM
@@ -106,6 +106,21 @@ class TtsAudioChunk:
     chunk_index: int
     is_final: bool
     cumulative_duration_ms: int
+    # v0.1.9 Lane 4 — forward-compatibility marker for progressive
+    # streaming. ALWAYS "coalesced" today against the v0.1.8 sherpa
+    # adapter (synchronous Generate inside one poll_event). The field
+    # exists so callers wiring against ``synthesize_with_chunks`` now
+    # can branch on streaming_mode in their UIs WITHOUT a follow-up
+    # dataclass-shape break when the v0.1.9 worker-thread runtime
+    # release lands. Flip to "progressive" is gated on:
+    #   * Lane 1 (runtime worker-thread Generate) shipping in
+    #     octomil-runtime, AND
+    #   * Lane 2 (runtime release tag bumped + dylib rebuilt + SDK
+    #     binding consumes the release).
+    # Until both are true, the SDK MUST emit "coalesced". A guard test
+    # (tests/test_tts_stream_no_premature_progressive_claim.py) blocks
+    # public-claim flips that precede the runtime release.
+    streaming_mode: Literal["coalesced", "progressive"] = "coalesced"
 
 
 def _runtime_advertises_tts_stream(rt: NativeRuntime) -> bool:
@@ -538,6 +553,15 @@ class NativeTtsStreamBackend:
                         chunk_index=chunk_index,
                         is_final=is_final,
                         cumulative_duration_ms=cumulative_duration_ms,
+                        # v0.1.9 Lane 4 — hardcoded "coalesced" until the
+                        # runtime release (Lane 1 + Lane 2) flips to
+                        # progressive Generate. A follow-up SDK PR will
+                        # change this to read from a runtime capability
+                        # hint, OR detect via inter-chunk wall-clock
+                        # delta (>50 ms gap = progressive). Until then,
+                        # the SDK honestly reports "coalesced" — see
+                        # module docstring + dataclass field comment.
+                        streaming_mode="coalesced",
                     )
                     chunk_index += 1
                     if is_final:
