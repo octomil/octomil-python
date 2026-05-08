@@ -293,15 +293,28 @@ class NativeSpeakerEmbeddingBackend:
             ) from exc
 
         if not _runtime_advertises_audio_speaker_embedding(self._runtime):
-            last_error_lc = (self._runtime.last_error() or "").lower()
+            # Codex R1 F-02 fix (mirrors VAD F-01 fix): the
+            # capability snapshot does NOT propagate the sherpa
+            # adapter's cached_reason_ into the runtime's thread-
+            # local last_error. Only the dispatch path in
+            # oct_session_open does that
+            # (octomil-runtime/src/runtime.cpp:1139-1147). So we
+            # attempt a probe session_open against
+            # audio.speaker.embedding to extract the precise
+            # diagnostic — it WILL fail with UNSUPPORTED, but the
+            # resulting NativeRuntimeError.last_error carries the
+            # "digest mismatch — got X want Y" string when the
+            # adapter declined for digest reasons.
+            probe_last_error = self._probe_audio_speaker_embedding_unsupported_reason()
             self.close()
-            if "digest" in last_error_lc:
+            if "digest" in probe_last_error.lower():
                 raise OctomilError(
                     code=OctomilErrorCode.CHECKSUM_MISMATCH,
                     message=(
                         "native speaker.embedding backend: ERes2NetV2 SHA-256 "
                         "does not match the v0.1.5 runtime-pinned digest "
-                        "(1a331345…7a5e4b). Re-download the artifact."
+                        f"(1a331345…7a5e4b). Re-download the artifact. Runtime "
+                        f"diagnostic: {probe_last_error}"
                     ),
                 )
             raise OctomilError(
@@ -311,7 +324,8 @@ class NativeSpeakerEmbeddingBackend:
                     "'audio.speaker.embedding'. Check OCTOMIL_SHERPA_SPEAKER_MODEL "
                     "(must point at the ERes2NetV2 ONNX with SHA-256 "
                     "1a331345…7a5e4b) and that the dylib was built with "
-                    "OCT_ENABLE_ENGINE_SHERPA_ONNX=ON."
+                    "OCT_ENABLE_ENGINE_SHERPA_ONNX=ON. Runtime diagnostic: "
+                    f"{probe_last_error}"
                 ),
             )
 
@@ -340,6 +354,47 @@ class NativeSpeakerEmbeddingBackend:
                 last_error=getattr(exc, "last_error", ""),
             ) from exc
         logger.debug("NativeSpeakerEmbeddingBackend: runtime opened + sherpa speaker model warmed")
+
+    def _probe_audio_speaker_embedding_unsupported_reason(self) -> str:
+        """Probe ``oct_session_open(capability="audio.speaker.embedding")``
+        with ``model=None`` to extract the precise dispatch-time
+        UNSUPPORTED reason.
+
+        Codex R1 F-02 fix (mirrors VAD F-01): the runtime's capability
+        snapshot does NOT propagate the sherpa adapter's
+        ``cached_reason_`` to the runtime's thread-local last_error.
+        Only oct_session_open's dispatch path does that
+        (octomil-runtime/src/runtime.cpp:1139-1147). The dispatch
+        order matters here: ``is_loadable_now()`` is checked BEFORE
+        the model presence check (line 1149), so a probe with
+        ``model=None`` returns the precise digest diagnostic when
+        the adapter declined for digest reasons. If the adapter is
+        loadable but the capability is hidden for some other reason,
+        we'd hit the model-NULL branch and get an INVALID_INPUT
+        instead — that's fine, we just won't see "digest" in the
+        result and will fall through to RUNTIME_UNAVAILABLE.
+        """
+        if self._runtime is None:
+            return ""
+        try:
+            sess = self._runtime.open_session(
+                capability=CAPABILITY_AUDIO_SPEAKER_EMBEDDING,
+                locality="on_device",
+                policy_preset="private",
+                sample_rate_in=_SPEAKER_SAMPLE_RATE_HZ,
+                # model=None on purpose — we want the dispatch-time
+                # adapter check to fire first.
+            )
+        except NativeRuntimeError as exc:
+            return getattr(exc, "last_error", "") or ""
+        except Exception:  # noqa: BLE001
+            return ""
+        else:
+            try:
+                sess.close()
+            except Exception:  # noqa: BLE001
+                pass
+            return ""
 
     def close(self) -> None:
         """Close the model BEFORE the runtime so ``oct_runtime_close``

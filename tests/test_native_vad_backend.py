@@ -227,7 +227,13 @@ class TestOpenGate:
         backend = NativeVadBackend()
         rt = MagicMock()
         rt.capabilities.return_value = MagicMock(supported_capabilities=("chat.completion",))
-        rt.last_error.return_value = "audio.vad not built in"
+        # Probe path: defaults to a non-digest reason so the SDK
+        # routes to RUNTIME_UNAVAILABLE rather than CHECKSUM_MISMATCH.
+        rt.open_session.side_effect = NativeRuntimeError(
+            OCT_STATUS_UNSUPPORTED,
+            "oct_session_open audio.vad failed",
+            "audio.vad not built into this runtime build",
+        )
         with patch(
             "octomil.runtime.native.vad_backend.NativeRuntime.open",
             return_value=rt,
@@ -237,16 +243,26 @@ class TestOpenGate:
             assert exc_info.value.code == OctomilErrorCode.RUNTIME_UNAVAILABLE
             assert "audio.vad" in exc_info.value.error_message
 
-    def test_capability_missing_with_digest_in_last_error_raises_checksum_mismatch(self) -> None:
+    def test_capability_missing_with_digest_in_probe_reason_raises_checksum_mismatch(self) -> None:
         """Bad-digest disambiguation: the runtime hides the capability
         when the silero artifact's SHA-256 doesn't match the pinned
-        digest. The SDK surfaces ``CHECKSUM_MISMATCH`` so callers can
-        route the integrity-failure case (re-download) separately
-        from the operator-misconfig case (set the env)."""
+        digest. Codex R1 F-01 fix: the SDK extracts the diagnostic by
+        attempting a probe ``oct_session_open(capability="audio.vad")``
+        — the runtime's dispatch path is the only place that surfaces
+        the silero adapter's ``cached_reason_`` (which contains the
+        "digest mismatch — got X want Y" string) into thread-local
+        ``last_error``. The probe call returns ``OCT_STATUS_UNSUPPORTED``
+        and the SDK's ``NativeRuntimeError`` carries that text."""
         backend = NativeVadBackend()
         rt = MagicMock()
         rt.capabilities.return_value = MagicMock(supported_capabilities=("chat.completion",))
-        rt.last_error.return_value = "ggml-silero-v6.2.0.bin digest mismatch (got abc, want xyz)"
+        # Probe path: open_session raises NativeRuntimeError with
+        # last_error containing the digest substring.
+        rt.open_session.side_effect = NativeRuntimeError(
+            OCT_STATUS_UNSUPPORTED,
+            "oct_session_open audio.vad failed",
+            "silero_vad: OCTOMIL_SILERO_VAD_MODEL=/path digest mismatch — got abc want xyz",
+        )
         with patch(
             "octomil.runtime.native.vad_backend.NativeRuntime.open",
             return_value=rt,
@@ -255,6 +271,46 @@ class TestOpenGate:
                 backend.open()
             assert exc_info.value.code == OctomilErrorCode.CHECKSUM_MISMATCH
             assert "digest" in exc_info.value.error_message.lower()
+
+    def test_capability_missing_without_digest_falls_through_to_runtime_unavailable(self) -> None:
+        """When the probe returns a non-digest reason (env unset or
+        engine missing), the SDK surfaces ``RUNTIME_UNAVAILABLE``
+        with the diagnostic appended."""
+        backend = NativeVadBackend()
+        rt = MagicMock()
+        rt.capabilities.return_value = MagicMock(supported_capabilities=("chat.completion",))
+        rt.open_session.side_effect = NativeRuntimeError(
+            OCT_STATUS_UNSUPPORTED,
+            "oct_session_open audio.vad failed",
+            "silero_vad: OCTOMIL_SILERO_VAD_MODEL env var unset",
+        )
+        with patch(
+            "octomil.runtime.native.vad_backend.NativeRuntime.open",
+            return_value=rt,
+        ):
+            with pytest.raises(OctomilError) as exc_info:
+                backend.open()
+            assert exc_info.value.code == OctomilErrorCode.RUNTIME_UNAVAILABLE
+            assert "OCTOMIL_SILERO_VAD_MODEL" in exc_info.value.error_message
+
+    def test_capability_missing_probe_silent_falls_through_to_runtime_unavailable(self) -> None:
+        """When the probe returns no diagnostic at all (e.g. it
+        unexpectedly succeeded — shouldn't happen but is forward-
+        compat), the SDK still surfaces ``RUNTIME_UNAVAILABLE``
+        rather than crashing."""
+        backend = NativeVadBackend()
+        rt = MagicMock()
+        rt.capabilities.return_value = MagicMock(supported_capabilities=("chat.completion",))
+        # Probe SUCCEEDED — defensive path. Returns a session-like
+        # mock that the helper closes silently.
+        rt.open_session.return_value = MagicMock()
+        with patch(
+            "octomil.runtime.native.vad_backend.NativeRuntime.open",
+            return_value=rt,
+        ):
+            with pytest.raises(OctomilError) as exc_info:
+                backend.open()
+            assert exc_info.value.code == OctomilErrorCode.RUNTIME_UNAVAILABLE
 
     def test_runtime_open_failure_raises_runtime_unavailable(self) -> None:
         backend = NativeVadBackend()

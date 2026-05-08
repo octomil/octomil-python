@@ -548,20 +548,32 @@ class NativeVadBackend:
             ) from exc
 
         if not _runtime_advertises_audio_vad(self._runtime):
-            # Capability not advertised. Disambiguate digest-mismatch
-            # via the same last_error substring rule as STT — the
-            # silero VAD adapter writes "digest mismatch (got X, want
-            # Y)" into thread-local last_error when it skips
-            # advertising on the digest gate.
-            last_error_lc = (self._runtime.last_error() or "").lower()
+            # Capability not advertised. Disambiguate the digest-mismatch
+            # branch from the missing-env / missing-engine branch.
+            #
+            # Codex R1 F-01: relying on runtime.last_error() after a
+            # successful capabilities() call is unreliable — the
+            # capability snapshot filters out unloadable adapters
+            # WITHOUT populating the runtime's thread-local last_error
+            # (the silero adapter caches its diagnostic in
+            # adapter-local cached_reason_; only oct_session_open's
+            # dispatch block calls runtime->set_error with that
+            # reason — see octomil-runtime/src/runtime.cpp:1255-1263).
+            # So we extract the precise reason by attempting a probe
+            # session_open against audio.vad — the dispatch will hit
+            # the silero adapter, call load_status_reason(), and
+            # surface the "digest mismatch — got X want Y" string via
+            # NativeRuntimeError.last_error.
+            probe_last_error = self._probe_audio_vad_unsupported_reason()
             self.close()
-            if "digest" in last_error_lc:
+            if "digest" in probe_last_error.lower():
                 raise OctomilError(
                     code=OctomilErrorCode.CHECKSUM_MISMATCH,
                     message=(
                         "native VAD backend: ggml-silero-v6.2.0.bin SHA-256 "
                         "does not match the v0.1.5 runtime-pinned digest "
-                        "(2aa269b7…fb6987). Re-download the artifact."
+                        f"(2aa269b7…fb6987). Re-download the artifact. Runtime "
+                        f"diagnostic: {probe_last_error}"
                     ),
                 )
             raise OctomilError(
@@ -571,7 +583,8 @@ class NativeVadBackend:
                     "'audio.vad'. Check OCTOMIL_SILERO_VAD_MODEL "
                     "(must point at ggml-silero-v6.2.0.bin with SHA-256 "
                     "2aa269b7…fb6987) and that the dylib was built with "
-                    "OCT_ENABLE_ENGINE_SILERO_VAD=ON."
+                    "OCT_ENABLE_ENGINE_SILERO_VAD=ON. Runtime diagnostic: "
+                    f"{probe_last_error}"
                 ),
             )
         self._initialized = True
@@ -609,6 +622,52 @@ class NativeVadBackend:
             self.open()
         assert self._runtime is not None  # mypy hint after open() guard
         return VadStreamingSession(self._runtime, sample_rate_hz)
+
+    def _probe_audio_vad_unsupported_reason(self) -> str:
+        """Probe ``oct_session_open(capability="audio.vad")`` to extract
+        the precise dispatch-time UNSUPPORTED reason.
+
+        Codex R1 F-01 fix: when the runtime hides ``audio.vad`` because
+        the silero adapter's 5-gate check failed, the diagnostic lives
+        in the adapter's ``cached_reason_`` (adapter-local), NOT in the
+        runtime's thread-local ``last_error``. Only the dispatch path
+        in ``oct_session_open`` propagates ``cached_reason_`` to
+        ``last_error`` via ``runtime->set_error(... + load_status_reason())``
+        (octomil-runtime/src/runtime.cpp:1255-1263). So we attempt a
+        probe session — it WILL fail with UNSUPPORTED — and read the
+        precise reason out of the resulting ``NativeRuntimeError`` /
+        last_error.
+
+        Returns the diagnostic string (possibly empty if the probe
+        couldn't extract one) so the caller can substring-match
+        ``"digest"``.
+        """
+        if self._runtime is None:
+            return ""
+        try:
+            sess = self._runtime.open_session(
+                capability=CAPABILITY_AUDIO_VAD,
+                locality="on_device",
+                policy_preset="private",
+                sample_rate_in=_VAD_SAMPLE_RATE_HZ,
+            )
+        except NativeRuntimeError as exc:
+            # Expected path: UNSUPPORTED with the precise reason.
+            return getattr(exc, "last_error", "") or ""
+        except Exception:  # noqa: BLE001
+            # Any other exception (ImportError, etc.) — fall through.
+            return ""
+        else:
+            # Unexpected: the probe SUCCEEDED. Close it and return ""
+            # so the caller falls through to the generic
+            # RUNTIME_UNAVAILABLE branch (this can only happen if the
+            # capability was advertised between the introspection and
+            # the probe; the open is now leaking — close it).
+            try:
+                sess.close()
+            except Exception:  # noqa: BLE001
+                pass
+            return ""
 
     def close(self) -> None:
         """Close the underlying runtime. Idempotent.

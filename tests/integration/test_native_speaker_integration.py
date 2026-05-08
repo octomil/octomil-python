@@ -233,7 +233,12 @@ class TestFullSmoke:
 
 
 class TestBadDigest:
-    def test_tampered_digest_raises_typed_error(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_tampered_digest_raises_checksum_mismatch(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Codex R1 F-02: with the probe-session wiring, a tampered
+        ONNX (file exists but SHA-256 doesn't match the canonical
+        ERes2NetV2 pin) MUST surface as ``CHECKSUM_MISMATCH``. The
+        probe extracts the digest diagnostic from the dispatch path's
+        ``set_error`` call."""
         from octomil.runtime.native.speaker_backend import NativeSpeakerEmbeddingBackend
 
         tampered = tmp_path / "eres2net_base.onnx"
@@ -243,13 +248,9 @@ class TestBadDigest:
         backend = NativeSpeakerEmbeddingBackend()
         with pytest.raises(OctomilError) as exc_info:
             backend.load_model("sherpa-eres2netv2-base")
-        assert exc_info.value.code != OctomilErrorCode.INFERENCE_FAILED
-        assert exc_info.value.code in {
-            OctomilErrorCode.CHECKSUM_MISMATCH,
-            OctomilErrorCode.RUNTIME_UNAVAILABLE,
-            OctomilErrorCode.MODEL_NOT_FOUND,
-            OctomilErrorCode.INVALID_INPUT,
-        }
+        assert (
+            exc_info.value.code == OctomilErrorCode.CHECKSUM_MISMATCH
+        ), f"tampered digest produced {exc_info.value.code}, expected CHECKSUM_MISMATCH"
 
 
 # ---------------------------------------------------------------------------

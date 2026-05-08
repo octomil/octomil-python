@@ -251,7 +251,12 @@ class TestLoadModelGate:
         backend = NativeSpeakerEmbeddingBackend()
         rt = MagicMock()
         rt.capabilities.return_value = MagicMock(supported_capabilities=("chat.completion",))
-        rt.last_error.return_value = "audio.speaker.embedding not built in"
+        # Probe path: non-digest reason routes to RUNTIME_UNAVAILABLE.
+        rt.open_session.side_effect = NativeRuntimeError(
+            OCT_STATUS_UNSUPPORTED,
+            "oct_session_open audio.speaker.embedding failed",
+            "audio.speaker.embedding not built into this runtime build",
+        )
         with patch(
             "octomil.runtime.native.speaker_backend.NativeRuntime.open",
             return_value=rt,
@@ -261,11 +266,22 @@ class TestLoadModelGate:
             assert exc_info.value.code == OctomilErrorCode.RUNTIME_UNAVAILABLE
             assert "audio.speaker.embedding" in exc_info.value.error_message
 
-    def test_capability_missing_with_digest_raises_checksum_mismatch(self) -> None:
+    def test_capability_missing_with_digest_in_probe_raises_checksum_mismatch(self) -> None:
+        """Codex R1 F-02 fix: the SDK extracts the digest diagnostic
+        by probing ``oct_session_open(audio.speaker.embedding)`` —
+        the dispatch path is the only place the runtime surfaces the
+        sherpa adapter's ``cached_reason_`` into thread-local
+        last_error. The probe call returns UNSUPPORTED and the
+        ``NativeRuntimeError.last_error`` carries the digest
+        substring."""
         backend = NativeSpeakerEmbeddingBackend()
         rt = MagicMock()
         rt.capabilities.return_value = MagicMock(supported_capabilities=("chat.completion",))
-        rt.last_error.return_value = "ERes2NetV2 digest mismatch (got abc, want 1a33...)"
+        rt.open_session.side_effect = NativeRuntimeError(
+            OCT_STATUS_UNSUPPORTED,
+            "oct_session_open audio.speaker.embedding failed",
+            "sherpa_onnx: OCTOMIL_SHERPA_SPEAKER_MODEL=/p digest mismatch — got abc want 1a33...",
+        )
         with patch(
             "octomil.runtime.native.speaker_backend.NativeRuntime.open",
             return_value=rt,
@@ -274,6 +290,24 @@ class TestLoadModelGate:
                 backend.load_model("sherpa-eres2netv2-base")
             assert exc_info.value.code == OctomilErrorCode.CHECKSUM_MISMATCH
             assert "digest" in exc_info.value.error_message.lower()
+
+    def test_capability_missing_without_digest_falls_through_to_runtime_unavailable(self) -> None:
+        backend = NativeSpeakerEmbeddingBackend()
+        rt = MagicMock()
+        rt.capabilities.return_value = MagicMock(supported_capabilities=("chat.completion",))
+        rt.open_session.side_effect = NativeRuntimeError(
+            OCT_STATUS_UNSUPPORTED,
+            "oct_session_open audio.speaker.embedding failed",
+            "sherpa_onnx: OCTOMIL_SHERPA_SPEAKER_MODEL env var unset",
+        )
+        with patch(
+            "octomil.runtime.native.speaker_backend.NativeRuntime.open",
+            return_value=rt,
+        ):
+            with pytest.raises(OctomilError) as exc_info:
+                backend.load_model("sherpa-eres2netv2-base")
+            assert exc_info.value.code == OctomilErrorCode.RUNTIME_UNAVAILABLE
+            assert "OCTOMIL_SHERPA_SPEAKER_MODEL" in exc_info.value.error_message
 
     def test_runtime_open_failure_raises_runtime_unavailable(self) -> None:
         backend = NativeSpeakerEmbeddingBackend()
