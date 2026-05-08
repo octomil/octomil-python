@@ -35,7 +35,11 @@ What is enforced
       ``from …._legacy_pywhisper import *``
     * Dynamic form:
       ``importlib.import_module("…._legacy_pywhisper")`` /
-      ``__import__("…._legacy_pywhisper")``
+      ``__import__("…._legacy_pywhisper")`` /
+      ``__import__("…<whisper-package>", fromlist=["_legacy_pywhisper"])``
+      (Python loads each fromlist entry as a submodule of the first
+      arg, so this shape DOES pull the legacy module in even though
+      the call returns the parent package.)
 
     v0.1.6 PR2 deliberately moved :func:`is_whisper_model` (and
     ``_WHISPER_MODELS``) into the non-legacy module
@@ -234,31 +238,80 @@ def _legacy_imports_in_file(path: Path) -> list[tuple[int, str]]:
                     hits.append((node.lineno, f"from {src_repr} import {alias.name}"))
             continue
 
-        # Form C: importlib.import_module("…._legacy_pywhisper") or
-        # __import__("…._legacy_pywhisper") — string-literal forms only.
+        # Form C: dynamic imports of the legacy module — string-literal
+        # arguments only. Three sub-shapes are detected:
+        #
+        #   importlib.import_module("…._legacy_pywhisper")
+        #   __import__("…._legacy_pywhisper")
+        #   __import__("…<whisper-package>", fromlist=["_legacy_pywhisper"])
+        #     (or any literal-list `fromlist` containing the tail name —
+        #      Python actually loads the submodule in this shape, even
+        #      though the call returns the parent package.)
+        #
         # Dynamic-runtime forms with non-literal arguments are out of
         # scope (string analysis would always lose to a determined
-        # adversary; the runtime probe catches those).
+        # adversary; the strict runtime probe catches those).
         if isinstance(node, ast.Call):
-            target_arg: ast.AST | None = None
-            call_label: str | None = None
-            func = node.func
-            if isinstance(func, ast.Attribute) and func.attr == "import_module":
-                if node.args:
-                    target_arg = node.args[0]
-                    call_label = "importlib.import_module"
-            elif isinstance(func, ast.Name) and func.id == "__import__":
-                if node.args:
-                    target_arg = node.args[0]
-                    call_label = "__import__"
-            if target_arg is None or call_label is None:
-                continue
-            if isinstance(target_arg, ast.Constant) and isinstance(target_arg.value, str):
-                value = target_arg.value
-                if value == _LEGACY_DOTTED or value.endswith("." + _LEGACY_TAIL):
-                    hits.append((node.lineno, f'{call_label}("{value}")'))
+            for hit in _legacy_dynamic_import_hits(node):
+                hits.append((node.lineno, hit))
 
     return hits
+
+
+def _legacy_dynamic_import_hits(node: ast.Call) -> list[str]:
+    """Detect string-literal dynamic imports that load the legacy module.
+
+    Returns one snippet per legacy reference in this call. Empty list
+    if the call is unrelated (or arguments are non-literal).
+    """
+    func = node.func
+    if isinstance(func, ast.Attribute) and func.attr == "import_module":
+        call_label = "importlib.import_module"
+    elif isinstance(func, ast.Name) and func.id == "__import__":
+        call_label = "__import__"
+    else:
+        return []
+
+    out: list[str] = []
+
+    # Sub-shape (a): first positional arg is the legacy dotted path or
+    # ends with the legacy tail.
+    if node.args:
+        first = node.args[0]
+        if isinstance(first, ast.Constant) and isinstance(first.value, str):
+            value = first.value
+            if value == _LEGACY_DOTTED or value.endswith("." + _LEGACY_TAIL):
+                out.append(f'{call_label}("{value}")')
+
+    # Sub-shape (b): __import__("…whisper", fromlist=["_legacy_pywhisper"]).
+    # Python loads each name in fromlist as a submodule of the first
+    # arg, so a literal "_legacy_pywhisper" entry pulls the legacy
+    # module in even though the call returns the package. Accept any
+    # literal-list / literal-tuple in either positional 4th arg or
+    # ``fromlist`` keyword.
+    fromlist_node: ast.AST | None = None
+    if call_label == "__import__":
+        if len(node.args) >= 4:
+            fromlist_node = node.args[3]
+        for kw in node.keywords:
+            if kw.arg == "fromlist":
+                fromlist_node = kw.value
+    elif call_label == "importlib.import_module":
+        # importlib.import_module has no fromlist. The first arg is
+        # already covered.
+        pass
+
+    if isinstance(fromlist_node, (ast.List, ast.Tuple)):
+        first_arg_repr = ""
+        if node.args:
+            first = node.args[0]
+            if isinstance(first, ast.Constant) and isinstance(first.value, str):
+                first_arg_repr = first.value
+        for elt in fromlist_node.elts:
+            if isinstance(elt, ast.Constant) and isinstance(elt.value, str) and elt.value == _LEGACY_TAIL:
+                out.append(f'{call_label}("{first_arg_repr}", fromlist=[…, "{_LEGACY_TAIL}", …])')
+
+    return out
 
 
 def test_no_legacy_pywhisper_import_on_product_paths():
@@ -504,16 +557,9 @@ def _hits_for_snippet(snippet: str, *, anchor_path: str = "octomil/foo/bar.py") 
                     src_repr = ("." * level) + module if level else module
                     hits.append(f"from {src_repr} import {alias.name}")
         elif isinstance(node, ast.Call):
-            func = node.func
-            label: str | None = None
-            if isinstance(func, ast.Attribute) and func.attr == "import_module" and node.args:
-                label = "importlib.import_module"
-            elif isinstance(func, ast.Name) and func.id == "__import__" and node.args:
-                label = "__import__"
-            if label and isinstance(node.args[0], ast.Constant) and isinstance(node.args[0].value, str):
-                v = node.args[0].value
-                if v == _LEGACY_DOTTED or v.endswith("." + _LEGACY_TAIL):
-                    hits.append(f'{label}("{v}")')
+            # Reuse the production matcher so the self-test pins the
+            # same code path it claims to verify.
+            hits.extend(_legacy_dynamic_import_hits(node))
     return hits
 
 
@@ -564,6 +610,18 @@ def _hits_for_snippet(snippet: str, *, anchor_path: str = "octomil/foo/bar.py") 
         ),
         (
             '__import__("octomil.runtime.engines.whisper._legacy_pywhisper")',
+            "octomil/foo/bar.py",
+        ),
+        # __import__ fromlist shape — Python loads the listed submodule
+        # of the first arg, so this DOES bring _legacy_pywhisper in even
+        # though the call returns the parent package.
+        (
+            '__import__("octomil.runtime.engines.whisper", fromlist=["_legacy_pywhisper"])',
+            "octomil/foo/bar.py",
+        ),
+        # Same shape, fromlist as positional 4th arg, tuple form.
+        (
+            '__import__("octomil.runtime.engines.whisper", None, None, ("_legacy_pywhisper",))',
             "octomil/foo/bar.py",
         ),
     ],
