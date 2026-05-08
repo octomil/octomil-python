@@ -94,7 +94,12 @@ class RuntimePlanner:
         if self._client is not None:
             api_base = getattr(self._client, "_base_url", None)
         if api_base is None:
-            api_base = (os.environ.get("OCTOMIL_API_BASE") or "https://api.octomil.com").rstrip("/")
+            # Honor OCTOMIL_PROFILE so staging clients don't share
+            # planner cache keys with prod when no explicit
+            # OCTOMIL_API_BASE is set (codex post-debate B2).
+            from octomil.config.profile import resolve_base_url
+
+            api_base = resolve_base_url(base_url=os.environ.get("OCTOMIL_API_BASE")).rstrip("/")
 
         raw_org = (os.environ.get("OCTOMIL_ORG_ID") or "").strip()
         org_id_hash = ""

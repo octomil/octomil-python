@@ -39,6 +39,7 @@ import os
 from dataclasses import dataclass
 from enum import Enum
 from typing import Optional
+from urllib.parse import urlparse
 
 
 class Profile(str, Enum):
@@ -92,13 +93,15 @@ _PROFILE_ARTIFACT_BUCKETS: dict[Profile, str] = {
     Profile.DEV: "octomil-models-dev",
 }
 
-# Heuristic host substrings used by ``resolve_profile`` when inferring
-# from an explicit OCTOMIL_API_BASE/URL. Match must be against the
-# parsed host, not the full URL — see ``_infer_from_url``.
-_HOST_INFERENCE_MARKERS: dict[Profile, tuple[str, ...]] = {
-    Profile.STAGING: ("api.staging.octomil.com",),
-    Profile.PRODUCTION: ("api.octomil.com",),
-    Profile.DEV: ("localhost", "127.0.0.1", "0.0.0.0"),
+# Exact-host markers used by ``resolve_profile`` when inferring from an
+# explicit OCTOMIL_API_BASE/URL. Match is against the *parsed hostname*,
+# never a substring of the raw URL — a hostile URL like
+# ``https://evil.test/?next=api.staging.octomil.com`` or
+# ``api.octomil.com.evil.test`` MUST NOT spoof a profile.
+_HOST_INFERENCE_MARKERS: dict[Profile, frozenset[str]] = {
+    Profile.STAGING: frozenset({"api.staging.octomil.com"}),
+    Profile.PRODUCTION: frozenset({"api.octomil.com"}),
+    Profile.DEV: frozenset({"localhost", "127.0.0.1", "0.0.0.0"}),
 }
 
 
@@ -136,19 +139,27 @@ def cache_namespace_for(profile: Profile) -> str:
 
 
 def _infer_from_url(url: str) -> Optional[Profile]:
-    """Best-effort host extraction without urllib (keep this module
-    stdlib-and-dataclass-only). Returns the profile whose host marker
-    appears in the URL, or None if no marker matches."""
-    if not url:
+    """Parse the URL and match its hostname EXACTLY against profile
+    markers. Returns None for unparseable URLs, missing hosts, or
+    hosts that don't exactly match any marker.
+
+    Substring matching would let a hostile URL like
+    ``https://evil.test/?next=api.staging.octomil.com`` or
+    ``api.octomil.com.evil.test`` spoof a profile. Codex post-debate
+    B1 across all 7 SDKs.
+    """
+    if not url or not url.strip():
         return None
-    lowered = url.strip().lower()
-    # Match staging FIRST because 'api.octomil.com' is a substring of
-    # 'api.staging.octomil.com' is FALSE — but to be safe order
-    # explicitly with staging first.
+    try:
+        parsed = urlparse(url.strip())
+    except (ValueError, TypeError):
+        return None
+    host = (parsed.hostname or "").lower()
+    if not host:
+        return None
     for profile, markers in _HOST_INFERENCE_MARKERS.items():
-        for marker in markers:
-            if marker in lowered:
-                return profile
+        if host in markers:
+            return profile
     return None
 
 
@@ -189,7 +200,11 @@ def resolve_profile(
     # 3. Infer from explicit base URL if the operator pinned one
     #    without setting OCTOMIL_PROFILE — treats a staging URL as a
     #    staging profile so cache keys + artifact buckets follow.
-    explicit_url = env_dict.get("OCTOMIL_API_BASE") or env_dict.get("OCTOMIL_API_URL") or ""
+    #    Trim BEFORE selecting so OCTOMIL_API_BASE='   ' doesn't mask
+    #    a valid OCTOMIL_API_URL (codex post-debate N1).
+    base_trimmed = (env_dict.get("OCTOMIL_API_BASE") or "").strip()
+    url_trimmed = (env_dict.get("OCTOMIL_API_URL") or "").strip()
+    explicit_url = base_trimmed or url_trimmed
     inferred = _infer_from_url(explicit_url)
     if inferred is not None:
         return ProfileResolution(profile=inferred, source="url_inferred")

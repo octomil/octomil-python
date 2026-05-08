@@ -190,6 +190,53 @@ def test_resolve_profile_unmatched_url_falls_through_to_default() -> None:
     assert res.source == "default"
 
 
+# ── Hostile-URL inference safety (codex post-debate B1) ──────────────
+
+
+def test_marker_in_query_string_does_not_spoof_profile() -> None:
+    """Substring matching would let evil.test/?next=api.staging... spoof
+    staging. Host parsing rejects it."""
+    res = resolve_profile(env={"OCTOMIL_API_BASE": "https://evil.test/?next=api.staging.octomil.com"})
+    assert res.profile is Profile.PRODUCTION
+    assert res.source == "default"
+
+
+def test_marker_in_path_does_not_spoof_profile() -> None:
+    res = resolve_profile(env={"OCTOMIL_API_BASE": "https://evil.test/api.octomil.com/v1"})
+    assert res.profile is Profile.PRODUCTION
+
+
+def test_marker_in_userinfo_does_not_spoof_profile() -> None:
+    res = resolve_profile(env={"OCTOMIL_API_BASE": "https://api.staging.octomil.com@evil.test/v1"})
+    # Host is evil.test, not api.staging.octomil.com.
+    assert res.profile is Profile.PRODUCTION
+
+
+def test_superdomain_does_not_spoof_profile() -> None:
+    res = resolve_profile(env={"OCTOMIL_API_BASE": "https://api.octomil.com.evil.test/v1"})
+    assert res.profile is Profile.PRODUCTION
+
+
+def test_unparseable_url_falls_through_safely() -> None:
+    res = resolve_profile(env={"OCTOMIL_API_BASE": "not a url"})
+    assert res.profile is Profile.PRODUCTION
+
+
+# ── Whitespace fallback (codex post-debate N1) ───────────────────────
+
+
+def test_whitespace_api_base_falls_back_to_api_url() -> None:
+    """OCTOMIL_API_BASE='   ' must NOT mask a valid OCTOMIL_API_URL."""
+    res = resolve_profile(
+        env={
+            "OCTOMIL_API_BASE": "   ",
+            "OCTOMIL_API_URL": "https://api.staging.octomil.com",
+        }
+    )
+    assert res.profile is Profile.STAGING
+    assert res.source == "url_inferred"
+
+
 # ── resolve_profile — default ────────────────────────────────────────
 
 
