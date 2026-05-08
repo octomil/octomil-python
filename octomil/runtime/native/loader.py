@@ -128,6 +128,18 @@ OCT_EVENT_EMBEDDING_VECTOR: int = 20
 # runtime-owned; lifetime = until next poll. Bindings MUST copy.
 OCT_EVENT_TRANSCRIPT_SEGMENT: int = 21
 OCT_EVENT_TRANSCRIPT_FINAL: int = 22
+# v0.1.8 Lane A — TTS audio-chunk event (audio.tts.batch + audio.tts.stream).
+# Carries PCM bytes for one synthesized chunk; granularity depends on the
+# capability:
+#   * audio.tts.batch  — ONE chunk per utterance (is_final=1).
+#   * audio.tts.stream — ONE chunk per sentence batch (Option C, sherpa
+#     `OfflineTts::Generate(callback=)`); last chunk per utterance carries
+#     is_final=1, followed by OCT_EVENT_SESSION_COMPLETED(OK).
+# Layout: ``data.tts_audio_chunk { pcm, n_bytes, sample_rate, sample_format,
+# channels, is_final }`` — runtime-owned ``pcm`` lifetime = until next poll.
+# Bindings MUST copy bytes out at poll time (this binding does so via
+# numpy.frombuffer(...).copy()).
+OCT_EVENT_TTS_AUDIO_CHUNK: int = 23
 # v0.1.5 PR-2N — VAD transition event (audio.vad capability, silero VAD
 # adapter PR-2F at runtime). One event per transition edge; payload is
 # `data.vad_transition` { transition_kind, timestamp_ms, confidence }.
@@ -1435,6 +1447,17 @@ class NativeEvent:
         "vad_transition_kind",
         "vad_timestamp_ms",
         "vad_confidence",
+        # v0.1.8 Lane A — TTS audio chunk fields. Populated only on
+        # OCT_EVENT_TTS_AUDIO_CHUNK. ``tts_pcm_bytes`` is a Python bytes
+        # object copied out of the runtime-owned ``data.tts_audio_chunk.pcm``
+        # buffer at poll time (lifetime contract: runtime owns the buffer
+        # only until the next poll on this session). Other fields are
+        # primitive copies.
+        "tts_pcm_bytes",
+        "tts_sample_rate",
+        "tts_sample_format",
+        "tts_channels",
+        "tts_is_final",
     )
 
     def __init__(
@@ -1477,6 +1500,11 @@ class NativeEvent:
         vad_transition_kind: int = 0,
         vad_timestamp_ms: int = 0,
         vad_confidence: float = 0.0,
+        tts_pcm_bytes: bytes = b"",
+        tts_sample_rate: int = 0,
+        tts_sample_format: int = 0,
+        tts_channels: int = 0,
+        tts_is_final: bool = False,
     ) -> None:
         self.type = type
         self.version = version
@@ -1515,6 +1543,11 @@ class NativeEvent:
         self.vad_transition_kind = vad_transition_kind
         self.vad_timestamp_ms = vad_timestamp_ms
         self.vad_confidence = vad_confidence
+        self.tts_pcm_bytes = tts_pcm_bytes
+        self.tts_sample_rate = tts_sample_rate
+        self.tts_sample_format = tts_sample_format
+        self.tts_channels = tts_channels
+        self.tts_is_final = tts_is_final
 
     @property
     def is_none(self) -> bool:
@@ -1852,6 +1885,12 @@ class NativeSession:
         vad_kind = 0
         vad_ts_ms = 0
         vad_conf = 0.0
+        # v0.1.8 Lane A — TTS audio-chunk payload defaults.
+        tts_pcm_bytes = b""
+        tts_sample_rate = 0
+        tts_sample_format = 0
+        tts_channels = 0
+        tts_is_final = False
         ev_type = int(ev.type)
         if ev_type == OCT_EVENT_TRANSCRIPT_CHUNK:
             chunk = ev.data.transcript_chunk
@@ -1923,6 +1962,22 @@ class NativeSession:
                 # poll hot path doesn't pay lazy-import overhead.
                 buf = ffi.buffer(emb.values, emb_n_dim * 4)[:]
                 emb_values = list(_emb_struct.unpack(f"{emb_n_dim}f", buf))
+        elif ev_type == OCT_EVENT_TTS_AUDIO_CHUNK:
+            # v0.1.8 Lane A — TTS audio chunk. Layout matches
+            # data.audio_chunk: { pcm, n_bytes, sample_rate, sample_format,
+            # channels, is_final }. The PCM buffer is runtime-owned with
+            # lifetime "until next poll on this session" — copy bytes out
+            # NOW. n_bytes bounds the read.
+            tts = ev.data.tts_audio_chunk
+            n_bytes = int(tts.n_bytes)
+            if tts.pcm != ffi.NULL and n_bytes > 0:
+                tts_pcm_bytes = bytes(ffi.buffer(tts.pcm, n_bytes))
+            else:
+                tts_pcm_bytes = b""
+            tts_sample_rate = int(tts.sample_rate)
+            tts_sample_format = int(tts.sample_format)
+            tts_channels = int(tts.channels)
+            tts_is_final = bool(tts.is_final)
         elif ev_type == OCT_EVENT_VAD_TRANSITION:
             # v0.1.5 PR-2N — silero VAD transition edge. Payload is
             # primitive-typed (kind enum + ms timestamp + f32
@@ -1967,6 +2022,11 @@ class NativeSession:
             vad_transition_kind=vad_kind,
             vad_timestamp_ms=vad_ts_ms,
             vad_confidence=vad_conf,
+            tts_pcm_bytes=tts_pcm_bytes,
+            tts_sample_rate=tts_sample_rate,
+            tts_sample_format=tts_sample_format,
+            tts_channels=tts_channels,
+            tts_is_final=tts_is_final,
             **_envelope(ev),
         )
 
@@ -2211,6 +2271,7 @@ __all__ = [
     "OCT_EVENT_TRANSCRIPT_CHUNK",
     "OCT_EVENT_TRANSCRIPT_FINAL",
     "OCT_EVENT_TRANSCRIPT_SEGMENT",
+    "OCT_EVENT_TTS_AUDIO_CHUNK",
     "OCT_EVENT_TURN_ENDED",
     "OCT_EVENT_USER_SPEECH_DETECTED",
     "OCT_EVENT_VAD_TRANSITION",
