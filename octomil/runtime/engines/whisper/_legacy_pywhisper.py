@@ -11,20 +11,29 @@ gated behind the opt-in env var ``OCTOMIL_USE_PY_WHISPERCPP_BENCHMARK=1``
 in the parity gate (:mod:`scripts.parity_native_stt`); production code
 must NOT import from here. ``WhisperCppEngine`` is kept as the class
 name so the parity script can construct it without further
-indirection, and ``is_whisper_model`` remains importable from the
-package ``__init__`` because the serve layer still uses it to identify
-whisper models by name (the bounded re-export surface).
+indirection.
+
+v0.1.6 PR2 moved :func:`is_whisper_model` and ``_WHISPER_MODELS`` into
+the non-legacy module
+:mod:`octomil.runtime.engines.whisper.model_names`, and the package
+``__init__`` now re-exports from there. This module re-exports them
+too (purely for parity / benchmark callers that already imported them
+from this dotted path) but is no longer the source of truth.
 
 Guard test
 ----------
 
 ``tests/test_no_legacy_pywhisper_in_product_paths.py`` (v0.1.6 PR2)
 asserts statically that no production module imports this file by
-dotted path or imports its inference symbols (``WhisperCppEngine``,
-``_WhisperBackend``) by name, and asserts at runtime that the legacy
-module never reaches ``sys.modules`` except through the bounded
-package shim. Set ``OCTOMIL_USE_PY_WHISPERCPP_BENCHMARK=1`` to opt in
-for parity comparison or research benchmarking only.
+dotted path, by relative path, or by dynamic
+(``importlib.import_module`` / ``__import__``) form, and that no
+product path imports the legacy inference symbols
+(``WhisperCppEngine``, ``_WhisperBackend``) by name. The runtime
+probe asserts that importing the canonical product entry points
+(``octomil``, ``octomil.serve.app``, ``octomil.execution.kernel``)
+does NOT bring this module into ``sys.modules``. Set
+``OCTOMIL_USE_PY_WHISPERCPP_BENCHMARK=1`` to opt in for parity
+comparison or research benchmarking only.
 """
 
 from __future__ import annotations
@@ -36,17 +45,23 @@ import time
 from typing import Any
 
 from octomil.runtime.core.base import BenchmarkResult, EnginePlugin
+from octomil.runtime.engines.whisper.model_names import (
+    _WHISPER_MODELS,
+    is_whisper_model,
+)
 
 logger = logging.getLogger(__name__)
 
-# Whisper model sizes — name to HuggingFace-style identifier.
-_WHISPER_MODELS: dict[str, str] = {
-    "whisper-tiny": "tiny",
-    "whisper-base": "base",
-    "whisper-small": "small",
-    "whisper-medium": "medium",
-    "whisper-large-v3": "large-v3",
-}
+# v0.1.6 PR2: ``_WHISPER_MODELS`` and ``is_whisper_model`` moved into
+# :mod:`octomil.runtime.engines.whisper.model_names` so the product
+# path can detect whisper model names without pulling this legacy
+# module into ``sys.modules``. They are re-exported here for parity /
+# benchmark code paths that still expect to find them on this module.
+__all__ = [
+    "_WHISPER_MODELS",
+    "is_whisper_model",
+    "WhisperCppEngine",
+]
 
 
 def _has_pywhispercpp() -> bool:
@@ -67,11 +82,6 @@ def _get_whisper_version() -> str:
         return getattr(pywhispercpp, "__version__", "unknown")
     except ImportError:
         return ""
-
-
-def is_whisper_model(model_name: str) -> bool:
-    """Check if a model name refers to a Whisper speech-to-text model."""
-    return model_name.lower() in _WHISPER_MODELS
 
 
 class WhisperCppEngine(EnginePlugin):

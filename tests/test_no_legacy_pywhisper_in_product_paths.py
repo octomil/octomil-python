@@ -18,41 +18,56 @@ plus a runtime ``sys.modules`` check.
 What is enforced
 ----------------
 
-(1) Source-pin (AST): no module under ``octomil/`` may write
-    ``import octomil.runtime.engines.whisper._legacy_pywhisper`` or
-    ``from octomil.runtime.engines.whisper._legacy_pywhisper import …``
-    EXCEPT:
+(1) Source-pin (AST): no module under ``octomil/`` may write any of
+    these import shapes EXCEPT the legacy file itself
+    (``_legacy_pywhisper.py`` is allowed to self-reference):
 
-    * ``octomil/runtime/engines/whisper/__init__.py`` — the package
-      shim. It is permitted to re-export EXACTLY one symbol:
-      :func:`is_whisper_model`. Re-exporting any other symbol (in
-      particular ``WhisperCppEngine`` or ``_WhisperBackend``) would
-      pull legacy inference machinery onto the product path.
-    * ``octomil/runtime/engines/whisper/_legacy_pywhisper.py`` itself
-      (self-references are vacuously allowed; it is the file we are
-      guarding).
+    * Absolute import:
+      ``import octomil.runtime.engines.whisper._legacy_pywhisper``
+    * Absolute from-import:
+      ``from octomil.runtime.engines.whisper._legacy_pywhisper import …``
+    * Sibling form:
+      ``from octomil.runtime.engines.whisper import _legacy_pywhisper``
+    * Relative form (any depth):
+      ``from . import _legacy_pywhisper`` or
+      ``from ._legacy_pywhisper import …`` (or ``..``, ``...``, etc.)
+    * Star form:
+      ``from …._legacy_pywhisper import *``
+    * Dynamic form:
+      ``importlib.import_module("…._legacy_pywhisper")`` /
+      ``__import__("…._legacy_pywhisper")``
+
+    v0.1.6 PR2 deliberately moved :func:`is_whisper_model` (and
+    ``_WHISPER_MODELS``) into the non-legacy module
+    :mod:`octomil.runtime.engines.whisper.model_names` precisely so the
+    package shim no longer has to import the legacy module at all.
+    The package ``__init__`` is therefore NOT whitelisted — it is
+    expected to import only from ``model_names``, and the runtime
+    probe asserts that.
 
 (2) Source-pin (AST): no module under ``octomil/`` may import the
     legacy class symbols (``WhisperCppEngine``, ``_WhisperBackend``)
-    from anywhere. The package ``__init__`` re-exports
-    :func:`is_whisper_model` only — the engine class is reachable
-    only via the explicit
-    ``octomil.runtime.engines.whisper._legacy_pywhisper`` dotted path,
-    which (1) already forbids on product paths.
+    by name from anywhere — neither absolute nor relative nor star.
+    The legacy file itself is the only allowed site.
 
-(3) Runtime check: with ``OCTOMIL_USE_PY_WHISPERCPP_BENCHMARK`` unset
-    or set to anything other than ``"1"``, importing the canonical
-    product entry points (``octomil``, ``octomil.serve.app``,
-    ``octomil.execution.kernel``) MUST NOT bring
-    ``octomil.runtime.engines.whisper._legacy_pywhisper`` into
-    ``sys.modules`` … unless the package shim
-    (``octomil.runtime.engines.whisper.__init__``) is itself
-    imported, in which case the shim's lone re-export of
-    :func:`is_whisper_model` is the bounded surface.
+(3) Shim discipline: the package ``__init__`` MUST re-export
+    :func:`is_whisper_model` from
+    :mod:`octomil.runtime.engines.whisper.model_names` (the
+    non-legacy source of truth) and MUST NOT import anything from
+    ``_legacy_pywhisper``. Pinned via AST.
 
-    The runtime check therefore asserts: the legacy module's
-    presence in ``sys.modules`` is either absent OR fully accounted
-    for by the package shim — never by direct product-path import.
+(4) Runtime check (strict): with ``OCTOMIL_USE_PY_WHISPERCPP_BENCHMARK``
+    unset, importing ANY of the canonical product entry points
+    (``octomil``, ``octomil.serve.app``, ``octomil.execution.kernel``,
+    ``octomil.runtime.engines.whisper``) MUST NOT cause
+    ``octomil.runtime.engines.whisper._legacy_pywhisper`` to enter
+    ``sys.modules``. After the v0.1.6 PR2 refactor, ``model_names``
+    is the only module the shim touches, so the legacy module is
+    fully off the product import graph.
+
+(5) Sanity: with ``OCTOMIL_USE_PY_WHISPERCPP_BENCHMARK=1`` set and the
+    legacy dotted path imported directly, the legacy module DOES
+    load — the parity / benchmark opt-in is untouched.
 
 Whitelisted (these MAY reference the legacy module):
 
@@ -62,18 +77,16 @@ Whitelisted (these MAY reference the legacy module):
 * ``packaging/`` — PyInstaller spec lists the legacy module as a
   hidden import so opt-in benchmark builds keep working.
 * ``octomil/runtime/engines/whisper/_legacy_pywhisper.py`` itself.
-* ``octomil/runtime/engines/whisper/__init__.py`` — bounded
-  re-export of :func:`is_whisper_model` ONLY (enforced).
 
-Hard-cutover discipline: if a future refactor needs to broaden the
-re-export surface, it must first promote a non-legacy backend (i.e.
-ship a real native replacement for ``is_whisper_model``'s purpose)
-and remove the legacy import from the shim — not widen this guard.
+Hard-cutover discipline: if a future refactor needs the legacy
+module on a product path, it must remove the legacy module entirely
+(or build a real native replacement) — not widen this guard.
 """
 
 from __future__ import annotations
 
 import ast
+import json
 import os
 import subprocess
 import sys
@@ -88,10 +101,14 @@ import pytest
 
 _LEGACY_DOTTED = "octomil.runtime.engines.whisper._legacy_pywhisper"
 _LEGACY_TAIL = "_legacy_pywhisper"
+_WHISPER_PACKAGE = "octomil.runtime.engines.whisper"
+_MODEL_NAMES_DOTTED = "octomil.runtime.engines.whisper.model_names"
+_MODEL_NAMES_TAIL = "model_names"
 
 # Symbol names that, if imported on a product path, would defeat the
-# cutover. ``is_whisper_model`` is intentionally NOT in this list — it is
-# the bounded re-export surface. Engine / inference symbols are.
+# cutover. ``is_whisper_model`` is intentionally NOT in this list — it now
+# lives in the non-legacy ``model_names`` module. Engine / inference
+# symbols are.
 _LEGACY_INFERENCE_SYMBOLS = frozenset(
     {
         "WhisperCppEngine",
@@ -100,23 +117,13 @@ _LEGACY_INFERENCE_SYMBOLS = frozenset(
 )
 
 # Files where ``_legacy_pywhisper`` references are allowed to appear in
-# import statements. Paths are repo-relative and use forward slashes.
+# import statements. v0.1.6 PR2: only the legacy file itself. The package
+# shim no longer imports from the legacy module — it imports from the
+# non-legacy ``model_names`` module instead.
 _PRODUCT_IMPORT_WHITELIST = frozenset(
     {
-        "octomil/runtime/engines/whisper/__init__.py",
         "octomil/runtime/engines/whisper/_legacy_pywhisper.py",
     }
-)
-
-# Directory prefixes (repo-relative, forward-slash) that are NOT product
-# paths and are allowed to reference the legacy module freely. We still
-# walk every file under ``octomil/`` for the AST guard — these are tested
-# at the *consumer* level (tests, scripts, packaging) and not part of the
-# import-graph guard.
-_NON_PRODUCT_PREFIXES = (
-    "tests/",
-    "scripts/",
-    "packaging/",
 )
 
 
@@ -136,61 +143,133 @@ def _relpath(path: Path) -> str:
 
 
 # ---------------------------------------------------------------------------
-# (1) AST guard — no product file imports the legacy module by dotted path,
-#     EXCEPT the bounded shim and the legacy file itself.
+# AST helpers.
+# ---------------------------------------------------------------------------
+
+
+def _parse(path: Path) -> ast.AST | None:
+    """Best-effort parse. Returns ``None`` on read / parse error so a
+    syntax error in product code is a separate (loud) bug — not this
+    guard's responsibility."""
+    try:
+        source = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return None
+    try:
+        return ast.parse(source, filename=str(path))
+    except SyntaxError:
+        return None
+
+
+def _module_dotted(path: Path) -> str:
+    """Return the dotted module path for ``path`` under the ``octomil``
+    package — used to resolve relative imports."""
+    rel = path.resolve().relative_to(_repo_root()).with_suffix("")
+    parts = list(rel.parts)
+    if parts and parts[-1] == "__init__":
+        parts = parts[:-1]
+    return ".".join(parts)
+
+
+def _resolve_relative(module: str, level: int, anchor: str) -> str:
+    """Resolve a relative ``ImportFrom`` (``from .x.y import …``) into
+    its absolute dotted path, given the importing module's dotted path
+    (``anchor``). Returns ``""`` if the level overshoots the anchor."""
+    if level <= 0:
+        return module or ""
+    anchor_parts = anchor.split(".")
+    # `from . import x` inside a package module ``a.b.c`` resolves to
+    # ``a.b`` (drop ``level`` trailing parts). For an ``__init__`` the
+    # anchor is already the package, so level=1 means "this package".
+    if level > len(anchor_parts):
+        return ""
+    base = anchor_parts[: len(anchor_parts) - (level - 1)]
+    if module:
+        base.append(module)
+    return ".".join(p for p in base if p)
+
+
+# ---------------------------------------------------------------------------
+# (1) AST guard — every shape that could re-introduce ``_legacy_pywhisper``
+#     into a product path's import graph.
 # ---------------------------------------------------------------------------
 
 
 def _legacy_imports_in_file(path: Path) -> list[tuple[int, str]]:
     """Return a list of ``(lineno, snippet)`` for every statement in
-    ``path`` that imports the legacy module by dotted path or tail name.
-
-    Catches all four forms:
-
-    * ``import octomil.runtime.engines.whisper._legacy_pywhisper``
-    * ``import octomil.runtime.engines.whisper._legacy_pywhisper as X``
-    * ``from octomil.runtime.engines.whisper._legacy_pywhisper import …``
-    * ``from .whisper import _legacy_pywhisper`` / relative-form
-      siblings — caught by the ``names`` walk on every ``ImportFrom``.
-    """
-    try:
-        source = path.read_text(encoding="utf-8")
-    except (OSError, UnicodeDecodeError):
-        return []
-    try:
-        tree = ast.parse(source, filename=str(path))
-    except SyntaxError:
-        # A syntax error in product code is a separate (loud) bug; this
-        # guard's job is import discipline, not parser sanity. Skip.
+    ``path`` that imports the legacy module — covering absolute,
+    relative, sibling, star, and dynamic forms."""
+    tree = _parse(path)
+    if tree is None:
         return []
 
+    anchor = _module_dotted(path)
     hits: list[tuple[int, str]] = []
+
     for node in ast.walk(tree):
+        # ``import a.b.c._legacy_pywhisper`` (and aliased form).
         if isinstance(node, ast.Import):
             for alias in node.names:
                 if alias.name == _LEGACY_DOTTED or alias.name.endswith("." + _LEGACY_TAIL):
                     hits.append((node.lineno, f"import {alias.name}"))
-        elif isinstance(node, ast.ImportFrom):
+            continue
+
+        # ``from … import …`` — handles absolute, relative, sibling, star.
+        if isinstance(node, ast.ImportFrom):
             module = node.module or ""
-            # Absolute "from octomil...._legacy_pywhisper import X"
-            if module == _LEGACY_DOTTED or module.endswith("." + _LEGACY_TAIL):
+            level = node.level or 0
+            absolute = _resolve_relative(module, level, anchor) if level else module
+
+            # Form A: from <legacy dotted> import …
+            if absolute == _LEGACY_DOTTED or absolute.endswith("." + _LEGACY_TAIL):
                 imported = ", ".join(a.name for a in node.names)
-                hits.append((node.lineno, f"from {module} import {imported}"))
+                src_repr = ("." * level) + module if level else module
+                hits.append((node.lineno, f"from {src_repr} import {imported}"))
                 continue
-            # "from octomil.runtime.engines.whisper import _legacy_pywhisper"
+
+            # Form B: from <something> import _legacy_pywhisper
             for alias in node.names:
                 if alias.name == _LEGACY_TAIL:
-                    hits.append((node.lineno, f"from {module} import {alias.name}"))
+                    src_repr = ("." * level) + module if level else module
+                    hits.append((node.lineno, f"from {src_repr} import {alias.name}"))
+            continue
+
+        # Form C: importlib.import_module("…._legacy_pywhisper") or
+        # __import__("…._legacy_pywhisper") — string-literal forms only.
+        # Dynamic-runtime forms with non-literal arguments are out of
+        # scope (string analysis would always lose to a determined
+        # adversary; the runtime probe catches those).
+        if isinstance(node, ast.Call):
+            target_arg: ast.AST | None = None
+            call_label: str | None = None
+            func = node.func
+            if isinstance(func, ast.Attribute) and func.attr == "import_module":
+                if node.args:
+                    target_arg = node.args[0]
+                    call_label = "importlib.import_module"
+            elif isinstance(func, ast.Name) and func.id == "__import__":
+                if node.args:
+                    target_arg = node.args[0]
+                    call_label = "__import__"
+            if target_arg is None or call_label is None:
+                continue
+            if isinstance(target_arg, ast.Constant) and isinstance(target_arg.value, str):
+                value = target_arg.value
+                if value == _LEGACY_DOTTED or value.endswith("." + _LEGACY_TAIL):
+                    hits.append((node.lineno, f'{call_label}("{value}")'))
+
     return hits
 
 
 def test_no_legacy_pywhisper_import_on_product_paths():
-    """No product module may import the legacy whisper shim directly.
+    """No product module may import the legacy whisper shim by ANY
+    static form — absolute, relative, sibling, star, or dynamic
+    string-literal call.
 
-    Whitelist is enforced at file granularity — the package
-    ``__init__`` and the legacy file itself are the only allowed
-    sites. Adding to the whitelist requires changing this test
-    (deliberate, reviewable).
+    Whitelist is enforced at file granularity. v0.1.6 PR2 narrowed it
+    to just ``_legacy_pywhisper.py`` itself (self-references); the
+    package ``__init__`` no longer imports from the legacy module at
+    all.
     """
     offenders: list[str] = []
     for path in _iter_product_python_files():
@@ -206,62 +285,71 @@ def test_no_legacy_pywhisper_import_on_product_paths():
     )
 
 
-def test_whisper_package_shim_only_reexports_is_whisper_model():
-    """The single allowed whitelist entry (the package ``__init__``) MUST
-    re-export ``is_whisper_model`` and nothing else from the legacy
-    module. Re-exporting an inference symbol (``WhisperCppEngine``,
-    ``_WhisperBackend``) would pull the legacy engine onto every
-    product path that touches whisper-name detection."""
-    shim = _repo_root() / "octomil/runtime/engines/whisper/__init__.py"
-    tree = ast.parse(shim.read_text(encoding="utf-8"), filename=str(shim))
-    legacy_reexports: list[str] = []
-    for node in ast.walk(tree):
-        if isinstance(node, ast.ImportFrom):
-            module = node.module or ""
-            if module == _LEGACY_DOTTED or module.endswith("." + _LEGACY_TAIL):
-                legacy_reexports.extend(a.name for a in node.names)
-
-    assert legacy_reexports == ["is_whisper_model"], (
-        "octomil/runtime/engines/whisper/__init__.py is allowed to "
-        "re-export EXACTLY ['is_whisper_model'] from "
-        f"_legacy_pywhisper. Found: {legacy_reexports!r}. "
-        "Re-exporting an engine / inference symbol breaks the "
-        "v0.1.5 PR-2B cutover discipline."
-    )
-
-
 def test_no_legacy_inference_symbols_on_product_paths():
     """No product module may import ``WhisperCppEngine`` or
-    ``_WhisperBackend`` by name from anywhere. These are legacy-only
-    symbols; reaching them requires the explicit
-    ``_legacy_pywhisper`` dotted path, which the previous test
-    forbids on product paths."""
+    ``_WhisperBackend`` by name from anywhere (absolute, relative,
+    star). These symbols only live in the legacy file, and the
+    previous test already forbids importing that file from product
+    paths — this is a defense-in-depth pin against the symbol names
+    themselves."""
     offenders: list[str] = []
     for path in _iter_product_python_files():
         rel = _relpath(path)
         if rel in _PRODUCT_IMPORT_WHITELIST:
             continue
-        try:
-            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-        except (OSError, SyntaxError, UnicodeDecodeError):
+        tree = _parse(path)
+        if tree is None:
             continue
         for node in ast.walk(tree):
             if isinstance(node, ast.ImportFrom):
+                src_repr = "." * (node.level or 0) + (node.module or "")
                 for alias in node.names:
                     if alias.name in _LEGACY_INFERENCE_SYMBOLS:
-                        offenders.append(f"{rel}:{node.lineno}  from {node.module} import {alias.name}")
+                        offenders.append(f"{rel}:{node.lineno}  from {src_repr} import {alias.name}")
     assert not offenders, "Legacy whisper inference symbols imported on product paths:\n  " + "\n  ".join(offenders)
 
 
+def test_whisper_package_shim_imports_from_model_names_not_legacy():
+    """The package shim (``__init__``) MUST source
+    :func:`is_whisper_model` from the non-legacy ``model_names``
+    module and MUST NOT import anything from ``_legacy_pywhisper``.
+    This is the structural change v0.1.6 PR2 codifies — the shim is
+    the single product-path entry to whisper-name detection, and it
+    must not drag the legacy module along."""
+    shim = _repo_root() / "octomil/runtime/engines/whisper/__init__.py"
+    tree = ast.parse(shim.read_text(encoding="utf-8"), filename=str(shim))
+
+    legacy_imports: list[str] = []
+    model_names_imports: list[str] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom):
+            level = node.level or 0
+            module = node.module or ""
+            absolute = _resolve_relative(module, level, _WHISPER_PACKAGE) if level else module
+            if absolute == _LEGACY_DOTTED or absolute.endswith("." + _LEGACY_TAIL):
+                legacy_imports.extend(a.name for a in node.names)
+            if absolute == _MODEL_NAMES_DOTTED or absolute.endswith("." + _MODEL_NAMES_TAIL):
+                model_names_imports.extend(a.name for a in node.names)
+            for alias in node.names:
+                if alias.name == _LEGACY_TAIL:
+                    legacy_imports.append(alias.name)
+
+    assert not legacy_imports, (
+        "octomil/runtime/engines/whisper/__init__.py must NOT import "
+        "from _legacy_pywhisper. v0.1.6 PR2 moved is_whisper_model "
+        "into the non-legacy 'model_names' module; the shim should "
+        f"import from there. Found legacy imports: {legacy_imports!r}."
+    )
+    assert "is_whisper_model" in model_names_imports, (
+        "octomil/runtime/engines/whisper/__init__.py must re-export "
+        "is_whisper_model from the non-legacy 'model_names' module."
+    )
+
+
 # ---------------------------------------------------------------------------
-# (2) Runtime guard — importing canonical product entry points must NOT
-#     pull the legacy module in via any path other than the bounded
-#     ``__init__`` re-export. The shim's lone import of
-#     ``is_whisper_model`` does cause Python to load the legacy module,
-#     but that is the one accounted-for surface; this test confirms the
-#     legacy module is NEVER reached EXCEPT through that shim, and never
-#     when ``OCTOMIL_USE_PY_WHISPERCPP_BENCHMARK`` is unset and the shim
-#     itself is not loaded.
+# (2) Runtime guard — strict. After v0.1.6 PR2 the legacy module is fully
+#     off the product import graph; importing any product entry point
+#     without the benchmark opt-in MUST leave it absent from sys.modules.
 # ---------------------------------------------------------------------------
 
 
@@ -279,9 +367,11 @@ _PROBE_SCRIPT = textwrap.dedent(
 
     legacy = "octomil.runtime.engines.whisper._legacy_pywhisper"
     shim = "octomil.runtime.engines.whisper"
+    model_names = "octomil.runtime.engines.whisper.model_names"
     print(json.dumps({
         "legacy_loaded": legacy in sys.modules,
         "shim_loaded": shim in sys.modules,
+        "model_names_loaded": model_names in sys.modules,
     }))
     """
 ).strip()
@@ -289,9 +379,8 @@ _PROBE_SCRIPT = textwrap.dedent(
 
 def _run_probe(target_module: str, *, env: dict[str, str]) -> dict[str, bool]:
     """Spawn a fresh interpreter, import ``target_module``, and report
-    whether the legacy module / shim are in ``sys.modules``."""
+    whether each candidate module is in ``sys.modules``."""
     proc_env = {**os.environ, **env}
-    # Strip any inherited opt-in so the negative case is clean.
     if env.get("OCTOMIL_USE_PY_WHISPERCPP_BENCHMARK") is None:
         proc_env.pop("OCTOMIL_USE_PY_WHISPERCPP_BENCHMARK", None)
     result = subprocess.run(
@@ -302,51 +391,40 @@ def _run_probe(target_module: str, *, env: dict[str, str]) -> dict[str, bool]:
         cwd=str(_repo_root()),
         env=proc_env,
     )
-    import json
-
     return json.loads(result.stdout.strip().splitlines()[-1])
-
-
-def test_top_level_octomil_import_does_not_load_legacy_module():
-    """Importing the top-level ``octomil`` package without the
-    benchmark opt-in MUST NOT pull the legacy module into
-    ``sys.modules``. The package init is small; if a future change
-    eagerly imports ``octomil.runtime.engines.whisper`` from
-    ``octomil/__init__.py`` (or any module reached transitively), the
-    legacy module would arrive via the shim's bounded re-export. That
-    is still off the product hot path, but it widens the import
-    surface — fail loudly so the change is reviewed."""
-    state = _run_probe("octomil", env={})
-    # We accept either: legacy not loaded, OR legacy loaded ONLY
-    # because the shim is loaded (bounded re-export). The negative
-    # case we forbid is: legacy loaded WITHOUT the shim, i.e. some
-    # other product path imported it directly.
-    if state["legacy_loaded"]:
-        assert state["shim_loaded"], (
-            "Legacy pywhispercpp module reached sys.modules WITHOUT "
-            "going through octomil.runtime.engines.whisper.__init__ — "
-            "some product path is importing it directly."
-        )
 
 
 @pytest.mark.parametrize(
     "module",
     [
+        "octomil",
         "octomil.execution.kernel",
         "octomil.serve.app",
+        "octomil.runtime.engines.whisper",
     ],
 )
-def test_product_entry_points_only_load_legacy_via_shim(module: str):
-    """The two canonical product entry points that *do* call
-    :func:`is_whisper_model` (kernel + serve) load it through the
-    package shim. The shim's lone re-export brings the legacy module
-    in; this test pins that the import shape is exactly that — never
-    a direct ``_legacy_pywhisper`` import from elsewhere."""
+def test_product_entry_points_do_not_load_legacy_module(module: str):
+    """Strict: importing any canonical product entry point with the
+    benchmark opt-in unset MUST NOT cause ``_legacy_pywhisper`` to
+    enter ``sys.modules``. v0.1.6 PR2 made this assertion strict — the
+    legacy module is fully off the product import graph."""
     state = _run_probe(module, env={})
-    if state["legacy_loaded"]:
-        assert state[
-            "shim_loaded"
-        ], f"{module} caused legacy pywhispercpp to load without the package shim being loaded — direct import found."
+    assert state["legacy_loaded"] is False, (
+        f"Importing {module!r} loaded the legacy pywhispercpp module — "
+        "the v0.1.6 PR2 cutover discipline says it must stay off the "
+        "product import graph until OCTOMIL_USE_PY_WHISPERCPP_BENCHMARK=1."
+    )
+
+
+def test_whisper_package_loads_model_names_not_legacy():
+    """When the whisper package is imported, ``model_names`` MUST be
+    loaded (it is the non-legacy source of :func:`is_whisper_model`)
+    and the legacy module MUST NOT be."""
+    state = _run_probe(_WHISPER_PACKAGE, env={})
+    assert (
+        state["model_names_loaded"] is True
+    ), "Importing the whisper package did not load 'model_names' — the shim's re-export of is_whisper_model is broken."
+    assert state["legacy_loaded"] is False, "Importing the whisper package loaded the legacy pywhispercpp module."
 
 
 def test_benchmark_opt_in_still_works():
@@ -390,3 +468,128 @@ def test_legacy_module_has_do_not_use_warning():
         "'OCTOMIL_USE_PY_WHISPERCPP_BENCHMARK' as the single supported "
         "entry point."
     )
+
+
+# ---------------------------------------------------------------------------
+# (4) Self-test — assert the AST guard catches the relative + dynamic
+#     forms it claims to catch. We synthesize tiny snippets and feed them
+#     to the parser directly (no temp files) so the guard's own logic is
+#     verified against forbidden shapes without polluting the source tree.
+# ---------------------------------------------------------------------------
+
+
+def _hits_for_snippet(snippet: str, *, anchor_path: str = "octomil/foo/bar.py") -> list[str]:
+    """Run the AST guard's matcher against an in-memory snippet,
+    pretending it lives at ``anchor_path`` for relative-import
+    resolution. Returns the list of detected snippets."""
+    tree = ast.parse(snippet)
+    anchor_dotted = _module_dotted(_repo_root() / anchor_path)
+    hits: list[str] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name == _LEGACY_DOTTED or alias.name.endswith("." + _LEGACY_TAIL):
+                    hits.append(f"import {alias.name}")
+        elif isinstance(node, ast.ImportFrom):
+            module = node.module or ""
+            level = node.level or 0
+            absolute = _resolve_relative(module, level, anchor_dotted) if level else module
+            if absolute == _LEGACY_DOTTED or absolute.endswith("." + _LEGACY_TAIL):
+                imported = ", ".join(a.name for a in node.names)
+                src_repr = ("." * level) + module if level else module
+                hits.append(f"from {src_repr} import {imported}")
+                continue
+            for alias in node.names:
+                if alias.name == _LEGACY_TAIL:
+                    src_repr = ("." * level) + module if level else module
+                    hits.append(f"from {src_repr} import {alias.name}")
+        elif isinstance(node, ast.Call):
+            func = node.func
+            label: str | None = None
+            if isinstance(func, ast.Attribute) and func.attr == "import_module" and node.args:
+                label = "importlib.import_module"
+            elif isinstance(func, ast.Name) and func.id == "__import__" and node.args:
+                label = "__import__"
+            if label and isinstance(node.args[0], ast.Constant) and isinstance(node.args[0].value, str):
+                v = node.args[0].value
+                if v == _LEGACY_DOTTED or v.endswith("." + _LEGACY_TAIL):
+                    hits.append(f'{label}("{v}")')
+    return hits
+
+
+@pytest.mark.parametrize(
+    "snippet,anchor_path",
+    [
+        # Absolute dotted-path forms.
+        ("import octomil.runtime.engines.whisper._legacy_pywhisper", "octomil/foo/bar.py"),
+        (
+            "import octomil.runtime.engines.whisper._legacy_pywhisper as legacy",
+            "octomil/foo/bar.py",
+        ),
+        (
+            "from octomil.runtime.engines.whisper._legacy_pywhisper import is_whisper_model",
+            "octomil/foo/bar.py",
+        ),
+        (
+            "from octomil.runtime.engines.whisper._legacy_pywhisper import *",
+            "octomil/foo/bar.py",
+        ),
+        # Sibling absolute form.
+        (
+            "from octomil.runtime.engines.whisper import _legacy_pywhisper",
+            "octomil/foo/bar.py",
+        ),
+        # Relative forms — anchored inside the whisper package.
+        (
+            "from . import _legacy_pywhisper",
+            "octomil/runtime/engines/whisper/__init__.py",
+        ),
+        (
+            "from ._legacy_pywhisper import is_whisper_model",
+            "octomil/runtime/engines/whisper/__init__.py",
+        ),
+        (
+            "from ._legacy_pywhisper import *",
+            "octomil/runtime/engines/whisper/__init__.py",
+        ),
+        # Relative form one level deeper.
+        (
+            "from .._legacy_pywhisper import is_whisper_model",
+            "octomil/runtime/engines/whisper/sub/sub.py",
+        ),
+        # Dynamic forms with literal string.
+        (
+            'import importlib\nimportlib.import_module("octomil.runtime.engines.whisper._legacy_pywhisper")',
+            "octomil/foo/bar.py",
+        ),
+        (
+            '__import__("octomil.runtime.engines.whisper._legacy_pywhisper")',
+            "octomil/foo/bar.py",
+        ),
+    ],
+)
+def test_ast_guard_self_test_catches_forbidden_shape(snippet: str, anchor_path: str):
+    """Confirm the AST guard's matcher detects every forbidden shape
+    enumerated in the module docstring. Without these self-tests, a
+    future refactor that breaks the matcher would silently pass."""
+    hits = _hits_for_snippet(snippet, anchor_path=anchor_path)
+    assert hits, f"AST guard did not catch forbidden snippet: {snippet!r}"
+
+
+def test_ast_guard_self_test_ignores_unrelated_imports():
+    """Negative control: imports that share no part of the legacy
+    dotted path / tail name MUST NOT register as hits. Without this
+    pin, an over-broad matcher (e.g. substring match) could
+    spuriously flag innocent code."""
+    benign_snippets = [
+        "import octomil.runtime.engines.whisper.model_names",
+        "from octomil.runtime.engines.whisper import is_whisper_model",
+        "from octomil.runtime.engines.whisper.model_names import is_whisper_model",
+        "from . import model_names",
+        'importlib.import_module("octomil.runtime.engines.whisper")',
+    ]
+    for snippet in benign_snippets:
+        # Wrap the importlib snippet with the import statement so it parses.
+        full = ("import importlib\n" + snippet) if "importlib." in snippet else snippet
+        hits = _hits_for_snippet(full, anchor_path="octomil/runtime/engines/whisper/__init__.py")
+        assert not hits, f"AST guard spuriously matched benign snippet: {snippet!r} -> {hits!r}"
