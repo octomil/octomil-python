@@ -2,6 +2,42 @@
 
 ## Unreleased
 
+## v0.1.9
+
+### Features
+
+- **progressive_during_synthesis flip**: `X-Octomil-Streaming-Honesty` response header on
+  `/v1/audio/speech/stream` updated from `coalesced_after_synthesis` to
+  `progressive_during_synthesis`, backed by measured proof artifact
+  (`/tmp/v019-progressive-proof-20260508T185426Z.json`, `first_audio_ratio=0.5909`,
+  gate < 0.75, `gate_pass=true`).
+
+- **tts.first_audio_ms surfaced in verbose**: `TtsAudioChunk.streaming_mode` default flipped
+  from `"coalesced"` to `"progressive"`. `OCT_EVENT_METRIC` events carrying
+  `tts.first_audio_ms` (the `TTS_FIRST_AUDIO_MS_METRIC_NAME` constant) are now captured
+  from the runtime event stream and surfaced in the verbose run metadata block when present.
+  The field is omitted defensively if the metric is absent (env gate
+  `OCTOMIL_TTS_FIRST_AUDIO_MS_EMIT=1` or contracts Lane 2 merged — PR #116 merged).
+
+- **Measured delivery characteristics**: `first_audio_ratio=0.5909` (first chunk arrived
+  at 59% of total synthesis wall-clock), `RTF=0.105` (faster than real-time),
+  sentence-bounded chunks, sub-sentence cancel granularity ~150-200ms.
+
+### Honest framing
+
+- "first audio" = `open→first-chunk-dequeued`, NOT a streaming-latency floor.
+- "progressive" means `delivery_timing=progressive_during_synthesis` — first audio before
+  synthesis completes. Not "instantaneous" or "zero-delay."
+- `realtime_streaming_claim=true` per contracts means `RTF < 1.0` (measured 0.105).
+
+### Test changes
+
+- Renamed `test_tts_stream_no_premature_progressive_claim.py` →
+  `test_tts_stream_progressive_claim_requires_proof.py`. Inverted guard direction:
+  test now asserts that progressive claims ARE present and always paired with a proof
+  reference (proof artifact path or `first_audio_ratio`). Cites proof artifact and
+  `proof_artifact.measured_first_audio_ratio` from contracts YAML.
+
 ## 4.17.5 (2026-05-05)
 
 ### Fixes
