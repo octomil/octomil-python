@@ -77,6 +77,18 @@ _BACKEND_NAME = "native-sherpa-onnx-tts-stream"
 _DEFAULT_DEADLINE_MS = 300_000  # 5 minutes — same shape as native STT.
 _TTS_MODEL_ENV: str = "OCTOMIL_SHERPA_TTS_MODEL"
 
+# v0.1.9 Lane 4 — documented anchor for the progressive-streaming
+# first-audio-chunk telemetry metric. A future runtime release
+# (Lane 1 + Lane 2) will start emitting ``OCT_EVENT_METRIC`` with
+# ``data.metric.name`` set to this string to mark first-audio-chunk
+# arrival in progressive mode. The SDK does NOT introspect or filter
+# on metric names at the binding boundary (RM-RT-001); this constant
+# is only exposed so consumers + reviewers have a single source of
+# truth to grep for. The Python-side telemetry sink registry, when
+# wired by a follow-up PR, MUST forward ``OCT_EVENT_METRIC`` events
+# regardless of name — no allowlist.
+TTS_FIRST_AUDIO_MS_METRIC_NAME: str = "tts.first_audio_ms"
+
 
 @dataclass
 class TtsAudioChunk:

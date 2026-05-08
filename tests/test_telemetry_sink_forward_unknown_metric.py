@@ -1,6 +1,21 @@
-"""v0.1.9 Lane 4 — telemetry sink forward-path: unknown metric names.
+"""v0.1.9 Lane 4 — telemetry sink forward-path: constant exposure pin.
 
 Honesty pin for the runtime->SDK telemetry forward path.
+
+SCOPE LIMITATION (read first):
+    This test verifies that the SDK *exposes* the constants needed
+    for the eventual forward path — the OCT_EVENT_METRIC enum value
+    and the ``tts.first_audio_ms`` metric-name string. It does NOT
+    prove that the cffi binding actually forwards a real metric event
+    end-to-end. That is a runtime-side test, pending Lane 1 + Lane 2
+    merge — at which point a follow-up PR can register a real
+    ``oct_telemetry_sink_fn``, fire a real metric event through cffi,
+    and assert the sink callback receives ``name="tts.first_audio_ms"``
+    byte-for-byte.
+
+    Lane 4 is "prep, not proof". An earlier draft of this test used
+    a closure side-channel that pretended to exercise the forward
+    path; that was misleading and has been removed.
 
 Background (RM-RT-001):
     The runtime delivers ``OCT_EVENT_METRIC`` events through the
@@ -16,222 +31,43 @@ Background (RM-RT-001):
     metric event through to the registered Python sink unchanged.
     Filtering / aggregation is the consumer's job, not the binding's.
 
-This test pins the contract:
+What this file pins:
 
-    * A future runtime release (gated on v0.1.9 Lane 1 + Lane 2)
-      will start emitting ``OCT_EVENT_METRIC`` with
-      ``name="tts.first_audio_ms"`` to mark first-audio-chunk
-      arrival in progressive mode.
-    * The SDK's binding ABSOLUTELY MUST NOT drop the event because
-      the name is one it has never seen. ``tts.first_audio_ms`` is
-      not a magic-known string in the binding; it travels through
-      the sink with no name-introspection.
+1. ``OCT_EVENT_METRIC`` is importable from
+   ``octomil.runtime.native.loader`` and re-exported on the
+   ``octomil.runtime.native`` package. Hiding the constant would
+   force consumers to rely on numeric literals — a compatibility
+   hazard.
 
-If this test fails, either:
-    1. Someone added a name allowlist to the sink path. Remove it.
-       Filtering is a consumer concern, not a binding concern.
-    2. The forward shim drops events of an unknown ``OCT_EVENT_*``
-       type. ``OCT_EVENT_METRIC`` is the relevant type here; bindings
-       must forward this type unchanged.
+2. The string ``tts.first_audio_ms`` is referenced in the SDK's
+   native-runtime layer. A future runtime release (Lane 1 + Lane 2)
+   will start emitting ``OCT_EVENT_METRIC`` with this name to mark
+   first-audio-chunk arrival; the SDK side needs it documented now
+   so consumers + reviewers know where it will surface.
 
-Notes on scope:
-    * The cffi-level ``oct_telemetry_sink_fn`` is currently
-      configured as ``ffi.NULL`` in ``NativeRuntime.open`` (see
-      ``octomil/runtime/native/loader.py`` — ``cfg.telemetry_sink =
-      ffi.NULL``). When a future PR wires a Python-side sink
-      registry, the contract this test pins MUST hold for that
-      registry too. The test exercises the Python ``NativeEvent``
-      surface — the boundary the sink-registry callback receives
-      events on — to demonstrate name-blind forwarding works on
-      the parsed-event shape with NO regression risk for the
-      ``tts.first_audio_ms`` name.
+3. The native-runtime layer does NOT carry an allowlist that filters
+   metric events on name. ``tts.first_audio_ms`` is not — and must
+   never become — a magic-known string in the binding's metric path.
+   We pin this by source-scanning the loader for filtering patterns.
 """
 
 from __future__ import annotations
 
-from typing import Callable, List
+from pathlib import Path
 
 import pytest
 
 from octomil.runtime.native.loader import (
     OCT_EVENT_METRIC,
-    OCT_EVENT_NONE,
-    OCT_EVENT_TTS_AUDIO_CHUNK,
-    NativeEvent,
 )
 
-# ---------------------------------------------------------------------------
-# Forward shim — minimal, name-blind. The sink registry (when wired) MUST
-# behave like this: receive a NativeEvent and dispatch to subscribers
-# without inspecting the metric name.
-# ---------------------------------------------------------------------------
-
-
-class _ForwardingSinkRegistry:
-    """Minimal in-memory sink: callable subscribers, no name filtering.
-
-    Mirrors the contract a future ``oct_telemetry_sink_fn`` Python
-    bridge MUST honour: every event the runtime emits is forwarded
-    to every subscriber unchanged. The registry knows nothing about
-    metric names; it just dispatches by event type to (callable,)
-    subscribers and lets each subscriber decide what to do.
-
-    Dropping an event because the metric name is unrecognized is a
-    bug — the runtime's metric vocabulary is open-ended.
-    """
-
-    def __init__(self) -> None:
-        self._subscribers: List[Callable[[NativeEvent], None]] = []
-
-    def subscribe(self, callback: Callable[[NativeEvent], None]) -> None:
-        self._subscribers.append(callback)
-
-    def dispatch(self, event: NativeEvent) -> None:
-        # Hard rule: no name-based filtering. Forward verbatim.
-        for cb in self._subscribers:
-            cb(event)
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+_LOADER_PATH = _REPO_ROOT / "octomil" / "runtime" / "native" / "loader.py"
+_TTS_STREAM_BACKEND_PATH = _REPO_ROOT / "octomil" / "runtime" / "native" / "tts_stream_backend.py"
 
 
 # ---------------------------------------------------------------------------
-# Mock event factory — builds a NativeEvent shaped like what poll_event
-# would surface for OCT_EVENT_METRIC. We can't easily synthesize a real
-# cffi oct_event_t without a dylib, but we CAN build the parsed Python
-# representation that the sink path receives.
-# ---------------------------------------------------------------------------
-
-
-def _make_metric_event(name: str, value: float) -> NativeEvent:
-    """Build a NativeEvent that represents an OCT_EVENT_METRIC parsed
-    from the runtime side. The current ``NativeEvent`` slot set does
-    not yet expose ``metric_name`` / ``metric_value`` (the loader's
-    poll_event parser does not extract the metric union arm — see
-    octomil/runtime/native/loader.py around line 1894). This test
-    pins the FORWARD contract at the event-type level: even with
-    primitive-only fields, the event type itself is forwarded to
-    subscribers — the sink path does NOT silently swallow metric
-    events because the ``data.metric`` arm is unparsed today.
-
-    When the metric arm is parsed in a follow-up PR, this test still
-    holds: forwarding stays name-blind. We mark the (name, value) on
-    the event via attribute injection so a second assertion can
-    verify the tts.first_audio_ms name in particular survives the
-    forward unchanged.
-    """
-    ev = NativeEvent(
-        type=OCT_EVENT_METRIC,
-        version=2,
-        monotonic_ns=12345,
-        user_data_ptr=0,
-    )
-    # Attach the would-be parsed payload as ad-hoc attributes via
-    # __dict__ rebind. NativeEvent uses __slots__, so we attach via
-    # Python dynamic attrs only when the slot exists; for this test
-    # we use the loose-namespace pattern by stashing in a single
-    # known attribute. Use object.__setattr__ on a SimpleNamespace
-    # surrogate fallback if slots reject attachment.
-    # Keep it simple: just return the event; the test asserts the
-    # type + uses a side-channel dict to track (name, value).
-    return ev
-
-
-# ---------------------------------------------------------------------------
-# Tests
-# ---------------------------------------------------------------------------
-
-
-class TestSinkForwardsUnknownMetric:
-    """The sink forward path MUST NOT filter on metric name."""
-
-    def test_metric_event_with_tts_first_audio_ms_reaches_sink(self) -> None:
-        """``tts.first_audio_ms`` is the name a future runtime release
-        will start emitting for progressive-mode first-audio-chunk
-        arrival. The SDK has never seen this name today, but the
-        sink path MUST forward it unchanged. No allowlist."""
-        registry = _ForwardingSinkRegistry()
-        received: List[tuple[NativeEvent, str, float]] = []
-
-        # Side-channel: the (name, value) pair the runtime would
-        # carry in data.metric. The forward shim doesn't read these
-        # — they ride along to verify name-survival end-to-end.
-        carried_name = "tts.first_audio_ms"
-        carried_value = 287.0  # ms, plausible first-audio latency.
-
-        def sink(event: NativeEvent) -> None:
-            received.append((event, carried_name, carried_value))
-
-        registry.subscribe(sink)
-
-        ev = _make_metric_event(carried_name, carried_value)
-        registry.dispatch(ev)
-
-        assert len(received) == 1, "sink did not receive the metric event"
-        delivered_event, delivered_name, delivered_value = received[0]
-        assert delivered_event.type == OCT_EVENT_METRIC, (
-            "forward path silently rewrote event type — "
-            "this is a binding bug; OCT_EVENT_METRIC must arrive as OCT_EVENT_METRIC"
-        )
-        assert delivered_name == "tts.first_audio_ms", (
-            "metric name was rewritten or filtered in the forward path. "
-            "The SDK does not introspect metric names per RM-RT-001; "
-            "tts.first_audio_ms (and any other unknown name) MUST pass through unchanged."
-        )
-        assert delivered_value == 287.0
-
-    def test_metric_event_with_arbitrary_unknown_name_is_forwarded(self) -> None:
-        """Generalisation: any unknown name must pass through. The
-        binding does not maintain an allowlist of metric names."""
-        registry = _ForwardingSinkRegistry()
-        received: List[tuple[NativeEvent, str]] = []
-
-        unknown_name = "future.unknown.metric.name.v999"
-
-        def sink(event: NativeEvent) -> None:
-            received.append((event, unknown_name))
-
-        registry.subscribe(sink)
-        registry.dispatch(_make_metric_event(unknown_name, 0.0))
-
-        assert len(received) == 1
-        assert received[0][1] == unknown_name
-
-    def test_multiple_sinks_each_get_the_metric(self) -> None:
-        """Multi-subscriber dispatch — every subscriber receives the
-        metric event (no name-based routing / filtering)."""
-        registry = _ForwardingSinkRegistry()
-        a_received: List[NativeEvent] = []
-        b_received: List[NativeEvent] = []
-        registry.subscribe(a_received.append)
-        registry.subscribe(b_received.append)
-
-        registry.dispatch(_make_metric_event("tts.first_audio_ms", 100.0))
-
-        assert len(a_received) == 1
-        assert len(b_received) == 1
-        assert a_received[0].type == OCT_EVENT_METRIC
-        assert b_received[0].type == OCT_EVENT_METRIC
-
-    def test_non_metric_events_also_forward_unchanged(self) -> None:
-        """The forward path is event-type-blind: TTS_AUDIO_CHUNK,
-        SESSION_STARTED, etc. — none filtered on type either. This
-        guards against a regression where someone adds a switch that
-        only forwards ``known`` types and accidentally drops METRIC.
-        """
-        registry = _ForwardingSinkRegistry()
-        received: List[NativeEvent] = []
-        registry.subscribe(received.append)
-
-        registry.dispatch(NativeEvent(type=OCT_EVENT_TTS_AUDIO_CHUNK, version=2, monotonic_ns=1, user_data_ptr=0))
-        registry.dispatch(NativeEvent(type=OCT_EVENT_METRIC, version=2, monotonic_ns=2, user_data_ptr=0))
-        registry.dispatch(NativeEvent(type=OCT_EVENT_NONE, version=2, monotonic_ns=3, user_data_ptr=0))
-
-        types_received = [e.type for e in received]
-        assert OCT_EVENT_METRIC in types_received, "OCT_EVENT_METRIC was dropped from the forward path"
-        assert OCT_EVENT_TTS_AUDIO_CHUNK in types_received
-        assert OCT_EVENT_NONE in types_received
-
-
-# ---------------------------------------------------------------------------
-# Pin: the OCT_EVENT_METRIC enum value is in the binding
+# 1. The OCT_EVENT_METRIC enum value is in the binding
 # ---------------------------------------------------------------------------
 
 
@@ -252,6 +88,77 @@ class TestMetricEventConstantExposed:
 
         assert hasattr(native_pkg, "OCT_EVENT_METRIC")
         assert native_pkg.OCT_EVENT_METRIC == OCT_EVENT_METRIC
+
+
+# ---------------------------------------------------------------------------
+# 2. The tts.first_audio_ms metric-name string is referenced at the SDK
+#    layer (binding + backend module). Lane 4 ships this as documentation
+#    + readiness; Lane 1 + Lane 2 wire the actual emit + forward.
+# ---------------------------------------------------------------------------
+
+
+class TestTtsFirstAudioMsConstantReferenced:
+    """The metric name string ``tts.first_audio_ms`` MUST appear at
+    the SDK layer so reviewers + consumers can grep for it.
+
+    NOT pinned here: that the binding ACTUALLY forwards an event with
+    this name — that's a runtime-integration test, pending Lane 1 +
+    Lane 2 merge.
+    """
+
+    METRIC_NAME = "tts.first_audio_ms"
+
+    def test_metric_name_referenced_in_native_runtime_module(self) -> None:
+        """The string appears somewhere in the native-runtime SDK
+        layer (loader.py OR tts_stream_backend.py). Reviewers need
+        a discoverable anchor before Lane 1 + Lane 2 wire the live
+        forward path."""
+        assert _LOADER_PATH.exists(), f"loader.py not found at {_LOADER_PATH}"
+        assert _TTS_STREAM_BACKEND_PATH.exists()
+        loader_text = _LOADER_PATH.read_text(encoding="utf-8")
+        backend_text = _TTS_STREAM_BACKEND_PATH.read_text(encoding="utf-8")
+        assert self.METRIC_NAME in loader_text or self.METRIC_NAME in backend_text, (
+            f"Metric name {self.METRIC_NAME!r} is not referenced in the SDK's "
+            "native-runtime layer (loader.py or tts_stream_backend.py). "
+            "Lane 1 + Lane 2 will start emitting OCT_EVENT_METRIC events "
+            "with this name; the SDK needs at least a documented anchor "
+            "now so reviewers can grep for it."
+        )
+
+
+# ---------------------------------------------------------------------------
+# 3. Source-scan: no name-allowlist on the metric forward path
+# ---------------------------------------------------------------------------
+
+
+class TestNoMetricNameAllowlistInLoader:
+    """Per RM-RT-001 the binding does NOT introspect or filter on the
+    metric ``name`` string. We can't run the live forward path until
+    Lane 1 + Lane 2 land, but we CAN catch the regression class —
+    someone adding a hard-coded allowlist or name-equality switch on
+    the metric path — by source-scanning the loader.
+
+    This is a smoke pin, not a guarantee. The real forward-path test
+    arrives with the runtime release.
+    """
+
+    def test_loader_does_not_introduce_metric_name_allowlist(self) -> None:
+        assert _LOADER_PATH.exists()
+        text = _LOADER_PATH.read_text(encoding="utf-8")
+        forbidden_patterns = (
+            "_METRIC_NAME_ALLOWLIST",
+            "METRIC_NAME_ALLOWLIST",
+            "metric_name_allowlist",
+            "ALLOWED_METRIC_NAMES",
+            "allowed_metric_names",
+        )
+        for pat in forbidden_patterns:
+            assert pat not in text, (
+                f"loader.py contains the pattern {pat!r}, which looks like "
+                "a metric-name allowlist on the binding's forward path. "
+                "Per RM-RT-001 the binding MUST forward all metric events "
+                "regardless of name; filtering is a consumer concern."
+            )
 
 
 if __name__ == "__main__":

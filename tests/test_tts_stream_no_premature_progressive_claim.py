@@ -52,12 +52,15 @@ from __future__ import annotations
 
 import inspect
 from pathlib import Path
+from typing import List
 
 import pytest
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 _TTS_STREAM_BACKEND_PATH = _REPO_ROOT / "octomil" / "runtime" / "native" / "tts_stream_backend.py"
 _SERVE_APP_PATH = _REPO_ROOT / "octomil" / "serve" / "app.py"
+
+_PROGRESSIVE_CLAIM_MARKER = "progressive_during_synthesis"
 
 
 # ---------------------------------------------------------------------------
@@ -195,6 +198,68 @@ class TestPublicMethodNameStillSynthesizeWithChunks:
                 "public progressive/realtime claim — BLOCKED until the runtime "
                 "release lands."
             )
+
+
+# ---------------------------------------------------------------------------
+# 4. Other public surfaces don't carry the progressive claim either
+# ---------------------------------------------------------------------------
+
+
+def _public_surface_files() -> List[Path]:
+    """Bounded set of public-facing files that could plausibly carry
+    a TTS-streaming public claim. We scan each for the
+    ``progressive_during_synthesis`` marker; any hit means a public-
+    claim flip happened on a surface that the serve/app.py + backend
+    pins do not cover.
+
+    Surfaces included:
+      * ``README.md`` — top-level project README, ships to PyPI.
+      * ``docs/**/*.md`` — public docs site sources.
+      * ``pyproject.toml`` — project metadata (``description`` /
+        ``readme`` content, both render on PyPI).
+
+    Surfaces deliberately excluded (already pinned in earlier
+    classes): ``octomil/serve/app.py`` and
+    ``octomil/runtime/native/tts_stream_backend.py``.
+
+    Surfaces deliberately NOT included: generated OpenAPI specs.
+    Today the SDK doesn't ship a generated spec containing
+    streaming-mode honesty text; if that changes, extend this list.
+    """
+    files: List[Path] = []
+    readme = _REPO_ROOT / "README.md"
+    if readme.exists():
+        files.append(readme)
+    pyproject = _REPO_ROOT / "pyproject.toml"
+    if pyproject.exists():
+        files.append(pyproject)
+    docs_dir = _REPO_ROOT / "docs"
+    if docs_dir.is_dir():
+        files.extend(sorted(docs_dir.rglob("*.md")))
+    return files
+
+
+@pytest.mark.parametrize("surface_path", _public_surface_files(), ids=lambda p: str(p.relative_to(_REPO_ROOT)))
+class TestPublicSurfacesDoNotCarryProgressiveClaim:
+    """Bounded scan over README + docs + pyproject. Each must NOT
+    contain the ``progressive_during_synthesis`` marker until the
+    runtime release lands.
+
+    If a future surface (e.g. a generated OpenAPI spec, a CHANGELOG
+    entry that quotes the marker) starts legitimately needing the
+    string, extend ``_public_surface_files`` with an explicit
+    forward-compat exclusion + a comment explaining why.
+    """
+
+    def test_surface_does_not_carry_progressive_during_synthesis_marker(self, surface_path: Path) -> None:
+        text = surface_path.read_text(encoding="utf-8")
+        assert _PROGRESSIVE_CLAIM_MARKER not in text, (
+            f"Public surface {surface_path.relative_to(_REPO_ROOT)!s} contains "
+            f"the marker {_PROGRESSIVE_CLAIM_MARKER!r}. This is a public-claim "
+            "flip and is BLOCKED until v0.1.9 Lane 1 + Lane 2 ship. If the "
+            "marker is being introduced legitimately as part of the runtime "
+            "release, update this test in the SAME PR with linked evidence."
+        )
 
 
 if __name__ == "__main__":
