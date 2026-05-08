@@ -50,7 +50,11 @@ from typing import Any
 
 SCHEMA_VERSION = "1.0.0"
 SDK_PREFIX = "sdk_"
-DEFAULT_OUTPUT_DIR = Path("release/parity")
+# Codex R1 F1 — anchor the default to the SDK checkout, not cwd, so
+# release automation invoking by absolute path from another dir can't
+# silently write artifacts outside this repo.
+SDK_REPO_ROOT = Path(__file__).resolve().parent.parent
+DEFAULT_OUTPUT_DIR = SDK_REPO_ROOT / "release" / "parity"
 CAPABILITIES = [
     ("audio.transcription", "parity_whisper_pooled_stt.py", "parity"),
     ("audio.vad", "release_assert_vad_no_parity.py", "smoke"),
@@ -226,6 +230,16 @@ def main() -> int:
             else:
                 extra.extend(["--jfk-wav", str(args.jfk_wav)])
 
+        # Codex R1 F2 — remove stale runtime artifact BEFORE running so
+        # a crashed / missing runtime script can't accidentally mirror
+        # a previous run's JSON.
+        if kind == "parity":
+            runtime_artifact_path = cap_dir / f"{capability}.parity.json"
+        else:
+            runtime_artifact_path = cap_dir / f"{capability}.smoke.json"
+        if runtime_artifact_path.exists():
+            runtime_artifact_path.unlink()
+
         rc, stdout, stderr = run_runtime_script(
             runtime_repo,
             build_dir,
@@ -239,15 +253,24 @@ def main() -> int:
         # the artifact the runtime script just wrote (if any) and
         # re-emit with kind=sdk_<original> for traceability.
         runtime_artifact = None
-        if kind == "parity":
-            runtime_artifact_path = cap_dir / f"{capability}.parity.json"
-        else:
-            runtime_artifact_path = cap_dir / f"{capability}.smoke.json"
         if runtime_artifact_path.is_file():
             try:
                 runtime_artifact = json.loads(runtime_artifact_path.read_text())
             except json.JSONDecodeError:
                 runtime_artifact = None
+
+        # Codex R1 F2 — synthesize a failure when the runtime script
+        # crashed before writing JSON. Without this, gate_pass=false +
+        # empty gate_failures would be ambiguous (fail with no reason).
+        synthesized_failures: list[dict[str, str]] = []
+        if rc != 0 and runtime_artifact is None:
+            synthesized_failures.append(
+                {
+                    "bound": "runtime_script_crash",
+                    "expected": "runtime script exit 0 with artifact json",
+                    "actual": f"rc={rc} no_artifact stderr={stderr.strip()[:200]!r}",
+                }
+            )
 
         sdk_payload: dict[str, Any] = {
             "schema_version": SCHEMA_VERSION,
@@ -257,7 +280,9 @@ def main() -> int:
             "host": host_block(),
             "runtime": {"build_dir": str(build_dir)},
             "gate_pass": rc == 0,
-            "gate_failures": (runtime_artifact or {}).get("gate_failures", []) if rc != 0 else [],
+            "gate_failures": (
+                (runtime_artifact or {}).get("gate_failures", []) + synthesized_failures if rc != 0 else []
+            ),
             "notes": (
                 f"SDK runner — invoked runtime/{script_name} (rc={rc}). "
                 f"Runtime artifact at {runtime_artifact_path.name}; this file "
