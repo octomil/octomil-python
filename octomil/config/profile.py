@@ -77,6 +77,12 @@ class Profile(str, Enum):
 # /v1 suffix is API-versioning shared across environments; the
 # operational base URL the SDK uses includes it. The host-only form
 # without /v1 is what e2e / health checks hit (see staging-e2e.yml).
+_PROFILE_HOST_URLS: dict[Profile, str] = {
+    Profile.PRODUCTION: "https://api.octomil.com",
+    Profile.STAGING: "https://api.staging.octomil.com",
+    Profile.DEV: "http://localhost:8000",
+}
+
 _PROFILE_BASE_URLS: dict[Profile, str] = {
     Profile.PRODUCTION: "https://api.octomil.com/v1",
     Profile.STAGING: "https://api.staging.octomil.com/v1",
@@ -119,8 +125,16 @@ class ProfileResolution:
 
 
 def base_url_for(profile: Profile) -> str:
-    """Canonical SDK base URL for the given profile."""
+    """Canonical SDK base URL (with /v1 suffix) for the given profile."""
     return _PROFILE_BASE_URLS[profile]
+
+
+def host_url_for(profile: Profile) -> str:
+    """Host-only base URL (no /v1 suffix). Used by clients that compose
+    their own path prefix — e.g. the planner appends /api/v2/...
+    paths and a /v1-suffixed base would yield /v1/api/v2/... 404s.
+    """
+    return _PROFILE_HOST_URLS[profile]
 
 
 def artifact_bucket_for(profile: Profile) -> str:

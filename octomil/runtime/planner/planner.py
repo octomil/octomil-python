@@ -520,13 +520,18 @@ def _client_from_env() -> RuntimePlannerClient | None:
 
 
 def _profile_resolved_base() -> str:
-    """Profile-aware default base URL for the planner — honors
-    OCTOMIL_PROFILE so an authenticated planner with no explicit
-    OCTOMIL_API_BASE talks to staging when the profile says staging
-    (codex post-debate B2)."""
-    from octomil.config.profile import resolve_base_url
+    """Profile-aware HOST-ONLY default base URL for the planner —
+    honors OCTOMIL_PROFILE so an authenticated planner with no
+    explicit OCTOMIL_API_BASE talks to staging when the profile says
+    staging (codex post-debate B2). Host-only (no /v1) because the
+    planner composes its own /api/v2/... path; a /v1-suffixed base
+    yields /v1/api/v2/... 404s (codex R3 finding)."""
+    from octomil.config.profile import host_url_for, resolve_profile
 
-    return resolve_base_url(base_url=os.environ.get("OCTOMIL_API_BASE"))
+    explicit = os.environ.get("OCTOMIL_API_BASE", "").strip()
+    if explicit:
+        return explicit
+    return host_url_for(resolve_profile().profile)
 
 
 def _normalize_api_base(raw: str | None) -> str:
