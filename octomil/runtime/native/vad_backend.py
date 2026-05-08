@@ -74,20 +74,14 @@ from typing import Any, Iterator, Literal
 
 from ...errors import OctomilError, OctomilErrorCode
 from .capabilities import CAPABILITY_AUDIO_VAD
+from .error_mapping import map_oct_status
 from .loader import (
     OCT_EVENT_ERROR,
     OCT_EVENT_NONE,
     OCT_EVENT_SESSION_COMPLETED,
     OCT_EVENT_SESSION_STARTED,
     OCT_EVENT_VAD_TRANSITION,
-    OCT_STATUS_BUSY,
-    OCT_STATUS_CANCELLED,
-    OCT_STATUS_INVALID_INPUT,
-    OCT_STATUS_NOT_FOUND,
     OCT_STATUS_OK,
-    OCT_STATUS_TIMEOUT,
-    OCT_STATUS_UNSUPPORTED,
-    OCT_STATUS_VERSION_MISMATCH,
     OCT_VAD_TRANSITION_SPEECH_END,
     OCT_VAD_TRANSITION_SPEECH_START,
     NativeRuntime,
@@ -113,40 +107,17 @@ def _runtime_status_to_sdk_error(
     *,
     last_error: str = "",
 ) -> OctomilError:
-    """Map a runtime ``oct_status_t`` (+ last_error text) onto the SDK's
-    bounded error taxonomy.
-
-    Mirrors :func:`octomil.runtime.native.stt_backend._runtime_status_to_sdk_error`
-    so the VAD cutover produces identical error shapes for identical
-    runtime statuses. The bad-digest disambiguation matters because
-    the runtime returns ``OCT_STATUS_UNSUPPORTED`` for both "capability
-    not built into this dylib" AND "ggml-silero-v6.2.0.bin SHA-256
-    mismatch", separated only by ``last_error`` text.
+    """Thin wrapper over :func:`octomil.runtime.native.error_mapping.map_oct_status`
+    pinned to the audio-capability policy. v0.1.6 PR1 centralized the
+    mapping in ``error_mapping.py``; this wrapper preserves the
+    backend-local symbol that v0.1.5 tests import directly.
     """
-    last_error_lc = (last_error or "").lower()
-    if status == OCT_STATUS_NOT_FOUND:
-        code = OctomilErrorCode.MODEL_NOT_FOUND
-    elif status == OCT_STATUS_INVALID_INPUT:
-        code = OctomilErrorCode.INVALID_INPUT
-    elif status == OCT_STATUS_UNSUPPORTED:
-        if "digest" in last_error_lc:
-            code = OctomilErrorCode.CHECKSUM_MISMATCH
-        else:
-            code = OctomilErrorCode.RUNTIME_UNAVAILABLE
-    elif status == OCT_STATUS_VERSION_MISMATCH:
-        code = OctomilErrorCode.RUNTIME_UNAVAILABLE
-    elif status == OCT_STATUS_CANCELLED:
-        code = OctomilErrorCode.CANCELLED
-    elif status == OCT_STATUS_TIMEOUT:
-        code = OctomilErrorCode.REQUEST_TIMEOUT
-    elif status == OCT_STATUS_BUSY:
-        code = OctomilErrorCode.SERVER_ERROR
-    else:
-        code = OctomilErrorCode.INFERENCE_FAILED
-    full_message = message
-    if last_error:
-        full_message = f"{message}: {last_error}"
-    return OctomilError(code=code, message=full_message)
+    return map_oct_status(
+        status,
+        last_error,
+        message=message,
+        default_unsupported_code=OctomilErrorCode.RUNTIME_UNAVAILABLE,
+    )
 
 
 def _validate_chunk_pcm_f32(samples: Any, sample_rate_hz: int) -> bytes:
