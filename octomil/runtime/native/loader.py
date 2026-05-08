@@ -128,6 +128,24 @@ OCT_EVENT_EMBEDDING_VECTOR: int = 20
 # runtime-owned; lifetime = until next poll. Bindings MUST copy.
 OCT_EVENT_TRANSCRIPT_SEGMENT: int = 21
 OCT_EVENT_TRANSCRIPT_FINAL: int = 22
+# v0.1.5 PR-2N — VAD transition event (audio.vad capability, silero VAD
+# adapter PR-2F at runtime). One event per transition edge; payload is
+# `data.vad_transition` { transition_kind, timestamp_ms, confidence }.
+# Multiple transitions per session are normal — bindings pair START
+# with the next END to derive a span. confidence ∈ [0.0, 1.0] is the
+# average per-window silero probability across the span.
+OCT_EVENT_VAD_TRANSITION: int = 24
+
+# v0.1.5 PR-2N — closed-enum sentinels for
+# data.vad_transition.transition_kind. UNKNOWN is a future-compat
+# sentinel; never emitted by v0.1.5 runtime but bindings MUST handle it
+# (treat as "skip event") rather than crash, per the runtime header
+# contract. SPEECH_START is the leading edge; SPEECH_END is the
+# trailing edge. Bindings derive a [start, end] span by pairing a
+# SPEECH_START with the next SPEECH_END on the same session.
+OCT_VAD_TRANSITION_UNKNOWN: int = 0
+OCT_VAD_TRANSITION_SPEECH_START: int = 1
+OCT_VAD_TRANSITION_SPEECH_END: int = 2
 
 OCT_SAMPLE_FORMAT_PCM_S16LE: int = 1
 OCT_SAMPLE_FORMAT_PCM_F32LE: int = 2
@@ -1408,6 +1426,15 @@ class NativeEvent:
         "segment_is_final",
         "final_n_segments",
         "final_duration_ms",
+        # v0.1.5 PR-2N — VAD transition payload. Populated only on
+        # OCT_EVENT_VAD_TRANSITION. transition_kind is one of
+        # OCT_VAD_TRANSITION_* constants; confidence is the silero
+        # average per-window speech probability across the span,
+        # clamped to [0.0, 1.0]; timestamp_ms is the runtime-monotonic
+        # event time at the transition edge.
+        "vad_transition_kind",
+        "vad_timestamp_ms",
+        "vad_confidence",
     )
 
     def __init__(
@@ -1447,6 +1474,9 @@ class NativeEvent:
         segment_is_final: bool = False,
         final_n_segments: int = 0,
         final_duration_ms: int = 0,
+        vad_transition_kind: int = 0,
+        vad_timestamp_ms: int = 0,
+        vad_confidence: float = 0.0,
     ) -> None:
         self.type = type
         self.version = version
@@ -1482,6 +1512,9 @@ class NativeEvent:
         self.segment_is_final = segment_is_final
         self.final_n_segments = final_n_segments
         self.final_duration_ms = final_duration_ms
+        self.vad_transition_kind = vad_transition_kind
+        self.vad_timestamp_ms = vad_timestamp_ms
+        self.vad_confidence = vad_confidence
 
     @property
     def is_none(self) -> bool:
@@ -1815,6 +1848,10 @@ class NativeSession:
         seg_is_final = False
         final_n_segments = 0
         final_duration_ms = 0
+        # v0.1.5 PR-2N — VAD transition payload defaults.
+        vad_kind = 0
+        vad_ts_ms = 0
+        vad_conf = 0.0
         ev_type = int(ev.type)
         if ev_type == OCT_EVENT_TRANSCRIPT_CHUNK:
             chunk = ev.data.transcript_chunk
@@ -1886,6 +1923,20 @@ class NativeSession:
                 # poll hot path doesn't pay lazy-import overhead.
                 buf = ffi.buffer(emb.values, emb_n_dim * 4)[:]
                 emb_values = list(_emb_struct.unpack(f"{emb_n_dim}f", buf))
+        elif ev_type == OCT_EVENT_VAD_TRANSITION:
+            # v0.1.5 PR-2N — silero VAD transition edge. Payload is
+            # primitive-typed (kind enum + ms timestamp + f32
+            # confidence); no runtime-owned pointer fields, so no
+            # copy-out lifetime concern. transition_kind is one of
+            # OCT_VAD_TRANSITION_* (UNKNOWN=0 sentinel; SPEECH_START=1;
+            # SPEECH_END=2). The runtime header guarantees confidence
+            # ∈ [0.0, 1.0]; we surface it as-is and let the caller
+            # decide whether to enforce that range (defensive callers
+            # may want to clamp).
+            vad = ev.data.vad_transition
+            vad_kind = int(vad.transition_kind)
+            vad_ts_ms = int(vad.timestamp_ms)
+            vad_conf = float(vad.confidence)
         return NativeEvent(
             type=ev_type,
             version=int(ev.version),
@@ -1913,6 +1964,9 @@ class NativeSession:
             segment_is_final=seg_is_final,
             final_n_segments=final_n_segments,
             final_duration_ms=final_duration_ms,
+            vad_transition_kind=vad_kind,
+            vad_timestamp_ms=vad_ts_ms,
+            vad_confidence=vad_conf,
             **_envelope(ev),
         )
 
@@ -2141,6 +2195,7 @@ __all__ = [
     "OCT_EVENT_CACHE_HIT",
     "OCT_EVENT_CACHE_MISS",
     "OCT_EVENT_CAPABILITY_VERIFIED",
+    "OCT_EVENT_EMBEDDING_VECTOR",
     "OCT_EVENT_ERROR",
     "OCT_EVENT_INPUT_DROPPED",
     "OCT_EVENT_MEMORY_PRESSURE",
@@ -2158,6 +2213,7 @@ __all__ = [
     "OCT_EVENT_TRANSCRIPT_SEGMENT",
     "OCT_EVENT_TURN_ENDED",
     "OCT_EVENT_USER_SPEECH_DETECTED",
+    "OCT_EVENT_VAD_TRANSITION",
     "OCT_EVENT_VERSION",
     "OCT_EVENT_WATCHDOG_TIMEOUT",
     "OCT_PRIORITY_FOREGROUND",
@@ -2175,6 +2231,9 @@ __all__ = [
     "OCT_STATUS_TIMEOUT",
     "OCT_STATUS_UNSUPPORTED",
     "OCT_STATUS_VERSION_MISMATCH",
+    "OCT_VAD_TRANSITION_SPEECH_END",
+    "OCT_VAD_TRANSITION_SPEECH_START",
+    "OCT_VAD_TRANSITION_UNKNOWN",
     "RuntimeCapabilities",
     "abi_version",
     "last_thread_error",
