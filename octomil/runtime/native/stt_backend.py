@@ -53,6 +53,7 @@ from typing import Any, Sequence
 
 from ...errors import OctomilError, OctomilErrorCode
 from .capabilities import CAPABILITY_AUDIO_TRANSCRIPTION
+from .error_mapping import map_oct_status
 from .loader import (
     OCT_EVENT_ERROR,
     OCT_EVENT_NONE,
@@ -60,14 +61,8 @@ from .loader import (
     OCT_EVENT_SESSION_STARTED,
     OCT_EVENT_TRANSCRIPT_FINAL,
     OCT_EVENT_TRANSCRIPT_SEGMENT,
-    OCT_STATUS_BUSY,
-    OCT_STATUS_CANCELLED,
     OCT_STATUS_INVALID_INPUT,
-    OCT_STATUS_NOT_FOUND,
     OCT_STATUS_OK,
-    OCT_STATUS_TIMEOUT,
-    OCT_STATUS_UNSUPPORTED,
-    OCT_STATUS_VERSION_MISMATCH,
     NativeRuntime,
     NativeRuntimeError,
 )
@@ -133,44 +128,20 @@ def _runtime_status_to_sdk_error(
     *,
     last_error: str = "",
 ) -> OctomilError:
-    """Map a runtime ``oct_status_t`` (+ last_error text) to the SDK's
-    bounded error taxonomy.
+    """Thin wrapper over :func:`octomil.runtime.native.error_mapping.map_oct_status`
+    pinned to the audio-capability ``default_unsupported_code`` policy
+    (``RUNTIME_UNAVAILABLE``).
 
-    The bad-digest path needs special handling: the runtime returns
-    ``OCT_STATUS_UNSUPPORTED`` for both "capability not built in" and
-    "ggml-tiny.bin SHA-256 mismatch", disambiguated only by
-    ``last_error`` text. The cutover spec maps the digest variant to
-    ``CHECKSUM_MISMATCH`` (bounded code for "integrity check failed
-    after download") and the capability variant to
-    ``RUNTIME_UNAVAILABLE``.
+    Kept as a backend-local symbol for back-compat with v0.1.5 tests
+    that import it directly. v0.1.6 PR1 centralized the body in
+    ``error_mapping.py``; rules + boundary contract live there.
     """
-    last_error_lc = (last_error or "").lower()
-    if status == OCT_STATUS_NOT_FOUND:
-        code = OctomilErrorCode.MODEL_NOT_FOUND
-    elif status == OCT_STATUS_INVALID_INPUT:
-        code = OctomilErrorCode.INVALID_INPUT
-    elif status == OCT_STATUS_UNSUPPORTED:
-        # Spec: digest mismatch → CHECKSUM_MISMATCH; otherwise →
-        # RUNTIME_UNAVAILABLE. Match on the substring "digest" in
-        # last_error per the runtime's convention.
-        if "digest" in last_error_lc:
-            code = OctomilErrorCode.CHECKSUM_MISMATCH
-        else:
-            code = OctomilErrorCode.RUNTIME_UNAVAILABLE
-    elif status == OCT_STATUS_VERSION_MISMATCH:
-        code = OctomilErrorCode.RUNTIME_UNAVAILABLE
-    elif status == OCT_STATUS_CANCELLED:
-        code = OctomilErrorCode.CANCELLED
-    elif status == OCT_STATUS_TIMEOUT:
-        code = OctomilErrorCode.REQUEST_TIMEOUT
-    elif status == OCT_STATUS_BUSY:
-        code = OctomilErrorCode.SERVER_ERROR
-    else:
-        code = OctomilErrorCode.INFERENCE_FAILED
-    full_message = message
-    if last_error:
-        full_message = f"{message}: {last_error}"
-    return OctomilError(code=code, message=full_message)
+    return map_oct_status(
+        status,
+        last_error,
+        message=message,
+        default_unsupported_code=OctomilErrorCode.RUNTIME_UNAVAILABLE,
+    )
 
 
 def _validate_pcm_f32(samples: Sequence[float] | Any, sample_rate_hz: int) -> bytes:

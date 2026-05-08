@@ -67,6 +67,7 @@ from ...serve.types import (
     InferenceBackend,
     InferenceMetrics,
 )
+from .error_mapping import map_oct_status
 from .loader import (
     OCT_EVENT_CACHE_HIT,
     OCT_EVENT_CACHE_MISS,
@@ -75,12 +76,8 @@ from .loader import (
     OCT_EVENT_SESSION_COMPLETED,
     OCT_EVENT_SESSION_STARTED,
     OCT_EVENT_TRANSCRIPT_CHUNK,
-    OCT_STATUS_BUSY,
     OCT_STATUS_INVALID_INPUT,
-    OCT_STATUS_NOT_FOUND,
     OCT_STATUS_OK,
-    OCT_STATUS_UNSUPPORTED,
-    OCT_STATUS_VERSION_MISMATCH,
     NativeRuntime,
     NativeRuntimeError,
 )
@@ -102,25 +99,18 @@ def _runtime_status_to_sdk_error(
     *,
     last_error: str = "",
 ) -> OctomilError:
-    """Map a runtime ``oct_status_t`` to the SDK's bounded error
-    taxonomy. Used both at construction (model_open / warm) and at
-    request time (session_open / send_text terminal status)."""
-    if status == OCT_STATUS_NOT_FOUND:
-        code = OctomilErrorCode.MODEL_NOT_FOUND
-    elif status == OCT_STATUS_INVALID_INPUT:
-        code = OctomilErrorCode.INVALID_INPUT
-    elif status == OCT_STATUS_UNSUPPORTED:
-        code = OctomilErrorCode.UNSUPPORTED_MODALITY
-    elif status == OCT_STATUS_VERSION_MISMATCH:
-        code = OctomilErrorCode.RUNTIME_UNAVAILABLE
-    elif status == OCT_STATUS_BUSY:
-        code = OctomilErrorCode.SERVER_ERROR
-    else:
-        code = OctomilErrorCode.INFERENCE_FAILED
-    full_message = message
-    if last_error:
-        full_message = f"{message}: {last_error}"
-    return OctomilError(code=code, message=full_message)
+    """Thin wrapper over :func:`octomil.runtime.native.error_mapping.map_oct_status`
+    pinned to the chat-completion policy: ``OCT_STATUS_UNSUPPORTED``
+    with no marker substring → ``UNSUPPORTED_MODALITY`` (request-shape
+    reject — grammar / tools / unsupported role). v0.1.6 PR1
+    centralized the mapping in ``error_mapping.py``.
+    """
+    return map_oct_status(
+        status,
+        last_error,
+        message=message,
+        default_unsupported_code=OctomilErrorCode.UNSUPPORTED_MODALITY,
+    )
 
 
 def _validate_messages_for_native(messages: list[dict[str, Any]]) -> list[dict[str, str]]:
@@ -466,7 +456,18 @@ class NativeChatBackend(InferenceBackend):
             # fails fast without burning a session/model handle.
             deadline = time.monotonic() + deadline_seconds
             while time.monotonic() < deadline:
-                ev = sess.poll_event(timeout_ms=200)
+                # Codex F-001: poll_event can raise NativeRuntimeError for
+                # non-OK statuses on the product path. Translate to canonical
+                # OctomilError so the chat product surface matches the boundary
+                # contract (loader/cffi raw, product paths typed).
+                try:
+                    ev = sess.poll_event(timeout_ms=200)
+                except NativeRuntimeError as exc:
+                    raise _runtime_status_to_sdk_error(
+                        exc.status,
+                        message=f"chat.completion poll_event failed: {exc}",
+                        last_error=getattr(exc, "last_error", str(exc)) or "",
+                    ) from exc
                 if ev is None or ev.type == OCT_EVENT_NONE:
                     continue
                 if ev.type == OCT_EVENT_SESSION_STARTED:
@@ -620,7 +621,17 @@ class NativeChatBackend(InferenceBackend):
             # resolved before open_session above.
             deadline = time.monotonic() + deadline_seconds
             while time.monotonic() < deadline:
-                ev = await loop.run_in_executor(self._executor, lambda: sess.poll_event(timeout_ms=200))
+                # Codex F-001 (stream variant): same boundary fix as
+                # generate(); poll_event raises NativeRuntimeError on
+                # non-OK status, translate to canonical OctomilError.
+                try:
+                    ev = await loop.run_in_executor(self._executor, lambda: sess.poll_event(timeout_ms=200))
+                except NativeRuntimeError as exc:
+                    raise _runtime_status_to_sdk_error(
+                        exc.status,
+                        message=f"chat.stream poll_event failed: {exc}",
+                        last_error=getattr(exc, "last_error", str(exc)) or "",
+                    ) from exc
                 if ev is None or ev.type == OCT_EVENT_NONE:
                     continue
                 if ev.type == OCT_EVENT_SESSION_STARTED:

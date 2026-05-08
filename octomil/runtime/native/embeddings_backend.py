@@ -65,18 +65,15 @@ from dataclasses import dataclass
 from typing import Any
 
 from ...errors import OctomilError, OctomilErrorCode
+from .error_mapping import map_oct_status
 from .loader import (
     OCT_EVENT_EMBEDDING_VECTOR,
     OCT_EVENT_ERROR,
     OCT_EVENT_NONE,
     OCT_EVENT_SESSION_COMPLETED,
     OCT_EVENT_SESSION_STARTED,
-    OCT_STATUS_BUSY,
     OCT_STATUS_INVALID_INPUT,
-    OCT_STATUS_NOT_FOUND,
     OCT_STATUS_OK,
-    OCT_STATUS_UNSUPPORTED,
-    OCT_STATUS_VERSION_MISMATCH,
     NativeRuntime,
     NativeRuntimeError,
 )
@@ -94,27 +91,18 @@ def _runtime_status_to_sdk_error(
     *,
     last_error: str = "",
 ) -> OctomilError:
-    """Map a runtime ``oct_status_t`` to the SDK's bounded error
-    taxonomy. Mirrors ``chat_backend._runtime_status_to_sdk_error``
-    so the embeddings path produces identical error shapes for the
-    same runtime statuses (UNSUPPORTED_MODALITY for capability
-    misses, MODEL_NOT_FOUND for missing GGUF, etc.)."""
-    if status == OCT_STATUS_NOT_FOUND:
-        code = OctomilErrorCode.MODEL_NOT_FOUND
-    elif status == OCT_STATUS_INVALID_INPUT:
-        code = OctomilErrorCode.INVALID_INPUT
-    elif status == OCT_STATUS_UNSUPPORTED:
-        code = OctomilErrorCode.UNSUPPORTED_MODALITY
-    elif status == OCT_STATUS_VERSION_MISMATCH:
-        code = OctomilErrorCode.RUNTIME_UNAVAILABLE
-    elif status == OCT_STATUS_BUSY:
-        code = OctomilErrorCode.SERVER_ERROR
-    else:
-        code = OctomilErrorCode.INFERENCE_FAILED
-    full_message = message
-    if last_error:
-        full_message = f"{message}: {last_error}"
-    return OctomilError(code=code, message=full_message)
+    """Thin wrapper over :func:`octomil.runtime.native.error_mapping.map_oct_status`
+    pinned to the embeddings/chat policy: ``OCT_STATUS_UNSUPPORTED``
+    → ``UNSUPPORTED_MODALITY`` for request-shape rejects (e.g.
+    OCT_EMBED_POOLING_RANK at session_open). v0.1.6 PR1 centralized
+    the mapping in ``error_mapping.py``.
+    """
+    return map_oct_status(
+        status,
+        last_error,
+        message=message,
+        default_unsupported_code=OctomilErrorCode.UNSUPPORTED_MODALITY,
+    )
 
 
 @dataclass
@@ -341,7 +329,18 @@ class NativeEmbeddingsBackend:
             deadline_seconds = resolved_deadline_ms / 1000.0
             deadline = time.monotonic() + deadline_seconds
             while time.monotonic() < deadline:
-                ev = sess.poll_event(timeout_ms=200)
+                # Codex F-002: poll_event raises NativeRuntimeError on
+                # non-OK status, translate to canonical OctomilError so
+                # the embeddings product surface matches the boundary
+                # contract (loader/cffi raw, product paths typed).
+                try:
+                    ev = sess.poll_event(timeout_ms=200)
+                except NativeRuntimeError as exc:
+                    raise _runtime_status_to_sdk_error(
+                        exc.status,
+                        message=f"embeddings.text poll_event failed: {exc}",
+                        last_error=getattr(exc, "last_error", str(exc)) or "",
+                    ) from exc
                 if ev is None or ev.type == OCT_EVENT_NONE:
                     continue
                 if ev.type == OCT_EVENT_SESSION_STARTED:
