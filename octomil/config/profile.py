@@ -227,7 +227,10 @@ def resolve_base_url(
     This is the public API the SDK constructors call. Existing call
     sites that pass an explicit ``base_url`` keep working unchanged.
     """
-    if base_url:
+    # Treat whitespace-only as unset so " " doesn't pin the SDK to an
+    # invalid URL; fall through to profile resolution (codex
+    # post-debate N1).
+    if base_url and base_url.strip():
         return base_url
     resolution = resolve_profile(profile=profile, env=env)
     return base_url_for(resolution.profile)

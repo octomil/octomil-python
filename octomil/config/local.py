@@ -403,6 +403,8 @@ def _default_cloud_profile_from_env() -> Optional[CloudProfile]:
     # defensive).
     from octomil.config.profile import resolve_base_url
 
-    return CloudProfile(
-        base_url=resolve_base_url(base_url=os.environ.get("OCTOMIL_API_BASE") or os.environ.get("OCTOMIL_API_URL")),
-    )
+    # Trim BEFORE selecting so a whitespace OCTOMIL_API_BASE doesn't
+    # mask a valid OCTOMIL_API_URL (codex post-debate N1).
+    base = (os.environ.get("OCTOMIL_API_BASE") or "").strip()
+    url = (os.environ.get("OCTOMIL_API_URL") or "").strip()
+    return CloudProfile(base_url=resolve_base_url(base_url=base or url))

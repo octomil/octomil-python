@@ -519,6 +519,16 @@ def _client_from_env() -> RuntimePlannerClient | None:
     )
 
 
+def _profile_resolved_base() -> str:
+    """Profile-aware default base URL for the planner — honors
+    OCTOMIL_PROFILE so an authenticated planner with no explicit
+    OCTOMIL_API_BASE talks to staging when the profile says staging
+    (codex post-debate B2)."""
+    from octomil.config.profile import resolve_base_url
+
+    return resolve_base_url(base_url=os.environ.get("OCTOMIL_API_BASE"))
+
+
 def _normalize_api_base(raw: str | None) -> str:
     """Normalize ``OCTOMIL_API_BASE`` to the planner's expected origin.
 
@@ -531,11 +541,13 @@ def _normalize_api_base(raw: str | None) -> str:
     ``/v1`` / ``/v2``) plus trailing slashes so the planner client
     appends its own versioned path cleanly.
 
-    Empty / unset → the production default. The result never has a
+    Empty / unset → the profile-resolved default URL (honors
+    OCTOMIL_PROFILE so unset base + staging profile points at the
+    staging endpoint instead of prod). The result never has a
     trailing slash.
     """
-    if not raw:
-        return "https://api.octomil.com"
+    if not raw or not raw.strip():
+        return _profile_resolved_base().rstrip("/")
     url = raw.strip().rstrip("/")
     # Strip trailing /api/vN if present.
     import re
