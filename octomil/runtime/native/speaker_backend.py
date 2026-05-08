@@ -373,6 +373,18 @@ class NativeSpeakerEmbeddingBackend:
         we'd hit the model-NULL branch and get an INVALID_INPUT
         instead — that's fine, we just won't see "digest" in the
         result and will fall through to RUNTIME_UNAVAILABLE.
+
+        Codex R2 F-03 fix: re-read the runtime ``last_error`` with a
+        4096-byte buffer immediately after the probe failure. The
+        sherpa adapter's diagnostic format
+        (sherpa_onnx_adapter.cpp:114-122) puts the artifact path
+        before the word ``"digest"``, so the loader's default
+        512-byte capture in ``open_session`` can truncate ``"digest"``
+        out of the SDK-visible string for long absolute paths. The
+        runtime stores the full message server-side; the larger
+        re-read recovers it. No intervening calls between the probe
+        and the re-read so the thread-local last_error is still the
+        probe's diagnostic.
         """
         if self._runtime is None:
             return ""
@@ -386,7 +398,12 @@ class NativeSpeakerEmbeddingBackend:
                 # adapter check to fire first.
             )
         except NativeRuntimeError as exc:
-            return getattr(exc, "last_error", "") or ""
+            try:
+                full = self._runtime.last_error(buflen=4096)
+            except Exception:  # noqa: BLE001
+                full = ""
+            short = getattr(exc, "last_error", "") or ""
+            return full if len(full) >= len(short) else short
         except Exception:  # noqa: BLE001
             return ""
         else:

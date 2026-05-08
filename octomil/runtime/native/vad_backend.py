@@ -635,8 +635,22 @@ class NativeVadBackend:
         ``last_error`` via ``runtime->set_error(... + load_status_reason())``
         (octomil-runtime/src/runtime.cpp:1255-1263). So we attempt a
         probe session — it WILL fail with UNSUPPORTED — and read the
-        precise reason out of the resulting ``NativeRuntimeError`` /
-        last_error.
+        precise reason out of the runtime's last_error buffer.
+
+        Codex R2 F-03 fix: ``NativeRuntimeError.last_error`` is captured
+        by the loader at ``open_session`` failure-time using the default
+        512-byte buflen (loader.py: ``self.last_error()``). The silero
+        diagnostic format puts the artifact path BEFORE the word
+        ``"digest"`` (silero_vad_adapter.cpp:114-122 emits
+        ``"silero_vad: OCTOMIL_SILERO_VAD_MODEL=" + path + " digest mismatch — got " + got + " want " + want``),
+        so a long absolute path can truncate ``"digest"`` out of the
+        SDK-visible string and misclassify the integrity-failure case
+        as RUNTIME_UNAVAILABLE. Mitigation: re-read the runtime
+        ``last_error`` immediately after the probe failure with a
+        4096-byte buffer (the runtime stores the full message
+        server-side; the only loss is the SDK-side buffer slice). No
+        intervening calls between the probe and this re-read, so the
+        thread-local ``last_error`` is still the probe's diagnostic.
 
         Returns the diagnostic string (possibly empty if the probe
         couldn't extract one) so the caller can substring-match
@@ -653,7 +667,18 @@ class NativeVadBackend:
             )
         except NativeRuntimeError as exc:
             # Expected path: UNSUPPORTED with the precise reason.
-            return getattr(exc, "last_error", "") or ""
+            # F-03 fix: re-read with a 4 KB buffer to capture long
+            # diagnostics (artifact paths can push "digest" past the
+            # default 512-byte buflen).
+            try:
+                full = self._runtime.last_error(buflen=4096)
+            except Exception:  # noqa: BLE001
+                full = ""
+            short = getattr(exc, "last_error", "") or ""
+            # Prefer the longer of the two (defensive — the runtime's
+            # last_error MAY have been overwritten by the loader's
+            # close-on-error cleanup in some future change).
+            return full if len(full) >= len(short) else short
         except Exception:  # noqa: BLE001
             # Any other exception (ImportError, etc.) — fall through.
             return ""
@@ -662,7 +687,8 @@ class NativeVadBackend:
             # so the caller falls through to the generic
             # RUNTIME_UNAVAILABLE branch (this can only happen if the
             # capability was advertised between the introspection and
-            # the probe; the open is now leaking — close it).
+            # the probe; the open bumped live_modelless_sessions —
+            # close it to decrement).
             try:
                 sess.close()
             except Exception:  # noqa: BLE001

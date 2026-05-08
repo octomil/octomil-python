@@ -293,6 +293,43 @@ class TestOpenGate:
             assert exc_info.value.code == OctomilErrorCode.RUNTIME_UNAVAILABLE
             assert "OCTOMIL_SILERO_VAD_MODEL" in exc_info.value.error_message
 
+    def test_capability_missing_long_path_digest_via_4kb_reread(self) -> None:
+        """Codex R2 F-03 regression test: when the silero diagnostic
+        is longer than the 512-byte default ``last_error`` buffer
+        (long absolute artifact path pushes ``"digest"`` past byte
+        512), the SDK re-reads via ``runtime.last_error(buflen=4096)``
+        to recover the full text. The probe helper takes the LONGER
+        of the loader-captured short string vs. the re-read; here we
+        simulate a truncated short capture (no ``"digest"``) plus a
+        full long re-read (containing ``"digest"``)."""
+        backend = NativeVadBackend()
+        rt = MagicMock()
+        rt.capabilities.return_value = MagicMock(supported_capabilities=("chat.completion",))
+        # Truncated short capture — what the loader saw at 512 B.
+        truncated = (
+            "oct_session_open: silero_vad adapter not loadable for capability audio.vad: "
+            "silero_vad: OCTOMIL_SILERO_VAD_MODEL=" + ("/very/long/canonical/artifact/path" * 12)
+        )
+        # Full re-read — what runtime.last_error(4096) recovers.
+        full = (
+            truncated
+            + " digest mismatch — got abc want 2aa269b785eeb53a82983a20501ddf7c1d9c48e33ab63a41391ac6c9f7fb6987"
+        )
+        rt.open_session.side_effect = NativeRuntimeError(
+            OCT_STATUS_UNSUPPORTED,
+            "oct_session_open audio.vad failed",
+            truncated,  # short capture from loader's default 512-byte buflen
+        )
+        rt.last_error.return_value = full  # 4 KB re-read
+        with patch(
+            "octomil.runtime.native.vad_backend.NativeRuntime.open",
+            return_value=rt,
+        ):
+            with pytest.raises(OctomilError) as exc_info:
+                backend.open()
+            # Without the F-03 fix this would land at RUNTIME_UNAVAILABLE.
+            assert exc_info.value.code == OctomilErrorCode.CHECKSUM_MISMATCH
+
     def test_capability_missing_probe_silent_falls_through_to_runtime_unavailable(self) -> None:
         """When the probe returns no diagnostic at all (e.g. it
         unexpectedly succeeded — shouldn't happen but is forward-

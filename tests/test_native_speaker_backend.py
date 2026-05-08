@@ -291,6 +291,37 @@ class TestLoadModelGate:
             assert exc_info.value.code == OctomilErrorCode.CHECKSUM_MISMATCH
             assert "digest" in exc_info.value.error_message.lower()
 
+    def test_capability_missing_long_path_digest_via_4kb_reread(self) -> None:
+        """Codex R2 F-03 regression: long sherpa artifact path can
+        truncate ``"digest"`` out of the loader-default 512-byte
+        ``last_error`` capture. The SDK re-reads via
+        ``runtime.last_error(buflen=4096)`` and surfaces
+        ``CHECKSUM_MISMATCH``."""
+        backend = NativeSpeakerEmbeddingBackend()
+        rt = MagicMock()
+        rt.capabilities.return_value = MagicMock(supported_capabilities=("chat.completion",))
+        truncated = (
+            "oct_session_open: sherpa_onnx adapter not loadable for capability audio.speaker.embedding: "
+            "sherpa_onnx: OCTOMIL_SHERPA_SPEAKER_MODEL=" + ("/very/long/canonical/artifact/path" * 12)
+        )
+        full = (
+            truncated
+            + " digest mismatch — got abc want 1a331345f04805badbb495c775a6ddffcdd1a732567d5ec8b3d5749e3c7a5e4b"
+        )
+        rt.open_session.side_effect = NativeRuntimeError(
+            OCT_STATUS_UNSUPPORTED,
+            "oct_session_open audio.speaker.embedding failed",
+            truncated,
+        )
+        rt.last_error.return_value = full
+        with patch(
+            "octomil.runtime.native.speaker_backend.NativeRuntime.open",
+            return_value=rt,
+        ):
+            with pytest.raises(OctomilError) as exc_info:
+                backend.load_model("sherpa-eres2netv2-base")
+            assert exc_info.value.code == OctomilErrorCode.CHECKSUM_MISMATCH
+
     def test_capability_missing_without_digest_falls_through_to_runtime_unavailable(self) -> None:
         backend = NativeSpeakerEmbeddingBackend()
         rt = MagicMock()
