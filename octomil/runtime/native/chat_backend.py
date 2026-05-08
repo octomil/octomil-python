@@ -456,7 +456,18 @@ class NativeChatBackend(InferenceBackend):
             # fails fast without burning a session/model handle.
             deadline = time.monotonic() + deadline_seconds
             while time.monotonic() < deadline:
-                ev = sess.poll_event(timeout_ms=200)
+                # Codex F-001: poll_event can raise NativeRuntimeError for
+                # non-OK statuses on the product path. Translate to canonical
+                # OctomilError so the chat product surface matches the boundary
+                # contract (loader/cffi raw, product paths typed).
+                try:
+                    ev = sess.poll_event(timeout_ms=200)
+                except NativeRuntimeError as exc:
+                    raise _runtime_status_to_sdk_error(
+                        exc.status,
+                        message=f"chat.completion poll_event failed: {exc}",
+                        last_error=getattr(exc, "last_error", str(exc)) or "",
+                    ) from exc
                 if ev is None or ev.type == OCT_EVENT_NONE:
                     continue
                 if ev.type == OCT_EVENT_SESSION_STARTED:
@@ -610,7 +621,17 @@ class NativeChatBackend(InferenceBackend):
             # resolved before open_session above.
             deadline = time.monotonic() + deadline_seconds
             while time.monotonic() < deadline:
-                ev = await loop.run_in_executor(self._executor, lambda: sess.poll_event(timeout_ms=200))
+                # Codex F-001 (stream variant): same boundary fix as
+                # generate(); poll_event raises NativeRuntimeError on
+                # non-OK status, translate to canonical OctomilError.
+                try:
+                    ev = await loop.run_in_executor(self._executor, lambda: sess.poll_event(timeout_ms=200))
+                except NativeRuntimeError as exc:
+                    raise _runtime_status_to_sdk_error(
+                        exc.status,
+                        message=f"chat.stream poll_event failed: {exc}",
+                        last_error=getattr(exc, "last_error", str(exc)) or "",
+                    ) from exc
                 if ev is None or ev.type == OCT_EVENT_NONE:
                     continue
                 if ev.type == OCT_EVENT_SESSION_STARTED:

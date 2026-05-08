@@ -329,7 +329,18 @@ class NativeEmbeddingsBackend:
             deadline_seconds = resolved_deadline_ms / 1000.0
             deadline = time.monotonic() + deadline_seconds
             while time.monotonic() < deadline:
-                ev = sess.poll_event(timeout_ms=200)
+                # Codex F-002: poll_event raises NativeRuntimeError on
+                # non-OK status, translate to canonical OctomilError so
+                # the embeddings product surface matches the boundary
+                # contract (loader/cffi raw, product paths typed).
+                try:
+                    ev = sess.poll_event(timeout_ms=200)
+                except NativeRuntimeError as exc:
+                    raise _runtime_status_to_sdk_error(
+                        exc.status,
+                        message=f"embeddings.text poll_event failed: {exc}",
+                        last_error=getattr(exc, "last_error", str(exc)) or "",
+                    ) from exc
                 if ev is None or ev.type == OCT_EVENT_NONE:
                     continue
                 if ev.type == OCT_EVENT_SESSION_STARTED:
