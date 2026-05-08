@@ -435,9 +435,25 @@ class NativeTtsStreamBackend:
                 ),
             ) from exc
 
+        # Codex r2 P2 fix: send_text MUST be synchronous (i.e. inside
+        # the request scope, BEFORE any StreamingResponse begins) so
+        # OctomilError(INVALID_INPUT) for malformed text / NaN bytes
+        # / single-utterance double-send-text rejects surface as a
+        # typed 4xx body rather than mid-stream after HTTP 200. The
+        # _drain generator only handles poll_event + chunk extraction
+        # post-send_text, so it can stay lazy.
+        try:
+            sess.send_text(text)
+        except NativeRuntimeError as exc:
+            sess.close()
+            raise _runtime_status_to_sdk_error(
+                exc.status,
+                "native TTS-stream send_text failed",
+                last_error=getattr(exc, "last_error", ""),
+            ) from exc
+
         return self._drain(
             sess=sess,
-            text=text,
             np_module=_np,
             resolved_deadline_ms=resolved_deadline_ms,
         )
@@ -446,15 +462,15 @@ class NativeTtsStreamBackend:
         self,
         *,
         sess: Any,
-        text: str,
         np_module: Any,
         resolved_deadline_ms: int,
     ) -> Iterator[TtsAudioChunk]:
         """Inner generator — split out so :meth:`synthesize_with_chunks`
         can do *synchronous* validation (voice / text / deadline / model)
-        BEFORE returning the iterator. The session has been opened by
-        the time we get here; from this point on, error events drain
-        through the iterator as raised :class:`OctomilError`.
+        AND ``send_text`` BEFORE returning the iterator. The session
+        has been opened and text already submitted by the time we
+        get here; from this point on, error events drain through
+        the iterator as raised :class:`OctomilError`.
 
         The yield-on-arrival shape is the load-bearing forward-compat
         property: in v0.1.9 the runtime will block in poll_event
@@ -462,15 +478,6 @@ class NativeTtsStreamBackend:
         becomes progressive without binding-side changes.
         """
         try:
-            try:
-                sess.send_text(text)
-            except NativeRuntimeError as exc:
-                raise _runtime_status_to_sdk_error(
-                    exc.status,
-                    "native TTS-stream send_text failed",
-                    last_error=getattr(exc, "last_error", ""),
-                ) from exc
-
             chunk_index = 0
             cumulative_samples = 0
             cumulative_sample_rate = 0
