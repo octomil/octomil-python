@@ -414,13 +414,24 @@ class TestPollEventEndToEndMockedSession:
         backend._model.handle = object()
         backend._model.name = "test-model"
         backend._loaded = True
+        # Cutover follow-up #74 wired a per-instance deadline default;
+        # ``__new__`` skips __init__, so set it explicitly here so
+        # ``_resolve_deadline_seconds`` works in the test.
+        backend._default_deadline_ms = NativeChatBackend.DEFAULT_DEADLINE_MS
 
         # Drive the generate() product path with a minimal request.
+        # GenerationRequest's canonical shape is structured chat messages
+        # (per `octomil.serve.types`); the earlier draft of this test
+        # used a non-existent `prompt=` kwarg and never exercised the
+        # backend at all. Use the real schema so the poll-event branch
+        # in `NativeChatBackend.generate` is actually reached and the
+        # T-001 invariant — NativeRuntimeError -> typed OctomilError on
+        # the product path — is verified end to end.
         from octomil.serve.types import GenerationRequest
 
         req = GenerationRequest(
-            prompt="hi",
             model="test-model",
+            messages=[{"role": "user", "content": "hi"}],
             max_tokens=8,
             temperature=0.0,
             top_p=1.0,
