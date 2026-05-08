@@ -100,10 +100,22 @@ def _is_appledouble(name: str) -> bool:
     return base.startswith("._")
 
 
+# The sentinel filename is reserved: a malicious tar payload could
+# include a top-level ``.extracted-ok`` member and, if a later member
+# fails extraction, leave that file on disk so the next non-force run
+# trusts the partial cache. _safe_extract refuses any tar member whose
+# basename matches this. Codex R2 G-002 fix.
+_RESERVED_SENTINEL_BASENAME = ".extracted-ok"
+
+
 def _safe_extract(tarball: Path, target_dir: Path) -> None:
     """Hard-bounded tar extraction. Same policy as fetch_runtime_dev.py:
     no path traversal, no symlinks/hardlinks, no device entries, every
-    member's resolved destination MUST stay inside ``target_dir``."""
+    member's resolved destination MUST stay inside ``target_dir``.
+
+    Additionally rejects any member named ``.extracted-ok`` so a tar
+    payload cannot inject the sentinel that ``main()`` writes only on
+    successful extraction (Codex R2 G-002)."""
     target_real = target_dir.resolve()
     with tarfile.open(tarball) as tf:
         for member in tf.getmembers():
@@ -112,6 +124,12 @@ def _safe_extract(tarball: Path, target_dir: Path) -> None:
                 continue
             if mname.startswith("/") or ".." in Path(mname).parts:
                 raise SystemExit(f"error: refusing to extract suspicious tar entry " f"{mname!r} from {tarball.name}")
+            if Path(mname).name == _RESERVED_SENTINEL_BASENAME:
+                raise SystemExit(
+                    f"error: refusing to extract reserved sentinel "
+                    f"{mname!r} from {tarball.name} — tar payloads MUST "
+                    f"NOT contain the sentinel; main() owns it."
+                )
             if member.issym() or member.islnk():
                 raise SystemExit(
                     f"error: refusing to extract link entry {mname!r} "

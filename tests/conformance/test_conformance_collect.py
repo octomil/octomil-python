@@ -22,10 +22,23 @@ import subprocess
 import sys
 from pathlib import Path
 from types import ModuleType
-from typing import Callable, Iterator, Optional
+from typing import Any, Callable, Iterator, Optional
 
 import pytest
-import yaml  # type: ignore[import-untyped]
+
+# Codex R2 G-003: PyYAML is not in the SDK's required test extras (the
+# YAML files we want to read live in the FETCHED conformance bundle,
+# not in the SDK source). Make the import optional + degrade to a
+# minimal manual parser keyed on the single field we need
+# (``capability:``) so a clean ``pip install -e '.[test]'`` can still
+# collect this module without pulling PyYAML in transitively.
+_yaml: Optional[Any]
+try:
+    import yaml as _yaml_module  # type: ignore[import-untyped]
+
+    _yaml = _yaml_module
+except ImportError:  # pragma: no cover  — PyYAML absent in test env
+    _yaml = None
 
 # Cross-cutting YAMLs encode declarative tables, not lifecycle drivers.
 # Their executable form lives in PR4 (error-code introspection,
@@ -41,6 +54,21 @@ _CROSS_CUTTING_YAML_NAMES: frozenset[str] = frozenset(
 )
 
 
+def _has_capability_field(yaml_text: str) -> bool:
+    """Minimal YAML check: does the text contain a top-level
+    ``capability:`` mapping key? Used as a fallback when PyYAML isn't
+    installed. Matches lines starting with the literal key — the
+    contracts schema constrains this field to a top-level scalar so a
+    line-prefix match is sufficient."""
+    for line in yaml_text.splitlines():
+        stripped = line.lstrip()
+        if stripped.startswith("#") or not stripped:
+            continue
+        if line.startswith("capability:"):
+            return True
+    return False
+
+
 def _capability_yamls(cache_dir: Path) -> list[Path]:
     """Return per-capability YAMLs from the fetched cache, sorted by
     name. Cross-cutting and legacy YAMLs are excluded so the collector
@@ -52,12 +80,18 @@ def _capability_yamls(cache_dir: Path) -> list[Path]:
     for p in sorted(conf_dir.glob("*.yaml")):
         if p.name in _CROSS_CUTTING_YAML_NAMES:
             continue
-        try:
-            doc = yaml.safe_load(p.read_text(encoding="utf-8"))
-        except yaml.YAMLError:
-            continue
-        if isinstance(doc, dict) and "capability" in doc:
-            out.append(p)
+        text = p.read_text(encoding="utf-8")
+        if _yaml is not None:
+            try:
+                doc = _yaml.safe_load(text)
+            except _yaml.YAMLError:
+                continue
+            if isinstance(doc, dict) and "capability" in doc:
+                out.append(p)
+        else:
+            # PyYAML absent — minimal text check.
+            if _has_capability_field(text):
+                out.append(p)
     return out
 
 
