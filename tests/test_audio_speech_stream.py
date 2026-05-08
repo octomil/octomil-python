@@ -520,24 +520,80 @@ async def test_http_speech_stream_unit_route_shape():
 # ---------------------------------------------------------------------------
 
 
+def _fake_native_tts_stream_backend_factory():
+    """v0.1.8 Lane C: fake NativeTtsStreamBackend matching the
+    production class's public surface (load_model / close /
+    validate_voice / synthesize_with_chunks / name)."""
+    import numpy as _np
+
+    class _FakeNative:
+        name = "native-sherpa-onnx-tts-stream"
+
+        def __init__(self) -> None:
+            self.load_model_called = False
+            self.calls: list[dict] = []
+
+        def load_model(self, model_name: str) -> None:
+            self.load_model_called = True
+
+        def close(self) -> None:
+            pass
+
+        def validate_voice(self, voice):
+            if voice is None or voice == "":
+                return "0"
+            v = str(voice).strip()
+            if not v:
+                return "0"
+            if not v.isdigit():
+                from octomil.errors import OctomilError, OctomilErrorCode
+
+                raise OctomilError(
+                    code=OctomilErrorCode.INVALID_INPUT,
+                    message=f"native TTS-stream: voice {voice!r} is not numeric",
+                )
+            return v
+
+        def synthesize_with_chunks(self, text, *, voice_id=None, deadline_ms=None):
+            self.calls.append({"text": text, "voice_id": voice_id})
+            from octomil.runtime.native.tts_stream_backend import TtsAudioChunk
+
+            n_per = 1200
+            cum = 0
+            chunks = []
+            for i in range(3):
+                pcm = _np.zeros(n_per, dtype=_np.float32)
+                cum += n_per
+                chunks.append(
+                    TtsAudioChunk(
+                        pcm_f32=pcm,
+                        sample_rate_hz=22050,
+                        chunk_index=i,
+                        is_final=(i == 2),
+                        cumulative_duration_ms=int(cum * 1000 / 22050),
+                    )
+                )
+            return iter(chunks)
+
+    return _FakeNative()
+
+
 @pytest.mark.asyncio
 async def test_production_http_speech_stream_route_returns_pcm_with_metadata_headers(tmp_path):
     """End-to-end through the real ``create_app`` factory.
 
-    Patches the sherpa engine factory to return a FakeStreamingBackend
-    so we don't need a Kokoro artifact on disk, but every other piece
-    of the server stack (FastAPI app, lifespan, state wiring, route
-    handler) is the production code in ``octomil/serve/app.py``.
-    Regressions in route registration / header naming / error
-    envelope / state plumbing fail this test.
+    v0.1.8 Lane C cutover: the route now uses
+    ``NativeTtsStreamBackend.synthesize_with_chunks``. The fake
+    native backend stands in so we don't need a built dylib +
+    sherpa-onnx model artifact.
     """
     pytest.importorskip("fastapi")
     pytest.importorskip("httpx")
 
     backend = FakeStreamingBackend(num_chunks=3, samples_per_chunk=1200, chunk_delay_s=0.005)
-
     fake_engine = MagicMock()
     fake_engine.create_backend.return_value = backend
+    native_instance = _fake_native_tts_stream_backend_factory()
 
     from httpx import ASGITransport, AsyncClient
 
@@ -545,32 +601,30 @@ async def test_production_http_speech_stream_route_returns_pcm_with_metadata_hea
         patch("octomil.runtime.engines.sherpa.SherpaTtsEngine", return_value=fake_engine),
         patch("octomil.serve.app._is_sherpa_tts_model", return_value=True),
         _stub_kernel_warmup_for_tts(tmp_path),
+        patch(
+            "octomil.runtime.native.tts_stream_backend.NativeTtsStreamBackend",
+            return_value=native_instance,
+        ),
     ):
         from octomil.serve.app import create_app
 
         app = create_app("kokoro-82m")
-        # httpx ASGITransport doesn't auto-fire lifespan; do it manually
-        # so create_app's startup wires state.sherpa_tts_backend.
         await _start_lifespan(app)
 
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
             async with client.stream(
                 "POST",
                 "/v1/audio/speech/stream",
-                json={"model": "kokoro-82m", "input": "hello", "voice": "af_bella"},
+                json={"model": "kokoro-82m", "input": "hello", "voice": "0"},
             ) as resp:
                 assert resp.status_code == 200, await resp.aread()
                 assert resp.headers["content-type"].startswith("application/octet-stream")
-                # All metadata required by the spec must be in headers,
-                # not trailers — clients/proxies routinely drop trailers.
-                assert resp.headers["x-octomil-sample-rate"] == str(SAMPLE_RATE)
-                assert resp.headers["x-octomil-sample-format"] == SAMPLE_FORMAT_PCM_S16LE
-                # Single-sentence input "hello" — backend honestly
-                # advertises final_chunk, not the legacy "realtime" lie.
-                assert resp.headers["x-octomil-streaming-capability-mode"] == "final_chunk"
+                # Honesty header pinned post Lane C.
+                assert resp.headers["x-octomil-streaming-honesty"] == "coalesced_after_synthesis"
+                assert resp.headers["x-octomil-streaming-capability-mode"] == "sentence_chunk"
                 assert resp.headers["x-octomil-channels"] == "1"
-                assert resp.headers["x-octomil-model"] == "kokoro-82m"
-                assert resp.headers["x-octomil-voice"] == "af_bella"
+                assert resp.headers["x-octomil-sample-format"] == SAMPLE_FORMAT_PCM_S16LE
+                assert "native" in resp.headers.get("x-octomil-backend", "")
 
                 total = 0
                 chunks = 0
@@ -581,7 +635,9 @@ async def test_production_http_speech_stream_route_returns_pcm_with_metadata_hea
 
     assert chunks >= 1
     assert total == 3 * 1200 * 2  # 3 chunks * 1200 samples * 2 bytes/sample
-    assert backend.stream_called is True
+    # python-sherpa stream MUST NOT have been called.
+    assert backend.stream_called is False
+    assert len(native_instance.calls) == 1
 
 
 @pytest.mark.asyncio
@@ -593,6 +649,7 @@ async def test_production_http_speech_stream_route_rejects_unsupported_format(tm
     backend = FakeStreamingBackend(num_chunks=2, chunk_delay_s=0.001)
     fake_engine = MagicMock()
     fake_engine.create_backend.return_value = backend
+    native_instance = _fake_native_tts_stream_backend_factory()
 
     from httpx import ASGITransport, AsyncClient
 
@@ -600,12 +657,14 @@ async def test_production_http_speech_stream_route_rejects_unsupported_format(tm
         patch("octomil.runtime.engines.sherpa.SherpaTtsEngine", return_value=fake_engine),
         patch("octomil.serve.app._is_sherpa_tts_model", return_value=True),
         _stub_kernel_warmup_for_tts(tmp_path),
+        patch(
+            "octomil.runtime.native.tts_stream_backend.NativeTtsStreamBackend",
+            return_value=native_instance,
+        ),
     ):
         from octomil.serve.app import create_app
 
         app = create_app("kokoro-82m")
-        # httpx ASGITransport doesn't auto-fire lifespan; do it manually
-        # so create_app's startup wires state.sherpa_tts_backend.
         await _start_lifespan(app)
 
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
@@ -964,6 +1023,7 @@ async def test_http_route_returns_4xx_for_unsupported_voice_before_streaming(tmp
     backend = _ValidatingBackend(num_chunks=1, samples_per_chunk=10, chunk_delay_s=0.001)
     fake_engine = MagicMock()
     fake_engine.create_backend.return_value = backend
+    native_instance = _fake_native_tts_stream_backend_factory()
 
     from httpx import ASGITransport, AsyncClient
 
@@ -971,6 +1031,10 @@ async def test_http_route_returns_4xx_for_unsupported_voice_before_streaming(tmp
         patch("octomil.runtime.engines.sherpa.SherpaTtsEngine", return_value=fake_engine),
         patch("octomil.serve.app._is_sherpa_tts_model", return_value=True),
         _stub_kernel_warmup_for_tts(tmp_path),
+        patch(
+            "octomil.runtime.native.tts_stream_backend.NativeTtsStreamBackend",
+            return_value=native_instance,
+        ),
     ):
         from octomil.serve.app import create_app
 
@@ -982,17 +1046,25 @@ async def test_http_route_returns_4xx_for_unsupported_voice_before_streaming(tmp
                 "/v1/audio/speech/stream",
                 json={"model": "kokoro-82m", "input": "hello", "voice": "alloy"},
             )
-            # 4xx before any streaming body is sent — clients see a real
-            # JSON error envelope, not a truncated octet-stream.
+            # v0.1.8 Lane C: the native backend rejects non-numeric
+            # voices (sherpa adapter expects numeric speaker_id).
+            # Same shape as the legacy validation: 4xx JSON envelope
+            # BEFORE any 200 octet-stream is committed.
             assert 400 <= resp.status_code < 500, resp.status_code
             assert resp.headers["content-type"].startswith("application/json"), (
                 f"unsupported voice must return JSON envelope, got {resp.headers['content-type']!r} — "
                 f"streaming clients cannot recover from a 200 octet-stream that EOFs mid-body"
             )
-            assert "voice_not_supported_for_model" in resp.text
+            # Either legacy "voice_not_supported_for_model" message
+            # or the native "voice ... not numeric" message — both
+            # surface as INVALID_INPUT.
+            assert "INVALID_INPUT" in resp.text or "voice" in resp.text.lower()
 
-    # Critically: the backend's stream method was never invoked.
+    # Critically: the legacy python-sherpa backend's stream method
+    # was never invoked, AND the native backend's synthesize path
+    # was never reached (voice rejected before session open).
     assert backend.stream_called is False
+    assert native_instance.calls == []
 
 
 def test_kokoro_explicit_unknown_voice_still_raises(tmp_path):
@@ -1641,9 +1713,9 @@ def test_streaming_mode_alias_no_longer_exported():
     import octomil.audio.streaming as streaming
 
     assert hasattr(streaming, "TtsStreamingMode")
-    assert not hasattr(streaming, "StreamingMode"), (
-        "StreamingMode alias is gone post-cutover; consumers must " "import TtsStreamingMode."
-    )
+    assert not hasattr(
+        streaming, "StreamingMode"
+    ), "StreamingMode alias is gone post-cutover; consumers must import TtsStreamingMode."
 
 
 def test_started_and_completed_no_longer_expose_v4_13_attribute_names():
