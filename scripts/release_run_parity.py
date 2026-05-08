@@ -178,6 +178,15 @@ def main() -> int:
         action="store_true",
         help="skip auto-build of runtime targets",
     )
+    ap.add_argument(
+        "--strict",
+        action="store_true",
+        help=(
+            "release-CI mode: forwards --strict to all runtime parity "
+            "scripts. Missing pywhispercpp / smoke binaries / unset env "
+            "become hard fails instead of skips."
+        ),
+    )
     args = ap.parse_args()
 
     runtime_repo = resolve_runtime_repo()
@@ -205,6 +214,8 @@ def main() -> int:
         cap_dir = args.output_dir / capability
         cap_dir.mkdir(parents=True, exist_ok=True)
         extra: list[str] = []
+        if args.strict:
+            extra.append("--strict")
         if capability == "audio.transcription":
             if not args.whisper_bin or not str(args.whisper_bin):
                 extra.extend(["--whisper-bin", "/dev/null"])
