@@ -388,9 +388,21 @@ def _merge_config_layer(
 
 
 def _default_cloud_profile_from_env() -> Optional[CloudProfile]:
-    """Return the built-in hosted profile when standard cloud auth is present."""
+    """Return the built-in hosted profile when standard cloud auth is present.
+
+    Base URL resolution honors OCTOMIL_PROFILE (staging/production/dev)
+    via ``octomil.config.profile.resolve_base_url`` — a user setting
+    OCTOMIL_PROFILE=staging without a custom OCTOMIL_API_BASE gets the
+    staging endpoint automatically. Explicit OCTOMIL_API_BASE / _URL
+    still wins for back-compat with users pinning custom hosts.
+    """
     if not os.environ.get("OCTOMIL_SERVER_KEY"):
         return None
+    # Local import — keep config/local.py importable even if a future
+    # circular import lands in profile.py (pure-stdlib today, but
+    # defensive).
+    from octomil.config.profile import resolve_base_url
+
     return CloudProfile(
-        base_url=os.environ.get("OCTOMIL_API_BASE") or os.environ.get("OCTOMIL_API_URL") or DEFAULT_CLOUD_BASE_URL,
+        base_url=resolve_base_url(base_url=os.environ.get("OCTOMIL_API_BASE") or os.environ.get("OCTOMIL_API_URL")),
     )
