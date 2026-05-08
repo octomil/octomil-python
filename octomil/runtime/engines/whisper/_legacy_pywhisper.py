@@ -1,7 +1,7 @@
-"""LEGACY pywhispercpp engine — DO NOT USE on the product path.
+"""LEGACY pywhispercpp engine — DO NOT use on product paths.
 
-v0.1.5 PR-2B retired this engine from the production registry. The
-product STT path now routes through
+Reference / benchmark only. v0.1.5 PR-2B retired this engine from the
+production registry. The product STT path now routes through
 :class:`octomil.runtime.native.stt_backend.NativeSttBackend` (cffi
 bindings into octomil-runtime + whisper.cpp), with a hard-cutover
 contract: no silent fallback to pywhispercpp at runtime.
@@ -9,11 +9,22 @@ contract: no silent fallback to pywhispercpp at runtime.
 This module remains for benchmarking / parity comparison ONLY. It is
 gated behind the opt-in env var ``OCTOMIL_USE_PY_WHISPERCPP_BENCHMARK=1``
 in the parity gate (:mod:`scripts.parity_native_stt`); production code
-must NOT import from here. ``WhisperCppEngine`` is kept as the
-class name so the parity script can construct it without further
+must NOT import from here. ``WhisperCppEngine`` is kept as the class
+name so the parity script can construct it without further
 indirection, and ``is_whisper_model`` remains importable from the
-package ``__init__`` because the serve layer still uses it to
-identify whisper models by name.
+package ``__init__`` because the serve layer still uses it to identify
+whisper models by name (the bounded re-export surface).
+
+Guard test
+----------
+
+``tests/test_no_legacy_pywhisper_in_product_paths.py`` (v0.1.6 PR2)
+asserts statically that no production module imports this file by
+dotted path or imports its inference symbols (``WhisperCppEngine``,
+``_WhisperBackend``) by name, and asserts at runtime that the legacy
+module never reaches ``sys.modules`` except through the bounded
+package shim. Set ``OCTOMIL_USE_PY_WHISPERCPP_BENCHMARK=1`` to opt in
+for parity comparison or research benchmarking only.
 """
 
 from __future__ import annotations
