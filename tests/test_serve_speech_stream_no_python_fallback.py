@@ -10,8 +10,8 @@ Pins:
   3. Voice validation runs BEFORE FastAPI emits HTTP 200 — bad
      voices surface as a typed 4xx body, not a mid-stream error
      after the consumer has attached.
-  4. The honesty header ``X-Octomil-Streaming-Honesty: coalesced_after_synthesis``
-     is on the response.
+  4. The honesty header ``X-Octomil-Streaming-Honesty: progressive_during_synthesis``
+     is on the response (post v0.1.9 Lane B / PR #568 progressive flip).
 
 Tests reuse the same lifespan/app construction pattern as
 ``test_audio_speech_stream.py`` so the production code path
@@ -232,7 +232,7 @@ async def test_native_backend_drives_route_when_available(tmp_path: Any) -> None
             ) as resp:
                 assert resp.status_code == 200, await resp.aread()
                 # Honesty header pinned.
-                assert resp.headers.get("x-octomil-streaming-honesty") == "coalesced_after_synthesis"
+                assert resp.headers.get("x-octomil-streaming-honesty") == "progressive_during_synthesis"
                 # Backend tag must point at the native backend.
                 assert "native" in resp.headers.get("x-octomil-backend", "")
                 received = 0
@@ -340,9 +340,9 @@ async def test_out_of_range_sid_raises_before_streaming(tmp_path: Any) -> None:
                     "voice": "999",  # numeric — passes validate_voice; out-of-range at session_open.
                 },
             )
-        assert 400 <= resp.status_code < 500, (
-            f"out-of-range sid must surface as typed 4xx BEFORE 200, " f"got {resp.status_code}: {resp.text}"
-        )
+        assert (
+            400 <= resp.status_code < 500
+        ), f"out-of-range sid must surface as typed 4xx BEFORE 200, got {resp.status_code}: {resp.text}"
         body_text = resp.text
         assert "INVALID_INPUT" in body_text or "out of range" in body_text.lower()
 
