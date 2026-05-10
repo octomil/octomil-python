@@ -337,32 +337,50 @@ class NativeEmbeddingsBackend:
         # v0.1.11 Lane B: check result cache for all inputs.
         # If ALL inputs hit the result cache, we can skip the runtime call
         # entirely.  If ANY miss, we proceed with the full session.
-        # PRIVACY: raw text is hashed inside EmbeddingsCacheManager.get_vector().
-        if self._cache_manager is not None:
-            input_list = [inputs] if isinstance(inputs, str) else list(inputs)
-            all_cached_vectors: list[list[float]] = []
+        # PRIVACY: raw text is hashed inside EmbeddingsCacheManager.get_record().
+        #
+        # Codex B1: skip the precheck for empty input lists. ``embed([])``
+        # is documented as INVALID_INPUT; we MUST let send_embed raise so
+        # the typed error is emitted instead of silently returning an
+        # n_dim=0 / pooling_type=0 EmbeddingsResult.
+        #
+        # Codex B2: ``get_record`` returns the full CachedEmbedding so
+        # cache hits replay prompt_tokens / n_dim / pooling_type /
+        # is_normalized exactly as the cold runtime call did.
+        input_list_for_cache: list[str]
+        if isinstance(inputs, str):
+            input_list_for_cache = [inputs]
+        else:
+            input_list_for_cache = list(inputs)
+        if self._cache_manager is not None and input_list_for_cache:
+            cached_records: list = []  # list[CachedEmbedding]
             all_hit = True
-            for inp in input_list:
+            for inp in input_list_for_cache:
                 t0 = time.monotonic()
-                cached = self._cache_manager.get_vector(inp, policy=effective_policy)
+                rec = self._cache_manager.get_record(inp, policy=effective_policy)
                 elapsed_ms = (time.monotonic() - t0) * 1000.0
                 emit_lookup_ms(metric_sink, elapsed_ms)
-                if cached is not None:
-                    all_cached_vectors.append(cached)
+                if rec is not None:
+                    cached_records.append(rec)
                     emit_cache_hit(metric_sink, "result")
                 else:
                     emit_cache_miss(metric_sink, "result")
                     all_hit = False
                     break
-            if all_hit and len(all_cached_vectors) == len(input_list):
-                # Full result cache hit: return without runtime call.
-                total_tokens = 0  # unknown from cache
+            if all_hit and len(cached_records) == len(input_list_for_cache):
+                # Full result cache hit: replay the original API-visible
+                # metadata. n_dim must agree across the batch (this is
+                # already an invariant on the cold path); take it from
+                # the first record. prompt_tokens / total_tokens sum
+                # across the batch.
+                first = cached_records[0]
+                total_tokens = sum(r.prompt_tokens for r in cached_records)
                 return EmbeddingsResult(
-                    embeddings=all_cached_vectors,
+                    embeddings=[r.vector for r in cached_records],
                     model=self._model_name,
-                    n_dim=len(all_cached_vectors[0]) if all_cached_vectors else 0,
-                    pooling_type=0,
-                    is_normalized=True,
+                    n_dim=first.n_dim,
+                    pooling_type=first.pooling_type,
+                    is_normalized=first.is_normalized,
                     prompt_tokens=total_tokens,
                     total_tokens=total_tokens,
                 )
@@ -484,12 +502,30 @@ class NativeEmbeddingsBackend:
                     ),
                 )
 
-            # v0.1.11 Lane B: populate result cache with the returned vectors.
-            # PRIVACY: raw text is hashed inside cache_manager.put_vector().
+            # v0.1.11 Lane B: populate result cache with the full
+            # API-visible record (Codex B2). PRIVACY: raw text is hashed
+            # inside cache_manager.put_record(). Per-input prompt_tokens
+            # is approximated as the batch total / batch size (the
+            # runtime emits one EMBEDDING_VECTOR per input but does not
+            # split prompt_tokens per input on the current ABI). When
+            # the runtime gains a per-vector token count this should
+            # switch to that field.
             if self._cache_manager is not None and vectors:
-                input_list_for_cache = [inputs] if isinstance(inputs, str) else list(inputs)
+                from octomil.runtime.native.embeddings_cache import CachedEmbedding
+
+                per_input_tokens = total_tokens // len(vectors) if vectors else 0
                 for cache_inp, cache_vec in zip(input_list_for_cache, vectors):
-                    self._cache_manager.put_vector(cache_inp, cache_vec, policy=effective_policy)
+                    self._cache_manager.put_record(
+                        cache_inp,
+                        CachedEmbedding(
+                            vector=cache_vec,
+                            prompt_tokens=per_input_tokens,
+                            n_dim=n_dim,
+                            pooling_type=pooling_type,
+                            is_normalized=is_normalized,
+                        ),
+                        policy=effective_policy,
+                    )
 
             return EmbeddingsResult(
                 embeddings=vectors,
