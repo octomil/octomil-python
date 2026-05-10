@@ -466,15 +466,17 @@ class NativeTtsStreamBackend:
         #     public path and send the caller's raw text;
         #   - cache ON with a real digest: probe before normalization using
         #     a raw-text key that includes real digest/speaker/speed/language;
-        #   - cache hit: send cached normalized bytes and skip normalization;
-        #   - cache miss: send raw text first, then insert normalized bytes
-        #     only after the runtime accepts send_text.
+        #   - cache hit: send cached normalized bytes;
+        #   - cache miss: normalize before send_text and insert those same
+        #     normalized bytes only after the runtime accepts send_text.
         cache_enabled = self._frontend_cache.is_enabled and bool(self._artifact_digest)
         raw_cache_key: bytes | None = None
         cached_value: bytes | None = None
         speed_x1000: int | None = None
         adapter_version = "octomil-python/v0.1.11-lane-c"
         text_to_send = text
+        normalized_text: str | None = None
+        normalized_bytes: bytes | None = None
         self._last_text_was_normalized_from_cache = False
 
         if cache_enabled:
@@ -506,6 +508,10 @@ class NativeTtsStreamBackend:
                 text_to_send = text
             else:
                 self._last_text_was_normalized_from_cache = True
+        if cached_value is None and cache_enabled:
+            normalized_text = normalize_for_profile(text, PROFILE_ESPEAK_COMPAT)
+            normalized_bytes = normalized_text.encode("utf-8")
+            text_to_send = normalized_text
         try:
             sess = self._runtime.open_session(
                 capability=CAPABILITY_AUDIO_TTS_STREAM,
@@ -554,8 +560,9 @@ class NativeTtsStreamBackend:
         # uses the raw-text key. We also populate the legacy normalized key
         # for compatibility with direct cache tests and any older callers.
         if cache_enabled and cached_value is None and raw_cache_key is not None and speed_x1000 is not None:
-            normalized_text = normalize_for_profile(text, PROFILE_ESPEAK_COMPAT)
-            normalized_bytes = normalized_text.encode("utf-8")
+            if normalized_text is None or normalized_bytes is None:
+                normalized_text = normalize_for_profile(text, PROFILE_ESPEAK_COMPAT)
+                normalized_bytes = normalized_text.encode("utf-8")
             self._frontend_cache.insert(raw_cache_key, normalized_bytes)
             normalized_cache_key = build_frontend_cache_key(
                 model_digest_hex=self._artifact_digest,

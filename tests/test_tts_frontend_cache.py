@@ -450,6 +450,97 @@ def test_backend_skips_cache_when_no_real_digest(monkeypatch):
     assert cache_enabled is False, "no real digest must disable the cache lookup"
 
 
+def test_backend_cache_miss_and_hit_send_same_normalized_text(monkeypatch):
+    """Post-merge review fix: cache-enabled cold and warm requests must
+    submit the same text bytes to the runtime. The cache value is the
+    normalized frontend proxy, so the cold miss path normalizes before
+    send_text instead of sending raw caller text and warming a divergent
+    hit path.
+    """
+    import struct
+
+    from octomil.audio.text_normalize import PROFILE_ESPEAK_COMPAT, normalize_for_profile
+    from octomil.runtime.native.loader import (
+        OCT_EVENT_SESSION_COMPLETED,
+        OCT_EVENT_TTS_AUDIO_CHUNK,
+        OCT_SAMPLE_FORMAT_PCM_F32LE,
+        OCT_STATUS_OK,
+    )
+    from octomil.runtime.native.tts_stream_backend import NativeTtsStreamBackend
+
+    monkeypatch.setenv("OCT_TTS_FRONTEND_CACHE", "1")
+
+    class _Event:
+        def __init__(self, **kw):
+            self.type = kw["type"]
+            self.tts_sample_format = kw.get("tts_sample_format", 0)
+            self.tts_channels = kw.get("tts_channels", 0)
+            self.tts_sample_rate = kw.get("tts_sample_rate", 0)
+            self.tts_pcm_bytes = kw.get("tts_pcm_bytes", b"")
+            self.tts_is_final = kw.get("tts_is_final", False)
+            self.terminal_status = kw.get("terminal_status", 0)
+
+    class _Session:
+        def __init__(self) -> None:
+            self.sent_text: str | None = None
+            self._events = iter(
+                [
+                    _Event(
+                        type=OCT_EVENT_TTS_AUDIO_CHUNK,
+                        tts_sample_format=OCT_SAMPLE_FORMAT_PCM_F32LE,
+                        tts_channels=1,
+                        tts_sample_rate=16000,
+                        tts_pcm_bytes=struct.pack("f", 0.0),
+                        tts_is_final=True,
+                    ),
+                    _Event(type=OCT_EVENT_SESSION_COMPLETED, terminal_status=OCT_STATUS_OK),
+                ]
+            )
+
+        def send_text(self, value: str) -> None:
+            self.sent_text = value
+
+        def poll_event(self, *_a, **_k):
+            return next(self._events)
+
+        def close(self) -> None:
+            return None
+
+    class _Runtime:
+        def __init__(self) -> None:
+            self.sessions: list[_Session] = []
+
+        def open_session(self, **_k):
+            sess = _Session()
+            self.sessions.append(sess)
+            return sess
+
+        def last_error(self) -> str:
+            return ""
+
+        def close(self) -> None:
+            return None
+
+    class _Model:
+        def close(self) -> None:
+            return None
+
+    runtime = _Runtime()
+    backend = NativeTtsStreamBackend()
+    backend._runtime = runtime  # type: ignore[assignment]
+    backend._model = _Model()
+    backend._artifact_digest = "a" * 64
+
+    raw_text = "Dr. Smith owes $1,200."
+    normalized = normalize_for_profile(raw_text, PROFILE_ESPEAK_COMPAT)
+
+    list(backend.synthesize_with_chunks(raw_text, voice_id="0"))
+    list(backend.synthesize_with_chunks(raw_text, voice_id="0"))
+
+    assert [s.sent_text for s in runtime.sessions] == [normalized, normalized]
+    assert backend._last_text_was_normalized_from_cache is True
+
+
 def test_lookup_re_raises_on_corruption_signal():
     """B4 fix: lookup() must surface cache-corruption signals (TypeError
     from a non-bytes key) instead of swallowing them."""
