@@ -336,6 +336,110 @@ def cache_put_vector(
 
 
 # ---------------------------------------------------------------------------
+# Result-cache entry: vector + replayable metadata.
+# ---------------------------------------------------------------------------
+# v0.1.11 Lane B+H follow-up: when the result cache replaces a runtime
+# call we MUST replay the original per-input metadata (n_dim,
+# pooling_type, is_normalized, n_input_tokens).  Storing only the
+# vector caused the embeddings backend to return n_dim=0,
+# pooling_type=0, total_tokens=0 on full-cache hit, which silently
+# changes API-visible usage and pooling semantics for identical
+# requests.  This entry struct + helper pair fixes that.
+# Privacy: the metadata fields are integers / bools.  No raw text or
+# vector content is exposed beyond what the cache already holds.
+
+
+@dataclass(frozen=True)
+class CachedVectorEntry:
+    """One result-cache entry: the embedding vector plus the runtime
+    metadata needed to reconstruct an :class:`EmbeddingsResult`
+    identical to the cold (non-cached) response.
+
+    ``vector`` is stored as a defensive copy at put time and returned
+    as a defensive copy at get time (see :class:`EmbeddingsLruCache`).
+    """
+
+    vector: list[float]
+    n_dim: int
+    pooling_type: int
+    is_normalized: bool
+    n_input_tokens: int
+
+
+def cache_get_vector_entry(
+    cache: EmbeddingsLruCache,
+    key: bytes,
+    *,
+    privacy_allowed: bool,
+) -> Optional[CachedVectorEntry]:
+    """Retrieve a full :class:`CachedVectorEntry` (vector + metadata).
+
+    Returns None on miss OR when ``privacy_allowed`` is False.
+
+    Defensive copy: rebuilds the entry with a fresh ``list`` for
+    ``vector`` so caller mutation of the returned vector cannot
+    corrupt the cached payload.  The dataclass itself is frozen so
+    only the vector field needs copying.
+    """
+    if not privacy_allowed:
+        return None
+    raw = cache.get(key)
+    if raw is None:
+        return None
+    if isinstance(raw, CachedVectorEntry):
+        # cache.get already defensive-copies plain lists; for the
+        # dataclass we return a fresh entry with a copied vector.
+        return CachedVectorEntry(
+            vector=list(raw.vector),
+            n_dim=raw.n_dim,
+            pooling_type=raw.pooling_type,
+            is_normalized=raw.is_normalized,
+            n_input_tokens=raw.n_input_tokens,
+        )
+    # Backward compat: callers that put a bare list[float] still get a
+    # vector-only response; metadata fields default to 0/False.  This
+    # path is only exercised by legacy put paths; new put paths use
+    # ``cache_put_vector_entry`` and store the dataclass.
+    if isinstance(raw, list):
+        return CachedVectorEntry(
+            vector=raw,  # cache.get already defensive-copied this list
+            n_dim=len(raw),
+            pooling_type=0,
+            is_normalized=False,
+            n_input_tokens=0,
+        )
+    return None
+
+
+def cache_put_vector_entry(
+    cache: EmbeddingsLruCache,
+    key: bytes,
+    entry: CachedVectorEntry,
+    *,
+    privacy_allowed: bool,
+) -> None:
+    """Store a :class:`CachedVectorEntry`.  No-ops when not allowed.
+
+    Size accounting uses ``len(vector)`` — the four small int/bool
+    metadata fields contribute negligibly versus the float payload.
+
+    Defensive copy: stores the entry with a fresh ``list`` for
+    ``vector`` so subsequent caller mutation cannot affect the
+    cached payload.
+    """
+    if not privacy_allowed:
+        return
+    snapshot = CachedVectorEntry(
+        vector=list(entry.vector),
+        n_dim=entry.n_dim,
+        pooling_type=entry.pooling_type,
+        is_normalized=entry.is_normalized,
+        n_input_tokens=entry.n_input_tokens,
+    )
+    cache.put(key, snapshot, len(snapshot.vector))
+
+
+# ---------------------------------------------------------------------------
 # EmbeddingsCacheManager — high-level wrapper for use by the backend
 # ---------------------------------------------------------------------------
 
@@ -460,6 +564,52 @@ class EmbeddingsCacheManager:
         text_hex = hash_text(text)
         key = derive_cache_key(self._model_digest, text_hex, self._result_salt)
         cache_put_vector(self._result_cache, key, vector, privacy_allowed=True)
+
+    # ------------------------------------------------------------------
+    # Result cache — vector + replayable metadata (preferred path)
+    # ------------------------------------------------------------------
+
+    def get_vector_entry(
+        self,
+        text: str,
+        *,
+        policy: CachePolicy,
+    ) -> Optional[CachedVectorEntry]:
+        """Look up a full :class:`CachedVectorEntry` for ``text``.
+
+        Returns the vector AND the metadata needed to reconstruct an
+        :class:`EmbeddingsResult` identical to the cold response
+        (n_dim, pooling_type, is_normalized, n_input_tokens).
+        Preferred over :meth:`get_vector` for v0.1.11 cache hits.
+
+        PRIVACY: ``text`` is hashed; vector and metadata are opaque.
+        Returns None when the result cache is disabled (env or policy).
+        """
+        privacy_allowed = policy.result_cache_allowed and result_cache_enabled()
+        if not privacy_allowed:
+            return None
+        text_hex = hash_text(text)
+        key = derive_cache_key(self._model_digest, text_hex, self._result_salt)
+        return cache_get_vector_entry(self._result_cache, key, privacy_allowed=True)
+
+    def put_vector_entry(
+        self,
+        text: str,
+        entry: CachedVectorEntry,
+        *,
+        policy: CachePolicy,
+    ) -> None:
+        """Store a :class:`CachedVectorEntry` for ``text``.
+
+        PRIVACY: ``text`` is hashed; vector and metadata are opaque.
+        No-ops when the result cache is disabled.
+        """
+        privacy_allowed = policy.result_cache_allowed and result_cache_enabled()
+        if not privacy_allowed:
+            return
+        text_hex = hash_text(text)
+        key = derive_cache_key(self._model_digest, text_hex, self._result_salt)
+        cache_put_vector_entry(self._result_cache, key, entry, privacy_allowed=True)
 
     # ------------------------------------------------------------------
     # Stats (opaque — for metrics, NOT for logging raw data)

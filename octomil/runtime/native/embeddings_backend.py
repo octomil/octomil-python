@@ -66,6 +66,7 @@ from typing import Any, Optional
 
 from ...errors import OctomilError, OctomilErrorCode
 from .embeddings_cache import (
+    CachedVectorEntry,
     CachePolicy,
     EmbeddingsCacheManager,
     emit_cache_hit,
@@ -349,35 +350,45 @@ class NativeEmbeddingsBackend:
         # Per-call policy overrides the backend default.
         effective_policy = cache_policy if cache_policy is not None else self._cache_policy
 
-        # v0.1.11 Lane B: check result cache for all inputs.
+        # v0.1.11 Lane B+H: check result cache for all inputs.
         # If ALL inputs hit the result cache, we can skip the runtime call
         # entirely.  If ANY miss, we proceed with the full session.
-        # PRIVACY: raw text is hashed inside EmbeddingsCacheManager.get_vector().
+        # PRIVACY: raw text is hashed inside EmbeddingsCacheManager.get_vector_entry().
+        # Codex Lane H sweep B2: we now retrieve the FULL CachedVectorEntry
+        # (vector + n_dim + pooling_type + is_normalized + n_input_tokens)
+        # so the cache-hit response replays the original runtime metadata
+        # rather than synthesizing zeros.
         if self._cache_manager is not None:
             input_list = [inputs] if isinstance(inputs, str) else list(inputs)
-            all_cached_vectors: list[list[float]] = []
+            all_cached_entries: list[CachedVectorEntry] = []
             all_hit = True
             for inp in input_list:
                 t0 = time.monotonic()
-                cached = self._cache_manager.get_vector(inp, policy=effective_policy)
+                entry = self._cache_manager.get_vector_entry(inp, policy=effective_policy)
                 elapsed_ms = (time.monotonic() - t0) * 1000.0
                 emit_lookup_ms(metric_sink, elapsed_ms)
-                if cached is not None:
-                    all_cached_vectors.append(cached)
+                if entry is not None:
+                    all_cached_entries.append(entry)
                     emit_cache_hit(metric_sink, "result")
                 else:
                     emit_cache_miss(metric_sink, "result")
                     all_hit = False
                     break
-            if all_hit and len(all_cached_vectors) == len(input_list):
-                # Full result cache hit: return without runtime call.
-                total_tokens = 0  # unknown from cache
+            if all_hit and len(all_cached_entries) == len(input_list):
+                # Full result cache hit: replay the original runtime
+                # metadata.  All entries in a single embed() call share
+                # the same model + pooling, so n_dim / pooling_type /
+                # is_normalized are taken from the first entry; this
+                # matches the runtime's stable-n_dim contract enforced
+                # below at vector-drain time.
+                first = all_cached_entries[0]
+                total_tokens = sum(e.n_input_tokens for e in all_cached_entries)
                 return EmbeddingsResult(
-                    embeddings=all_cached_vectors,
+                    embeddings=[e.vector for e in all_cached_entries],
                     model=self._model_name,
-                    n_dim=len(all_cached_vectors[0]) if all_cached_vectors else 0,
-                    pooling_type=0,
-                    is_normalized=True,
+                    n_dim=first.n_dim,
+                    pooling_type=first.pooling_type,
+                    is_normalized=first.is_normalized,
                     prompt_tokens=total_tokens,
                     total_tokens=total_tokens,
                 )
@@ -411,6 +422,10 @@ class NativeEmbeddingsBackend:
             # failure: ERROR + SESSION_COMPLETED with matching status;
             # subsequent inputs NOT processed.
             vectors: list[list[float]] = []
+            # Per-input n_input_tokens — captured for cache-entry
+            # metadata replay (Lane H sweep B2 fix).  total_tokens
+            # below is the sum used in the EmbeddingsResult.
+            per_input_tokens: list[int] = []
             n_dim = 0
             pooling_type = 0
             is_normalized = False
@@ -463,6 +478,7 @@ class NativeEmbeddingsBackend:
                             message=(f"native embeddings: n_dim drift across batch (got {ev.n_dim}, expected {n_dim})"),
                         )
                     vectors.append(list(ev.values))
+                    per_input_tokens.append(int(ev.n_input_tokens))
                     total_tokens += int(ev.n_input_tokens)
                     continue
                 if ev.type == OCT_EVENT_ERROR:
@@ -499,12 +515,23 @@ class NativeEmbeddingsBackend:
                     ),
                 )
 
-            # v0.1.11 Lane B: populate result cache with the returned vectors.
-            # PRIVACY: raw text is hashed inside cache_manager.put_vector().
+            # v0.1.11 Lane B+H: populate result cache with vectors AND
+            # the metadata needed to reconstruct an identical
+            # EmbeddingsResult on a future cache hit (Codex Lane H
+            # sweep B2 fix).  PRIVACY: raw text is hashed inside
+            # cache_manager.put_vector_entry(); metadata fields are
+            # opaque ints/bools.
             if self._cache_manager is not None and vectors:
                 input_list_for_cache = [inputs] if isinstance(inputs, str) else list(inputs)
-                for cache_inp, cache_vec in zip(input_list_for_cache, vectors):
-                    self._cache_manager.put_vector(cache_inp, cache_vec, policy=effective_policy)
+                for cache_inp, cache_vec, cache_n_input in zip(input_list_for_cache, vectors, per_input_tokens):
+                    entry = CachedVectorEntry(
+                        vector=cache_vec,
+                        n_dim=n_dim,
+                        pooling_type=pooling_type,
+                        is_normalized=is_normalized,
+                        n_input_tokens=cache_n_input,
+                    )
+                    self._cache_manager.put_vector_entry(cache_inp, entry, policy=effective_policy)
 
             return EmbeddingsResult(
                 embeddings=vectors,
