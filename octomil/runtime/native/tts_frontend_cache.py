@@ -20,7 +20,7 @@ Privacy contract:
     NOT appear in any metric label, log line, or event payload.
   - Values are opaque bytes. The cache never logs them.
   - No metric carries text or phoneme content; metric names are from
-    the provisional TODO(lane-a) closed set below.
+    the canonical Lane A closed set (contracts#123 / runtime#51).
 
 Env gate: ``OCT_TTS_FRONTEND_CACHE`` — absent or ``"1"`` → ON (default);
 ``"0"`` → OFF.
@@ -31,15 +31,21 @@ entries on overflow.
 Lifecycle: :meth:`TtsFrontendCache.clear` is called on model-close and
 session-group close. Call it from the backend's ``close()`` method.
 
-Metrics (provisional, TODO(lane-a) for canonical names):
-  - ``tts.frontend_cache_hit``   — counter (1.0 per hit)
-  - ``tts.frontend_cache_miss``  — counter (1.0 per miss)
-  - ``tts.frontend_saved_ms``    — gauge ms of synthesis skipped on hit
-  - ``cache.lookup_ms``          — gauge ms of each lookup call
+Metrics (canonical names, Lane A contracts#123):
+  - ``tts.frontend_cache_hit_total``  — counter (1.0 per hit)
+  - ``tts.audio_cache_miss_total``    — counter (1.0 per miss; reused
+    as the generic frontend-cache miss counter for v0.1.11)
+  - ``cache.lookup_ms``               — gauge ms of each lookup call
 
-These names are NOT yet in the contracts closed-enum; they are emitted
-via the provisional Python-side metric sink (``_emit_metric_provisional``)
-which does NOT forward to OCT_EVENT_METRIC. Lane A will canonicalize.
+Note: a provisional ``tts.frontend_saved_ms`` metric was considered
+but is NOT in Lane A's canonical enum. It has been dropped here; if
+the wall-clock-saved gauge becomes useful it can be canonicalized
+separately under octomil-contracts#128.
+
+These names are emitted via the Python-side metric sink at debug-log
+level (``_emit_metric``); they are NOT yet forwarded to
+OCT_EVENT_METRIC from Python (the runtime-side emission in
+``sherpa_onnx_tts_batch_session.cpp`` is the authoritative source).
 """
 
 from __future__ import annotations
@@ -69,10 +75,9 @@ MAX_PHONEME_TOKEN_BYTES: int = 16_384  # 16 KB
 # Default LRU capacity.
 DEFAULT_CACHE_MAX_BYTES: int = 16 * 1024 * 1024  # 16 MiB
 
-# Provisional metric names — TODO(lane-a): register in contracts enum.
-_METRIC_HIT = "tts.frontend_cache_hit"
-_METRIC_MISS = "tts.frontend_cache_miss"
-_METRIC_SAVED_MS = "tts.frontend_saved_ms"
+# Canonical metric names — Lane A contracts#123 / runtime#51.
+_METRIC_HIT = "tts.frontend_cache_hit_total"
+_METRIC_MISS = "tts.audio_cache_miss_total"
 _METRIC_LOOKUP_MS = "cache.lookup_ms"
 
 
@@ -133,15 +138,16 @@ def build_frontend_cache_key(
 
 
 # ---------------------------------------------------------------------------
-# Provisional metrics sink — NOT forwarded to OCT_EVENT_METRIC.
-# Lane A will replace with canonical closed-enum names.
+# Canonical-name metrics sink — debug-log only on the Python side.
+# Authoritative emission to OCT_EVENT_METRIC is on the runtime side
+# (sherpa_onnx_tts_batch_session.cpp); this Python sink lets unit
+# tests assert the canonical names without booting the runtime.
 # ---------------------------------------------------------------------------
 
 
-def _emit_metric_provisional(name: str, value: float) -> None:
-    """Best-effort provisional metric.  Never raises.  Never logs content."""
+def _emit_metric(name: str, value: float) -> None:
+    """Best-effort canonical-name metric.  Never raises.  Never logs content."""
     try:
-        # TODO(lane-a): forward to contracts-registered metric sink.
         logger.debug("tts_frontend_cache metric: name=%s value=%f", name, value)
     except Exception:  # noqa: BLE001
         pass
@@ -253,11 +259,11 @@ class TtsFrontendCache:
             pass
 
         lookup_ms = (time.monotonic() - t0) * 1000.0
-        _emit_metric_provisional(
+        _emit_metric(
             _METRIC_HIT if result is not None else _METRIC_MISS,
             1.0,
         )
-        _emit_metric_provisional(_METRIC_LOOKUP_MS, lookup_ms)
+        _emit_metric(_METRIC_LOOKUP_MS, lookup_ms)
         return result
 
     def insert(self, key: bytes, value: bytes) -> None:
@@ -297,18 +303,6 @@ class TtsFrontendCache:
 
                 self._store[key] = value
                 self._stored_bytes += len(value)
-        except Exception:  # noqa: BLE001
-            pass
-
-    def record_saved_ms(self, saved_ms: float) -> None:
-        """Emit the ``tts.frontend_saved_ms`` metric.
-
-        Called by the TTS dispatch path on a cache hit, passing the
-        estimated wall-clock saved (the caller's baseline from prior
-        runs or a heuristic).  Best-effort; never raises.
-        """
-        try:
-            _emit_metric_provisional(_METRIC_SAVED_MS, saved_ms)
         except Exception:  # noqa: BLE001
             pass
 

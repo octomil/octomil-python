@@ -84,7 +84,7 @@ def test_no_phoneme_leak_in_metrics():
     sentinel_bytes = bytes([0xDE, 0xAD, 0xBE, 0xEF, 0x42])
     cache.insert(key, sentinel_bytes)
 
-    with patch("octomil.runtime.native.tts_frontend_cache._emit_metric_provisional", side_effect=capture_metric):
+    with patch("octomil.runtime.native.tts_frontend_cache._emit_metric", side_effect=capture_metric):
         cache.lookup(key)
 
     for metric_name, metric_value in logged_metrics:
@@ -92,9 +92,14 @@ def test_no_phoneme_leak_in_metrics():
         assert "world" not in metric_name
         # metric_value is float; sentinel bytes not expressible as a float
         assert not (int(metric_value) == 0xDEADBEEF)
-    # Just confirm metrics were emitted (names are provisional).
+    # Confirm canonical metrics were emitted (Lane A names).
     names = {n for n, _ in logged_metrics}
-    assert any("tts.frontend_cache" in n or "cache" in n for n in names), f"Expected cache metric names, got: {names}"
+    expected_canonical = {
+        "tts.frontend_cache_hit_total",
+        "tts.audio_cache_miss_total",
+        "cache.lookup_ms",
+    }
+    assert names & expected_canonical, f"Expected at least one canonical cache metric, got: {names}"
 
 
 # ---------------------------------------------------------------------------
@@ -136,7 +141,7 @@ def test_voice_speed_language_not_in_metric_labels():
     key = build_frontend_cache_key(_MODEL_DIGEST, "text", "42", 1250, "fr-FR", _ADAPTER)
     cache.insert(key, b"fake_phonemes")
 
-    with patch("octomil.runtime.native.tts_frontend_cache._emit_metric_provisional", side_effect=capture):
+    with patch("octomil.runtime.native.tts_frontend_cache._emit_metric", side_effect=capture):
         cache.lookup(key)
 
     for metric_name, _ in logged:
