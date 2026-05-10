@@ -191,6 +191,23 @@ OCT_ACCEL_CUDA: int = 2
 OCT_ACCEL_CPU: int = 3
 OCT_ACCEL_ANE: int = 4
 
+# v0.1.11 Lane G — cache scope discriminators for
+# oct_runtime_cache_clear_scope. Mirrors OCT_CACHE_SCOPE_* in runtime.h.
+# Broader scopes subsume narrower: APP > RUNTIME > SESSION > REQUEST.
+# Scope codes match the canonical CacheScope enum (request|session|runtime|app)
+# in octomil-contracts v1.24.0 (enums/cache_scope.yaml, #123). The integer
+# ordering here is a binding-internal detail; the canonical wire form is
+# the string code emitted in CacheEntrySnapshot.scope.
+OCT_CACHE_SCOPE_REQUEST: int = 0  # clear entries created within a single request
+OCT_CACHE_SCOPE_SESSION: int = 1  # clear entries scoped to a session
+OCT_CACHE_SCOPE_RUNTIME: int = 2  # clear all entries scoped to this runtime handle
+OCT_CACHE_SCOPE_APP: int = 3  # clear all entries including persistent on-disk
+
+# Capability constant that gates the cache introspect API.
+# CANONICAL: registered in octomil-contracts v1.25.0
+# (schemas/core/runtime_capability.json, #129).
+OCT_CAPABILITY_CACHE_INTROSPECT: str = "cache.introspect"
+
 # v0.4 — bounded error code taxonomy. Wire-value enum (uint32_t).
 # Mirrors octomil-contracts/fixtures/runtime_error_code/canonical_error_codes.json.
 OCT_ERR_OK: int = 0
@@ -776,6 +793,37 @@ oct_status_t oct_model_evict(oct_model_t* model);
  * closed handle; OK on successful free. */
 oct_status_t oct_model_close(oct_model_t* model);
 size_t       oct_model_config_size(void);
+
+/* v0.1.11 Lane G — cache clear/introspection ABI skeleton.
+ * All four entry points return OCT_STATUS_UNSUPPORTED until Lanes
+ * B/C/F wire real caches. Added to cdef so bindings can call them
+ * and conformance tests can exercise the stub contracts.
+ *
+ * Feature probe: check for "cache.introspect" in
+ * oct_runtime_capabilities().supported_capabilities before calling.
+ * ABI minor is NOT bumped — these are probe-gated additive symbols.
+ *
+ * CANONICAL: capability "cache.introspect" registered in
+ * octomil-contracts v1.25.0 (#129); cache scope codes match
+ * enums/cache_scope.yaml from v1.24.0 (#123). */
+typedef uint32_t oct_cache_scope_t;
+
+oct_status_t oct_runtime_cache_clear_all(
+    oct_runtime_t* runtime
+);
+oct_status_t oct_runtime_cache_clear_capability(
+    oct_runtime_t* runtime,
+    const char*    capability_id
+);
+oct_status_t oct_runtime_cache_clear_scope(
+    oct_runtime_t*    runtime,
+    oct_cache_scope_t scope_id
+);
+oct_status_t oct_runtime_cache_introspect(
+    oct_runtime_t* runtime,
+    char*          out_json_buf,
+    size_t         buf_len
+);
 """
 
 
