@@ -482,3 +482,167 @@ class TestCacheFacade:
             with pytest.raises(CacheNotImplementedError) as exc_info:
                 facade_introspect(fake_handle)
         assert hasattr(exc_info.value, "snapshot")
+
+
+# ---------------------------------------------------------------------------
+# §10 Post-hoc Lane G sweep regressions (Codex B1/B3/B4)
+# ---------------------------------------------------------------------------
+# Regression coverage for the post-hoc consensus sweep follow-up
+# (octomil-python fix/cache-sweep-571-B1-B4-...). Each test pins a
+# previously-missing invariant so the gap doesn't reopen.
+
+
+class TestPostHocSweepFollowUp:
+    """Regressions for issues caught by the post-hoc Lane G consensus sweep."""
+
+    def test_capability_in_runtime_capabilities_registry(self) -> None:
+        """Codex B1: cache.introspect MUST be in RUNTIME_CAPABILITIES.
+
+        Without this, NativeRuntime.capabilities() silently drops the
+        runtime's advertised cache.introspect string and feature probes
+        report False even when the runtime supports it.
+        """
+        from octomil.runtime.native.capabilities import (
+            CAPABILITY_CACHE_INTROSPECT,
+            RUNTIME_CAPABILITIES,
+        )
+
+        assert CAPABILITY_CACHE_INTROSPECT == "cache.introspect"
+        assert CAPABILITY_CACHE_INTROSPECT in RUNTIME_CAPABILITIES
+
+    def test_introspect_invalid_input_raises_native_error_not_value_error(self, fake_handle: Any) -> None:
+        """Codex B4: hard ABI status MUST surface as NativeRuntimeError.
+
+        The pre-fix code parsed the buffer (likely empty / NUL) BEFORE
+        checking the status, so OCT_STATUS_INVALID_INPUT surfaced as
+        ValueError("invalid JSON") and lost the real error code.
+        """
+        ffi, lib = _make_ffi_lib(
+            introspect_status=OCT_STATUS_INVALID_INPUT,
+            introspect_json="",  # ABI writes empty/NUL on INVALID_INPUT
+        )
+        with patch(
+            "octomil.runtime.native.cache._get_lib",
+            return_value=(ffi, lib),
+        ):
+            with pytest.raises(NativeRuntimeError) as exc_info:
+                introspect(fake_handle)
+        assert exc_info.value.status == OCT_STATUS_INVALID_INPUT
+
+    def test_parse_snapshot_requires_version_key(self) -> None:
+        """Codex B3: missing 'version' key MUST raise (no silent default)."""
+        bad_json = '{"is_stub":true,"entries":[]}'
+        with pytest.raises(ValueError, match="missing required key.*version"):
+            _parse_snapshot(bad_json)
+
+    def test_parse_snapshot_requires_is_stub_key(self) -> None:
+        """Codex B3: missing 'is_stub' key MUST raise (no silent default)."""
+        bad_json = '{"version":1,"entries":[]}'
+        with pytest.raises(ValueError, match="missing required key.*is_stub"):
+            _parse_snapshot(bad_json)
+
+    def test_parse_snapshot_rejects_non_canonical_capability(self) -> None:
+        """Codex B3: capability MUST be a canonical RUNTIME_CAPABILITIES string.
+
+        Without enum validation, a buggy runtime emitting
+        capability='/Users/leak/path' would pass key-shape validation
+        and reach the caller despite the privacy contract.
+        """
+        bad_json = json.dumps(
+            {
+                "version": 1,
+                "is_stub": False,
+                "entries": [
+                    {
+                        "capability": "/Users/leak/secret_path",
+                        "scope": "runtime",
+                        "entries": 0,
+                        "bytes": 0,
+                        "hit": 0,
+                        "miss": 0,
+                    }
+                ],
+            }
+        )
+        with pytest.raises(ValueError, match="not a canonical runtime capability"):
+            _parse_snapshot(bad_json)
+
+    def test_parse_snapshot_rejects_non_canonical_scope(self) -> None:
+        """Codex B3: scope MUST be one of request|session|runtime|app."""
+        bad_json = json.dumps(
+            {
+                "version": 1,
+                "is_stub": False,
+                "entries": [
+                    {
+                        "capability": "chat.completion",
+                        "scope": "global",  # NOT canonical
+                        "entries": 0,
+                        "bytes": 0,
+                        "hit": 0,
+                        "miss": 0,
+                    }
+                ],
+            }
+        )
+        with pytest.raises(ValueError, match="not a canonical cache_scope"):
+            _parse_snapshot(bad_json)
+
+    def test_parse_snapshot_rejects_negative_counter(self) -> None:
+        """Codex B3: counter fields MUST be >= 0."""
+        bad_json = json.dumps(
+            {
+                "version": 1,
+                "is_stub": False,
+                "entries": [
+                    {
+                        "capability": "chat.completion",
+                        "scope": "runtime",
+                        "entries": -1,
+                        "bytes": 0,
+                        "hit": 0,
+                        "miss": 0,
+                    }
+                ],
+            }
+        )
+        with pytest.raises(ValueError, match="must be >= 0"):
+            _parse_snapshot(bad_json)
+
+    def test_parse_snapshot_rejects_non_int_counter(self) -> None:
+        """Codex B3: counter fields MUST be int (not silent str→int coercion)."""
+        bad_json = json.dumps(
+            {
+                "version": 1,
+                "is_stub": False,
+                "entries": [
+                    {
+                        "capability": "chat.completion",
+                        "scope": "runtime",
+                        "entries": "42",  # string not int
+                        "bytes": 0,
+                        "hit": 0,
+                        "miss": 0,
+                    }
+                ],
+            }
+        )
+        with pytest.raises(ValueError, match="must be an int"):
+            _parse_snapshot(bad_json)
+
+    def test_introspect_unsupported_still_validates_strict_schema(self, fake_handle: Any) -> None:
+        """Stub path MUST still run the full strict schema; can't skip
+        validation just because we plan to raise CacheNotImplementedError.
+        """
+        # Stub JSON missing required is_stub key — should ValueError, not
+        # silently raise CacheNotImplementedError with a malformed snapshot.
+        ffi, lib = _make_ffi_lib(
+            introspect_status=OCT_STATUS_UNSUPPORTED,
+            introspect_json='{"version":1,"entries":[]}',  # is_stub absent
+        )
+        with patch(
+            "octomil.runtime.native.cache._get_lib",
+            return_value=(ffi, lib),
+        ):
+            with pytest.raises(ValueError, match="missing required key.*is_stub"):
+                introspect(fake_handle)
