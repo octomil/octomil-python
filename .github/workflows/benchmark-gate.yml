@@ -130,3 +130,115 @@ jobs:
           git diff --cached --quiet || \
             (git commit -m "chore(bench): update baseline after ${GITHUB_REF_NAME}" && \
              git push origin HEAD:main)
+
+  # ── Cache bench proof gate (Lane H skeleton) ──────────────────────────────
+  # Runs the Python-side cache bench harness tests:
+  #   1. test_cache_bench_harness.py: unit + integration tests for the harness.
+  #   2. Verifies the anti-pattern guard: absent fixture dir → skipped proof.
+  #   3. Verifies the CI latch: if any cache_bench_proof artifact in
+  #      release/cache_proofs/ has skipped=false, it must be valid.
+  #
+  # Phase 1: no cache claims latency yet; the latency-claim gate is wired but
+  # has no active claims to fail on.
+  #
+  # Cross-ref (Lane A canonical telemetry enum):
+  #   cold_p50/p95_ms / warm_p50/p95_ms = p50/p95 of cache.lookup_ms (gauge)
+  #     during the cold/warm phase respectively.
+  #   hit_ratio = cache.hit_total / (cache.hit_total + cache.miss_total).
+  # These are aggregate proof-artifact fields (cache_bench_proof.json), not raw
+  # metric enum entries. Per-sample raw metrics come from runtime_metric.json.
+  cache-bench-proof-gate:
+    timeout-minutes: 15
+    name: Cache Bench Proof Gate (Python — Lane H skeleton)
+    runs-on: ubuntu-latest
+    permissions: {}
+
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]" || pip install pytest jsonschema
+
+      - name: Run cache bench harness tests
+        run: pytest tests/test_cache_bench_harness.py -v
+
+      - name: Verify anti-pattern guard (no fixture → skipped proof)
+        run: |
+          python3 -c "
+          import json, os, sys, tempfile
+          from pathlib import Path
+          from octomil.runtime.bench.cache_bench import (
+              CacheBenchConfig, run_cache_bench, SKIP_STAGED_ARTIFACT_ABSENT
+          )
+          with tempfile.TemporaryDirectory() as output_dir:
+              config = CacheBenchConfig(
+                  cache_id='chat.completion.kv',
+                  capability='chat.completion',
+                  fixture_dir=Path('/nonexistent/does/not/exist'),
+                  output_dir=Path(output_dir),
+              )
+              proof = run_cache_bench(config)
+              if not proof.skipped:
+                  print('FAIL: harness ran a live measurement when fixture dir was absent — first-request-synthesis anti-pattern!')
+                  sys.exit(1)
+              if proof.skip_reason != SKIP_STAGED_ARTIFACT_ABSENT:
+                  print(f'FAIL: expected skip_reason={SKIP_STAGED_ARTIFACT_ABSENT!r}, got {proof.skip_reason!r}')
+                  sys.exit(1)
+              proof_path = Path(output_dir) / 'chat.completion.kv_proof.json'
+              if not proof_path.exists():
+                  print('FAIL: skipped proof was not written to disk')
+                  sys.exit(1)
+              doc = json.loads(proof_path.read_text())
+              metrics = ['cold_p50_ms','cold_p95_ms','warm_p50_ms','warm_p95_ms','hit_ratio']
+              for m in metrics:
+                  if doc.get(m) is not None:
+                      print(f'FAIL: {m} must be null when skipped=True, got {doc[m]}')
+                      sys.exit(1)
+              print(f'OK: anti-pattern guard works — skipped proof emitted correctly.')
+          "
+
+      - name: Latency-claim gate (Phase 1 — no active claims)
+        run: |
+          python3 -c "
+          import json, pathlib, sys
+          # Phase 1: no release/cache_proofs/ directory expected.
+          proof_dir = pathlib.Path('release/cache_proofs')
+          if not proof_dir.exists():
+              print('No release/cache_proofs/ — Phase 1 gate: wired but no claims.')
+              sys.exit(0)
+          failures = []
+          for f in proof_dir.glob('**/*.json'):
+              try:
+                  doc = json.loads(f.read_text())
+              except json.JSONDecodeError as e:
+                  failures.append(f'{f}: JSON decode error: {e}')
+                  continue
+              if not doc.get('skipped', True):
+                  # A real measurement exists — it MUST have been
+                  # produced by a valid harness run (not skip-exempted).
+                  if doc.get('cold_p50_ms') is None:
+                      failures.append(f'{f}: skipped=false but cold_p50_ms is null')
+                  if doc.get('hit_ratio') is None:
+                      failures.append(f'{f}: skipped=false but hit_ratio is null')
+          if failures:
+              for msg in failures:
+                  print(f'FAIL: {msg}')
+              sys.exit(1)
+          print(f'Cache bench proof gate: OK (0 active latency claims).')
+          "
+
+      - name: Upload proof artifacts (if any)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: python-cache-bench-proofs-${{ github.run_id }}
+          path: release/cache_proofs/
+          if-no-files-found: ignore
+          retention-days: 14
