@@ -43,6 +43,13 @@ CAPABILITY_EMBEDDINGS_IMAGE: str = "embeddings.image"
 CAPABILITY_EMBEDDINGS_TEXT: str = "embeddings.text"
 CAPABILITY_INDEX_VECTOR_QUERY: str = "index.vector.query"
 
+# v0.5 — Lane G cache ABI skeleton (octomil-contracts#129;
+# octomil-runtime#53). Gates oct_runtime_cache_clear_*/introspect.
+# Runtime advertises iff at least one introspectable cache is
+# registered; today's runtimes do not advertise it (skeleton-only,
+# all four ABI entry points return OCT_STATUS_UNSUPPORTED).
+CAPABILITY_CACHE_INTROSPECT: str = "cache.introspect"
+
 #: The canonical set of capabilities the Layer 2a runtime can claim.
 #: Lex-sorted within each namespace, namespaces grouped — matches
 #: the contract enum's order.
@@ -57,6 +64,7 @@ RUNTIME_CAPABILITIES: frozenset[str] = frozenset(
         CAPABILITY_AUDIO_TTS_BATCH,
         CAPABILITY_AUDIO_TTS_STREAM,
         CAPABILITY_AUDIO_VAD,
+        CAPABILITY_CACHE_INTROSPECT,
         CAPABILITY_CHAT_COMPLETION,
         CAPABILITY_CHAT_STREAM,
         CAPABILITY_EMBEDDINGS_IMAGE,
@@ -76,6 +84,7 @@ __all__ = [
     "CAPABILITY_AUDIO_TTS_BATCH",
     "CAPABILITY_AUDIO_TTS_STREAM",
     "CAPABILITY_AUDIO_VAD",
+    "CAPABILITY_CACHE_INTROSPECT",
     "CAPABILITY_CHAT_COMPLETION",
     "CAPABILITY_CHAT_STREAM",
     "CAPABILITY_EMBEDDINGS_IMAGE",

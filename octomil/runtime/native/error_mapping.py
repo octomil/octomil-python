@@ -35,8 +35,8 @@ and the conformance YAMLs at
 
 from __future__ import annotations
 
-from octomil.errors import OctomilError, OctomilErrorCode
-from octomil.runtime.native.loader import (
+from ...errors import OctomilError, OctomilErrorCode
+from .loader import (
     OCT_STATUS_BUSY,
     OCT_STATUS_CANCELLED,
     OCT_STATUS_INVALID_INPUT,

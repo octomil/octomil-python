@@ -234,14 +234,36 @@ def _parse_snapshot(raw_json: str) -> CacheSnapshot:
     if unexpected:
         raise ValueError(f"introspect JSON contains unexpected keys: {unexpected!r}")
 
-    version = obj.get("version", 0)
-    if not isinstance(version, int):
-        raise ValueError("introspect JSON 'version' must be int")
+    # Codex B3 (post-hoc Lane G sweep): require version + is_stub keys
+    # explicitly (don't silently default). A malformed runtime emitting
+    # `{}` would otherwise parse as version=0, is_stub=False, masking
+    # real wire-shape regressions.
+    for required in ("version", "is_stub"):
+        if required not in obj:
+            raise ValueError(f"introspect JSON missing required key: {required!r}")
 
-    is_stub = bool(obj.get("is_stub", False))
+    version = obj["version"]
+    if not isinstance(version, int) or isinstance(version, bool):
+        raise ValueError("introspect JSON 'version' must be int")
+    if version < 0:
+        raise ValueError(f"introspect JSON 'version' must be >= 0; got {version}")
+
+    if not isinstance(obj["is_stub"], bool):
+        raise ValueError("introspect JSON 'is_stub' must be bool")
+    is_stub = obj["is_stub"]
+
     raw_entries = obj.get("entries", [])
     if not isinstance(raw_entries, list):
         raise ValueError("introspect JSON 'entries' must be a list")
+
+    # Privacy-bound enum sets — capability and scope MUST be canonical.
+    # Codex B3 (post-hoc Lane G sweep): without enum validation, a buggy
+    # runtime emitting capability='/Users/leak/path' or
+    # scope='/etc/passwd' would pass schema since the field is allowed.
+    # Imported lazily to avoid a circular import via octomil.runtime.native.
+    from octomil.runtime.native.capabilities import RUNTIME_CAPABILITIES
+
+    _VALID_SCOPE_STRINGS: frozenset[str] = frozenset({"request", "session", "runtime", "app"})
 
     allowed_entry_keys = {"capability", "scope", "entries", "bytes", "hit", "miss"}
     parsed: list[CacheEntrySnapshot] = []
@@ -251,14 +273,39 @@ def _parse_snapshot(raw_json: str) -> CacheSnapshot:
         unexpected_entry = set(entry.keys()) - allowed_entry_keys
         if unexpected_entry:
             raise ValueError(f"introspect entries[{i}] contains unexpected keys: {unexpected_entry!r}")
+
+        # Type validation — coerce-via-int-and-str hides garbage. Reject
+        # non-canonical types loudly so leaks can't slip through.
+        for str_field in ("capability", "scope"):
+            val = entry.get(str_field, None)
+            if not isinstance(val, str):
+                raise ValueError(f"introspect entries[{i}].{str_field} must be a string; " f"got {type(val).__name__}")
+        for num_field in ("entries", "bytes", "hit", "miss"):
+            val = entry.get(num_field, None)
+            if not isinstance(val, int) or isinstance(val, bool):
+                raise ValueError(f"introspect entries[{i}].{num_field} must be an int; " f"got {type(val).__name__}")
+            if val < 0:
+                raise ValueError(f"introspect entries[{i}].{num_field} must be >= 0; got {val}")
+
+        # Enum validation — capability and scope must be canonical.
+        cap = entry["capability"]
+        scope = entry["scope"]
+        if cap not in RUNTIME_CAPABILITIES:
+            raise ValueError(f"introspect entries[{i}].capability is not a canonical " f"runtime capability: {cap!r}")
+        if scope not in _VALID_SCOPE_STRINGS:
+            raise ValueError(
+                f"introspect entries[{i}].scope is not a canonical "
+                f"cache_scope (request|session|runtime|app): {scope!r}"
+            )
+
         parsed.append(
             CacheEntrySnapshot(
-                capability=str(entry.get("capability", "")),
-                scope=str(entry.get("scope", "")),
-                entries=int(entry.get("entries", 0)),
-                bytes=int(entry.get("bytes", 0)),
-                hit=int(entry.get("hit", 0)),
-                miss=int(entry.get("miss", 0)),
+                capability=cap,
+                scope=scope,
+                entries=entry["entries"],
+                bytes=entry["bytes"],
+                hit=entry["hit"],
+                miss=entry["miss"],
             )
         )
 
@@ -410,8 +457,23 @@ def introspect(runtime_handle: Any) -> CacheSnapshot:
     status = int(lib.oct_runtime_cache_introspect(runtime_handle, buf, _INTROSPECT_BUF_BYTES))
     raw = ffi.string(buf).decode("utf-8", errors="replace")
 
-    # Parse + validate the bounded JSON before checking status so the
-    # privacy-schema assertion runs on stub output too.
+    # B4 fix (Codex post-hoc Lane G sweep): hard ABI errors must surface
+    # as NativeRuntimeError, NOT as ValueError from a JSON parse against
+    # an empty/garbage buffer. The runtime ABI contract for INVALID_INPUT
+    # writes either nothing or a NUL to out_json_buf — calling
+    # _parse_snapshot('') here would mask the real status as
+    # "invalid JSON" and lose the OCT_STATUS_INVALID_INPUT signal.
+    # Status check ordering: hard errors first, then UNSUPPORTED (stub),
+    # then OK (parse + return).
+    if status not in (OCT_STATUS_OK, OCT_STATUS_UNSUPPORTED):
+        raise NativeRuntimeError(
+            status,
+            f"introspect: ABI returned status={status} (not OK / not UNSUPPORTED)",
+        )
+
+    # Parse + validate the bounded JSON. Privacy-schema check runs on
+    # stub output too so the assertion is exercised before real caches
+    # land.
     snapshot = _parse_snapshot(raw)
 
     if status == OCT_STATUS_UNSUPPORTED:
@@ -423,6 +485,4 @@ def introspect(runtime_handle: Any) -> CacheSnapshot:
         )
         err.snapshot = snapshot  # type: ignore[attr-defined]
         raise err
-    if status != OCT_STATUS_OK:
-        raise NativeRuntimeError(status, "introspect: unexpected ABI status")
     return snapshot
