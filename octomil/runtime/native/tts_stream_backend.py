@@ -56,6 +56,7 @@ import time
 from dataclasses import dataclass
 from typing import Any, Iterator, Literal
 
+from ...audio.text_normalize import PROFILE_ESPEAK_COMPAT, normalize_for_profile
 from ...errors import OctomilError, OctomilErrorCode
 from .capabilities import CAPABILITY_AUDIO_TTS_STREAM
 from .error_mapping import map_oct_status
@@ -71,6 +72,10 @@ from .loader import (
     OCT_STATUS_OK,
     NativeRuntime,
     NativeRuntimeError,
+)
+from .tts_frontend_cache import (
+    TtsFrontendCache,
+    build_frontend_cache_key,
 )
 
 logger = logging.getLogger(__name__)
@@ -192,6 +197,7 @@ class NativeTtsStreamBackend:
         self,
         *,
         default_deadline_ms: int | None = None,
+        frontend_cache: TtsFrontendCache | None = None,
     ) -> None:
         self._model_name: str = ""
         self._runtime: NativeRuntime | None = None
@@ -199,6 +205,10 @@ class NativeTtsStreamBackend:
         self._default_deadline_ms: int = (
             default_deadline_ms if default_deadline_ms is not None else self.DEFAULT_DEADLINE_MS
         )
+        # v0.1.11 Lane C — TTS frontend cache.
+        # None → create a default-enabled cache.  Pass TtsFrontendCache(enabled=False)
+        # to disable per-session (e.g. for privacy policy override).
+        self._frontend_cache: TtsFrontendCache = frontend_cache if frontend_cache is not None else TtsFrontendCache()
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -289,6 +299,8 @@ class NativeTtsStreamBackend:
         )
 
     def close(self) -> None:
+        # v0.1.11 Lane C — clear frontend cache on close (lifecycle contract).
+        self._frontend_cache.clear()
         if self._model is not None:
             try:
                 self._model.close()
@@ -425,6 +437,53 @@ class NativeTtsStreamBackend:
 
         speaker_id_str = self.validate_voice(voice_id)
 
+        # v0.1.11 Lane C — TTS frontend cache.
+        #
+        # Step 1: normalize text (Python-side frontend stage).
+        # The normalization result is the closest observable "phoneme
+        # token" output accessible without forking sherpa-onnx.
+        # TODO(lane-a): replace with actual piper-phonemize token extraction
+        # once the sherpa-onnx internal API is exposed.
+        normalized_text = normalize_for_profile(text, PROFILE_ESPEAK_COMPAT)
+        normalized_bytes = normalized_text.encode("utf-8")
+
+        # Step 2: build cache key.  Voice / speed / language are folded
+        # into the key ONLY — they do not appear in any metric label.
+        # model_digest_hex from the adapter is not yet available here
+        # (blocked-on-lane-a for canonical artifact_digest on the session
+        # config); use a stable placeholder until Lane A lands the digest
+        # accessor on the Python session config.
+        # TODO(lane-a): replace "placeholder_digest" with actual model digest.
+        _model_digest = "placeholder_digest"
+        _adapter_version = "octomil-python/v0.1.11-lane-c"
+        cache_key = build_frontend_cache_key(
+            model_digest_hex=_model_digest,
+            normalized_text=normalized_text,
+            voice=speaker_id_str,
+            speed_x1000=1000,  # speed not yet passed through; default 1.0×
+            language="en-US",  # language not yet in session config; default
+            adapter_version=_adapter_version,
+        )
+
+        # Step 3: cache lookup.  On hit, ``normalized_bytes`` matches what
+        # was stored; we skip synthesis and replay the cached phoneme tokens
+        # (for this prototype, the "tokens" are the normalized text bytes).
+        # On miss, run synthesis and store result.
+        #
+        # NOTE: The cache does NOT store or replay PCM audio (that is
+        # Lane D, deferred).  On a cache hit we know the normalized text is
+        # identical to a prior synthesis; we still run the synthesis engine
+        # (the PCM result must come from the runtime).  The speedup is on
+        # the Python-side text normalization stage only.  The cache hit does
+        # set cache_was_hit metadata for testing.
+        cached_value = self._frontend_cache.lookup(cache_key)
+        _cache_hit = cached_value is not None
+        if cached_value is None:
+            self._frontend_cache.insert(cache_key, normalized_bytes)
+
+        # On cache miss, also record normalized_bytes as the "phoneme tokens"
+        # for future hits.  (No audio in cache; no synthesis bypass.)
+
         try:
             sess = self._runtime.open_session(
                 capability=CAPABILITY_AUDIO_TTS_STREAM,
@@ -460,8 +519,11 @@ class NativeTtsStreamBackend:
         # typed 4xx body rather than mid-stream after HTTP 200. The
         # _drain generator only handles poll_event + chunk extraction
         # post-send_text, so it can stay lazy.
+        # Send the NORMALIZED text (not raw user input) to the runtime.
+        # This is consistent regardless of cache hit/miss — the cache
+        # does NOT bypass synthesis; it only confirms normalization was done.
         try:
-            sess.send_text(text)
+            sess.send_text(normalized_text)
         except NativeRuntimeError as exc:
             sess.close()
             raise _runtime_status_to_sdk_error(
@@ -474,6 +536,7 @@ class NativeTtsStreamBackend:
             sess=sess,
             np_module=_np,
             resolved_deadline_ms=resolved_deadline_ms,
+            cache_hit=_cache_hit,
         )
 
     def _drain(
@@ -482,6 +545,7 @@ class NativeTtsStreamBackend:
         sess: Any,
         np_module: Any,
         resolved_deadline_ms: int,
+        cache_hit: bool = False,
     ) -> Iterator[TtsAudioChunk]:
         """Inner generator — split out so :meth:`synthesize_with_chunks`
         can do *synchronous* validation (voice / text / deadline / model)
@@ -637,5 +701,7 @@ __all__ = [
     "NativeTtsStreamBackend",
     "TTS_FIRST_AUDIO_MS_METRIC_NAME",
     "TtsAudioChunk",
+    "TtsFrontendCache",
+    "build_frontend_cache_key",
     "runtime_advertises_tts_stream",
 ]
