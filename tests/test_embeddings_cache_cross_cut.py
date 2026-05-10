@@ -10,6 +10,10 @@ PR body for the full bug list and per-bug fix summary.
 
 from __future__ import annotations
 
+import pytest
+
+from octomil.errors import OctomilError, OctomilErrorCode
+from octomil.runtime.native.embeddings_backend import NativeEmbeddingsBackend
 from octomil.runtime.native.embeddings_cache import EmbeddingsLruCache
 
 # ---------------------------------------------------------------------------
@@ -62,3 +66,45 @@ def test_b3_two_gets_return_independent_lists() -> None:
     assert isinstance(b, list)
     a[0] = 999.0
     assert b == [0.1, 0.2, 0.3]
+
+
+# ---------------------------------------------------------------------------
+# B1 — empty input list must reject INVALID_INPUT before cache pre-check.
+# Codex eval round-1: octomil/runtime/native/embeddings_backend.py:357
+# "The result-cache precheck treats an empty input list as an all-hit
+#  batch and returns an empty EmbeddingsResult before send_embed
+#  validates it."
+# ---------------------------------------------------------------------------
+
+
+def test_b1_embed_empty_list_raises_invalid_input() -> None:
+    """embed([]) MUST raise INVALID_INPUT regardless of cache state.
+
+    The bug: the result-cache pre-check iterates over inputs and, for
+    a zero-length list, declares all_hit=True with zero entries —
+    returning EmbeddingsResult(n_dim=0, pooling_type=0, embeddings=[])
+    instead of letting send_embed's INVALID_INPUT validator run.
+
+    This test exercises the pre-runtime validation path: it does NOT
+    require a loaded model since the empty-input guard runs after
+    deadline validation but before any runtime/session call.
+    """
+    backend = NativeEmbeddingsBackend()
+    # NOTE: load_model is intentionally NOT called.  The bug surfaces
+    # in the cache pre-check path which sits before runtime open.  We
+    # need to skirt the load_model gate (which raises
+    # RUNTIME_UNAVAILABLE).  Set the runtime/model handles to non-None
+    # sentinels so the gate clears; the empty-input guard below the
+    # gate is what we are exercising.
+    backend._runtime = object()  # type: ignore[assignment]
+    backend._model = object()
+    try:
+        with pytest.raises(OctomilError) as ei:
+            backend.embed([])
+        assert ei.value.code == OctomilErrorCode.INVALID_INPUT
+        assert "non-empty" in str(ei.value)
+    finally:
+        # Clear sentinels so backend.close()'s teardown logs do not
+        # fire AttributeError noise on the test's gc.
+        backend._runtime = None
+        backend._model = None

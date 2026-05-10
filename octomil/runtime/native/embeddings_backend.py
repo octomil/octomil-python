@@ -330,6 +330,21 @@ class NativeEmbeddingsBackend:
                 ),
             )
 
+        # v0.1.11 Lane B+H: empty input list rejects up front.
+        # The docstring promises "non-empty list of strings"; the
+        # runtime-side validator catches this on send_embed, but the
+        # cache pre-check below would short-circuit an empty list as
+        # an "all-hit" batch (zero iterations) and bypass the runtime
+        # validator entirely — returning EmbeddingsResult(n_dim=0,
+        # pooling_type=0, embeddings=[]) instead of INVALID_INPUT.
+        # Codex Lane H sweep flagged this (B1).  Reject here so the
+        # caller sees the canonical error regardless of cache state.
+        if not isinstance(inputs, str) and len(inputs) == 0:
+            raise OctomilError(
+                code=OctomilErrorCode.INVALID_INPUT,
+                message=("embeddings.text: inputs must be a non-empty list of strings"),
+            )
+
         # v0.1.11 Lane B: resolve effective cache policy.
         # Per-call policy overrides the backend default.
         effective_policy = cache_policy if cache_policy is not None else self._cache_policy
