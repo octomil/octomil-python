@@ -176,7 +176,7 @@ jobs:
           pip install -e ".[dev]" || pip install pytest jsonschema
 
       - name: Run cache bench harness tests
-        run: pytest tests/test_cache_bench_harness.py -v
+        run: pytest tests/test_cache_bench_harness.py -v -o addopts=''
 
       - name: Verify anti-pattern guard (no fixture → skipped proof)
         run: |
