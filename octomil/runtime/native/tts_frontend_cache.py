@@ -137,6 +137,49 @@ def build_frontend_cache_key(
     return outer.digest()
 
 
+def build_raw_text_cache_key(
+    model_digest_hex: str,
+    raw_text: str,
+    voice: str,
+    speed_x1000: int,
+    language: str,
+    adapter_version: str,
+) -> bytes:
+    """Build a 32-byte key over RAW text (Codex B7 fix).
+
+    The original ``build_frontend_cache_key`` keys on the normalized
+    text — which means the caller must run the very normalization step
+    the cache claims to skip before it can even ask for the cached
+    value. That defeats the cache's stated purpose.
+
+    This raw-text variant lets the caller probe the cache before
+    normalizing. On a hit, the cached normalized bytes are reused and
+    normalization is skipped. On a miss, the caller normalizes and
+    stores under the same raw-text key plus a co-key on the normalized
+    text (so two raw inputs that normalize to the same string still
+    share the cached value).
+
+    Privacy: the same hashing pattern as ``build_frontend_cache_key`` —
+    raw text is sha256'd inside this function and the hash (not the
+    text) enters the key.
+    """
+    text_hash = hashlib.sha256(raw_text.encode("utf-8")).digest()
+    outer = hashlib.sha256()
+    outer.update(b"raw|")
+    outer.update(model_digest_hex.encode("ascii"))
+    outer.update(b"\x00")
+    outer.update(text_hash)
+    outer.update(b"\x00")
+    outer.update(voice.encode("utf-8"))
+    outer.update(b"\x00")
+    outer.update(str(speed_x1000).encode("ascii"))
+    outer.update(b"\x00")
+    outer.update(language.encode("utf-8"))
+    outer.update(b"\x00")
+    outer.update(adapter_version.encode("utf-8"))
+    return outer.digest()
+
+
 # ---------------------------------------------------------------------------
 # Canonical-name metrics sink — debug-log only on the Python side.
 # Authoritative emission to OCT_EVENT_METRIC is on the runtime side

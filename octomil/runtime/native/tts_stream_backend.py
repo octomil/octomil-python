@@ -439,16 +439,18 @@ class NativeTtsStreamBackend:
 
         # v0.1.11 Lane C — TTS frontend cache.
         #
-        # Step 1: normalize text (Python-side frontend stage).
-        # The normalization result is the closest observable "phoneme
-        # token" output accessible without forking sherpa-onnx.
-        # TODO(lane-a): replace with actual piper-phonemize token extraction
-        # once the sherpa-onnx internal API is exposed.
-        normalized_text = normalize_for_profile(text, PROFILE_ESPEAK_COMPAT)
-        normalized_bytes = normalized_text.encode("utf-8")
-
-        # Step 2: build cache key.  Voice / speed / language are folded
-        # into the key ONLY — they do not appear in any metric label.
+        # Codex B7 fix: probe the cache BEFORE running normalization,
+        # using a raw-text-keyed lookup. Previously the backend always
+        # normalized first (the very work the cache claims to save) and
+        # never used the cached value, so the "frontend cache" was
+        # adding memory + metrics with no real hit behaviour.
+        #
+        # New flow:
+        #   1. Build a raw-text cache key (no normalization required).
+        #   2. Look up — if hit, reuse the cached normalized_bytes and
+        #      skip the normalization step.
+        #   3. On miss, normalize the text and store the result under
+        #      the raw-text key for future hits.
         # model_digest_hex from the adapter is not yet available here
         # (blocked-on-lane-a for canonical artifact_digest on the session
         # config); use a stable placeholder until Lane A lands the digest
@@ -456,33 +458,44 @@ class NativeTtsStreamBackend:
         # TODO(lane-a): replace "placeholder_digest" with actual model digest.
         _model_digest = "placeholder_digest"
         _adapter_version = "octomil-python/v0.1.11-lane-c"
+
+        from octomil.runtime.native.tts_frontend_cache import build_raw_text_cache_key
+
+        raw_cache_key = build_raw_text_cache_key(
+            model_digest_hex=_model_digest,
+            raw_text=text,
+            voice=speaker_id_str,
+            speed_x1000=1000,
+            language="en-US",
+            adapter_version=_adapter_version,
+        )
+
+        cached_value = self._frontend_cache.lookup(raw_cache_key)
+        _cache_hit = cached_value is not None
+        if cached_value is not None:
+            # Codex B7: cache hit — reuse cached normalized bytes; skip
+            # the (expensive) normalize_for_profile call.
+            normalized_bytes = bytes(cached_value)
+            normalized_text = normalized_bytes.decode("utf-8")
+        else:
+            # Cache miss — normalize and cache under the raw-text key.
+            normalized_text = normalize_for_profile(text, PROFILE_ESPEAK_COMPAT)
+            normalized_bytes = normalized_text.encode("utf-8")
+            self._frontend_cache.insert(raw_cache_key, normalized_bytes)
+
+        # Also build the legacy normalized-text key. We keep populating
+        # it for any callers (and tests) that probe via the original
+        # API; the raw-text key is the active hit path.
         cache_key = build_frontend_cache_key(
             model_digest_hex=_model_digest,
             normalized_text=normalized_text,
             voice=speaker_id_str,
-            speed_x1000=1000,  # speed not yet passed through; default 1.0×
-            language="en-US",  # language not yet in session config; default
+            speed_x1000=1000,
+            language="en-US",
             adapter_version=_adapter_version,
         )
-
-        # Step 3: cache lookup.  On hit, ``normalized_bytes`` matches what
-        # was stored; we skip synthesis and replay the cached phoneme tokens
-        # (for this prototype, the "tokens" are the normalized text bytes).
-        # On miss, run synthesis and store result.
-        #
-        # NOTE: The cache does NOT store or replay PCM audio (that is
-        # Lane D, deferred).  On a cache hit we know the normalized text is
-        # identical to a prior synthesis; we still run the synthesis engine
-        # (the PCM result must come from the runtime).  The speedup is on
-        # the Python-side text normalization stage only.  The cache hit does
-        # set cache_was_hit metadata for testing.
-        cached_value = self._frontend_cache.lookup(cache_key)
-        _cache_hit = cached_value is not None
-        if cached_value is None:
+        if self._frontend_cache.lookup(cache_key) is None:
             self._frontend_cache.insert(cache_key, normalized_bytes)
-
-        # On cache miss, also record normalized_bytes as the "phoneme tokens"
-        # for future hits.  (No audio in cache; no synthesis bypass.)
 
         try:
             sess = self._runtime.open_session(
