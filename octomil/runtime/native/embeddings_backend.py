@@ -68,6 +68,7 @@ from ...errors import OctomilError, OctomilErrorCode
 from .embeddings_cache import (
     CachePolicy,
     EmbeddingsCacheManager,
+    _MetricSink,
     emit_cache_hit,
     emit_cache_miss,
     emit_lookup_ms,
@@ -278,7 +279,7 @@ class NativeEmbeddingsBackend:
         *,
         deadline_ms: int | None = None,
         cache_policy: CachePolicy | None = None,
-        metric_sink: object = None,
+        metric_sink: Optional[_MetricSink] = None,
     ) -> EmbeddingsResult:
         """Run an embeddings.text request against the cached model.
 

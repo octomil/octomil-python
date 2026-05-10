@@ -53,9 +53,36 @@ import os
 import threading
 from collections import OrderedDict
 from dataclasses import dataclass
-from typing import Optional
+from typing import Mapping, Optional, Protocol, runtime_checkable
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Metric-sink Protocol
+# ---------------------------------------------------------------------------
+
+
+@runtime_checkable
+class _MetricSink(Protocol):
+    """Structural type for the SDK telemetry sink the cache emits into.
+
+    The native runtime emits OCT_EVENT_METRIC envelopes through the C
+    ABI; the SDK telemetry sink (correlated with session/request IDs)
+    is what these helpers feed. We only need ``emit(name, value, attrs)``
+    here — typing the parameter as a Protocol (rather than ``object``)
+    lets pyright verify the call sites at module load time, and means
+    a swapped-in fake sink in tests is still type-checkable.
+    """
+
+    def emit(
+        self,
+        name: str,
+        value: float,
+        attrs: Mapping[str, object],
+        /,
+    ) -> None: ...
+
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -470,7 +497,7 @@ _METRIC_CACHE_MISS = "cache.miss_total"  # canonical (Lane A)
 _METRIC_LOOKUP_MS = "cache.lookup_ms"  # canonical (Lane A)
 
 
-def emit_cache_hit(metric_sink: object, cache_layer: str) -> None:
+def emit_cache_hit(metric_sink: Optional[_MetricSink], cache_layer: str) -> None:
     """Emit embeddings.cache_hit_total metric.
 
     PRIVACY: only the canonical metric name + value is emitted — no
@@ -483,13 +510,13 @@ def emit_cache_hit(metric_sink: object, cache_layer: str) -> None:
     """
     del cache_layer  # name-only emission; see canonical envelope
     try:
-        if metric_sink is not None and hasattr(metric_sink, "emit"):
+        if metric_sink is not None:
             metric_sink.emit(_METRIC_CACHE_HIT, 1.0, {})
     except Exception:  # noqa: BLE001
         pass
 
 
-def emit_cache_miss(metric_sink: object, cache_layer: str) -> None:
+def emit_cache_miss(metric_sink: Optional[_MetricSink], cache_layer: str) -> None:
     """Emit cache.miss_total metric.
 
     PRIVACY: same constraints as emit_cache_hit. ``cache_layer`` is
@@ -498,20 +525,20 @@ def emit_cache_miss(metric_sink: object, cache_layer: str) -> None:
     """
     del cache_layer  # name-only emission; see canonical envelope
     try:
-        if metric_sink is not None and hasattr(metric_sink, "emit"):
+        if metric_sink is not None:
             metric_sink.emit(_METRIC_CACHE_MISS, 1.0, {})
     except Exception:  # noqa: BLE001
         pass
 
 
-def emit_lookup_ms(metric_sink: object, elapsed_ms: float) -> None:
+def emit_lookup_ms(metric_sink: Optional[_MetricSink], elapsed_ms: float) -> None:
     """Emit cache.lookup_ms metric.
 
     PRIVACY: only the numeric latency value is emitted.
     Best-effort: never raises.
     """
     try:
-        if metric_sink is not None and hasattr(metric_sink, "emit"):
+        if metric_sink is not None:
             metric_sink.emit(_METRIC_LOOKUP_MS, elapsed_ms, {})
     except Exception:  # noqa: BLE001
         pass
