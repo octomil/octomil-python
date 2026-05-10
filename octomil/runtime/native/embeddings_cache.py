@@ -207,16 +207,41 @@ class EmbeddingsLruCache:
         self._lock = threading.Lock()
 
     def get(self, key: bytes) -> Optional[object]:
-        """Return the cached value or None on miss.  Promotes to MRU."""
+        """Return the cached value or None on miss.  Promotes to MRU.
+
+        Defensive copy: returns a fresh ``list`` constructed from the
+        stored payload so caller mutation cannot corrupt the cache or
+        cross-contaminate other consumers of the same key.  This is
+        the v0.1.11 Lane B+H follow-up fix for the Codex-flagged
+        mutable-list aliasing bug (see fix-cache-impl-cross-cut PR).
+        """
         with self._lock:
             if key not in self._cache:
                 return None
             self._cache.move_to_end(key)
-            return self._cache[key]
+            stored = self._cache[key]
+            # int and float lists are the only payload types in this
+            # cache (token IDs, embedding vectors).  list(...) yields
+            # a shallow copy that is independent of the stored object.
+            if isinstance(stored, list):
+                return list(stored)
+            return stored
 
     def put(self, key: bytes, value: object, n_elements: int) -> None:
-        """Insert or replace.  Evicts LRU entries to satisfy capacity."""
+        """Insert or replace.  Evicts LRU entries to satisfy capacity.
+
+        Defensive copy: stores a fresh ``list`` so subsequent caller
+        mutation of the put-time reference cannot affect the cached
+        entry.  Pairs with the defensive copy in :meth:`get`.
+        """
         byte_cost = 4 * n_elements
+        # Snapshot the payload before taking the lock.  list(value)
+        # is independent of the caller's reference; mutating either
+        # side after put() returns leaves the cached entry untouched.
+        if isinstance(value, list):
+            stored_value: object = list(value)
+        else:
+            stored_value = value
         with self._lock:
             if key in self._cache:
                 self._bytes_used -= self._sizes[key]
@@ -226,7 +251,7 @@ class EmbeddingsLruCache:
             while self._cache and self._bytes_used + byte_cost > self._max_bytes:
                 old_key, _ = self._cache.popitem(last=False)
                 self._bytes_used -= self._sizes.pop(old_key, 0)
-            self._cache[key] = value
+            self._cache[key] = stored_value
             self._sizes[key] = byte_cost
             self._bytes_used += byte_cost
 
