@@ -76,6 +76,7 @@ from .loader import (
 from .tts_frontend_cache import (
     TtsFrontendCache,
     build_frontend_cache_key,
+    build_raw_text_cache_key,
 )
 
 logger = logging.getLogger(__name__)
@@ -205,15 +206,28 @@ class NativeTtsStreamBackend:
         self._default_deadline_ms: int = (
             default_deadline_ms if default_deadline_ms is not None else self.DEFAULT_DEADLINE_MS
         )
-        # v0.1.11 Lane C — TTS frontend cache.
-        # None → create a default-enabled cache.  Pass TtsFrontendCache(enabled=False)
-        # to disable per-session (e.g. for privacy policy override).
+        # v0.1.11 Lane C remediation (#572 B1): TTS frontend cache.
+        # None → reads OCT_TTS_FRONTEND_CACHE env (default OFF post-remediation).
+        # Pass TtsFrontendCache(enabled=True) explicitly to opt in for testing.
         self._frontend_cache: TtsFrontendCache = frontend_cache if frontend_cache is not None else TtsFrontendCache()
+        # v0.1.11 Lane C remediation (#572 B2): the artifact digest we
+        # used to open the model. Captured from load_model so the cache
+        # key carries the REAL digest, not a placeholder. Empty string
+        # if the SDK caller did not pass an artifact_digest at
+        # load_model() time — in which case we fail-closed by NOT
+        # consulting the cache for that session.
+        self._artifact_digest: str = ""
+        # v0.1.11 Lane C remediation (#572 B3): test-observable flag —
+        # True when the most recent synthesize_with_chunks() picked the
+        # cached normalized bytes over running normalize_for_profile
+        # again. Lets tests assert that a "hit" produces a different
+        # observable code path from a "miss".
+        self._last_text_was_normalized_from_cache: bool = False
 
     # ------------------------------------------------------------------
     # Lifecycle
     # ------------------------------------------------------------------
-    def load_model(self, model_name: str) -> None:
+    def load_model(self, model_name: str, *, artifact_digest: str = "") -> None:
         """Open the runtime, verify ``audio.tts.stream`` advertised,
         open + warm a sherpa-onnx model handle. Idempotent on re-load
         with the same model_name.
@@ -284,8 +298,14 @@ class NativeTtsStreamBackend:
             self._model = self._runtime.open_model(
                 model_uri=tts_model_path,
                 engine_hint="sherpa_onnx",
+                artifact_digest=artifact_digest,
             )
             self._model.warm()
+            # v0.1.11 Lane C remediation (#572 B2): capture the real
+            # artifact digest for cache keying. Empty string means the
+            # caller did not pass one; the cache lookup site will skip
+            # the cache rather than collide on a placeholder.
+            self._artifact_digest = artifact_digest
         except NativeRuntimeError as exc:
             self.close()
             raise _runtime_status_to_sdk_error(
@@ -368,6 +388,8 @@ class NativeTtsStreamBackend:
         *,
         voice_id: str | None = None,
         deadline_ms: int | None = None,
+        speed: float = 1.0,
+        language: str = "en-US",
     ) -> Iterator[TtsAudioChunk]:
         """Yields sentence-bounded chunks. Chunks arrive together at
         end-of-synth in the v0.1.8 sherpa adapter. Future v0.1.9
@@ -437,66 +459,53 @@ class NativeTtsStreamBackend:
 
         speaker_id_str = self.validate_voice(voice_id)
 
-        # v0.1.11 Lane C — TTS frontend cache.
+        # v0.1.11 Lane C/H remediation: TTS frontend cache.
         #
-        # Codex B7 fix: probe the cache BEFORE running normalization,
-        # using a raw-text-keyed lookup. Previously the backend always
-        # normalized first (the very work the cache claims to save) and
-        # never used the cached value, so the "frontend cache" was
-        # adding memory + metrics with no real hit behaviour.
-        #
-        # New flow:
-        #   1. Build a raw-text cache key (no normalization required).
-        #   2. Look up — if hit, reuse the cached normalized_bytes and
-        #      skip the normalization step.
-        #   3. On miss, normalize the text and store the result under
-        #      the raw-text key for future hits.
-        # model_digest_hex from the adapter is not yet available here
-        # (blocked-on-lane-a for canonical artifact_digest on the session
-        # config); use a stable placeholder until Lane A lands the digest
-        # accessor on the Python session config.
-        # TODO(lane-a): replace "placeholder_digest" with actual model digest.
-        _model_digest = "placeholder_digest"
-        _adapter_version = "octomil-python/v0.1.11-lane-c"
+        # Combined invariant:
+        #   - cache OFF or no real artifact digest: preserve the pre-cache
+        #     public path and send the caller's raw text;
+        #   - cache ON with a real digest: probe before normalization using
+        #     a raw-text key that includes real digest/speaker/speed/language;
+        #   - cache hit: send cached normalized bytes and skip normalization;
+        #   - cache miss: send raw text first, then insert normalized bytes
+        #     only after the runtime accepts send_text.
+        cache_enabled = self._frontend_cache.is_enabled and bool(self._artifact_digest)
+        raw_cache_key: bytes | None = None
+        cached_value: bytes | None = None
+        speed_x1000: int | None = None
+        adapter_version = "octomil-python/v0.1.11-lane-c"
+        text_to_send = text
+        self._last_text_was_normalized_from_cache = False
 
-        from octomil.runtime.native.tts_frontend_cache import build_raw_text_cache_key
+        if cache_enabled:
+            speed_x1000 = int(round(float(speed) * 1000))
+            if speed_x1000 <= 0:
+                raise OctomilError(
+                    code=OctomilErrorCode.INVALID_INPUT,
+                    message=f"speed must be positive; got {speed}",
+                )
+            raw_cache_key = build_raw_text_cache_key(
+                model_digest_hex=self._artifact_digest,
+                raw_text=text,
+                voice=speaker_id_str,
+                speed_x1000=speed_x1000,
+                language=language,
+                adapter_version=adapter_version,
+            )
+            cached_value = self._frontend_cache.lookup(raw_cache_key)
 
-        raw_cache_key = build_raw_text_cache_key(
-            model_digest_hex=_model_digest,
-            raw_text=text,
-            voice=speaker_id_str,
-            speed_x1000=1000,
-            language="en-US",
-            adapter_version=_adapter_version,
-        )
-
-        cached_value = self._frontend_cache.lookup(raw_cache_key)
-        _cache_hit = cached_value is not None
         if cached_value is not None:
-            # Codex B7: cache hit — reuse cached normalized bytes; skip
-            # the (expensive) normalize_for_profile call.
-            normalized_bytes = bytes(cached_value)
-            normalized_text = normalized_bytes.decode("utf-8")
-        else:
-            # Cache miss — normalize and cache under the raw-text key.
-            normalized_text = normalize_for_profile(text, PROFILE_ESPEAK_COMPAT)
-            normalized_bytes = normalized_text.encode("utf-8")
-            self._frontend_cache.insert(raw_cache_key, normalized_bytes)
-
-        # Also build the legacy normalized-text key. We keep populating
-        # it for any callers (and tests) that probe via the original
-        # API; the raw-text key is the active hit path.
-        cache_key = build_frontend_cache_key(
-            model_digest_hex=_model_digest,
-            normalized_text=normalized_text,
-            voice=speaker_id_str,
-            speed_x1000=1000,
-            language="en-US",
-            adapter_version=_adapter_version,
-        )
-        if self._frontend_cache.lookup(cache_key) is None:
-            self._frontend_cache.insert(cache_key, normalized_bytes)
-
+            try:
+                text_to_send = cached_value.decode("utf-8")
+            except UnicodeDecodeError:
+                logger.warning(
+                    "tts_frontend_cache: cached value not valid UTF-8, treating as miss",
+                    exc_info=True,
+                )
+                cached_value = None
+                text_to_send = text
+            else:
+                self._last_text_was_normalized_from_cache = True
         try:
             sess = self._runtime.open_session(
                 capability=CAPABILITY_AUDIO_TTS_STREAM,
@@ -527,16 +536,11 @@ class NativeTtsStreamBackend:
 
         # Codex r2 P2 fix: send_text MUST be synchronous (i.e. inside
         # the request scope, BEFORE any StreamingResponse begins) so
-        # OctomilError(INVALID_INPUT) for malformed text / NaN bytes
-        # / single-utterance double-send-text rejects surface as a
-        # typed 4xx body rather than mid-stream after HTTP 200. The
-        # _drain generator only handles poll_event + chunk extraction
-        # post-send_text, so it can stay lazy.
-        # Send the NORMALIZED text (not raw user input) to the runtime.
-        # This is consistent regardless of cache hit/miss — the cache
-        # does NOT bypass synthesis; it only confirms normalization was done.
+        # OctomilError(INVALID_INPUT) for malformed text / NaN bytes /
+        # single-utterance double-send-text rejects surface as a typed
+        # 4xx body rather than mid-stream after HTTP 200.
         try:
-            sess.send_text(normalized_text)
+            sess.send_text(text_to_send)
         except NativeRuntimeError as exc:
             sess.close()
             raise _runtime_status_to_sdk_error(
@@ -545,11 +549,30 @@ class NativeTtsStreamBackend:
                 last_error=getattr(exc, "last_error", ""),
             ) from exc
 
+        # Insert AFTER send_text accepted the bytes so a rejected or
+        # malformed request never lands in the cache. The active hit path
+        # uses the raw-text key. We also populate the legacy normalized key
+        # for compatibility with direct cache tests and any older callers.
+        if cache_enabled and cached_value is None and raw_cache_key is not None and speed_x1000 is not None:
+            normalized_text = normalize_for_profile(text, PROFILE_ESPEAK_COMPAT)
+            normalized_bytes = normalized_text.encode("utf-8")
+            self._frontend_cache.insert(raw_cache_key, normalized_bytes)
+            normalized_cache_key = build_frontend_cache_key(
+                model_digest_hex=self._artifact_digest,
+                normalized_text=normalized_text,
+                voice=speaker_id_str,
+                speed_x1000=speed_x1000,
+                language=language,
+                adapter_version=adapter_version,
+            )
+            if self._frontend_cache.lookup(normalized_cache_key) is None:
+                self._frontend_cache.insert(normalized_cache_key, normalized_bytes)
+
         return self._drain(
             sess=sess,
             np_module=_np,
             resolved_deadline_ms=resolved_deadline_ms,
-            cache_hit=_cache_hit,
+            cache_hit=cached_value is not None,
         )
 
     def _drain(

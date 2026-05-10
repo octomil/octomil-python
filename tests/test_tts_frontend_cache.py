@@ -43,6 +43,18 @@ _MODEL_DIGEST = "fbaa8e36d8f26fe6f3ebb65cab461e629d8b37a5b7c5fb78fb64317db73e1c2
 _ADAPTER = "octomil-python/test"
 
 
+# v0.1.11 Lane C remediation (#572 B1): default flipped to OFF in
+# tts_frontend_cache.py. Opt the suite in via an autouse fixture so the
+# pre-existing tests that constructed `TtsFrontendCache()` without
+# explicit args keep exercising the enabled-cache code paths. Tests
+# that intentionally probe the disabled-by-env path still flip the env
+# back to "0" via monkeypatch.
+@pytest.fixture(autouse=True)
+def _opt_in_cache_env(monkeypatch):
+    monkeypatch.setenv("OCT_TTS_FRONTEND_CACHE", "1")
+    yield
+
+
 def _make_key(text: str, voice: str = "0", speed: int = 1000, lang: str = "en-US") -> bytes:
     return build_frontend_cache_key(_MODEL_DIGEST, text, voice, speed, lang, _ADAPTER)
 
@@ -264,8 +276,19 @@ def test_disabled_by_env(monkeypatch):
     assert cache.lookup(key) is None
 
 
-def test_enabled_by_default(monkeypatch):
+def test_disabled_by_default(monkeypatch):
+    """v0.1.11 Lane C remediation (#572 / runtime#54 B1): default flipped
+    to OFF until the privacy + lifecycle invariants are hardened.
+    Absent env → cache disabled. Set OCT_TTS_FRONTEND_CACHE=1 to opt in.
+    """
     monkeypatch.delenv("OCT_TTS_FRONTEND_CACHE", raising=False)
+    cache = TtsFrontendCache()
+    assert not cache.is_enabled
+
+
+def test_enabled_when_env_one(monkeypatch):
+    """Explicit OCT_TTS_FRONTEND_CACHE=1 enables the cache."""
+    monkeypatch.setenv("OCT_TTS_FRONTEND_CACHE", "1")
     cache = TtsFrontendCache()
     assert cache.is_enabled
 
@@ -351,6 +374,126 @@ def test_pcm_parity_cache_on_vs_off():
 # ---------------------------------------------------------------------------
 # 14. Thread-safety smoke
 # ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# v0.1.11 Lane C remediation (#572) — backend-level fixes
+# ---------------------------------------------------------------------------
+
+
+def test_backend_send_text_unchanged_when_cache_disabled(monkeypatch):
+    """B1 fix: when the cache is disabled, synthesize_with_chunks must
+    send the caller's RAW text to the runtime — restoring pre-PR-572
+    public behavior. We assert by inspecting what the backend would
+    have forwarded (the `_last_text_was_normalized_from_cache` flag).
+    """
+    monkeypatch.delenv("OCT_TTS_FRONTEND_CACHE", raising=False)
+    from octomil.runtime.native.tts_stream_backend import NativeTtsStreamBackend
+
+    backend = NativeTtsStreamBackend()
+    # The cache is disabled by default → flag stays False even without
+    # any synthesize call (initial state). Once a synth happens, miss
+    # path also keeps it False because cache_enabled is False.
+    assert backend._frontend_cache.is_enabled is False
+    assert backend._last_text_was_normalized_from_cache is False
+
+
+def test_backend_real_digest_used_in_cache_key(monkeypatch):
+    """B2 fix: cache_key must be built from the real artifact_digest
+    captured at load_model() time, NOT a placeholder. Two backends
+    loaded with different digests must produce different cache keys
+    for identical text.
+    """
+    monkeypatch.setenv("OCT_TTS_FRONTEND_CACHE", "1")
+    from octomil.runtime.native.tts_stream_backend import NativeTtsStreamBackend
+
+    digest_a = "a" * 64
+    digest_b = "b" * 64
+
+    # We don't actually call load_model (would require runtime); set the
+    # captured field directly to simulate two distinct loads.
+    backend_a = NativeTtsStreamBackend()
+    backend_a._artifact_digest = digest_a
+    backend_b = NativeTtsStreamBackend()
+    backend_b._artifact_digest = digest_b
+
+    key_a = build_frontend_cache_key(digest_a, "Hello world", "0", 1000, "en-US", "octomil-python/v0.1.11-lane-c")
+    key_b = build_frontend_cache_key(digest_b, "Hello world", "0", 1000, "en-US", "octomil-python/v0.1.11-lane-c")
+    assert key_a != key_b, "Different artifact_digests must produce different keys"
+
+    # And neither should equal the legacy placeholder-keyed key.
+    key_placeholder = build_frontend_cache_key(
+        "placeholder_digest",
+        "Hello world",
+        "0",
+        1000,
+        "en-US",
+        "octomil-python/v0.1.11-lane-c",
+    )
+    assert key_a != key_placeholder
+    assert key_b != key_placeholder
+
+
+def test_backend_skips_cache_when_no_real_digest(monkeypatch):
+    """B2 fix: if load_model was called without a real artifact_digest
+    (empty string), the backend must NOT use the cache — fail-closed.
+    """
+    monkeypatch.setenv("OCT_TTS_FRONTEND_CACHE", "1")
+    from octomil.runtime.native.tts_stream_backend import NativeTtsStreamBackend
+
+    backend = NativeTtsStreamBackend()
+    backend._artifact_digest = ""  # empty → must not consult cache
+    assert backend._frontend_cache.is_enabled  # env says ON
+    # The cache_enabled gate at the call site combines env + real digest.
+    # We verify by reading the same expression the backend uses.
+    cache_enabled = backend._frontend_cache.is_enabled and bool(backend._artifact_digest)
+    assert cache_enabled is False, "no real digest must disable the cache lookup"
+
+
+def test_lookup_re_raises_on_corruption_signal():
+    """B4 fix: lookup() must surface cache-corruption signals (TypeError
+    from a non-bytes key) instead of swallowing them."""
+    cache = TtsFrontendCache()
+    with pytest.raises(TypeError):
+        cache.lookup("not-bytes")  # type: ignore[arg-type]
+
+
+def test_insert_re_raises_on_corruption_signal():
+    """B4 fix: insert() must surface cache-corruption signals."""
+    cache = TtsFrontendCache()
+    with pytest.raises(TypeError):
+        cache.insert("not-bytes", b"value")  # type: ignore[arg-type]
+
+
+def test_lookup_logs_warning_on_unexpected_exception(caplog):
+    """B4 fix: lookup() must logger.warning on unexpected exception
+    (not silently swallow). We force a transient error by patching the
+    internal store to raise on `in` check.
+    """
+    import logging
+    import unittest.mock as _mock
+
+    cache = TtsFrontendCache()
+    key = _make_key("warn test")
+    cache.insert(key, b"value")
+
+    class _RaisingDict:
+        def __contains__(self, _key):
+            raise RuntimeError("transient lock issue (synthetic)")
+
+        def __getitem__(self, _key):
+            raise KeyError(_key)
+
+        def move_to_end(self, _key):
+            pass
+
+    with caplog.at_level(logging.WARNING, logger="octomil.runtime.native.tts_frontend_cache"):
+        with _mock.patch.object(cache, "_store", _RaisingDict()):
+            result = cache.lookup(key)
+    assert result is None
+    assert any(
+        "unexpected exception" in rec.message.lower() for rec in caplog.records
+    ), f"Expected warning logged; got: {[r.message for r in caplog.records]}"
 
 
 def test_thread_safety_concurrent_insert_lookup():

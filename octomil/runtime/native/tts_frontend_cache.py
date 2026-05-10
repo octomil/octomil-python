@@ -64,7 +64,9 @@ logger = logging.getLogger(__name__)
 # Constants
 # ---------------------------------------------------------------------------
 
-# OCT_TTS_FRONTEND_CACHE env var — default ON.
+# OCT_TTS_FRONTEND_CACHE env var — v0.1.11 Lane C remediation (#572 +
+# runtime#54 B1) flipped the default to OFF until the privacy and
+# lifecycle invariants are hardened. Set to "1" to opt in.
 _ENV_CACHE_FLAG = "OCT_TTS_FRONTEND_CACHE"
 
 # Maximum value size.  A normalized text string for any realistic TTS
@@ -193,7 +195,12 @@ def _emit_metric(name: str, value: float) -> None:
     try:
         logger.debug("tts_frontend_cache metric: name=%s value=%f", name, value)
     except Exception:  # noqa: BLE001
-        pass
+        # v0.1.11 Lane C remediation (#572 B4): a debug-log emission
+        # failure is not a cache-corruption signal; swallow but warn so
+        # the issue surfaces in operator logs without taking down the
+        # synthesis path. We do NOT log the metric value itself here in
+        # case of a downstream sink that mis-formats it.
+        logger.warning("tts_frontend_cache: metric emit failed", exc_info=True)
 
 
 # ---------------------------------------------------------------------------
@@ -232,8 +239,11 @@ class TtsFrontendCache:
             Pass ``True`` or ``False`` to override the env gate.
         """
         if enabled is None:
-            env_val = os.environ.get(_ENV_CACHE_FLAG, "1")
-            self._enabled = env_val != "0"
+            # v0.1.11 Lane C remediation (#572 / runtime#54 B1): default
+            # OFF. Absent or any non-"1" value disables the cache.
+            # Explicit "1" opts in.
+            env_val = os.environ.get(_ENV_CACHE_FLAG, "")
+            self._enabled = env_val == "1"
         else:
             self._enabled = bool(enabled)
 
@@ -283,10 +293,26 @@ class TtsFrontendCache:
         """Look up ``key``.
 
         Returns the cached value bytes on hit, ``None`` on miss.
-        Emits provisional metrics.  Never raises.
+        Emits provisional metrics.
+
+        Failure mode (v0.1.11 Lane C remediation #572 B4): the original
+        prototype's bare ``except Exception: pass`` swallowed every
+        possible failure, including cache-corruption signals (TypeError
+        from a non-bytes key, MemoryError from OrderedDict ops, etc.)
+        without surfacing a single byte of evidence. The remediation
+        replaces it with a logged ``warning`` plus re-raise on
+        TypeError / MemoryError — those indicate the cache state is
+        actually broken and the caller MUST treat it as such.
+        Operational issues (e.g. transient lock contention) still log
+        + return ``None``. The log line never carries the key bytes or
+        the value bytes — only that an exception class fired.
         """
         if not self._enabled:
             return None
+        if not isinstance(key, (bytes, bytearray)):
+            # Cache-corruption signal: programmer error. Surface it
+            # rather than mask it as a miss.
+            raise TypeError(f"TtsFrontendCache.lookup: key must be bytes, got {type(key).__name__}")
 
         t0 = time.monotonic()
         result: Optional[bytes] = None
@@ -298,8 +324,25 @@ class TtsFrontendCache:
                     self._hit_count += 1
                 else:
                     self._miss_count += 1
+        except (TypeError, MemoryError):
+            # Cache-corruption signal — re-raise without leaking the
+            # key bytes into the log. The ABI says the cache is
+            # advisory; surfacing the raise lets the backend fall
+            # through to its non-cache code path AND surface the
+            # operational defect to the caller's observability stack.
+            logger.warning(
+                "tts_frontend_cache.lookup: cache-corruption signal — re-raising",
+                exc_info=True,
+            )
+            raise
         except Exception:  # noqa: BLE001
-            pass
+            # Operational failure (transient lock issue, etc.). Log
+            # WITHOUT the key bytes or value bytes; treat as miss.
+            logger.warning(
+                "tts_frontend_cache.lookup: unexpected exception, treating as miss",
+                exc_info=True,
+            )
+            return None
 
         lookup_ms = (time.monotonic() - t0) * 1000.0
         _emit_metric(
@@ -328,6 +371,10 @@ class TtsFrontendCache:
                 )
             return
 
+        if not isinstance(key, (bytes, bytearray)):
+            # Cache-corruption signal — re-raise.
+            raise TypeError(f"TtsFrontendCache.insert: key must be bytes, got {type(key).__name__}")
+
         try:
             with self._lock:
                 if key in self._store:
@@ -346,8 +393,20 @@ class TtsFrontendCache:
 
                 self._store[key] = value
                 self._stored_bytes += len(value)
+        except (TypeError, MemoryError):
+            # v0.1.11 Lane C remediation (#572 B4): cache-corruption
+            # signals re-raised; transient operational errors logged
+            # and swallowed.
+            logger.warning(
+                "tts_frontend_cache.insert: cache-corruption signal — re-raising",
+                exc_info=True,
+            )
+            raise
         except Exception:  # noqa: BLE001
-            pass
+            logger.warning(
+                "tts_frontend_cache.insert: unexpected exception, dropping insert",
+                exc_info=True,
+            )
 
     def clear(self) -> None:
         """Evict all entries.  Called on model-close and runtime-close."""
@@ -356,7 +415,13 @@ class TtsFrontendCache:
                 self._store.clear()
                 self._stored_bytes = 0
         except Exception:  # noqa: BLE001
-            pass
+            # v0.1.11 Lane C remediation (#572 B4): clear() should be
+            # robust on close paths, but a failure here still gets
+            # surfaced via the operator log.
+            logger.warning(
+                "tts_frontend_cache.clear: unexpected exception during clear",
+                exc_info=True,
+            )
 
 
 __all__ = [
