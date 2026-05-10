@@ -140,11 +140,63 @@ class StagedFixtureSet:
     capability: str
 
     def input_digest(self) -> str:
-        """SHA256 of the fixture set metadata (not raw inputs)."""
+        """SHA256 of the fixture set metadata (not raw inputs).
+
+        Codex B6: hashes the fixture index/content fingerprint, not just
+        the directory path. Two different fixture sets staged at the
+        same path now produce different digests, so changing fixtures
+        is detectable by downstream tooling and the proof artifact
+        cannot be silently reused across fixture revisions.
+
+        Privacy: this digest is computed over file paths, sizes, and
+        sha256 digests of file contents — never over raw input bytes
+        embedded in the artifact (the resulting fingerprint is small
+        and fixed-size regardless of fixture size).
+        """
         h = hashlib.sha256()
-        h.update(str(self.fixture_dir).encode())
         h.update(self.cache_id.encode())
+        h.update(b"|")
         h.update(self.capability.encode())
+        h.update(b"|")
+
+        # If the fixture dir is missing, fall back to the path-only
+        # mode (digest still reflects cache_id + capability + path).
+        # The skip path emits skipped=true, so the digest is only an
+        # advisory signal in that branch.
+        if not self.fixture_dir.exists():
+            h.update(b"missing|")
+            h.update(str(self.fixture_dir).encode())
+            return "sha256:" + h.hexdigest()
+
+        # Walk the fixture dir deterministically: sorted relative paths,
+        # for each file include relpath, byte size, and sha256(content).
+        # Skip symlinks pointing outside the fixture dir defensively.
+        fixture_root = self.fixture_dir.resolve()
+        entries: list[tuple[str, int, str]] = []
+        for path in sorted(fixture_root.rglob("*")):
+            if not path.is_file():
+                continue
+            try:
+                rel = path.relative_to(fixture_root).as_posix()
+            except ValueError:
+                # Path escaped the fixture root via symlink; skip.
+                continue
+            try:
+                size = path.stat().st_size
+                file_hash = hashlib.sha256(path.read_bytes()).hexdigest()
+            except OSError:
+                # Unreadable file; record path only with sentinel size.
+                size = -1
+                file_hash = "unreadable"
+            entries.append((rel, size, file_hash))
+
+        for rel, size, file_hash in entries:
+            h.update(rel.encode())
+            h.update(b"|")
+            h.update(str(size).encode())
+            h.update(b"|")
+            h.update(file_hash.encode())
+            h.update(b"\n")
         return "sha256:" + h.hexdigest()
 
 

@@ -138,6 +138,31 @@ class CachePolicy:
 
 
 # ---------------------------------------------------------------------------
+# Cached record — what we actually store in the result cache
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class CachedEmbedding:
+    """Full embedding record stored in the result cache.
+
+    Codex B2: cache hits replay every API-visible metadata field
+    (prompt_tokens, n_dim, pooling_type, is_normalized) — not just the
+    vector — so enabling the result cache does NOT change the
+    EmbeddingsResult shape callers see for identical inputs.
+
+    The vector list is defensively copied on read and write
+    (see B3) so caller mutation cannot corrupt cached state.
+    """
+
+    vector: list[float]
+    prompt_tokens: int
+    n_dim: int
+    pooling_type: int
+    is_normalized: bool
+
+
+# ---------------------------------------------------------------------------
 # Key derivation
 # ---------------------------------------------------------------------------
 
@@ -287,10 +312,22 @@ def cache_get_vector(
 
     Returns None on miss OR when privacy_allowed is False.
     The returned floats are never logged.
+
+    Codex B3: returns a defensive copy. The cache stores the same list
+    instance the backend handed us via ``put_vector`` (private to the
+    cache); without a copy on read, a caller mutating the returned list
+    would silently corrupt every subsequent hit on the same key.
     """
     if not privacy_allowed:
         return None
-    return cache.get(key)  # type: ignore[return-value]
+    cached = cache.get(key)
+    if cached is None:
+        return None
+    # Defensive: hand callers a fresh list so they cannot mutate the
+    # stored entry. ``list(...)`` over a list of floats is O(n) — same
+    # order of magnitude as the rest of the lookup work — and protects
+    # the cache invariant that put(x); a=get(x); b=get(x) implies a == b.
+    return list(cached)  # type: ignore[call-overload]
 
 
 def cache_put_vector(
@@ -304,10 +341,15 @@ def cache_put_vector(
 
     PRIVACY: vector bytes are opaque — this function does not log them.
     No-ops when privacy_allowed is False.
+
+    Codex B3: stores a defensive copy of ``vector``. Without the copy
+    a caller that mutates ``vector`` after handing it to the cache
+    (e.g. in-place normalization) would silently change the cached
+    value seen by every later hit.
     """
     if not privacy_allowed:
         return
-    cache.put(key, vector, len(vector))
+    cache.put(key, list(vector), len(vector))
 
 
 # ---------------------------------------------------------------------------
@@ -409,13 +451,16 @@ class EmbeddingsCacheManager:
 
         PRIVACY: ``text`` is hashed; float values are never logged.
         Returns None when the result cache is disabled (env or policy).
+
+        Codex B2 note: prefer ``get_record`` over this thin shim — the
+        bare-vector form drops prompt_tokens / pooling_type / n_dim and
+        is kept only for callers that legitimately do not need those
+        fields.
         """
-        privacy_allowed = policy.result_cache_allowed and result_cache_enabled()
-        if not privacy_allowed:
+        record = self.get_record(text, policy=policy)
+        if record is None:
             return None
-        text_hex = hash_text(text)
-        key = derive_cache_key(self._model_digest, text_hex, self._result_salt)
-        return cache_get_vector(self._result_cache, key, privacy_allowed=True)
+        return record.vector
 
     def put_vector(
         self,
@@ -424,17 +469,93 @@ class EmbeddingsCacheManager:
         *,
         policy: CachePolicy,
     ) -> None:
-        """Store an embedding vector for ``text``.
+        """Store an embedding vector for ``text`` (no metadata).
 
         PRIVACY: ``text`` is hashed; float bytes are never logged.
         No-ops when the result cache is disabled.
+
+        Codex B2 note: prefer ``put_record`` so metadata is preserved.
+        This shim stores zeroed metadata and exists for back-compat.
+        """
+        self.put_record(
+            text,
+            CachedEmbedding(
+                vector=vector,
+                prompt_tokens=0,
+                n_dim=len(vector),
+                pooling_type=0,
+                is_normalized=False,
+            ),
+            policy=policy,
+        )
+
+    # Codex B2: full-record get/put so the backend can replay every
+    # API-visible field on a result-cache hit instead of fabricating
+    # n_dim=0 / pooling_type=0 / prompt_tokens=0 like the v0.1.11 PR
+    # #569 skeleton did. Stored values are defensive-copied; see B3.
+    def get_record(
+        self,
+        text: str,
+        *,
+        policy: CachePolicy,
+    ) -> Optional["CachedEmbedding"]:
+        """Look up the full cached embedding record for ``text``.
+
+        Returns None on miss or when the result cache is disabled.
+        The returned object is a defensive copy: callers may mutate
+        ``.vector`` without corrupting the cache.
+        """
+        privacy_allowed = policy.result_cache_allowed and result_cache_enabled()
+        if not privacy_allowed:
+            return None
+        text_hex = hash_text(text)
+        key = derive_cache_key(self._model_digest, text_hex, self._result_salt)
+        cached = self._result_cache.get(key)
+        if cached is None:
+            return None
+        # Stored value is a CachedEmbedding; defensive-copy the vector
+        # so caller mutation can't corrupt future hits (B3).
+        rec: CachedEmbedding = cached  # type: ignore[assignment]
+        return CachedEmbedding(
+            vector=list(rec.vector),
+            prompt_tokens=rec.prompt_tokens,
+            n_dim=rec.n_dim,
+            pooling_type=rec.pooling_type,
+            is_normalized=rec.is_normalized,
+        )
+
+    def put_record(
+        self,
+        text: str,
+        record: "CachedEmbedding",
+        *,
+        policy: CachePolicy,
+    ) -> None:
+        """Store the full cached embedding record for ``text``.
+
+        Codex B2: stores prompt_tokens / n_dim / pooling_type /
+        is_normalized alongside the vector so cache hits replay the
+        same API-visible metadata as the cold runtime call.
+
+        Codex B3: stores a defensive copy of ``record.vector`` so a
+        caller mutating ``record`` after put cannot mutate the cached
+        entry.
         """
         privacy_allowed = policy.result_cache_allowed and result_cache_enabled()
         if not privacy_allowed:
             return
         text_hex = hash_text(text)
         key = derive_cache_key(self._model_digest, text_hex, self._result_salt)
-        cache_put_vector(self._result_cache, key, vector, privacy_allowed=True)
+        # Defensive copy of the vector list. Other fields are
+        # immutable scalars and don't need copying.
+        copied = CachedEmbedding(
+            vector=list(record.vector),
+            prompt_tokens=record.prompt_tokens,
+            n_dim=record.n_dim,
+            pooling_type=record.pooling_type,
+            is_normalized=record.is_normalized,
+        )
+        self._result_cache.put(key, copied, len(copied.vector))
 
     # ------------------------------------------------------------------
     # Stats (opaque — for metrics, NOT for logging raw data)
