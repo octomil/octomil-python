@@ -9,8 +9,9 @@ Lifecycle:
 - One ``NativeSttBackend`` instance per (planner-selected) STT engine.
 - ``load_model(model_name)`` opens a ``NativeRuntime``, verifies the
   ``audio.transcription`` capability is advertised, and caches the
-  runtime. Whisper-tiny is the only model wired in v0.1.5; the
-  runtime resolves the artifact via ``OCTOMIL_WHISPER_BIN``.
+  runtime. W1 wires ``whisper-tiny`` and ``whisper-base`` only; the
+  SDK verifies the actual ``OCTOMIL_WHISPER_BIN`` file matches the
+  requested model's size + SHA-256 before model_open.
 - ``transcribe(pcm_f32, sample_rate_hz=...)`` opens one session per
   request with ``capability="audio.transcription"``, sends the audio
   view, drains ``OCT_EVENT_TRANSCRIPT_SEGMENT`` events, captures
@@ -24,10 +25,10 @@ Hard rules (cutover discipline — no silent Python fallback):
    already advertised ``audio.transcription``.
 2. ``transcribe()`` rejects NaN / Inf / zero-length input via the
    runtime-side validator; the SDK surfaces those as ``INVALID_INPUT``.
-3. Bad ggml-tiny.bin digest produces ``OCT_STATUS_UNSUPPORTED`` with
-   ``last_error`` mentioning ``digest`` — surfaced as
-   ``CHECKSUM_MISMATCH`` (the bounded code for "integrity check
-   failed after download" in the SDK's error taxonomy).
+3. Bad or wrong-size registered-artifact bytes fail closed as
+   ``CHECKSUM_MISMATCH`` before ``oct_model_open``; runtime digest
+   rejects with ``last_error`` mentioning ``digest`` are mapped the
+   same way.
 4. ``OCTOMIL_WHISPER_BIN`` unset / artifact missing → the runtime
    does NOT advertise the capability and ``open_session`` returns
    ``OCT_STATUS_UNSUPPORTED`` — surfaced as ``RUNTIME_UNAVAILABLE``.
@@ -44,9 +45,11 @@ Bounded-error mapping (runtime → SDK):
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import math
 import os
+import stat
 import time
 from dataclasses import dataclass, field
 from typing import Any, Sequence
@@ -72,25 +75,105 @@ logger = logging.getLogger(__name__)
 
 _BACKEND_NAME = "native-whisper-cpp"
 _DEFAULT_DEADLINE_MS = 300_000  # 5 minutes — same shape as chat / embeddings.
-# whisper-tiny is hard-coded to 16kHz mono PCM-f32 in v0.1.5; the
-# runtime rejects anything else with INVALID_INPUT. We keep this as a
-# Python-side guard so callers see the shape error before the FFI
-# call. SR-mismatch surfacing as INVALID_INPUT preserves bounded-
-# rejection behavior.
+# whisper.cpp STT is hard-coded to 16kHz mono PCM-f32 for the W1
+# tiny/base native path; the runtime rejects anything else with
+# INVALID_INPUT. We keep this as a Python-side guard so callers see
+# the shape error before the FFI call. SR-mismatch surfacing as
+# INVALID_INPUT preserves bounded-rejection behavior.
 _WHISPER_SAMPLE_RATE_HZ: int = 16000
-# v0.1.5 PR-2A: the runtime's whisper.cpp adapter resolves the
-# ggml-tiny.bin artifact off OCTOMIL_WHISPER_BIN at session_open
-# time. oct_model_open still requires a valid model_uri scheme
-# (absolute path, file://, local://) — we hand it the same env
-# value so the URI parses AND the digest verification has
-# something concrete to point at when last_error is rendered.
+# The runtime's whisper.cpp adapter resolves ggml-tiny.bin /
+# ggml-base.bin off OCTOMIL_WHISPER_BIN. oct_model_open still
+# requires a valid model_uri scheme (absolute path, file://,
+# local://) - we hand it the same env value so the URI parses and the
+# digest verification has something concrete to point at when
+# last_error is rendered.
 _WHISPER_BIN_ENV: str = "OCTOMIL_WHISPER_BIN"
-# v0.1.5 wires exactly one whisper variant. Codex R1 blocker:
-# accepting any whisper-* name and silently substituting tiny is a
-# correctness bug (different model identities have different WER /
-# RTF / size profiles). Reject other names with UNSUPPORTED_MODALITY
-# until a runtime release ships multi-size support.
-_SUPPORTED_MODEL_NAME: str = "whisper-tiny"
+
+
+@dataclass(frozen=True)
+class _WhisperArtifactSpec:
+    model_name: str
+    size_name: str
+    filename: str
+    sha256: str
+    size_bytes: int
+
+    @property
+    def artifact_digest(self) -> str:
+        return f"sha256:{self.sha256}"
+
+
+_WHISPER_ARTIFACTS: dict[str, _WhisperArtifactSpec] = {
+    "whisper-tiny": _WhisperArtifactSpec(
+        model_name="whisper-tiny",
+        size_name="tiny",
+        filename="ggml-tiny.bin",
+        sha256="be07e048e1e599ad46341c8d2a135645097a538221678b7acdd1b1919c6e1b21",
+        size_bytes=77_691_713,
+    ),
+    "whisper-base": _WhisperArtifactSpec(
+        model_name="whisper-base",
+        size_name="base",
+        filename="ggml-base.bin",
+        sha256="60ed5bc3dd14eea856493d334349b405782ddcaf0028d4b5df4088345fba2efe",
+        size_bytes=147_951_465,
+    ),
+}
+_SUPPORTED_MODEL_NAMES: tuple[str, ...] = tuple(_WHISPER_ARTIFACTS)
+
+
+def is_supported_native_whisper_model(model_name: str) -> bool:
+    """Return True for native whisper.cpp sizes backed by runtime rows."""
+    return model_name.lower() in _WHISPER_ARTIFACTS
+
+
+def _sha256_file_hex(path: str) -> str:
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1024 * 1024), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _verify_whisper_artifact_matches_spec(path: str, spec: _WhisperArtifactSpec) -> None:
+    """Verify the env artifact matches the requested model identity."""
+    try:
+        st = os.stat(path)
+    except OSError as exc:
+        raise OctomilError(
+            code=OctomilErrorCode.MODEL_NOT_FOUND,
+            message=f"native STT backend: {_WHISPER_BIN_ENV} path not found or unreadable: {path}",
+        ) from exc
+    if not stat.S_ISREG(st.st_mode):
+        raise OctomilError(
+            code=OctomilErrorCode.MODEL_NOT_FOUND,
+            message=f"native STT backend: {_WHISPER_BIN_ENV} is not a regular file: {path}",
+        )
+    actual_size = int(st.st_size)
+    if actual_size != spec.size_bytes:
+        raise OctomilError(
+            code=OctomilErrorCode.CHECKSUM_MISMATCH,
+            message=(
+                f"native STT backend: {spec.model_name} requires {spec.filename} "
+                f"size {spec.size_bytes} bytes, but {_WHISPER_BIN_ENV} points at "
+                f"{actual_size} bytes"
+            ),
+        )
+    try:
+        digest = _sha256_file_hex(path)
+    except OSError as exc:
+        raise OctomilError(
+            code=OctomilErrorCode.MODEL_NOT_FOUND,
+            message=f"native STT backend: could not read {_WHISPER_BIN_ENV} artifact: {path}",
+        ) from exc
+    if digest != spec.sha256:
+        raise OctomilError(
+            code=OctomilErrorCode.CHECKSUM_MISMATCH,
+            message=(
+                f"native STT backend: {spec.model_name} requires {spec.filename} "
+                f"SHA-256 {spec.sha256}, but {_WHISPER_BIN_ENV} computed {digest}"
+            ),
+        )
 
 
 @dataclass
@@ -158,16 +241,16 @@ def _validate_pcm_f32(samples: Sequence[float] | Any, sample_rate_hz: int) -> by
       * Python sequence of floats (mono).
       * Raw ``bytes`` already in float32-LE shape.
 
-    Stereo / multichannel and non-16kHz inputs are rejected here —
-    the v0.1.5 runtime is hard-coded to whisper-tiny which expects
-    16kHz mono.
+    Stereo / multichannel and non-16kHz inputs are rejected here;
+    the W1 native whisper.cpp path expects 16kHz mono for both tiny
+    and base.
     """
     if sample_rate_hz != _WHISPER_SAMPLE_RATE_HZ:
         raise OctomilError(
             code=OctomilErrorCode.INVALID_INPUT,
             message=(
                 f"native STT: sample_rate_hz must be {_WHISPER_SAMPLE_RATE_HZ} "
-                f"(whisper-tiny is mono-16kHz-only in v0.1.5); got {sample_rate_hz}"
+                f"(native whisper.cpp STT is mono-16kHz-only); got {sample_rate_hz}"
             ),
         )
     if isinstance(samples, (bytes, bytearray, memoryview)):
@@ -286,49 +369,51 @@ class NativeSttBackend:
         """Open the runtime and verify ``audio.transcription`` is
         advertised. Idempotent — a second call is a no-op.
 
-        v0.1.5 hard rule: the runtime pins ``whisper-tiny`` (it
-        verifies a specific SHA-256 against the ggml-tiny.bin the
-        operator points ``OCTOMIL_WHISPER_BIN`` at). Other whisper
-        sizes (`whisper-base`, `whisper-small`, etc.) are NOT
-        supported in v0.1.5 — silently substituting tiny would be
-        a correctness bug (different model identity → different
-        WER + RTF profile). Codex R1 blocker fix: explicit reject
-        with ``UNSUPPORTED_MODALITY`` instead of letting the env
-        decide which model actually runs. Future runtime PRs that
-        ship multi-size whisper builds (different env vars +
-        digest constants per size) can relax this gate.
+        W1 hard rule: the SDK accepts exactly the native whisper.cpp
+        model names backed by runtime registry rows (``whisper-tiny``
+        and ``whisper-base``). Other whisper sizes are NOT supported;
+        silently substituting one registered artifact for another
+        would be a correctness bug (different model identity means
+        different WER / RTF profile).
 
         Raises
         ------
         OctomilError
             ``UNSUPPORTED_MODALITY`` if the requested model name is
-            not ``whisper-tiny``.
+            not one of ``whisper-tiny`` or ``whisper-base``.
             ``RUNTIME_UNAVAILABLE`` if the runtime fails to open or
             does not advertise ``audio.transcription`` (operator
             forgot ``OCTOMIL_WHISPER_BIN`` or the dylib was built
             without ``OCT_ENABLE_ENGINE_WHISPER_CPP=ON``).
             ``CHECKSUM_MISMATCH`` if the artifact's digest doesn't
-            match the v0.1.5 runtime-pinned ggml-tiny.bin SHA-256.
+            match the requested model's runtime-pinned SHA-256.
         """
-        # Codex R2 nit: validate model_name BEFORE the idempotent
-        # short-circuit so a second `load_model("whisper-base")`
-        # call on a backend already warmed for whisper-tiny doesn't
-        # silently no-op (which would let a downstream transcribe
-        # call run tiny against a request labeled base).
-        if model_name.lower() != _SUPPORTED_MODEL_NAME:
+        # Validate model_name before the idempotent short-circuit so a
+        # second load_model call for a different size cannot silently
+        # reuse an already-warmed artifact.
+        requested_model = model_name.lower()
+        spec = _WHISPER_ARTIFACTS.get(requested_model)
+        if spec is None:
             raise OctomilError(
                 code=OctomilErrorCode.UNSUPPORTED_MODALITY,
                 message=(
-                    f"native STT backend: model {model_name!r} is not supported in v0.1.5. "
-                    f"Only {_SUPPORTED_MODEL_NAME!r} is wired in this release "
-                    "(the runtime pins a single ggml-tiny.bin SHA-256). "
-                    "Multi-size whisper support requires a runtime update."
+                    f"native STT backend: model {model_name!r} is not supported by the native runtime. "
+                    f"Supported native sizes are {', '.join(_SUPPORTED_MODEL_NAMES)}. "
+                    "whisper-small, whisper-medium, and whisper-large-v3 are not enabled."
                 ),
             )
         if self._runtime is not None:
-            # Same canonical name on a re-load is idempotent.
-            return
-        self._model_name = model_name
+            if self._model_name.lower() == requested_model:
+                # Same canonical name on a re-load is idempotent.
+                return
+            raise OctomilError(
+                code=OctomilErrorCode.INVALID_INPUT,
+                message=(
+                    f"native STT backend already loaded {self._model_name!r}; "
+                    f"cannot reuse it for {requested_model!r}"
+                ),
+            )
+        self._model_name = requested_model
         try:
             self._runtime = NativeRuntime.open()
         except NativeRuntimeError as exc:
@@ -357,7 +442,7 @@ class NativeSttBackend:
             # thread-local last_error when it skips advertising on
             # this branch). The disambiguation matters because (a)
             # is a setup problem the operator fixes by pointing at a
-            # real ggml-tiny.bin, while (b) is an integrity-violation
+            # real registered ggml artifact, while (b) is an integrity-violation
             # signal that callers route differently (e.g. trigger a
             # re-download). Codex R1 blocker: previously we flattened
             # both to RUNTIME_UNAVAILABLE.
@@ -367,9 +452,8 @@ class NativeSttBackend:
                 raise OctomilError(
                     code=OctomilErrorCode.CHECKSUM_MISMATCH,
                     message=(
-                        "native STT backend: ggml-tiny.bin SHA-256 does not "
-                        "match the v0.1.5 runtime-pinned digest "
-                        "(be07e048…6e1b21). Re-download the artifact."
+                        "native STT backend: Whisper artifact SHA-256 does not "
+                        "match a runtime-registered digest. Re-download the artifact."
                     ),
                 )
             raise OctomilError(
@@ -377,18 +461,17 @@ class NativeSttBackend:
                 message=(
                     "native STT backend: runtime does not advertise "
                     "'audio.transcription'. Check OCTOMIL_WHISPER_BIN "
-                    "(must point at ggml-tiny.bin with SHA-256 "
-                    "be07e048…6e1b21) and that the dylib was built with "
+                    "(must point at a registered ggml-tiny.bin or "
+                    "ggml-base.bin artifact) and that the dylib was built with "
                     "OCT_ENABLE_ENGINE_WHISPER_CPP=ON."
                 ),
             )
 
-        # v0.1.5 PR-2A: audio.transcription is a model-bound capability
-        # like chat.completion. session_open requires a pre-opened
-        # `oct_model_t*` (engine_hint="whisper_cpp"); the runtime
-        # rejects with INVALID_INPUT and a precise last_error otherwise.
-        # We pre-warm here so transcribe() pays only session_open +
-        # send_audio + drain on the hot path.
+        # Runtime registry admission accepts any registered Whisper row;
+        # the SDK request is for a specific identity, so verify the
+        # env artifact against `spec` before model_open. We still pass
+        # artifact_digest as defense in depth, but the SDK does not rely
+        # on runtime-side expected-identity consumption.
         whisper_bin = os.environ.get(_WHISPER_BIN_ENV, "")
         if not whisper_bin:
             self.close()
@@ -396,13 +479,19 @@ class NativeSttBackend:
                 code=OctomilErrorCode.RUNTIME_UNAVAILABLE,
                 message=(
                     f"native STT backend: {_WHISPER_BIN_ENV} not set. "
-                    "Point at a verified ggml-tiny.bin (SHA-256 "
-                    "be07e048…6e1b21)."
+                    f"Point at verified {spec.filename} bytes for {spec.model_name} "
+                    f"(SHA-256 {spec.sha256[:12]}...)."
                 ),
             )
         try:
+            _verify_whisper_artifact_matches_spec(whisper_bin, spec)
+        except OctomilError:
+            self.close()
+            raise
+        try:
             self._model = self._runtime.open_model(
                 model_uri=whisper_bin,
+                artifact_digest=spec.artifact_digest,
                 engine_hint="whisper_cpp",
             )
             self._model.warm()
@@ -410,12 +499,12 @@ class NativeSttBackend:
             self.close()
             raise _runtime_status_to_sdk_error(
                 exc.status,
-                "native STT backend failed to warm whisper-tiny model",
+                f"native STT backend failed to warm {spec.model_name} model",
                 last_error=getattr(exc, "last_error", ""),
             ) from exc
         # Codex R1 nit: was logger.info; lowered to debug so the
         # cutover-rule "no new stderr/metric emission" stays clean.
-        logger.debug("NativeSttBackend: runtime opened + whisper-tiny warmed")
+        logger.debug("NativeSttBackend: runtime opened + %s warmed", spec.model_name)
 
     def close(self) -> None:
         # Close the model BEFORE the runtime so oct_runtime_close
@@ -459,7 +548,7 @@ class NativeSttBackend:
             numpy float32 array OR a list of floats. Stereo /
             multichannel rejects ``INVALID_INPUT``.
         sample_rate_hz
-            Hz. Must be 16000 (whisper-tiny is hard-coded in v0.1.5).
+            Hz. Must be 16000 for the native whisper.cpp STT path.
         language
             BCP-47 language hint. Echoed back on the result; the
             runtime is multilingual but v0.1.5 surfaces a single

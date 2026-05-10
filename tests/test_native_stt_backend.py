@@ -29,6 +29,8 @@ What we lock in here:
 
 from __future__ import annotations
 
+import stat
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import numpy as np
@@ -45,12 +47,14 @@ from octomil.runtime.native.loader import (
     NativeRuntimeError,
 )
 from octomil.runtime.native.stt_backend import (
+    _WHISPER_ARTIFACTS,
     NativeSttBackend,
     NativeTranscriptionBackend,
     Segment,
     TranscriptionResult,
     _runtime_status_to_sdk_error,
     _validate_pcm_f32,
+    is_supported_native_whisper_model,
     runtime_advertises_audio_transcription,
 )
 
@@ -200,16 +204,35 @@ class TestRuntimeAdvertises:
 
 
 class TestModelNameGate:
-    """Codex R1 blocker: only whisper-tiny is wired in v0.1.5; other
-    names must reject UNSUPPORTED_MODALITY rather than silently
-    substitute tiny."""
+    """W1 wires tiny/base only; later sizes must reject rather than
+    silently substituting a different registered artifact."""
 
-    def test_whisper_base_rejects_unsupported_modality(self) -> None:
+    def test_supported_native_whisper_model_helper(self) -> None:
+        assert is_supported_native_whisper_model("whisper-tiny") is True
+        assert is_supported_native_whisper_model("whisper-base") is True
+        assert is_supported_native_whisper_model("whisper-small") is False
+
+    def test_whisper_base_loads_with_expected_digest(self) -> None:
         backend = NativeSttBackend()
-        with pytest.raises(OctomilError) as exc_info:
+        rt = MagicMock()
+        rt.capabilities.return_value = MagicMock(supported_capabilities=("audio.transcription",))
+        model = MagicMock()
+        rt.open_model.return_value = model
+        with (
+            patch(
+                "octomil.runtime.native.stt_backend.NativeRuntime.open",
+                return_value=rt,
+            ),
+            patch("octomil.runtime.native.stt_backend._verify_whisper_artifact_matches_spec") as verify_mock,
+        ):
             backend.load_model("whisper-base")
-        assert exc_info.value.code == OctomilErrorCode.UNSUPPORTED_MODALITY
-        assert "whisper-base" in exc_info.value.error_message
+        verify_mock.assert_called_once_with(_FAKE_WHISPER_BIN, _WHISPER_ARTIFACTS["whisper-base"])
+        rt.open_model.assert_called_once_with(
+            model_uri=_FAKE_WHISPER_BIN,
+            artifact_digest=_WHISPER_ARTIFACTS["whisper-base"].artifact_digest,
+            engine_hint="whisper_cpp",
+        )
+        model.warm.assert_called_once()
 
     def test_whisper_small_rejects_unsupported_modality(self) -> None:
         backend = NativeSttBackend()
@@ -303,10 +326,78 @@ class TestLoadModelGate:
     def test_load_model_idempotent(self) -> None:
         backend = NativeSttBackend()
         backend._runtime = MagicMock()  # type: ignore[assignment]
+        backend._model_name = "whisper-tiny"
         # Should be a no-op; no NativeRuntime.open call.
         with patch("octomil.runtime.native.stt_backend.NativeRuntime.open") as open_mock:
             backend.load_model("whisper-tiny")
             open_mock.assert_not_called()
+
+    def test_requested_tiny_rejects_base_env_artifact_before_model_open(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        backend = NativeSttBackend()
+        rt = MagicMock()
+        rt.capabilities.return_value = MagicMock(supported_capabilities=("audio.transcription",))
+        base_spec = _WHISPER_ARTIFACTS["whisper-base"]
+        monkeypatch.setenv("OCTOMIL_WHISPER_BIN", "/models/whisper-base/ggml-base.bin")
+        with (
+            patch(
+                "octomil.runtime.native.stt_backend.NativeRuntime.open",
+                return_value=rt,
+            ),
+            patch(
+                "octomil.runtime.native.stt_backend.os.stat",
+                return_value=SimpleNamespace(st_mode=stat.S_IFREG | 0o644, st_size=base_spec.size_bytes),
+            ),
+        ):
+            with pytest.raises(OctomilError) as exc_info:
+                backend.load_model("whisper-tiny")
+            assert exc_info.value.code == OctomilErrorCode.CHECKSUM_MISMATCH
+        rt.open_model.assert_not_called()
+
+    def test_requested_base_rejects_tiny_env_artifact_before_model_open(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        backend = NativeSttBackend()
+        rt = MagicMock()
+        rt.capabilities.return_value = MagicMock(supported_capabilities=("audio.transcription",))
+        tiny_spec = _WHISPER_ARTIFACTS["whisper-tiny"]
+        monkeypatch.setenv("OCTOMIL_WHISPER_BIN", "/models/whisper-tiny/ggml-tiny.bin")
+        with (
+            patch(
+                "octomil.runtime.native.stt_backend.NativeRuntime.open",
+                return_value=rt,
+            ),
+            patch(
+                "octomil.runtime.native.stt_backend.os.stat",
+                return_value=SimpleNamespace(st_mode=stat.S_IFREG | 0o644, st_size=tiny_spec.size_bytes),
+            ),
+        ):
+            with pytest.raises(OctomilError) as exc_info:
+                backend.load_model("whisper-base")
+            assert exc_info.value.code == OctomilErrorCode.CHECKSUM_MISMATCH
+        rt.open_model.assert_not_called()
+
+    def test_requested_base_rejects_wrong_sha_after_size_match(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        backend = NativeSttBackend()
+        rt = MagicMock()
+        rt.capabilities.return_value = MagicMock(supported_capabilities=("audio.transcription",))
+        base_spec = _WHISPER_ARTIFACTS["whisper-base"]
+        monkeypatch.setenv("OCTOMIL_WHISPER_BIN", "/models/whisper-base/ggml-base.bin")
+        with (
+            patch(
+                "octomil.runtime.native.stt_backend.NativeRuntime.open",
+                return_value=rt,
+            ),
+            patch(
+                "octomil.runtime.native.stt_backend.os.stat",
+                return_value=SimpleNamespace(st_mode=stat.S_IFREG | 0o644, st_size=base_spec.size_bytes),
+            ),
+            patch(
+                "octomil.runtime.native.stt_backend._sha256_file_hex",
+                return_value=_WHISPER_ARTIFACTS["whisper-tiny"].sha256,
+            ),
+        ):
+            with pytest.raises(OctomilError) as exc_info:
+                backend.load_model("whisper-base")
+            assert exc_info.value.code == OctomilErrorCode.CHECKSUM_MISMATCH
+        rt.open_model.assert_not_called()
 
     def test_kernel_resolver_reraises_typed_native_errors(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Codex R2 blocker: kernel native-first branch must re-raise
@@ -354,8 +445,8 @@ class TestLoadModelGate:
                 result = kernel._resolve_local_transcription_backend("whisper-tiny")
             assert result is None
 
-    def test_kernel_resolver_rejects_non_tiny_whisper_with_none(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Codex R1+R2: when env is set and model is whisper-base/etc.,
+    def test_kernel_resolver_rejects_unregistered_whisper_with_none(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """When env is set and model is whisper-small/etc.,
         kernel returns None (caller's cloud-fallback gate decides).
         The native backend itself raises UNSUPPORTED_MODALITY but
         the kernel resolver short-circuits to None before
@@ -371,21 +462,36 @@ class TestLoadModelGate:
         object.__setattr__(kernel, "_lookup_warmed_backend", lambda *a, **kw: None)
         with patch("octomil.runtime.engines.get_registry") as reg_mock:
             reg_mock.return_value.detect_all.return_value = []
-            result = kernel._resolve_local_transcription_backend("whisper-base")
+            result = kernel._resolve_local_transcription_backend("whisper-small")
         assert result is None
 
+    def test_kernel_resolver_accepts_whisper_base_native(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from octomil.execution.kernel import ExecutionKernel
+        from octomil.serve.stt_serve_adapter import NativeSttServeAdapter
+
+        monkeypatch.setenv("OCTOMIL_WHISPER_BIN", "/some/fake/path.bin")
+        kernel = ExecutionKernel.__new__(ExecutionKernel)
+        object.__setattr__(kernel, "_warmed_backends", {})
+        object.__setattr__(kernel, "_lookup_warmed_backend", lambda *a, **kw: None)
+        with patch(
+            "octomil.serve.stt_serve_adapter.NativeSttServeAdapter.load_model",
+            return_value=None,
+        ) as load_mock:
+            result = kernel._resolve_local_transcription_backend("whisper-base")
+        assert isinstance(result, NativeSttServeAdapter)
+        load_mock.assert_called_once_with("whisper-base")
+
     def test_already_loaded_rejects_mismatched_model_name(self) -> None:
-        """Codex R2 nit: when the backend is already warmed for
+        """When the backend is already warmed for
         whisper-tiny, a second load_model call asking for a
-        different size must reject UNSUPPORTED_MODALITY rather
-        than no-op (which would let the next transcribe call run
-        tiny against a request labeled base)."""
+        different supported size must reject INVALID_INPUT rather
+        than no-op."""
         backend = NativeSttBackend()
         backend._runtime = MagicMock()  # type: ignore[assignment]
         backend._model_name = "whisper-tiny"
         with pytest.raises(OctomilError) as exc_info:
             backend.load_model("whisper-base")
-        assert exc_info.value.code == OctomilErrorCode.UNSUPPORTED_MODALITY
+        assert exc_info.value.code == OctomilErrorCode.INVALID_INPUT
 
 
 # ---------------------------------------------------------------------------

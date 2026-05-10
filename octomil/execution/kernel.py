@@ -4117,17 +4117,15 @@ class ExecutionKernel:
         except Exception:  # noqa: BLE001 — defensive; module is in-tree
             _looks_like_whisper = False
         if _looks_like_whisper and os.environ.get("OCTOMIL_WHISPER_BIN"):
-            # Codex R1 blocker: only whisper-tiny is wired in v0.1.5.
-            # Other names (whisper-base/small/medium/large-v3) would
-            # silently run tiny otherwise. Mirror NativeSttBackend's
-            # gate at the kernel layer so the cloud-fallback path is
-            # aware (returning None lets the caller's policy gate
-            # decide; the SDK contract says local STT for
-            # whisper-base+ is unavailable until the runtime ships
-            # multi-size support).
-            if model.lower() != "whisper-tiny":
+            # Mirror NativeSttBackend's size gate at the kernel
+            # layer: W1 enables tiny/base only, and later sizes must
+            # keep flowing through the caller's policy gate until the
+            # runtime, contracts, and SDK all advertise them.
+            from octomil.runtime.native.stt_backend import is_supported_native_whisper_model
+
+            if not is_supported_native_whisper_model(model):
                 logger.debug(
-                    "native STT backend rejected %r — only whisper-tiny is wired in v0.1.5",
+                    "native STT backend rejected %r - only whisper-tiny and whisper-base are wired",
                     model,
                 )
                 return None

@@ -7,8 +7,8 @@ oct_session_open → oct_session_send_audio → oct_session_poll_event drain
   * ``OCTOMIL_RUNTIME_DYLIB`` (or a fetched dev cache) pointing at a
     liboctomil-runtime built with ``OCT_ENABLE_ENGINE_WHISPER_CPP=ON``
     and ABI minor >= 9.
-  * ``OCTOMIL_WHISPER_BIN`` pointing at a verified ggml-tiny.bin
-    (SHA-256 ``be07e048…6e1b21``).
+  * ``OCTOMIL_WHISPER_BIN`` pointing at a verified ggml-tiny.bin or
+    ggml-base.bin row registered by the runtime.
   * ``research/engines/whisper.cpp/samples/jfk.wav`` on disk.
 
 When any of these are missing the entire module skips; we never
