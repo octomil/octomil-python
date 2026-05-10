@@ -3,10 +3,19 @@ name: Benchmark Regression Gate
 on:
   pull_request:
     branches: [main]
+    # B5 (URGENT): include cache-bench proof artifacts, the harness tests,
+    # the validator, and the workflow file itself so changes to any of
+    # these trigger the cache bench proof gate. Without these paths a PR
+    # could land a malformed proof artifact (or weaken the gate itself)
+    # and the gate would never run.
     paths:
       - 'octomil/**'
       - 'scripts/run_benchmark.py'
       - 'benchmarks/**'
+      - 'release/cache_proofs/**'
+      - 'tests/test_cache_bench_harness.py'
+      - 'ci/validate_cache_bench_proof.py'
+      - '.github/workflows/benchmark-gate.yml'
   push:
     tags: ['v*']
   workflow_dispatch:
@@ -204,34 +213,39 @@ jobs:
               print(f'OK: anti-pattern guard works — skipped proof emitted correctly.')
           "
 
-      - name: Latency-claim gate (Phase 1 — no active claims)
+      - name: Latency-claim gate (canonical schema validation)
+        # Codex sweep B4 (URGENT): every proof artifact in
+        # release/cache_proofs/** is run through the canonical validator
+        # — both skipped=true and skipped=false. The previous gate only
+        # ad-hoc-checked cold_p50_ms / hit_ratio for skipped=false and
+        # let schema-invalid / privacy-violating artifacts through.
         run: |
           python3 -c "
           import json, pathlib, sys
-          # Phase 1: no release/cache_proofs/ directory expected.
+          sys.path.insert(0, 'scripts')
+          from validate_cache_bench_proof import validate_proof, ProofValidationError
           proof_dir = pathlib.Path('release/cache_proofs')
           if not proof_dir.exists():
-              print('No release/cache_proofs/ — Phase 1 gate: wired but no claims.')
+              print('No release/cache_proofs/ — Phase 1 gate: wired, no claims yet.')
               sys.exit(0)
           failures = []
-          for f in proof_dir.glob('**/*.json'):
+          checked = 0
+          for f in sorted(proof_dir.glob('**/*.json')):
+              checked += 1
               try:
                   doc = json.loads(f.read_text())
               except json.JSONDecodeError as e:
                   failures.append(f'{f}: JSON decode error: {e}')
                   continue
-              if not doc.get('skipped', True):
-                  # A real measurement exists — it MUST have been
-                  # produced by a valid harness run (not skip-exempted).
-                  if doc.get('cold_p50_ms') is None:
-                      failures.append(f'{f}: skipped=false but cold_p50_ms is null')
-                  if doc.get('hit_ratio') is None:
-                      failures.append(f'{f}: skipped=false but hit_ratio is null')
+              try:
+                  validate_proof(doc)
+              except ProofValidationError as exc:
+                  failures.append(f'{f}: {exc}')
           if failures:
               for msg in failures:
                   print(f'FAIL: {msg}')
               sys.exit(1)
-          print(f'Cache bench proof gate: OK (0 active latency claims).')
+          print(f'Cache bench proof gate: OK ({checked} artifact(s) validated).')
           "
 
       - name: Upload proof artifacts (if any)
