@@ -198,6 +198,124 @@ def test_native_embeddings_backend_drain_emits_vectors_in_order_via_fake_session
     assert r.model == "fake-bge-mini"
 
 
+def test_result_cache_replays_exact_batch_token_metadata(monkeypatch):
+    """Post-merge cache review: warm batch hits must preserve the exact
+    per-input token metadata from the cold runtime result. Integer-dividing
+    the batch total corrupts prompt_tokens when counts are uneven.
+    """
+    from octomil.runtime.native.embeddings_backend import NativeEmbeddingsBackend
+    from octomil.runtime.native.embeddings_cache import CachePolicy, EmbeddingsCacheManager
+    from octomil.runtime.native.loader import (
+        OCT_EVENT_EMBEDDING_VECTOR,
+        OCT_EVENT_NONE,
+        OCT_EVENT_SESSION_COMPLETED,
+        OCT_STATUS_OK,
+    )
+
+    monkeypatch.setenv("OCT_EMBEDDINGS_RESULT_CACHE", "1")
+
+    class _FakeEvent:
+        def __init__(self, **kw: Any) -> None:
+            self.type = kw["type"]
+            self.values = kw.get("values", [])
+            self.n_dim = kw.get("n_dim", 0)
+            self.n_input_tokens = kw.get("n_input_tokens", 0)
+            self.index = kw.get("index", 0)
+            self.pooling_type = kw.get("pooling_type", 0)
+            self.is_normalized = kw.get("is_normalized", False)
+            self.terminal_status = kw.get("terminal_status", 0)
+            self.text = ""
+
+    class _FakeSession:
+        def __init__(self) -> None:
+            self._events = iter(
+                [
+                    _FakeEvent(
+                        type=OCT_EVENT_EMBEDDING_VECTOR,
+                        values=[1.0, 0.0],
+                        n_dim=2,
+                        n_input_tokens=4,
+                        index=0,
+                        pooling_type=1,
+                        is_normalized=True,
+                    ),
+                    _FakeEvent(
+                        type=OCT_EVENT_EMBEDDING_VECTOR,
+                        values=[0.0, 1.0],
+                        n_dim=2,
+                        n_input_tokens=2,
+                        index=1,
+                        pooling_type=1,
+                        is_normalized=True,
+                    ),
+                    _FakeEvent(
+                        type=OCT_EVENT_EMBEDDING_VECTOR,
+                        values=[0.5, 0.5],
+                        n_dim=2,
+                        n_input_tokens=5,
+                        index=2,
+                        pooling_type=1,
+                        is_normalized=True,
+                    ),
+                    _FakeEvent(type=OCT_EVENT_SESSION_COMPLETED, terminal_status=OCT_STATUS_OK),
+                ]
+            )
+
+        def send_embed(self, *_a: Any, **_k: Any) -> None:
+            return None
+
+        def poll_event(self, *_a: Any, **_k: Any) -> Any:
+            try:
+                return next(self._events)
+            except StopIteration:
+                return _FakeEvent(type=OCT_EVENT_NONE)
+
+        def close(self) -> None:
+            return None
+
+    class _FakeRuntime:
+        def open_session(self, **_k: Any) -> Any:
+            return _FakeSession()
+
+        def last_error(self) -> str:
+            return ""
+
+        def close(self) -> None:
+            return None
+
+    class _RejectRuntime:
+        def open_session(self, **_k: Any) -> Any:
+            raise AssertionError("warm cache hit must not open a runtime session")
+
+        def close(self) -> None:
+            return None
+
+    class _FakeModel:
+        def close(self) -> None:
+            return None
+
+    policy = CachePolicy.policy_allowed()
+    backend = NativeEmbeddingsBackend(cache_policy=policy)
+    backend._runtime = _FakeRuntime()  # type: ignore[assignment]
+    backend._model = _FakeModel()  # type: ignore[assignment]
+    backend._model_name = "fake-bge-mini"
+    backend._cache_manager = EmbeddingsCacheManager(
+        model_digest="sha256:" + "a" * 64,
+        adapter_version="test",
+    )
+
+    inputs = ["alpha", "beta gamma", "delta epsilon zeta"]
+    cold = backend.embed(inputs)
+    assert cold.prompt_tokens == 11
+    assert cold.total_tokens == 11
+
+    backend._runtime = _RejectRuntime()  # type: ignore[assignment]
+    warm = backend.embed(inputs)
+    assert warm.prompt_tokens == 11
+    assert warm.total_tokens == 11
+    assert warm.embeddings == cold.embeddings
+
+
 def test_native_embeddings_backend_out_of_order_index_raises_inference_failed():
     """Defensive invariant: if the runtime ever emits
     EMBEDDING_VECTOR events out of input order, the SDK MUST raise

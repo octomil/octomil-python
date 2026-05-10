@@ -419,6 +419,7 @@ class NativeEmbeddingsBackend:
             pooling_type = 0
             is_normalized = False
             total_tokens = 0
+            per_vector_tokens: list[int] = []
             terminal_status: int = OCT_STATUS_OK
             saw_error = False
             error_message = ""
@@ -467,7 +468,9 @@ class NativeEmbeddingsBackend:
                             message=(f"native embeddings: n_dim drift across batch (got {ev.n_dim}, expected {n_dim})"),
                         )
                     vectors.append(list(ev.values))
-                    total_tokens += int(ev.n_input_tokens)
+                    input_tokens = int(ev.n_input_tokens)
+                    per_vector_tokens.append(input_tokens)
+                    total_tokens += input_tokens
                     continue
                 if ev.type == OCT_EVENT_ERROR:
                     saw_error = True
@@ -505,22 +508,19 @@ class NativeEmbeddingsBackend:
 
             # v0.1.11 Lane B: populate result cache with the full
             # API-visible record (Codex B2). PRIVACY: raw text is hashed
-            # inside cache_manager.put_record(). Per-input prompt_tokens
-            # is approximated as the batch total / batch size (the
-            # runtime emits one EMBEDDING_VECTOR per input but does not
-            # split prompt_tokens per input on the current ABI). When
-            # the runtime gains a per-vector token count this should
-            # switch to that field.
+            # inside cache_manager.put_record(). Preserve the exact
+            # per-vector n_input_tokens emitted by the runtime so a warm
+            # batch hit replays the same prompt_tokens / total_tokens as
+            # the cold result, even when counts are uneven.
             if self._cache_manager is not None and vectors:
                 from octomil.runtime.native.embeddings_cache import CachedEmbedding
 
-                per_input_tokens = total_tokens // len(vectors) if vectors else 0
-                for cache_inp, cache_vec in zip(input_list_for_cache, vectors):
+                for cache_inp, cache_vec, cache_tokens in zip(input_list_for_cache, vectors, per_vector_tokens):
                     self._cache_manager.put_record(
                         cache_inp,
                         CachedEmbedding(
                             vector=cache_vec,
-                            prompt_tokens=per_input_tokens,
+                            prompt_tokens=cache_tokens,
                             n_dim=n_dim,
                             pooling_type=pooling_type,
                             is_normalized=is_normalized,
