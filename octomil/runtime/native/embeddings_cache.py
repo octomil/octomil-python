@@ -23,16 +23,26 @@ PRIVACY INVARIANTS (enforced by-construction):
   3. Cache keys are 32-byte SHA-256 digests.  They are never printed
      or emitted in any event.
   4. The only observable external signal is a boolean hit/miss, surfaced
-     as metrics embeddings.cache_hit and embeddings.cache_miss.
+     as metrics embeddings.cache_hit_total and cache.miss_total.
 
-METRICS (provisional — TODO(lane-a): names not yet in contracts):
-  embeddings.cache_hit   — counter, incremented on each cache hit
-  embeddings.cache_miss  — counter, incremented on each cache miss
-  cache.lookup_ms        — histogram, lookup latency in ms
+METRICS (canonical — registered in octomil-contracts Lane A v1.24.0):
+  embeddings.cache_hit_total — counter, incremented on each cache hit
+                                (capability-prefixed cache metric per
+                                schemas/core/runtime_metric.json).
+  cache.miss_total           — counter, incremented on each cache miss
+                                (generic cache metric; no capability-
+                                prefixed embeddings miss exists).
+  cache.lookup_ms            — gauge, lookup latency in ms (most recent
+                                lookup, not cumulative).
 
 PROTOTYPE STATUS:
-  v0.1.11 Lane B prototype.  Metric names are provisional and marked
-  TODO(lane-a).  Do NOT merge until Lane A contracts land.
+  v0.1.11 Lane B prototype.  Metric names are now canonical (Lane A
+  merged at contracts cfffaf8 / runtime 3bcb061).  No envelope label
+  fields are emitted from these helpers — the canonical OCT_EVENT_METRIC
+  envelope reserves a closed allowlist (request_id, route_id, trace_id,
+  engine_version, adapter_version, accelerator, artifact_digest,
+  cache_was_hit) and that wiring is left to the SDK telemetry sink at
+  the C ABI boundary, not these Python emit helpers.
 """
 
 from __future__ import annotations
@@ -446,38 +456,50 @@ class EmbeddingsCacheManager:
 # ---------------------------------------------------------------------------
 # Metric emission helpers
 # ---------------------------------------------------------------------------
-# TODO(lane-a): names below are PROVISIONAL.  They are not yet registered in
-# octomil-contracts/schemas/core/runtime_metric.json.  Once Lane A lands,
-# replace these strings with the blessed closed-enum constants.
+# Canonical metric names — Lane A merged at octomil-contracts cfffaf8
+# (schemas/core/runtime_metric.json v1.24.0).  Names below are the closed
+# enum constants and are validated by ci/validate_cache_metric_payload.py.
+# `cache_layer` is intentionally NOT emitted as an envelope field — the
+# canonical envelope allowlist (request_id, route_id, trace_id,
+# engine_version, adapter_version, accelerator, artifact_digest,
+# cache_was_hit) does not include free-form labels, and the metric NAME
+# already namespaces the emission point.
 
-_METRIC_CACHE_HIT = "embeddings.cache_hit"  # TODO(lane-a): provisional
-_METRIC_CACHE_MISS = "embeddings.cache_miss"  # TODO(lane-a): provisional
-_METRIC_LOOKUP_MS = "cache.lookup_ms"  # TODO(lane-a): provisional
+_METRIC_CACHE_HIT = "embeddings.cache_hit_total"  # canonical (Lane A)
+_METRIC_CACHE_MISS = "cache.miss_total"  # canonical (Lane A)
+_METRIC_LOOKUP_MS = "cache.lookup_ms"  # canonical (Lane A)
 
 
 def emit_cache_hit(metric_sink: object, cache_layer: str) -> None:
-    """Emit embeddings.cache_hit metric.
+    """Emit embeddings.cache_hit_total metric.
 
-    PRIVACY: only the cache_layer label ('tokenization' or 'result')
-    is included — no input text, no token IDs, no vector bytes.
+    PRIVACY: only the canonical metric name + value is emitted — no
+    input text, no token IDs, no vector bytes, no free-form label.
+    The ``cache_layer`` argument is accepted for source-call-site
+    documentation only; it is NOT included in the metric event,
+    because the canonical envelope reserves a closed allowlist of
+    fields and free-form labels would expand cardinality.
     Best-effort: never raises.
     """
+    del cache_layer  # name-only emission; see canonical envelope
     try:
         if metric_sink is not None and hasattr(metric_sink, "emit"):
-            metric_sink.emit(_METRIC_CACHE_HIT, 1.0, {"layer": cache_layer})
+            metric_sink.emit(_METRIC_CACHE_HIT, 1.0, {})
     except Exception:  # noqa: BLE001
         pass
 
 
 def emit_cache_miss(metric_sink: object, cache_layer: str) -> None:
-    """Emit embeddings.cache_miss metric.
+    """Emit cache.miss_total metric.
 
-    PRIVACY: same constraints as emit_cache_hit.
+    PRIVACY: same constraints as emit_cache_hit. ``cache_layer`` is
+    intentionally not forwarded.
     Best-effort: never raises.
     """
+    del cache_layer  # name-only emission; see canonical envelope
     try:
         if metric_sink is not None and hasattr(metric_sink, "emit"):
-            metric_sink.emit(_METRIC_CACHE_MISS, 1.0, {"layer": cache_layer})
+            metric_sink.emit(_METRIC_CACHE_MISS, 1.0, {})
     except Exception:  # noqa: BLE001
         pass
 
