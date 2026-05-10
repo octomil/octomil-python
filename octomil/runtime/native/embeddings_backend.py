@@ -62,9 +62,16 @@ import logging
 import os
 import time
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Optional
 
 from ...errors import OctomilError, OctomilErrorCode
+from .embeddings_cache import (
+    CachePolicy,
+    EmbeddingsCacheManager,
+    emit_cache_hit,
+    emit_cache_miss,
+    emit_lookup_ms,
+)
 from .error_mapping import map_oct_status
 from .loader import (
     OCT_EVENT_EMBEDDING_VECTOR,
@@ -156,6 +163,7 @@ class NativeEmbeddingsBackend:
         *,
         model_dir: str | None = None,
         default_deadline_ms: int | None = None,
+        cache_policy: CachePolicy | None = None,
     ) -> None:
         self._model_dir: str | None = model_dir
         self._model_name: str = ""
@@ -165,6 +173,13 @@ class NativeEmbeddingsBackend:
         self._default_deadline_ms: int = (
             default_deadline_ms if default_deadline_ms is not None else self.DEFAULT_DEADLINE_MS
         )
+        # v0.1.11 Lane B: embeddings cache.
+        # Default policy: tokenization cache ON (safe default per PE caveat),
+        # result cache OFF.  Callers may pass an explicit CachePolicy.
+        self._cache_policy: CachePolicy = cache_policy if cache_policy is not None else CachePolicy.tokenization_only()
+        # Cache manager is initialized after load_model() when we have
+        # the model_digest.  None until then.
+        self._cache_manager: Optional[EmbeddingsCacheManager] = None
 
     # ------------------------------------------------------------------
     # GGUF resolution — same shape as NativeChatBackend.
@@ -209,8 +224,32 @@ class NativeEmbeddingsBackend:
                 f"native embeddings backend failed to load {self._gguf_path}",
                 last_error=getattr(exc, "last_error", ""),
             ) from exc
+        # v0.1.11 Lane B: initialize cache manager now that we have the
+        # model artifact digest.
+        model_digest = ""
+        try:
+            if self._model is not None:
+                model_digest = getattr(self._model, "artifact_digest", "") or ""
+        except Exception:  # noqa: BLE001
+            pass
+        if not model_digest:
+            # Fallback: use GGUF path hash as a stable namespace key.
+            import hashlib as _hl
+
+            model_digest = "sha256:" + _hl.sha256(self._gguf_path.encode()).hexdigest()
+        self._cache_manager = EmbeddingsCacheManager(
+            model_digest=model_digest,
+            adapter_version=_BACKEND_NAME,
+        )
 
     def close(self) -> None:
+        # v0.1.11 Lane B: clear caches on close (lifecycle requirement).
+        if self._cache_manager is not None:
+            try:
+                self._cache_manager.close()
+            except Exception:  # noqa: BLE001
+                pass
+            self._cache_manager = None
         if self._model is not None:
             try:
                 self._model.close()
@@ -238,6 +277,8 @@ class NativeEmbeddingsBackend:
         inputs: str | list[str],
         *,
         deadline_ms: int | None = None,
+        cache_policy: CachePolicy | None = None,
+        metric_sink: object = None,
     ) -> EmbeddingsResult:
         """Run an embeddings.text request against the cached model.
 
@@ -288,6 +329,43 @@ class NativeEmbeddingsBackend:
                     f"fall back to the backend's default ({self.DEFAULT_DEADLINE_MS}ms)."
                 ),
             )
+
+        # v0.1.11 Lane B: resolve effective cache policy.
+        # Per-call policy overrides the backend default.
+        effective_policy = cache_policy if cache_policy is not None else self._cache_policy
+
+        # v0.1.11 Lane B: check result cache for all inputs.
+        # If ALL inputs hit the result cache, we can skip the runtime call
+        # entirely.  If ANY miss, we proceed with the full session.
+        # PRIVACY: raw text is hashed inside EmbeddingsCacheManager.get_vector().
+        if self._cache_manager is not None:
+            input_list = [inputs] if isinstance(inputs, str) else list(inputs)
+            all_cached_vectors: list[list[float]] = []
+            all_hit = True
+            for inp in input_list:
+                t0 = time.monotonic()
+                cached = self._cache_manager.get_vector(inp, policy=effective_policy)
+                elapsed_ms = (time.monotonic() - t0) * 1000.0
+                emit_lookup_ms(metric_sink, elapsed_ms)
+                if cached is not None:
+                    all_cached_vectors.append(cached)
+                    emit_cache_hit(metric_sink, "result")
+                else:
+                    emit_cache_miss(metric_sink, "result")
+                    all_hit = False
+                    break
+            if all_hit and len(all_cached_vectors) == len(input_list):
+                # Full result cache hit: return without runtime call.
+                total_tokens = 0  # unknown from cache
+                return EmbeddingsResult(
+                    embeddings=all_cached_vectors,
+                    model=self._model_name,
+                    n_dim=len(all_cached_vectors[0]) if all_cached_vectors else 0,
+                    pooling_type=0,
+                    is_normalized=True,
+                    prompt_tokens=total_tokens,
+                    total_tokens=total_tokens,
+                )
 
         try:
             sess = self._runtime.open_session(
@@ -405,6 +483,13 @@ class NativeEmbeddingsBackend:
                         f"native embeddings: vector count mismatch (got {len(vectors)}, expected {expected_count})"
                     ),
                 )
+
+            # v0.1.11 Lane B: populate result cache with the returned vectors.
+            # PRIVACY: raw text is hashed inside cache_manager.put_vector().
+            if self._cache_manager is not None and vectors:
+                input_list_for_cache = [inputs] if isinstance(inputs, str) else list(inputs)
+                for cache_inp, cache_vec in zip(input_list_for_cache, vectors):
+                    self._cache_manager.put_vector(cache_inp, cache_vec, policy=effective_policy)
 
             return EmbeddingsResult(
                 embeddings=vectors,
