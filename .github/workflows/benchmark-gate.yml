@@ -141,8 +141,12 @@ jobs:
   # Phase 1: no cache claims latency yet; the latency-claim gate is wired but
   # has no active claims to fail on.
   #
-  # Blocked on Lane A for canonical metric name rebasing.
-  # TODO(lane-a): rebase metric field names to canonical telemetry enum.
+  # Cross-ref (Lane A canonical telemetry enum):
+  #   cold_p50/p95_ms / warm_p50/p95_ms = p50/p95 of cache.lookup_ms (gauge)
+  #     during the cold/warm phase respectively.
+  #   hit_ratio = cache.hit_total / (cache.hit_total + cache.miss_total).
+  # These are aggregate proof-artifact fields (cache_bench_proof.json), not raw
+  # metric enum entries. Per-sample raw metrics come from runtime_metric.json.
   cache-bench-proof-gate:
     timeout-minutes: 15
     name: Cache Bench Proof Gate (Python — Lane H skeleton)

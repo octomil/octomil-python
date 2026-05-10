@@ -25,8 +25,12 @@ Privacy:
   ``_StagedFixtureSet.input_digest`` field must be computed over the
   fixture set metadata, not over the raw inputs.
 
-# TODO(lane-a): rebase all metric field names to canonical names once
-#               Lane A finalises the telemetry enum.
+Metric cross-ref (Lane A canonical telemetry enum, contracts runtime_metric.json):
+  cold_p50_ms / cold_p95_ms = p50/p95 of cache.lookup_ms (gauge) samples during cold phase
+  warm_p50_ms / warm_p95_ms = p50/p95 of cache.lookup_ms (gauge) samples during warm phase
+  hit_ratio                 = cache.hit_total / (cache.hit_total + cache.miss_total) over bench window
+These aggregate fields are local to cache_bench_proof.json — NOT metric enum names.
+
 # TODO(lane-b/c): replace StubCacheAdapter with real cache adapters.
 """
 
@@ -65,7 +69,8 @@ class CacheBenchAdapter(Protocol):
         payload size.
 
         Raises ValueError if the fixture set is malformed.
-        # TODO(lane-a): emit cache.populate_ms metric here.
+        When wired (Lane B/C): emit cache.lookup_ms gauge samples plus
+        cache.hit_total / cache.miss_total counter increments per outcome.
         """
         ...
 
@@ -73,7 +78,8 @@ class CacheBenchAdapter(Protocol):
         """Simulate a cold-path cache lookup.
 
         Returns (hit, latency_ms). Cold = no warm state in the adapter.
-        # TODO(lane-a): emit cache.lookup_ms cold event here.
+        When wired (Lane B/C): emit one cache.lookup_ms gauge sample plus
+        a cache.miss_total / cache.hit_total increment per outcome.
         """
         ...
 
@@ -81,7 +87,8 @@ class CacheBenchAdapter(Protocol):
         """Simulate a warm-path cache lookup.
 
         Returns (hit, latency_ms). Warm = same-process, repeated call.
-        # TODO(lane-a): emit cache.lookup_ms warm event here.
+        When wired (Lane B/C): emit one cache.lookup_ms gauge sample plus
+        a cache.miss_total / cache.hit_total increment per outcome.
         """
         ...
 
@@ -232,7 +239,9 @@ class CacheBenchProof:
             "model_digest": self.model_digest,
             "adapter_version": self.adapter_version,
             "staged_artifact_ref": self.staged_artifact_ref,
-            # TODO(lane-a): rebase metric field names to canonical telemetry enum
+            # Aggregate fields below are local to cache_bench_proof.json; per-sample
+            # raw metrics come from cache.lookup_ms / cache.hit_total / cache.miss_total
+            # in Lane A's canonical enum (contracts runtime_metric.json).
             "cold_p50_ms": self.cold_p50_ms,
             "cold_p95_ms": self.cold_p95_ms,
             "warm_p50_ms": self.warm_p50_ms,
