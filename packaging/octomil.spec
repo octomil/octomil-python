@@ -28,8 +28,11 @@ hidden_imports = [
     "octomil._generated.model_status",
     "octomil._generated.otlp_resource_attributes",
     "octomil._generated.principal_type",
+    "octomil._generated.cache_privacy_mode",
+    "octomil._generated.cache_scope",
+    "octomil._generated.runtime_capability",
+    "octomil._generated.runtime_metric_names",
     "octomil._generated.scope",
-    "octomil._generated.telemetry_events",
     # SDK modules imported by __init__.py
     "octomil.model",
     "octomil.client",
