@@ -7,15 +7,17 @@ Do not edit manually -- re-run codegen from octomil-contracts instead.
 # Span-based telemetry (v1.2.0)
 from . import (
     metric_views,
+    runtime_metric_names,
     span_attributes,
     span_event_attributes,
     span_event_names,
     span_names,
     span_status_mapping,
-    telemetry_events,
 )
 from .artifact_cache_status import ArtifactCacheStatus
 from .artifact_resource_kind import ArtifactResourceKind
+from .cache_privacy_mode import CachePrivacyMode
+from .cache_scope import CacheScope
 from .cache_status import CacheStatus
 from .compatibility_level import CompatibilityLevel
 from .device_class import DeviceClass
@@ -45,10 +47,13 @@ from .otlp_resource_attributes import (
 from .planner_source import PlannerSource
 from .route_locality import RouteLocality
 from .route_mode import RouteMode
+from .runtime_capability import RuntimeCapability
 
 __all__ = [
     "ArtifactResourceKind",
     "ArtifactCacheStatus",
+    "CachePrivacyMode",
+    "CacheScope",
     "CacheStatus",
     "CompatibilityLevel",
     "DeviceClass",
@@ -62,6 +67,7 @@ __all__ = [
     "PlannerSource",
     "RouteLocality",
     "RouteMode",
+    "RuntimeCapability",
     # OTLP resource attributes
     "SERVICE_NAME",
     "SERVICE_VERSION",
@@ -84,5 +90,5 @@ __all__ = [
     "span_event_attributes",
     "span_status_mapping",
     "metric_views",
-    "telemetry_events",
+    "runtime_metric_names",
 ]

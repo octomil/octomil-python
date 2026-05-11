@@ -81,7 +81,7 @@ class FacadeTranscriptions:
         model:
             Optional model ref. Common forms: ``@app/<slug>/transcription``,
             a hosted provider model id (``whisper-1``), or a local model id
-            (``whisper-tiny``).
+            (``whisper-tiny`` / ``whisper-base``).
         language:
             Optional BCP-47 language hint (``"en"``, ``"fr"`` …).
         response_format:

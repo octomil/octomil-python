@@ -76,7 +76,7 @@ def _wav_to_pcm_f32_bytes(audio_path: str) -> tuple[bytes, int]:
             code=OctomilErrorCode.INVALID_INPUT,
             message=(
                 f"native STT serve: WAV sample rate {sample_rate} Hz unsupported; "
-                f"v0.1.5 whisper-tiny is hard-coded to {_WHISPER_SAMPLE_RATE_HZ} Hz "
+                f"native whisper.cpp STT is hard-coded to {_WHISPER_SAMPLE_RATE_HZ} Hz "
                 "mono. Resample upstream (ffmpeg -ar 16000 -ac 1)."
             ),
         )
