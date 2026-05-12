@@ -1,25 +1,27 @@
 #!/usr/bin/env sh
 #
-# Octomil installer — download the correct binary for this platform.
+# Octomil installer — download the self-contained binary bundle for this platform.
 #
 # Usage:
 #   curl -fsSL https://get.octomil.com | sh
 #
 # Environment variables:
-#   OCTOMIL_VERSION   — specific version to install (default: latest)
-#   OCTOMIL_INSTALL   — installation directory (default: /usr/local/bin or ~/.local/bin)
+#   OCTOMIL_VERSION       specific version to install (default: latest)
+#   OCTOMIL_INSTALL_DIR   bin directory for the octomil symlink (default: /usr/local/bin or ~/.local/bin)
+#   OCTOMIL_INSTALL       legacy alias for OCTOMIL_INSTALL_DIR
+#   OCTOMIL_LIB_DIR       bundle directory (default: ~/.local/lib/octomil)
 
 set -eu
 
 REPO="octomil/octomil-python"
 BINARY_NAME="octomil"
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
 info() {
     printf '\033[1;34m==>\033[0m %s\n' "$1"
+}
+
+warn() {
+    printf '\033[1;33mwarning:\033[0m %s\n' "$1" >&2
 }
 
 error() {
@@ -27,91 +29,82 @@ error() {
     exit 1
 }
 
-warn() {
-    printf '\033[1;33mwarning:\033[0m %s\n' "$1" >&2
-}
+download() {
+    url="$1"
+    dest="$2"
 
-# ---------------------------------------------------------------------------
-# Detect OS and architecture
-# ---------------------------------------------------------------------------
-
-detect_platform() {
-    OS="$(uname -s)"
-    ARCH="$(uname -m)"
-
-    case "$OS" in
-        Darwin) OS="darwin" ;;
-        Linux)  OS="linux" ;;
-        *)      error "Unsupported operating system: $OS. Octomil supports macOS and Linux." ;;
-    esac
-
-    case "$ARCH" in
-        arm64|aarch64)  ARCH="arm64" ;;
-        x86_64|amd64)   ARCH="amd64" ;;
-        *)              error "Unsupported architecture: $ARCH. Octomil supports arm64 and x86_64." ;;
-    esac
-
-    PLATFORM="${OS}-${ARCH}"
-
-    # Intel macOS: no pre-built binary — fall back to pip
-    if [ "$PLATFORM" = "darwin-amd64" ]; then
-        warn "Pre-built binaries are only available for Apple Silicon (arm64)."
-        echo ""
-        echo "  Install via pip instead:"
-        echo ""
-        echo "    pip install octomil[serve]"
-        echo ""
-        exit 0
+    if command -v curl >/dev/null 2>&1; then
+        curl -fsSL "$url" -o "$dest"
+    elif command -v wget >/dev/null 2>&1; then
+        wget -q -O "$dest" "$url"
+    else
+        error "curl or wget is required to download Octomil."
     fi
 }
 
-# ---------------------------------------------------------------------------
-# Determine version
-# ---------------------------------------------------------------------------
+asset_exists() {
+    url="$1"
+
+    if command -v curl >/dev/null 2>&1; then
+        curl -fsIL "$url" >/dev/null 2>&1
+    elif command -v wget >/dev/null 2>&1; then
+        wget --spider -q "$url" >/dev/null 2>&1
+    else
+        error "curl or wget is required to download Octomil."
+    fi
+}
+
+detect_platform() {
+    os="$(uname -s)"
+    arch="$(uname -m)"
+
+    case "$os" in
+        Darwin) os="darwin" ;;
+        Linux) os="linux" ;;
+        *) error "Unsupported operating system: $os. Octomil supports macOS and Linux." ;;
+    esac
+
+    case "$arch" in
+        arm64|aarch64) arch="arm64" ;;
+        x86_64|amd64) arch="amd64" ;;
+        *) error "Unsupported architecture: $arch. Octomil supports arm64 and x86_64." ;;
+    esac
+
+    PLATFORM="${os}-${arch}"
+}
+
+artifact_name() {
+    printf 'octomil-%s-%s.tar.gz\n' "$1" "$PLATFORM"
+}
+
+release_base_url() {
+    printf 'https://github.com/%s/releases/download/%s\n' "$REPO" "$1"
+}
 
 get_version() {
     if [ -n "${OCTOMIL_VERSION:-}" ]; then
         VERSION="$OCTOMIL_VERSION"
-        # Prepend v if missing
         case "$VERSION" in
             v*) ;;
-            *)  VERSION="v${VERSION}" ;;
+            *) VERSION="v${VERSION}" ;;
         esac
+        ARTIFACT="$(artifact_name "$VERSION")"
         return
     fi
 
     info "Fetching latest release..."
+    tmp_releases="${TMPDIR_PATH}/releases.json"
+    download "https://api.github.com/repos/${REPO}/releases?per_page=10" "$tmp_releases"
 
-    # Fetch recent releases and pick the first one that has a binary for
-    # this platform.  This handles the race where the latest tag exists
-    # but the binary hasn't finished building yet.
-    ASSET_NAME="${BINARY_NAME}-${PLATFORM}.tar.gz"
-    RELEASES_JSON=""
-    if command -v curl >/dev/null 2>&1; then
-        RELEASES_JSON=$(curl -fsSL "https://api.github.com/repos/${REPO}/releases?per_page=5" 2>/dev/null) || true
-    elif command -v wget >/dev/null 2>&1; then
-        RELEASES_JSON=$(wget -qO- "https://api.github.com/repos/${REPO}/releases?per_page=5" 2>/dev/null) || true
-    else
-        error "curl or wget is required to download octomil."
-    fi
-
-    if [ -z "$RELEASES_JSON" ]; then
-        error "Could not fetch releases. Set OCTOMIL_VERSION manually."
-    fi
-
-    # Extract tag names from the JSON (lightweight grep, no jq needed)
-    TAGS=$(printf '%s' "$RELEASES_JSON" | grep '"tag_name"' | sed -E 's/.*"tag_name":[[:space:]]*"([^"]+)".*/\1/')
-
+    tags="$(grep '"tag_name"' "$tmp_releases" | sed -E 's/.*"tag_name":[[:space:]]*"([^"]+)".*/\1/' || true)"
     VERSION=""
-    for tag in $TAGS; do
-        CHECK_URL="https://github.com/${REPO}/releases/download/${tag}/${ASSET_NAME}"
-        if command -v curl >/dev/null 2>&1; then
-            HTTP_STATUS=$(curl -sI -o /dev/null -w '%{http_code}' -L "$CHECK_URL" 2>/dev/null) || true
-        else
-            HTTP_STATUS=$(wget --spider -S "$CHECK_URL" 2>&1 | grep 'HTTP/' | tail -1 | awk '{print $2}') || true
-        fi
-        if [ "${HTTP_STATUS:-}" = "200" ]; then
+    ARTIFACT=""
+
+    for tag in $tags; do
+        candidate="$(artifact_name "$tag")"
+        if asset_exists "$(release_base_url "$tag")/${candidate}"; then
             VERSION="$tag"
+            ARTIFACT="$candidate"
             break
         fi
     done
@@ -121,199 +114,123 @@ get_version() {
     fi
 }
 
-# ---------------------------------------------------------------------------
-# Determine install directory
-# ---------------------------------------------------------------------------
-
-get_install_dir() {
-    if [ -n "${OCTOMIL_INSTALL:-}" ]; then
+get_install_dirs() {
+    if [ -n "${OCTOMIL_INSTALL_DIR:-}" ]; then
+        INSTALL_DIR="$OCTOMIL_INSTALL_DIR"
+    elif [ -n "${OCTOMIL_INSTALL:-}" ]; then
         INSTALL_DIR="$OCTOMIL_INSTALL"
-        return
-    fi
-
-    # bin dir: symlink target (must be on PATH)
-    if [ -w "/usr/local/bin" ]; then
-        INSTALL_DIR="/usr/local/bin"
-    elif [ "$(id -u)" = "0" ]; then
+    elif [ -w "/usr/local/bin" ] || [ "$(id -u)" = "0" ]; then
         INSTALL_DIR="/usr/local/bin"
     else
         INSTALL_DIR="${HOME}/.local/bin"
     fi
 
-    # lib dir: where the full binary bundle lives
-    LIB_DIR="${HOME}/.local/lib/octomil"
+    LIB_DIR="${OCTOMIL_LIB_DIR:-${HOME}/.local/lib/octomil}"
 }
 
-# ---------------------------------------------------------------------------
-# Download and install
-# ---------------------------------------------------------------------------
+download_checksums() {
+    base="$1"
+    dest="$2"
+
+    if download "${base}/SHA256SUMS" "$dest" 2>/dev/null; then
+        return
+    fi
+
+    if download "${base}/checksums.txt" "$dest" 2>/dev/null; then
+        return
+    fi
+
+    error "Could not download SHA256SUMS for ${VERSION}."
+}
+
+verify_checksum() {
+    checksum_file="$1"
+    archive_path="$2"
+    archive_name="$(basename "$archive_path")"
+    line="$(grep " ${archive_name}\$" "$checksum_file" || true)"
+
+    if [ -z "$line" ]; then
+        error "${archive_name} is not listed in SHA256SUMS."
+    fi
+
+    info "Verifying checksum..."
+    (
+        cd "$(dirname "$archive_path")"
+        if command -v sha256sum >/dev/null 2>&1; then
+            printf '%s\n' "$line" | sha256sum -c -
+        elif command -v shasum >/dev/null 2>&1; then
+            printf '%s\n' "$line" | shasum -a 256 -c -
+        else
+            error "sha256sum or shasum is required to verify Octomil."
+        fi
+    ) >/dev/null
+}
 
 download_and_install() {
-    ARCHIVE_NAME="${BINARY_NAME}-${PLATFORM}.tar.gz"
-    DOWNLOAD_URL="https://github.com/${REPO}/releases/download/${VERSION}/${ARCHIVE_NAME}"
+    base="$(release_base_url "$VERSION")"
+    archive_path="${TMPDIR_PATH}/${ARTIFACT}"
+    checksum_path="${TMPDIR_PATH}/SHA256SUMS"
+    bundle_path="${TMPDIR_PATH}/bundle"
 
-    TMPDIR_PATH="$(mktemp -d)"
-    trap 'rm -rf "$TMPDIR_PATH"' EXIT
+    info "Downloading Octomil ${VERSION} for ${PLATFORM}..."
+    download "${base}/${ARTIFACT}" "$archive_path"
+    download_checksums "$base" "$checksum_path"
+    verify_checksum "$checksum_path" "$archive_path"
 
-    info "Downloading ${BINARY_NAME} ${VERSION} for ${PLATFORM}..."
+    info "Installing bundle..."
+    mkdir -p "$bundle_path"
+    tar -xzf "$archive_path" -C "$bundle_path"
 
-    if command -v curl >/dev/null 2>&1; then
-        HTTP_CODE=$(curl -fSL --write-out '%{http_code}' -o "${TMPDIR_PATH}/${ARCHIVE_NAME}" "$DOWNLOAD_URL" 2>/dev/null) || true
-    elif command -v wget >/dev/null 2>&1; then
-        wget -q -O "${TMPDIR_PATH}/${ARCHIVE_NAME}" "$DOWNLOAD_URL" 2>/dev/null && HTTP_CODE="200" || HTTP_CODE="404"
+    if [ ! -f "${bundle_path}/${BINARY_NAME}" ]; then
+        error "Archive did not contain expected binary '${BINARY_NAME}'."
     fi
 
-    if [ "${HTTP_CODE:-}" != "200" ] || [ ! -f "${TMPDIR_PATH}/${ARCHIVE_NAME}" ]; then
-        error "Download failed (HTTP ${HTTP_CODE:-unknown}).
-  URL: ${DOWNLOAD_URL}
-
-  Possible causes:
-    - Version ${VERSION} does not have a binary for ${PLATFORM}
-    - The release has not been published yet
-
-  Available platforms: darwin-arm64, linux-amd64"
-    fi
-
-    info "Extracting..."
-    tar -xzf "${TMPDIR_PATH}/${ARCHIVE_NAME}" -C "$TMPDIR_PATH"
-
-    if [ ! -f "${TMPDIR_PATH}/${BINARY_NAME}/${BINARY_NAME}" ]; then
-        error "Archive did not contain expected binary '${BINARY_NAME}/${BINARY_NAME}'."
-    fi
-
-    # Remove previous installation
-    if [ -d "$LIB_DIR" ]; then
-        rm -rf "$LIB_DIR"
-    fi
-
-    # Install bundle to lib dir
-    mkdir -p "$(dirname "$LIB_DIR")"
-    mv "${TMPDIR_PATH}/${BINARY_NAME}" "$LIB_DIR"
+    rm -rf "$LIB_DIR"
+    mkdir -p "$LIB_DIR"
+    tar -xzf "$archive_path" -C "$LIB_DIR"
     chmod +x "${LIB_DIR}/${BINARY_NAME}"
 
-    # Create bin directory and symlink
-    if [ ! -d "$INSTALL_DIR" ]; then
-        info "Creating ${INSTALL_DIR}..."
-        mkdir -p "$INSTALL_DIR"
-    fi
-
+    mkdir -p "$INSTALL_DIR"
     ln -sf "${LIB_DIR}/${BINARY_NAME}" "${INSTALL_DIR}/${BINARY_NAME}"
+
     info "Installed to ${INSTALL_DIR}/${BINARY_NAME}"
 }
 
-# ---------------------------------------------------------------------------
-# Verify installation
-# ---------------------------------------------------------------------------
+verify_installation() {
+    installed="${INSTALL_DIR}/${BINARY_NAME}"
 
-verify() {
-    if ! "${INSTALL_DIR}/${BINARY_NAME}" --version >/dev/null 2>&1; then
+    if ! "$installed" --version >/dev/null 2>&1; then
         warn "Binary installed but --version check failed."
         warn "This may happen if required shared libraries are missing."
     else
-        INSTALLED_VERSION=$("${INSTALL_DIR}/${BINARY_NAME}" --version 2>&1 || true)
-        info "Installed: ${INSTALLED_VERSION}"
+        installed_version="$("$installed" --version 2>&1 || true)"
+        info "Installed: ${installed_version}"
     fi
 
-    # Check if install dir is in PATH
-    case ":${PATH}:" in
-        *":${INSTALL_DIR}:"*) ;;
-        *)
-            warn "${INSTALL_DIR} is not in your PATH."
-            echo ""
-            echo "  Add it to your shell profile:"
-            echo ""
-            echo "    export PATH=\"${INSTALL_DIR}:\$PATH\""
-            echo ""
-            ;;
-    esac
-}
-
-# ---------------------------------------------------------------------------
-# Shell completions
-# ---------------------------------------------------------------------------
-
-COMPLETIONS_MARKER="# octomil shell completions"
-
-setup_completions() {
-    CURRENT_SHELL="$(basename "${SHELL:-/bin/sh}")"
-
-    case "$CURRENT_SHELL" in
-        zsh)
-            COMP_LINE='eval "$(_OCTOMIL_COMPLETE=zsh_source octomil)"'
-            RC_FILE="${HOME}/.zshrc"
-            ;;
-        fish)
-            COMP_LINE='_OCTOMIL_COMPLETE=fish_source octomil | source'
-            RC_FILE="${HOME}/.config/fish/conf.d/octomil.fish"
-            ;;
-        bash|*)
-            COMP_LINE='eval "$(_OCTOMIL_COMPLETE=bash_source octomil)"'
-            RC_FILE="${HOME}/.bashrc"
-            ;;
-    esac
-
-    # Skip if already installed
-    if [ -f "$RC_FILE" ] && grep -qF "$COMPLETIONS_MARKER" "$RC_FILE" 2>/dev/null; then
-        return
-    fi
-
-    # For fish, ensure conf.d directory exists
-    if [ "$CURRENT_SHELL" = "fish" ]; then
-        mkdir -p "$(dirname "$RC_FILE")"
-    fi
-
-    printf '\n%s\n%s\n' "$COMPLETIONS_MARKER" "$COMP_LINE" >> "$RC_FILE"
-    info "Shell completions added to ${RC_FILE}"
-}
-
-# ---------------------------------------------------------------------------
-# Engine setup (background)
-# ---------------------------------------------------------------------------
-
-setup_engine_background() {
-    OCTOMIL_BIN="${INSTALL_DIR}/${BINARY_NAME}"
-    STATE_FILE="${HOME}/.octomil/setup_state.json"
-
-    # Skip if setup already completed
-    if [ -f "$STATE_FILE" ]; then
-        PHASE=$(grep '"phase"' "$STATE_FILE" 2>/dev/null | sed -E 's/.*"phase":[[:space:]]*"([^"]+)".*/\1/' || true)
-        if [ "$PHASE" = "complete" ]; then
-            info "Engine already set up."
-            return
-        fi
-    fi
-
-    # Verify the binary can run setup
-    if ! "$OCTOMIL_BIN" setup --status >/dev/null 2>&1; then
-        warn "Could not run 'octomil setup'. Skipping engine auto-setup."
+    resolved="$(command -v "$BINARY_NAME" || true)"
+    if [ "$resolved" != "$installed" ]; then
         echo ""
-        echo "  You can set up manually later:"
-        echo "    octomil setup"
+        warn "Octomil installed successfully, but your shell resolves '${BINARY_NAME}' to:"
+        echo "    ${resolved:-not found}"
         echo ""
-        return
+        echo "Add this to your shell config:"
+        echo "    export PATH=\"${INSTALL_DIR}:\$PATH\""
+        echo ""
+        echo "Or run directly:"
+        echo "    ${installed} --help"
     fi
-
-    info "Setting up inference engine in background..."
-    echo "  Run 'octomil setup --status' to check progress."
-
-    mkdir -p "${HOME}/.octomil"
-    nohup "$OCTOMIL_BIN" setup --foreground > "${HOME}/.octomil/setup.log" 2>&1 &
 }
-
-# ---------------------------------------------------------------------------
-# Main
-# ---------------------------------------------------------------------------
 
 main() {
+    TMPDIR_PATH="$(mktemp -d)"
+    trap 'rm -rf "$TMPDIR_PATH"' EXIT
+
     detect_platform
     get_version
-    get_install_dir
+    get_install_dirs
     download_and_install
-    verify
-    setup_completions
-    setup_engine_background
+    verify_installation
 
-    # --- Post-install banner ---
     CYAN='\033[1;36m'
     DIM='\033[2m'
     WHITE='\033[1;37m'
@@ -322,20 +239,17 @@ main() {
     RESET='\033[0m'
 
     echo ""
-    printf "  ${CYAN}🐙 Octomil ${VERSION}${RESET}\n"
+    printf "  ${CYAN}Octomil ${VERSION}${RESET}\n"
     printf "  ${DIM}on-device AI inference${RESET}\n"
     echo ""
-    printf "  ${GREEN}✓${RESET} Installed successfully\n"
+    printf "  ${GREEN}Installed successfully${RESET}\n"
     echo ""
     printf "  ${YELLOW}Get started${RESET}\n"
-    printf "    ${WHITE}octomil serve qwen-7b${RESET}        ${DIM}Start a local model server${RESET}\n"
-    printf "    ${WHITE}octomil launch${RESET}               ${DIM}Launch a coding agent (Claude, Codex, …)${RESET}\n"
-    printf "    ${WHITE}octomil deploy phi-mini${RESET}      ${DIM}Deploy a model to devices${RESET}\n"
-    printf "    ${WHITE}octomil benchmark gemma-1b${RESET}   ${DIM}Benchmark inference performance${RESET}\n"
+    printf "    ${WHITE}%s serve qwen-7b${RESET}        ${DIM}Start a local model server${RESET}\n" "${INSTALL_DIR}/${BINARY_NAME}"
+    printf "    ${WHITE}%s launch${RESET}               ${DIM}Launch a coding agent${RESET}\n" "${INSTALL_DIR}/${BINARY_NAME}"
+    printf "    ${WHITE}%s benchmark gemma-1b${RESET}   ${DIM}Benchmark inference performance${RESET}\n" "${INSTALL_DIR}/${BINARY_NAME}"
     echo ""
-    printf "  ${YELLOW}More${RESET}\n"
-    printf "    ${WHITE}octomil --help${RESET}               ${DIM}All commands${RESET}\n"
-    printf "    ${DIM}https://docs.octomil.com${RESET}       ${DIM}Documentation${RESET}\n"
+    printf "  ${DIM}The installer did not use Python, pip, or virtualenvs.${RESET}\n"
     echo ""
 }
 

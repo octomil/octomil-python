@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import sys
 from unittest.mock import MagicMock, patch
 
@@ -39,8 +40,10 @@ class TestTryVenvReexec:
     @patch("octomil.setup.is_setup_in_progress", return_value=False)
     @patch("octomil.setup.is_engine_ready", return_value=False)
     @patch("octomil.setup.get_venv_python", return_value=None)
-    def test_no_venv_runs_setup(self, mock_venv, mock_ready, mock_progress, mock_run_setup, mock_load_state):
-        """When no venv exists, try_venv_reexec runs setup inline."""
+    def test_no_venv_does_not_run_setup_by_default(
+        self, mock_venv, mock_ready, mock_progress, mock_run_setup, mock_load_state
+    ):
+        """When no venv exists, frozen commands fall through without user Python."""
         from octomil.setup import SetupState
 
         mock_load_state.return_value = SetupState()  # phase="pending"
@@ -48,7 +51,7 @@ class TestTryVenvReexec:
 
         result = try_venv_reexec()
         assert result is False
-        mock_run_setup.assert_called_once()
+        mock_run_setup.assert_not_called()
 
     @patch("octomil.setup.load_state")
     @patch("octomil.setup.is_setup_in_progress", return_value=False)
@@ -131,11 +134,25 @@ class TestTryVenvReexec:
         mock_load_state.return_value = SetupState()
         mock_run_setup.return_value = SetupState(phase="complete", engine_installed=True)
 
-        with patch.object(sys, "argv", ["octomil", "serve", "qwen-coder-7b"]):
-            try_venv_reexec()
+        with patch.dict(os.environ, {"OCTOMIL_ALLOW_MANAGED_PYTHON_SETUP": "1"}):
+            with patch.object(sys, "argv", ["octomil", "serve", "qwen-coder-7b"]):
+                try_venv_reexec()
 
         mock_run_setup.assert_called_once()
         mock_execv.assert_called_once()
+
+
+class TestFrozenEnginePrompt:
+    def test_frozen_prompt_does_not_offer_pip_install(self, capsys):
+        from octomil.commands.serve import _prompt_engine_install
+
+        with patch.object(sys, "frozen", True, create=True):
+            result = _prompt_engine_install()
+
+        output = capsys.readouterr().out
+        assert result is False
+        assert "does not install Python packages" in output
+        assert "pip install" not in output
 
 
 # ---------------------------------------------------------------------------

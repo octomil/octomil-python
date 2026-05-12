@@ -1,9 +1,9 @@
-"""Shared venv re-exec logic for frozen binary commands.
+"""Shared managed-runtime re-exec logic for frozen binary commands.
 
-When Octomil is installed as a PyInstaller binary, native Python packages
-like ``mlx-lm`` are not bundled. Commands that need native engine access
-call ``try_venv_reexec()`` to transparently re-launch into the managed
-venv at ``~/.octomil/engines/venv/`` via ``os.execv()``.
+Older Octomil binary installs could prepare a managed venv at
+``~/.octomil/engines/venv/``. Frozen commands may re-launch into that
+runtime if it already exists, but they do not create it implicitly. The
+standalone installer must not reach for the user's Python or pip.
 
 Extracted from ``commands/serve.py`` so that ``benchmark``, ``mcp serve``,
 and any future engine-dependent commands share the same logic.
@@ -23,18 +23,18 @@ def needs_venv_reexec() -> bool:
 
 
 def try_venv_reexec() -> bool:
-    """Try to re-exec into the managed venv's Python for native engine support.
+    """Try to re-exec into an existing managed venv for native engine support.
 
     When running from a frozen binary with no native engines, this checks
     if ``octomil setup`` has prepared a venv with mlx-lm or llama.cpp.
     If so, ``os.execv()`` replaces this process entirely with the venv's
     Python running the original command. Single process, no proxy.
 
-    If no venv exists and setup hasn't run yet, runs setup inline so that
-    the command is a single-command experience with no separate step.
+    If no venv exists, returns False. Set ``OCTOMIL_ALLOW_MANAGED_PYTHON_SETUP=1``
+    to opt into the legacy inline setup path for development.
 
     Returns True if re-exec was initiated (unreachable after os.execv).
-    Returns False if setup failed and we should fall through.
+    Returns False if no managed runtime is available and we should fall through.
     """
     from octomil.setup import (
         get_venv_python,
@@ -49,24 +49,25 @@ def try_venv_reexec() -> bool:
 
     venv_py = get_venv_python()
     if not venv_py or not is_engine_ready():
-        # No venv yet — run setup inline so the command just works
+        if os.environ.get("OCTOMIL_ALLOW_MANAGED_PYTHON_SETUP") != "1":
+            return False
+
         state = load_state()
-        if state.phase != "failed":
-            click.echo(
-                click.style(
-                    "\n  First run: setting up native inference engine...\n",
-                    fg="cyan",
-                )
+        if state.phase == "failed":
+            return False
+
+        click.echo(
+            click.style(
+                "\n  Setting up legacy managed Python runtime...\n",
+                fg="cyan",
             )
-            result = run_setup()
-            if result.phase == "failed":
-                click.echo(click.style(f"  Setup failed: {result.error}", fg="red"))
-                return False
-            # Re-check after setup
-            venv_py = get_venv_python()
-            if not venv_py or not is_engine_ready():
-                return False
-        else:
+        )
+        result = run_setup()
+        if result.phase == "failed":
+            click.echo(click.style(f"  Setup failed: {result.error}", fg="red"))
+            return False
+        venv_py = get_venv_python()
+        if not venv_py or not is_engine_ready():
             return False
 
     # Build the argv for re-exec: venv python -m octomil <original args>

@@ -172,7 +172,7 @@ octomil benchmark Qwen/Qwen3-0.6B
 
 - Version managed by Knope (`knope.toml`): bumps `pyproject.toml`, `__init__.py`, homebrew formula, test_cli.py, sonar-project.properties
 - Release flow: `knope release` → `release` branch → version bump + changelog → PR to main
-- On merge: tag push → PyInstaller binaries (darwin-arm64, linux-amd64) → PyPI → Homebrew tap
+- On merge: tag push → PyInstaller binaries (darwin-arm64, darwin-amd64, linux-arm64, linux-amd64) + `SHA256SUMS` → PyPI → Homebrew tap
 - Binary builds: `release-binary.yml` GitHub Action
 - Homebrew: `octomil/homebrew-octomil` repo
 

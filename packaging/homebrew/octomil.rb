@@ -21,26 +21,27 @@ class Octomil < Formula
 
   on_macos do
     if Hardware::CPU.arm?
-      url "https://github.com/octomil/octomil-python/releases/download/v#{version}/octomil-darwin-arm64.tar.gz"
+      url "https://github.com/octomil/octomil-python/releases/download/v#{version}/octomil-v#{version}-darwin-arm64.tar.gz"
       sha256 "PLACEHOLDER_DARWIN_ARM64_SHA256"
     else
-      url "https://github.com/octomil/octomil-python/releases/download/v#{version}/octomil-darwin-amd64.tar.gz"
+      url "https://github.com/octomil/octomil-python/releases/download/v#{version}/octomil-v#{version}-darwin-amd64.tar.gz"
       sha256 "PLACEHOLDER_DARWIN_AMD64_SHA256"
     end
   end
 
   on_linux do
     if Hardware::CPU.arm?
-      url "https://github.com/octomil/octomil-python/releases/download/v#{version}/octomil-linux-arm64.tar.gz"
+      url "https://github.com/octomil/octomil-python/releases/download/v#{version}/octomil-v#{version}-linux-arm64.tar.gz"
       sha256 "PLACEHOLDER_LINUX_ARM64_SHA256"
     else
-      url "https://github.com/octomil/octomil-python/releases/download/v#{version}/octomil-linux-amd64.tar.gz"
+      url "https://github.com/octomil/octomil-python/releases/download/v#{version}/octomil-v#{version}-linux-amd64.tar.gz"
       sha256 "PLACEHOLDER_LINUX_AMD64_SHA256"
     end
   end
 
   def install
-    bin.install "octomil"
+    libexec.install Dir["*"]
+    bin.install_symlink libexec/"octomil" => "octomil"
   end
 
   test do

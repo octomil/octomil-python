@@ -6,11 +6,11 @@
 #   ./scripts/build-binary.sh
 #
 # Requirements:
-#   pip install pyinstaller
+#   python -m pip install -e ".[serve,binary]"
 #
 # Output:
-#   dist/octomil-<os>-<arch>.tar.gz   (macOS / Linux)
-#   dist/octomil-<os>-<arch>.zip      (Windows)
+#   dist/octomil-v<version>-<os>-<arch>.tar.gz
+#   dist/octomil-v<version>-<os>-<arch>.tar.gz.sha256
 
 set -euo pipefail
 
@@ -46,15 +46,34 @@ detect_platform() {
     echo "${os}-${arch}"
 }
 
+PYTHON="${PYTHON:-python3}"
 PLATFORM="$(detect_platform)"
 echo "==> Platform: ${PLATFORM}"
+
+detect_version() {
+    local version
+
+    if [ -n "${OCTOMIL_VERSION:-}" ]; then
+        version="${OCTOMIL_VERSION}"
+    else
+        version="$(sed -nE 's/^version = "([^"]+)"/\1/p' pyproject.toml | head -n1)"
+    fi
+
+    case "$version" in
+        v*) printf '%s\n' "$version" ;;
+        *)  printf 'v%s\n' "$version" ;;
+    esac
+}
+
+VERSION="$(detect_version)"
+echo "==> Version: ${VERSION}"
 
 # ---------------------------------------------------------------------------
 # Check PyInstaller is installed
 # ---------------------------------------------------------------------------
-if ! command -v pyinstaller &>/dev/null; then
-    echo "ERROR: pyinstaller not found. Install it with:" >&2
-    echo "  pip install pyinstaller" >&2
+if ! "$PYTHON" -m PyInstaller --version >/dev/null 2>&1; then
+    echo "ERROR: PyInstaller not found. Install build dependencies with:" >&2
+    echo "  ${PYTHON} -m pip install -e \".[serve,binary]\"" >&2
     exit 1
 fi
 
@@ -62,16 +81,17 @@ fi
 # Clean previous build artifacts
 # ---------------------------------------------------------------------------
 echo "==> Cleaning previous build..."
-rm -rf build/ dist/octomil dist/octomil.pkg
+rm -rf build/ dist/octomil dist/octomil.pkg dist/octomil-*.tar.gz dist/octomil-*.tar.gz.sha256
 
 # ---------------------------------------------------------------------------
 # Run PyInstaller
 # ---------------------------------------------------------------------------
 echo "==> Building binary with PyInstaller..."
-pyinstaller packaging/octomil.spec --noconfirm
+"$PYTHON" -m PyInstaller packaging/octomil.spec --noconfirm
 
 # Verify the binary was created
-BINARY="dist/octomil"
+BUNDLE_DIR="dist/octomil"
+BINARY="${BUNDLE_DIR}/octomil"
 if [ ! -f "$BINARY" ]; then
     echo "ERROR: Binary not found at ${BINARY}" >&2
     exit 1
@@ -85,31 +105,28 @@ if ! "$BINARY" --version; then
     echo "ERROR: Binary failed to run --version" >&2
     exit 1
 fi
+if ! "$BINARY" --help >/dev/null; then
+    echo "ERROR: Binary failed to run --help" >&2
+    exit 1
+fi
+if ! "$BINARY" serve --help >/dev/null; then
+    echo "ERROR: Binary failed to run serve --help" >&2
+    exit 1
+fi
 
 # ---------------------------------------------------------------------------
-# Report binary size
+# Report bundle size
 # ---------------------------------------------------------------------------
-BINARY_SIZE=$(du -sh "$BINARY" | cut -f1)
-echo "==> Binary size: ${BINARY_SIZE}"
+BUNDLE_SIZE=$(du -sh "$BUNDLE_DIR" | cut -f1)
+echo "==> Bundle size: ${BUNDLE_SIZE}"
 
 # ---------------------------------------------------------------------------
 # Create archive
 # ---------------------------------------------------------------------------
-ARCHIVE_NAME="octomil-${PLATFORM}"
+ARCHIVE="octomil-${VERSION}-${PLATFORM}.tar.gz"
 
 echo "==> Creating archive..."
-case "$PLATFORM" in
-    windows-*)
-        # zip for Windows
-        ARCHIVE="${ARCHIVE_NAME}.zip"
-        (cd dist && zip -9 "$ARCHIVE" octomil.exe 2>/dev/null || zip -9 "$ARCHIVE" octomil)
-        ;;
-    *)
-        # tar.gz for macOS and Linux
-        ARCHIVE="${ARCHIVE_NAME}.tar.gz"
-        tar -czf "dist/${ARCHIVE}" -C dist octomil
-        ;;
-esac
+tar -czf "dist/${ARCHIVE}" -C "$BUNDLE_DIR" .
 
 ARCHIVE_SIZE=$(du -sh "dist/${ARCHIVE}" | cut -f1)
 echo "==> Archive: dist/${ARCHIVE} (${ARCHIVE_SIZE})"
@@ -122,12 +139,15 @@ if command -v sha256sum &>/dev/null; then
 elif command -v shasum &>/dev/null; then
     SHA256=$(shasum -a 256 "dist/${ARCHIVE}" | awk '{print $1}')
 else
-    SHA256="(sha256sum not available)"
+    echo "ERROR: sha256sum or shasum is required to checksum release artifacts" >&2
+    exit 1
 fi
 echo "==> SHA256: ${SHA256}"
+printf '%s  %s\n' "$SHA256" "$ARCHIVE" > "dist/${ARCHIVE}.sha256"
 
 echo ""
 echo "Build complete."
-echo "  Binary:  dist/octomil"
+echo "  Bundle:  dist/octomil"
 echo "  Archive: dist/${ARCHIVE}"
+echo "  Checksum: dist/${ARCHIVE}.sha256"
 echo "  SHA256:  ${SHA256}"

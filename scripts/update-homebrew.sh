@@ -11,25 +11,34 @@ BASE_URL="https://github.com/octomil/octomil-python/releases/download/${VERSION}
 
 echo "Updating formula for ${VERSION}..."
 
-# Fetch SHA256 hashes for each platform binary
-echo "  Fetching SHA256 for darwin-arm64..."
-SHA_ARM64=$(curl -fsSL "${BASE_URL}/octomil-darwin-arm64.tar.gz" | shasum -a 256 | cut -d' ' -f1)
+# Fetch SHA256 hashes for each platform binary from the release manifest.
+CHECKSUMS="$(mktemp)"
+trap 'rm -f "$CHECKSUMS"' EXIT
+curl -fsSL "${BASE_URL}/SHA256SUMS" -o "$CHECKSUMS"
 
-echo "  Fetching SHA256 for darwin-amd64..."
-SHA_AMD64=$(curl -fsSL "${BASE_URL}/octomil-darwin-amd64.tar.gz" | shasum -a 256 | cut -d' ' -f1)
+sha_for() {
+  awk -v name="$1" '$2 == name { print $1 }' "$CHECKSUMS"
+}
 
-echo "  Fetching SHA256 for linux-amd64..."
-SHA_LINUX=$(curl -fsSL "${BASE_URL}/octomil-linux-amd64.tar.gz" | shasum -a 256 | cut -d' ' -f1)
+SHA_DARWIN_ARM64="$(sha_for "octomil-${VERSION}-darwin-arm64.tar.gz")"
+SHA_DARWIN_AMD64="$(sha_for "octomil-${VERSION}-darwin-amd64.tar.gz")"
+SHA_LINUX_ARM64="$(sha_for "octomil-${VERSION}-linux-arm64.tar.gz")"
+SHA_LINUX_AMD64="$(sha_for "octomil-${VERSION}-linux-amd64.tar.gz")"
 
-# Replace sha256 values positionally (1st = arm64, 2nd = amd64, 3rd = linux).
+# Replace sha256 values positionally.
 # Matches any existing sha256 "..." value including placeholders, making the
 # script idempotent across releases.
-awk -v arm64="${SHA_ARM64}" -v amd64="${SHA_AMD64}" -v linux="${SHA_LINUX}" '
+awk \
+  -v darwin_arm64="${SHA_DARWIN_ARM64}" \
+  -v darwin_amd64="${SHA_DARWIN_AMD64}" \
+  -v linux_arm64="${SHA_LINUX_ARM64}" \
+  -v linux_amd64="${SHA_LINUX_AMD64}" '
   /sha256 "/ {
     n++
-    if (n == 1) sub(/sha256 ".*"/, "sha256 \"" arm64 "\"")
-    else if (n == 2) sub(/sha256 ".*"/, "sha256 \"" amd64 "\"")
-    else if (n == 3) sub(/sha256 ".*"/, "sha256 \"" linux "\"")
+    if (n == 1) sub(/sha256 ".*"/, "sha256 \"" darwin_arm64 "\"")
+    else if (n == 2) sub(/sha256 ".*"/, "sha256 \"" darwin_amd64 "\"")
+    else if (n == 3) sub(/sha256 ".*"/, "sha256 \"" linux_arm64 "\"")
+    else if (n == 4) sub(/sha256 ".*"/, "sha256 \"" linux_amd64 "\"")
   }
   { print }
 ' "${FORMULA}" > "${FORMULA}.tmp" && mv "${FORMULA}.tmp" "${FORMULA}"

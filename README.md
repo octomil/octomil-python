@@ -18,7 +18,11 @@ Octomil is a CLI + Python SDK for running open-weight models locally behind an O
 curl -fsSL https://get.octomil.com | sh
 ```
 
-Or via pip:
+The installer downloads a self-contained Octomil binary for your OS and CPU,
+verifies it against the release `SHA256SUMS`, and installs it without using
+Python, pip, Homebrew Python, or virtualenvs.
+
+For Python SDK development, you can still install the library with pip:
 
 ```bash
 pip install octomil
@@ -244,15 +248,15 @@ octomil serve --models smollm-360m,phi-mini,llama-3b
 
 ## Supported engines
 
-| Engine                                                  | Platform            | Install                          |
-| ------------------------------------------------------- | ------------------- | -------------------------------- |
-| [MLX](https://github.com/ml-explore/mlx)                | Apple Silicon Mac   | `pip install 'octomil[mlx]'`     |
-| [llama.cpp](https://github.com/ggerganov/llama.cpp)     | Mac, Linux, Windows | `pip install 'octomil[llama]'`   |
-| [ONNX Runtime](https://onnxruntime.ai/)                 | All platforms       | `pip install 'octomil[onnx]'`    |
-| [MLC-LLM](https://llm.mlc.ai/)                          | Mac, Linux, Android | auto-detected                    |
-| [MNN](https://github.com/alibaba/MNN)                   | All platforms       | auto-detected                    |
-| [ExecuTorch](https://pytorch.org/executorch/)           | Mobile              | auto-detected                    |
-| [Whisper.cpp](https://github.com/ggerganov/whisper.cpp) | All platforms       | `pip install 'octomil[whisper]'` |
+| Engine                                                  | Platform            | Runtime                 |
+| ------------------------------------------------------- | ------------------- | ----------------------- |
+| [MLX](https://github.com/ml-explore/mlx)                | Apple Silicon Mac   | Octomil-managed runtime |
+| [llama.cpp](https://github.com/ggerganov/llama.cpp)     | Mac, Linux, Windows | Native runtime          |
+| [ONNX Runtime](https://onnxruntime.ai/)                 | All platforms       | Native runtime          |
+| [MLC-LLM](https://llm.mlc.ai/)                          | Mac, Linux, Android | Auto-detected           |
+| [MNN](https://github.com/alibaba/MNN)                   | All platforms       | Auto-detected           |
+| [ExecuTorch](https://pytorch.org/executorch/)           | Mobile              | Auto-detected           |
+| [Whisper.cpp](https://github.com/ggerganov/whisper.cpp) | All platforms       | Native runtime          |
 
 No engine installed? `octomil serve` tells you exactly what to install.
 
@@ -291,12 +295,12 @@ Use aliases: `octomil serve deepseek-r1` resolves to `deepseek-r1-7b`. Each mode
 ```
 curl -fsSL https://get.octomil.com | sh
     │
-    └── octomil setup (background)
-         ├── 1. Find system Python with venv support
-         ├── 2. Create ~/.octomil/engines/venv/
-         ├── 3. Install best engine (mlx-lm on Apple Silicon, llama.cpp elsewhere)
-         ├── 4. Download recommended model for your device
-         └── 5. Register MCP server with AI tools (Claude, Cursor, VS Code, Codex)
+    └── install standalone bundle
+         ├── 1. Detect OS/arch
+         ├── 2. Download octomil-vX.Y.Z-<os>-<arch>.tar.gz
+         ├── 3. Verify SHA256SUMS
+         ├── 4. Install under ~/.local/lib/octomil/
+         └── 5. Symlink octomil into your bin dir and warn on PATH shadowing
 
 octomil serve gemma-1b
     │

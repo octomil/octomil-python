@@ -173,6 +173,9 @@ dev = [
   "uvicorn[standard]>=0.20.0",
   "eth-account>=0.10.0",
 ]
+binary = [
+  "pyinstaller>=6.0.0",
+]
 
 [project.scripts]
 octomil = "octomil.cli:main"

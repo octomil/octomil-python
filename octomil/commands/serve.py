@@ -566,6 +566,12 @@ def _prompt_engine_install() -> bool:
         )
     )
 
+    if getattr(sys, "frozen", False):
+        click.echo("  This standalone Octomil binary does not install Python packages " "or use your system Python.")
+        click.echo("  Use --cloud for hosted routing, or install a release with bundled native runtimes.")
+        click.echo()
+        return False
+
     # Build platform-specific recommendation list (best performance first)
     recommendations: list[tuple[str, str]] = []  # (label, install_cmd)
     if is_apple_silicon:
