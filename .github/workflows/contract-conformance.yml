@@ -10,13 +10,78 @@ permissions:
 
 jobs:
   conformance:
-    uses: octomil/octomil-contracts/.github/workflows/sdk-conformance.yml@v1.22.0
-    with:
-      sdk: python
-      contract-version: "1.22.0"
-      setup-command: "python -m pip install --upgrade pip && pip install -e '.[test]'"
-      codegen-command: "python3 .contract/scripts/sync_generated.py --sdk python --check --target-dir octomil/_generated"
-      test-command: "pytest tests/conformance -q --no-cov && python3 .contract/ci/audit-sdks.py --sdk python --sdk-path . --out parity_report.json"
-      parity-report-path: parity_report.json
-      parity-score-floor: 60
-    secrets: inherit
+    name: python conformance
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Fetch contracts
+        uses: actions/checkout@v4
+        with:
+          repository: octomil/octomil-contracts
+          ref: main
+          path: .contract
+          token: ${{ secrets.CROSS_REPO_READ_TOKEN || github.token }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install codegen dependencies
+        run: python -m pip install --upgrade pip pyyaml
+
+      - name: Read contract version
+        id: contract
+        run: |
+          python - <<'PY' >> "$GITHUB_OUTPUT"
+          import pathlib
+          import yaml
+
+          version = yaml.safe_load(pathlib.Path(".contract/contract.yaml").read_text())["version"]
+          print(f"version={version}")
+          PY
+
+      - name: Check generated contracts
+        run: python3 .contract/scripts/sync_generated.py --sdk python --check --target-dir octomil/_generated
+
+      - name: Install SDK dependencies
+        run: pip install -e '.[test]'
+
+      - name: Run conformance tests
+        env:
+          CONTRACT_ROOT: ${{ github.workspace }}/.contract
+          CONTRACT_VERSION: ${{ steps.contract.outputs.version }}
+        run: |
+          pytest tests/conformance -q --no-cov
+          python3 .contract/ci/audit-sdks.py --sdk python --sdk-path . --out parity_report.json
+
+      - name: Gate parity score
+        if: always()
+        run: |
+          python3 - <<'PY'
+          import json
+          import pathlib
+          import sys
+
+          report_path = pathlib.Path("parity_report.json")
+          if not report_path.exists():
+              print("::error::No parity report generated.")
+              sys.exit(1)
+          score = json.loads(report_path.read_text()).get("summary", {}).get("parityScore", 0)
+          print(f"Parity score: {score}% (floor: 60%)")
+          if float(score) < 60:
+              print(f"::error::Parity score {score}% is below floor 60%")
+              sys.exit(1)
+          PY
+
+      - name: Upload parity report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: parity-python-${{ steps.contract.outputs.version }}
+          path: parity_report.json
+          retention-days: 90

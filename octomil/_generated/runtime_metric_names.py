@@ -41,7 +41,10 @@ TTS_AUDIO_DURATION_MS = "tts.audio_duration_ms"
 TTS_CHUNK_COUNT = "tts.chunk_count"
 TTS_FIRST_AUDIO_MS = "tts.first_audio_ms"
 TTS_FIRST_CHUNK_AFTER_SYNTH_MS = "tts.first_chunk_after_synth_ms"
+TTS_FRONTEND_CACHE_CLEAR_TOTAL = "tts.frontend_cache_clear_total"
 TTS_FRONTEND_CACHE_HIT_TOTAL = "tts.frontend_cache_hit_total"
+TTS_FRONTEND_CACHE_REJECT_EMPTY_TOTAL = "tts.frontend_cache_reject_empty_total"
+TTS_FRONTEND_CACHE_REJECT_OVERSIZE_TOTAL = "tts.frontend_cache_reject_oversize_total"
 TTS_REAL_TIME_FACTOR = "tts.real_time_factor"
 TTS_SESSION_OPEN_MS = "tts.session_open_ms"
 TTS_SYNTHESIZE_MS = "tts.synthesize_ms"
@@ -96,7 +99,10 @@ ALL_RUNTIME_METRICS = [
     TTS_CHUNK_COUNT,
     TTS_FIRST_AUDIO_MS,
     TTS_FIRST_CHUNK_AFTER_SYNTH_MS,
+    TTS_FRONTEND_CACHE_CLEAR_TOTAL,
     TTS_FRONTEND_CACHE_HIT_TOTAL,
+    TTS_FRONTEND_CACHE_REJECT_EMPTY_TOTAL,
+    TTS_FRONTEND_CACHE_REJECT_OVERSIZE_TOTAL,
     TTS_REAL_TIME_FACTOR,
     TTS_SESSION_OPEN_MS,
     TTS_SYNTHESIZE_MS,
