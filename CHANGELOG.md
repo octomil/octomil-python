@@ -38,6 +38,37 @@
   reference (proof artifact path or `first_audio_ratio`). Cites proof artifact and
   `proof_artifact.measured_first_audio_ratio` from contracts YAML.
 
+## 4.17.6 (2026-05-12)
+
+### Features
+
+- sync contract types to octomil-contracts 1.23.0
+- re-sync to contracts 9912d59 — PlanSupportLevel rename
+- embeddings.text binding + cutover (v0.1.3-rc1) (#548)
+- embeddings cutover — registry + kernel + server route
+- v0.1.5 PR-2B — SDK STT cutover to native runtime (#556)
+- v0.1.5 PR-2N — SDK VAD + speaker embedding native bindings (#557)
+- v0.1.5 PR-2M — Python conformance fetch + pytest hook (#558)
+- PR1 — SDK error typing alignment (centralize oct_status mapper) (#559)
+- v0.1.6 PR3 — SDK release parity runner (#560)
+- v0.1.8 Lane C — Python SDK native cutover (audio.tts.stream) (#563)
+- v0.1.9 Lane 4 — Python SDK progressive prep (#565)
+- flip SDK to progressive (#568)
+- lane B — embeddings cache prototype (Python SDK) (#573)
+- lane C — TTS frontend cache prototype (blocked-on lane-a) (#572)
+- lane H — cache bench/release-proof skeleton (blocked-on lane-a) (#569)
+- lane G — Python SDK cache clear/introspect skeleton (#571)
+- enable base model selection
+
+### Fixes
+
+- round-3 fixes — HF org-prefix routing + close-race (#553)
+- v0.1.6 PR1 — correct GenerationRequest shape in poll_event T-001 test (#566)
+- post-hoc remediation for #569 — URGENT closes latency-claim CI gate leakage paths (B4/B5) (#575)
+- post-hoc #571 B1+B3+B4 — capability registry, strict schema, status order (#574)
+- post-hoc remediation for #572 (B1-B4) (#576)
+- preserve cache-hit parity after post-merge review
+
 ## 4.17.5 (2026-05-05)
 
 ### Fixes
