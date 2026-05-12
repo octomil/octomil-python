@@ -14,9 +14,9 @@ import pytest
 
 ROOT = Path(__file__).resolve().parent.parent
 
-# Build artifacts that only exist during release builds
-_SPEC_FILE = ROOT / "octomil.spec"
-_FORMULA_FILE = ROOT / "homebrew" / "octomil.rb"
+# Build and release packaging files
+_SPEC_FILE = ROOT / "packaging" / "octomil.spec"
+_FORMULA_FILE = ROOT / "packaging" / "homebrew" / "octomil.rb"
 
 _skip_no_spec = pytest.mark.skipif(
     not _SPEC_FILE.is_file(),
@@ -49,7 +49,7 @@ class TestPyInstallerSpec:
         ast.parse(spec_content)
 
     def test_spec_entry_point(self, spec_content: str) -> None:
-        assert "octomil/__main__.py" in spec_content
+        assert "entrypoint.py" in spec_content
 
     def test_spec_output_name(self, spec_content: str) -> None:
         assert 'name="octomil"' in spec_content
@@ -57,11 +57,11 @@ class TestPyInstallerSpec:
     def test_spec_console_mode(self, spec_content: str) -> None:
         assert "console=True" in spec_content
 
-    def test_spec_onefile_mode(self, spec_content: str) -> None:
-        """EXE receives all bundles — this is the one-file pattern."""
-        assert "a.binaries" in spec_content
-        assert "a.zipfiles" in spec_content
-        assert "a.datas" in spec_content
+    def test_spec_onedir_mode(self, spec_content: str) -> None:
+        """COLLECT creates the diagnosable onedir bundle used by releases."""
+        assert "COLLECT(" in spec_content
+        assert "exclude_binaries=True" in spec_content
+        assert 'name="octomil"' in spec_content
 
     def test_spec_hidden_imports_engines(self, spec_content: str) -> None:
         """All engine modules must be listed as hidden imports."""
@@ -80,9 +80,24 @@ class TestPyInstallerSpec:
     def test_spec_hidden_imports_catalog(self, spec_content: str) -> None:
         assert "octomil.models.catalog" in spec_content
 
+    def test_spec_hidden_imports_uvicorn_autoloaders(self, spec_content: str) -> None:
+        for module in (
+            "uvicorn.logging",
+            "uvicorn.loops.auto",
+            "uvicorn.protocols.http.auto",
+            "uvicorn.protocols.websockets.auto",
+            "uvicorn.lifespan.on",
+        ):
+            assert module in spec_content
+
+    def test_spec_collects_server_packages(self, spec_content: str) -> None:
+        assert "collect_all" in spec_content
+        for package in ("octomil", "uvicorn", "fastapi", "starlette"):
+            assert f'"{package}"' in spec_content
+
     def test_spec_excludes_heavy_deps(self, spec_content: str) -> None:
         """Heavy optional deps should be excluded to keep binary small."""
-        for dep in ("torch", "tensorflow", "scipy", "matplotlib"):
+        for dep in ("torch", "tensorflow", "pandas", "pyarrow", "pytest", "scipy", "matplotlib"):
             assert dep in spec_content, f"Expected {dep} in excludes list"
 
 
@@ -120,11 +135,12 @@ class TestBuildScript:
             assert platform in script_content
 
     def test_build_script_runs_pyinstaller(self, script_content: str) -> None:
-        assert "pyinstaller" in script_content
-        assert "octomil.spec" in script_content
+        assert "pyinstaller" in script_content.lower()
+        assert "packaging/octomil.spec" in script_content
 
     def test_build_script_creates_archive(self, script_content: str) -> None:
         assert "tar -czf" in script_content
+        assert "octomil-${VERSION}-${PLATFORM}.tar.gz" in script_content
 
     def test_build_script_generates_sha256(self, script_content: str) -> None:
         assert "sha256sum" in script_content or "shasum" in script_content
@@ -180,6 +196,7 @@ class TestInstallScript:
 
     def test_install_script_supports_octomil_install_env(self, script_content: str) -> None:
         assert "OCTOMIL_INSTALL" in script_content
+        assert "OCTOMIL_INSTALL_DIR" in script_content
 
     def test_install_script_fallback_install_dir(self, script_content: str) -> None:
         assert "/usr/local/bin" in script_content
@@ -187,6 +204,22 @@ class TestInstallScript:
 
     def test_install_script_verifies_installation(self, script_content: str) -> None:
         assert "--version" in script_content
+
+    def test_install_script_verifies_checksums(self, script_content: str) -> None:
+        assert "SHA256SUMS" in script_content
+        assert "sha256sum" in script_content
+        assert "shasum -a 256" in script_content
+
+    def test_install_script_is_binary_only(self, script_content: str) -> None:
+        forbidden = ("pip install", "python3 -m", "python -m venv", "setup --foreground")
+        for text in forbidden:
+            assert text not in script_content
+
+    def test_install_script_supports_all_release_platforms(self, script_content: str) -> None:
+        assert "darwin" in script_content
+        assert "linux" in script_content
+        assert "arm64" in script_content
+        assert "amd64" in script_content
 
     def test_install_script_cleans_up_tmpdir(self, script_content: str) -> None:
         assert "mktemp" in script_content
@@ -230,7 +263,8 @@ class TestHomebrewFormula:
         assert "on_linux" in formula_content
 
     def test_formula_install_block(self, formula_content: str) -> None:
-        assert 'bin.install "octomil"' in formula_content
+        assert "libexec.install" in formula_content
+        assert "bin.install_symlink" in formula_content
 
     def test_formula_test_block(self, formula_content: str) -> None:
         assert "assert_match" in formula_content
@@ -238,6 +272,7 @@ class TestHomebrewFormula:
 
     def test_formula_uses_github_releases(self, formula_content: str) -> None:
         assert "github.com/octomil/octomil-python/releases" in formula_content
+        assert "octomil-v#{version}-darwin-arm64.tar.gz" in formula_content
 
 
 # ---------------------------------------------------------------------------
@@ -259,23 +294,24 @@ class TestReleaseWorkflow:
         assert "tags: ['v*']" in workflow_content
 
     def test_workflow_matrix_targets(self, workflow_content: str) -> None:
-        for target in ("darwin-arm64", "linux-amd64"):
+        for target in ("darwin-arm64", "darwin-amd64", "linux-arm64", "linux-amd64"):
             assert target in workflow_content
 
     def test_workflow_uses_python_311(self, workflow_content: str) -> None:
         assert "python-version: '3.11'" in workflow_content
 
     def test_workflow_installs_pyinstaller(self, workflow_content: str) -> None:
-        assert "pyinstaller" in workflow_content.lower()
+        assert ".[serve,binary]" in workflow_content
 
     def test_workflow_runs_pyinstaller(self, workflow_content: str) -> None:
-        assert "pyinstaller packaging/octomil.spec" in workflow_content
+        assert "./scripts/build-binary.sh" in workflow_content
 
     def test_workflow_verifies_binary(self, workflow_content: str) -> None:
         assert "--version" in workflow_content
 
     def test_workflow_generates_sha256(self, workflow_content: str) -> None:
         assert "sha256" in workflow_content.lower()
+        assert "SHA256SUMS" in workflow_content
 
     def test_workflow_uploads_artifacts(self, workflow_content: str) -> None:
         assert "upload-artifact" in workflow_content
@@ -284,8 +320,9 @@ class TestReleaseWorkflow:
         assert "gh release upload" in workflow_content
 
     def test_workflow_uses_macos_runners(self, workflow_content: str) -> None:
-        """macOS arm64 requires macos-14."""
+        """macOS arm64 and Intel are built on native macOS runners."""
         assert "macos-14" in workflow_content
+        assert "macos-15-intel" in workflow_content
 
     def test_workflow_does_not_overwrite_existing_release_yml(self) -> None:
         """The existing release.yml (PyPI) should still exist."""
@@ -306,7 +343,7 @@ class TestConsistency:
         pyproject_content = (ROOT / "pyproject.toml").read_text()
         assert "octomil.cli:main" in pyproject_content
         spec_content = _SPEC_FILE.read_text()
-        assert "octomil/__main__.py" in spec_content
+        assert "entrypoint.py" in spec_content
 
     def test_all_engines_in_spec(self) -> None:
         """Every engine in the runtime/engines directory should be a hidden import."""

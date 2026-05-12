@@ -3,13 +3,17 @@
 
 Build with::
 
-    pyinstaller octomil.spec
+    pyinstaller packaging/octomil.spec
 
-The resulting binary lands in ``dist/octomil``.
+The resulting onedir bundle lands in ``dist/octomil``.
 """
 
 
 block_cipher = None
+
+import os
+
+from PyInstaller.utils.hooks import collect_all
 
 # ---------------------------------------------------------------------------
 # Hidden imports — engines are lazily imported, PyInstaller can't detect them.
@@ -105,9 +109,22 @@ hidden_imports = [
     "starlette.middleware",
     "uvicorn",
     "uvicorn.config",
+    "uvicorn.logging",
+    "uvicorn.loops",
+    "uvicorn.loops.asyncio",
+    "uvicorn.loops.auto",
     "uvicorn.main",
     "uvicorn.lifespan",
     "uvicorn.lifespan.on",
+    "uvicorn.protocols",
+    "uvicorn.protocols.http",
+    "uvicorn.protocols.http.auto",
+    "uvicorn.protocols.http.h11_impl",
+    "uvicorn.protocols.http.httptools_impl",
+    "uvicorn.protocols.websockets",
+    "uvicorn.protocols.websockets.auto",
+    "uvicorn.protocols.websockets.websockets_impl",
+    "uvicorn.protocols.websockets.wsproto_impl",
     "pydantic",
     "pydantic._internal",
     "anyio",
@@ -116,21 +133,26 @@ hidden_imports = [
 ]
 
 # ---------------------------------------------------------------------------
-# Data files — model catalog is pure Python so no extra data needed.
-# Include the package metadata for importlib.metadata / pkg_resources.
+# Data files and package metadata for importlib.metadata/pkg_resources.
 # ---------------------------------------------------------------------------
 datas = []
+binaries = []
+
+for package in ("octomil", "uvicorn", "fastapi", "starlette"):
+    package_datas, package_binaries, package_hidden_imports = collect_all(package)
+    datas += package_datas
+    binaries += package_binaries
+    hidden_imports += package_hidden_imports
 
 # ---------------------------------------------------------------------------
 # Analysis
 # ---------------------------------------------------------------------------
-import os
 REPO_ROOT = os.path.abspath(os.path.join(SPECPATH, ".."))
 
 a = Analysis(
-    [os.path.join(REPO_ROOT, "octomil", "__main__.py")],
+    [os.path.join(REPO_ROOT, "packaging", "entrypoint.py")],
     pathex=[REPO_ROOT],
-    binaries=[],
+    binaries=binaries,
     datas=datas,
     hiddenimports=hidden_imports,
     hookspath=[],
@@ -142,6 +164,8 @@ a = Analysis(
         # the training/FL SDK which requires torch anyway.
         "torch",
         "tensorflow",
+        "pandas",
+        "pyarrow",
         "onnxruntime",
         "mlx",
         "mlx_lm",
@@ -153,6 +177,24 @@ a = Analysis(
         "numpy",
         "scipy",
         "matplotlib",
+        "PIL",
+        "Pillow",
+        "fsspec",
+        "pytest",
+        "py",
+        "keyring",
+        "eth_account",
+        "eth_keyfile",
+        "eth_keys",
+        "eth_utils",
+        "eth_typing",
+        "eth_hash",
+        "eth_rlp",
+        "eth_abi",
+        "hexbytes",
+        "rlp",
+        "cytoolz",
+        "Crypto",
         "tkinter",
     ],
     win_no_prefer_redirects=False,

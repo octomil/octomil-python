@@ -665,10 +665,10 @@ class TestServeReexec:
     @patch("octomil.setup.is_setup_in_progress", return_value=False)
     @patch("octomil.setup.is_engine_ready", return_value=False)
     @patch("octomil.setup.get_venv_python", return_value=None)
-    def test_try_venv_reexec_no_venv_runs_setup(
+    def test_try_venv_reexec_no_venv_does_not_run_setup_by_default(
         self, mock_venv, mock_ready, mock_progress, mock_run_setup, mock_load_state
     ):
-        """When no venv exists, try_venv_reexec runs setup inline."""
+        """When no venv exists, try_venv_reexec falls through without user Python."""
         from octomil.setup import SetupState
         from octomil.venv_reexec import try_venv_reexec
 
@@ -677,7 +677,7 @@ class TestServeReexec:
 
         result = try_venv_reexec()
         assert result is False
-        mock_run_setup.assert_called_once()
+        mock_run_setup.assert_not_called()
 
     @patch("octomil.setup.load_state")
     @patch("octomil.setup.is_setup_in_progress", return_value=False)
