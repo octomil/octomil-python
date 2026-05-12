@@ -59,6 +59,7 @@
 - lane H — cache bench/release-proof skeleton (blocked-on lane-a) (#569)
 - lane G — Python SDK cache clear/introspect skeleton (#571)
 - enable base model selection
+- ship standalone CLI installer and four-platform binary release artifacts (#581)
 
 ### Fixes
 
