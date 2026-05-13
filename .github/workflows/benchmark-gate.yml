@@ -150,11 +150,16 @@ jobs:
           git switch -c "$branch"
           git commit -m "$title"
           git push origin "HEAD:$branch"
-          gh pr create \
+          if ! pr_url="$(gh pr create \
             --base main \
             --head "$branch" \
             --title "$title" \
-            --body "Automated benchmark baseline update from ${GITHUB_REF_NAME}."
+            --body "Automated benchmark baseline update from ${GITHUB_REF_NAME}." 2>&1)"; then
+            echo "::warning::Pushed ${branch}, but could not create a pull request automatically."
+            echo "$pr_url"
+            exit 0
+          fi
+          echo "$pr_url"
 
   # ── Cache bench proof gate (Lane H skeleton) ──────────────────────────────
   # Runs the Python-side cache bench harness tests:
