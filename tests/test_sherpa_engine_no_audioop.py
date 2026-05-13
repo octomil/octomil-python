@@ -16,16 +16,30 @@ These regressions:
      ``sys.modules`` manipulation).
   2. ``_samples_to_wav`` must produce a valid RIFF/WAVE/fmt /data
      header without ``wave``.
-  3. ``_sherpa_tts_runtime_loadable`` must log the engine-import
-     failure at WARNING (rather than silently swallowing it) so
-     embedded users can see *why* the runtime is unavailable.
+  3. ``_sherpa_tts_runtime_loadable`` must key off the native batch
+     runtime gate, not whether the legacy Sherpa module imports.
 """
 
 from __future__ import annotations
 
-import logging
 import struct
 import sys
+from unittest.mock import patch
+
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def _restore_sherpa_modules_after_import_block_tests():
+    """Tests in this file force fresh imports; keep module identity
+    stable for later files that imported the voice-cache globals."""
+    snapshot = {name: mod for name, mod in sys.modules.items() if name.startswith("octomil.runtime.engines.sherpa")}
+    yield
+    for name in list(sys.modules):
+        if name.startswith("octomil.runtime.engines.sherpa"):
+            sys.modules.pop(name, None)
+    sys.modules.update(snapshot)
+
 
 # ---------------------------------------------------------------------------
 # (1) Engine module imports without ``audioop`` / ``wave``
@@ -156,21 +170,15 @@ def test_samples_to_wav_clips_outside_unit_range():
 
 
 # ---------------------------------------------------------------------------
-# (3) Kernel gate logs engine-import failures
+# (3) Kernel gate follows the native batch capability gate
 # ---------------------------------------------------------------------------
 
 
-def test_runtime_loadable_logs_engine_import_failure(monkeypatch, caplog):
-    """When ``octomil.runtime.engines.sherpa`` raises on import,
-    ``_sherpa_tts_runtime_loadable`` must log a WARNING explaining
-    why — not just silently return False. Embedded-Python users
-    need this to diagnose ``local_tts_runtime_unavailable``."""
+def test_native_tts_loadable_ignores_legacy_sherpa_import_failure(monkeypatch):
+    """A blocked legacy Sherpa import must not change native TTS
+    availability. The gate is the native batch runtime advertisement."""
     from octomil.execution.kernel import ExecutionKernel
 
-    # Force the next ``from octomil.runtime.engines.sherpa import …``
-    # inside ``_sherpa_tts_runtime_loadable`` to raise. Easiest way:
-    # remove the module from sys.modules so it re-imports, then
-    # install a meta-path finder that blocks it.
     sys.modules.pop("octomil.runtime.engines.sherpa", None)
 
     class _BlockSherpa:
@@ -181,11 +189,14 @@ def test_runtime_loadable_logs_engine_import_failure(monkeypatch, caplog):
 
     monkeypatch.setattr(sys, "meta_path", [_BlockSherpa(), *sys.meta_path])
 
-    with caplog.at_level(logging.WARNING, logger="octomil.execution.kernel"):
-        result = ExecutionKernel._sherpa_tts_runtime_loadable("kokoro-82m")
+    class _FakeRuntime:
+        def close(self) -> None:
+            pass
 
-    assert result is False
-    msgs = [r.getMessage() for r in caplog.records]
-    assert any(
-        "Sherpa TTS engine module failed to import" in m for m in msgs
-    ), f"expected a WARNING explaining the engine-import failure; got: {msgs!r}"
+    with (
+        patch("octomil.runtime.native.loader.NativeRuntime.open", return_value=_FakeRuntime()),
+        patch("octomil.runtime.native.tts_batch_backend.runtime_advertises_tts_batch", return_value=True),
+    ):
+        result = ExecutionKernel._sherpa_tts_runtime_loadable("piper-en-amy")
+
+    assert result is True

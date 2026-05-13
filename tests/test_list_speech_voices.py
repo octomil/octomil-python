@@ -150,18 +150,19 @@ def _kernel_with_static_route():
 
 
 @pytest.mark.asyncio
-async def test_list_speech_voices_returns_v1_0_catalog_from_prepared_cache(tmp_path):
-    """Happy path: prepared cache on disk → catalog comes from
-    voices.txt. 53 entries, source='voices_txt', sample_rate=24000,
-    artifact identity populated from the recipe."""
+async def test_list_speech_voices_returns_native_runtime_catalog_when_batch_is_advertised():
+    """Native cutover: when audio.tts.batch is advertised, the
+    listing API reflects the native runtime catalog directly.
+
+    Prepared cache state is not the source of local availability
+    anymore. For a native runtime model, the catalog should be the
+    runtime-backed one entry that the batch backend exposes."""
     from octomil.config.local import ResolvedExecutionDefaults
 
     kernel = _kernel_with_static_route()
-    (tmp_path / "voices.txt").write_text("\n".join(KOKORO_MULTI_LANG_V1_0_VOICES) + "\n", encoding="utf-8")
-    (tmp_path / "VERSION").write_text("kokoro-multi-lang-v1_0\n", encoding="utf-8")
 
     defaults = ResolvedExecutionDefaults(
-        model="kokoro-82m",
+        model="piper-en-amy",
         policy_preset="local_only",
         inline_policy=None,
         cloud_profile=None,
@@ -171,33 +172,27 @@ async def test_list_speech_voices_returns_v1_0_catalog_from_prepared_cache(tmp_p
         patch("octomil.execution.kernel._resolve_planner_selection", return_value=None),
         patch("octomil.execution.kernel._resolve_routing_policy"),
         patch.object(kernel, "_sherpa_tts_runtime_loadable", return_value=True),
-        patch.object(kernel, "_prepared_cache_may_short_circuit", return_value=True),
-        patch.object(kernel, "_prepared_local_artifact_dir", return_value=str(tmp_path)),
         patch(
             "octomil.execution.kernel._select_locality_for_capability",
             return_value=("on_device", False),
         ),
     ):
-        catalog = await kernel.list_speech_voices(model="kokoro-82m")
+        catalog = await kernel.list_speech_voices(model="piper-en-amy")
 
     assert isinstance(catalog, VoiceCatalog)
     assert catalog.locality == "on_device"
-    assert catalog.source == "voices_txt"
-    assert catalog.model == "kokoro-82m"
-    assert catalog.artifact_id == "kokoro-82m"
-    assert catalog.artifact_version == "kokoro-multi-lang-v1_0"
-    assert catalog.digest and catalog.digest.startswith("sha256:c133d263")
-    assert catalog.sample_rate == 24000
-    assert len(catalog.voices) == 53
-    assert catalog.voice_ids[:3] == ("af_alloy", "af_aoede", "af_bella")
-    assert catalog.voice_ids[12] == "am_echo"
-    # default voice flagged.
-    assert catalog.default_voice == "af_bella"
-    bella = catalog.get("af_bella")
-    assert bella is not None
-    assert bella.default is True
-    assert bella.sid == 2
-    # Unknown voices return None from .get().
+    assert catalog.source == "native_runtime"
+    assert catalog.model == "piper-en-amy"
+    assert catalog.artifact_id is None
+    assert catalog.artifact_version is None
+    assert catalog.digest is None
+    assert catalog.sample_rate == 22050
+    assert catalog.voice_ids == ("0",)
+    assert catalog.default_voice == "0"
+    native = catalog.get("0")
+    assert native is not None
+    assert native.default is True
+    assert native.sid == 0
     assert catalog.get("not_a_voice") is None
 
 
@@ -417,11 +412,13 @@ async def test_list_speech_voices_planner_artifact_without_prepared_cache_return
 
 
 @pytest.mark.asyncio
-async def test_list_speech_voices_planner_artifact_with_prepared_cache_uses_artifact_voices_txt(tmp_path):
-    """P1: when the planner artifact IS on disk, voices.txt is
-    authoritative — listing returns those voices, plus the planner
-    artifact's identity, never falling through to the public static
-    recipe's manifest/digest."""
+async def test_list_speech_voices_planner_artifact_with_prepared_cache_does_not_fabricate_catalog(tmp_path):
+    """P1 / cutover contract: a prepared cache may exist as
+    metadata, but it does not conjure local availability for a
+    planner-selected private artifact. If the runtime cannot
+    advertise the native batch backend for that artifact, listing
+    stays on the planner-pending path rather than pretending the
+    cache is authoritative."""
     from octomil.config.local import ResolvedExecutionDefaults
 
     custom_catalog = ("private_voice_a", "private_voice_b", "private_voice_c")
@@ -464,19 +461,13 @@ async def test_list_speech_voices_planner_artifact_with_prepared_cache_uses_arti
     finally:
         kernel_mod._local_sdk_runtime_candidate = original
 
-    # Voices come from the artifact's own voices.txt, not the public recipe.
-    assert catalog.voice_ids == custom_catalog
-    assert catalog.source == "voices_txt"
+    assert catalog.voice_ids == ()
+    assert catalog.source == "planner_pending"
     # Identity is the planner artifact's.
     assert catalog.artifact_id == "private-kokoro-v2"
     assert catalog.digest == "sha256:" + "b" * 64
-    # P2 invariant: default_voice falls back to the catalog's first
-    # entry because the model-table default (af_bella) isn't in the
-    # private artifact's catalog. The flagged VoiceInfo agrees.
-    assert catalog.default_voice == "private_voice_a"
-    flagged = [v for v in catalog.voices if v.default]
-    assert len(flagged) == 1
-    assert flagged[0].id == "private_voice_a"
+    assert catalog.default_voice is None
+    assert catalog.sample_rate is None
 
 
 # ---------------------------------------------------------------------------

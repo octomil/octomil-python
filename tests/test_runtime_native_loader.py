@@ -16,14 +16,13 @@ Exercises:
   * Version handshake.
   * ``oct_runtime_open`` v1 success + v0 / v2 / NULL-out error paths.
   * ``oct_runtime_close`` + idempotent context-manager close.
-  * ``oct_runtime_capabilities`` honors out->size, returns empty
-    sentinel arrays from the stub.
+  * ``oct_runtime_capabilities`` honors out->size and the bounded
+    canonical capability registry.
   * Forward-compat: capabilities() drops unknown advertised strings.
   * Thread-error and runtime-error read-back paths.
-  * Slice 2A: ABI parity for the session-level structs
-    (oct_session_config_t, oct_audio_view_t, oct_event_t) plus
-    NativeSession stub-behavior (open/send_audio/send_text/poll_event/
-    cancel/close all surface OCT_STATUS_UNSUPPORTED cleanly).
+  * ABI parity for the session-level structs (oct_session_config_t,
+    oct_audio_view_t, oct_event_t) plus blocked/unavailable session
+    paths surfacing OCT_STATUS_UNSUPPORTED cleanly.
 """
 
 from __future__ import annotations
@@ -257,7 +256,7 @@ def test_capabilities_after_close_raises():
 
 
 # ---------------------------------------------------------------------------
-# oct_runtime_capabilities — slice-2 stub returns empty sentinel arrays
+# oct_runtime_capabilities — canonical capability registry
 # ---------------------------------------------------------------------------
 
 
@@ -361,25 +360,52 @@ def test_capabilities_constants_match_contract_set():
         "embeddings.image",
         "embeddings.text",
         "index.vector.query",
+        "cache.introspect",
     }
     assert set(RUNTIME_CAPABILITIES) == expected
 
 
-def test_v0_4_capabilities_present():
-    """ABI v0.4: 6 new capabilities admitted to the runtime enum.
+def test_v0_4_and_v0_5_capabilities_present():
+    """ABI v0.4/v0.5 capabilities admitted to the runtime enum.
     embeddings.text in particular replaces the v0.3 'intentionally
-    absent' rule."""
+    absent' rule; cache.introspect is now live-conditional when native cache
+    providers are compiled."""
     from octomil.runtime.native import RUNTIME_CAPABILITIES
 
     for cap in (
         "audio.diarization",
         "audio.speaker.embedding",
         "audio.vad",
+        "cache.introspect",
         "embeddings.image",
         "embeddings.text",
         "index.vector.query",
     ):
-        assert cap in RUNTIME_CAPABILITIES, f"v0.4 capability {cap!r} missing"
+        assert cap in RUNTIME_CAPABILITIES, f"runtime capability {cap!r} missing"
+
+
+def test_runtime_capability_status_partition_is_complete():
+    """Every canonical capability has exactly one current Python SDK status."""
+    from octomil.runtime.native import (
+        BLOCKED_WITH_PROOF_CAPABILITIES,
+        CAPABILITY_STATUS_BLOCKED_WITH_PROOF,
+        CAPABILITY_STATUS_DONE_NATIVE_CUTOVER,
+        CAPABILITY_STATUS_LIVE_NATIVE_CONDITIONAL,
+        DONE_NATIVE_CUTOVER_CAPABILITIES,
+        LIVE_NATIVE_CONDITIONAL_CAPABILITIES,
+        RUNTIME_CAPABILITIES,
+        RUNTIME_CAPABILITY_STATUSES,
+    )
+
+    assert set(RUNTIME_CAPABILITY_STATUSES) == set(RUNTIME_CAPABILITIES)
+    assert set(RUNTIME_CAPABILITY_STATUSES.values()) == {
+        CAPABILITY_STATUS_BLOCKED_WITH_PROOF,
+        CAPABILITY_STATUS_DONE_NATIVE_CUTOVER,
+        CAPABILITY_STATUS_LIVE_NATIVE_CONDITIONAL,
+    }
+    assert (
+        DONE_NATIVE_CUTOVER_CAPABILITIES | LIVE_NATIVE_CONDITIONAL_CAPABILITIES | BLOCKED_WITH_PROOF_CAPABILITIES
+    ) == RUNTIME_CAPABILITIES
 
 
 # ---------------------------------------------------------------------------
@@ -554,27 +580,23 @@ def test_safe_extract_refuses_symlink_member(tmp_path: Path):
 
 
 # ---------------------------------------------------------------------------
-# Slice 2A — NativeSession stub behavior
+# NativeSession unsupported-path behavior
 #
-# Every session entry point on the slice-2 stub returns
-# OCT_STATUS_UNSUPPORTED. These tests pin that behavior so the slice
-# 2-proper Moshi-on-MLX adapter can replace stubs file-by-file with
-# tests that fail loudly on regressions.
+# Blocked or unavailable capability paths return OCT_STATUS_UNSUPPORTED.
+# These tests pin that behavior so legal enum names cannot masquerade as
+# live runtime features.
 #
-# Critical property: the stub MUST NEVER yield a fake event. Any
-# poll_event call returns UNSUPPORTED (raised) before reaching the
-# event-loop path; bindings that mistake "stub" for "working" because
-# poll_event silently produced an OCT_EVENT_NONE would silently drop
-# payloads in the slice 2-proper hand-off.
+# Critical property: unsupported paths MUST NEVER yield a fake event. Any
+# poll_event call returns UNSUPPORTED (raised) before reaching the event
+# loop path; bindings that mistake "unsupported" for "working" would
+# silently drop payloads when a real adapter later lands.
 # ---------------------------------------------------------------------------
 
 
 def test_session_open_unadvertised_capability_returns_unsupported():
-    """Under v0.1.0, capabilities NOT advertised by the runtime
-    (because no engine adapter is loadable for them) return
-    UNSUPPORTED on session_open. `audio.realtime.session` is the
-    Moshi capability; no engine ships it in v0.1.0, so it's
-    always UNSUPPORTED."""
+    """Capabilities not advertised by the runtime return UNSUPPORTED
+    on session_open. ``audio.realtime.session`` is BLOCKED_WITH_PROOF
+    today, so it must fail closed."""
     from octomil.runtime.native import (
         CAPABILITY_AUDIO_REALTIME_SESSION,
         OCT_STATUS_UNSUPPORTED,
@@ -591,11 +613,10 @@ def test_session_open_unadvertised_capability_returns_unsupported():
         assert "session_open" in exc_info.value.last_error.lower()
 
 
-def test_session_open_unknown_capability_under_stub_returns_unsupported():
-    """Even for non-canonical capability strings the stub returns
+def test_session_open_unknown_capability_returns_unsupported():
+    """Even for non-canonical capability strings the runtime returns
     UNSUPPORTED (rather than crashing or producing a fake handle).
-    Real runtime applies strict-reject against the canonical enum
-    here; the stub shape stays consistent."""
+    Runtime applies strict-reject against the canonical enum here."""
     from octomil.runtime.native import OCT_STATUS_UNSUPPORTED, NativeRuntime, NativeRuntimeError
 
     with NativeRuntime.open() as rt:
@@ -604,7 +625,7 @@ def test_session_open_unknown_capability_under_stub_returns_unsupported():
         assert exc_info.value.status == OCT_STATUS_UNSUPPORTED
 
 
-def test_session_open_never_returns_a_handle_against_stub():
+def test_session_open_failure_never_returns_a_handle():
     """Bindings rely on `*out == NULL` after a non-OK session_open.
     Without it the wrapper would attempt to NativeSession.close() a
     garbage handle on the cleanup path — the C contract guarantees
@@ -632,19 +653,19 @@ def test_session_open_never_returns_a_handle_against_stub():
         loc_buf = ffi.new("char[]", b"on_device")
         sess_cfg.locality = loc_buf
         sess_out = ffi.new("oct_session_t**")
-        # Pre-poison sess_out so we'd notice if the stub fails to NULL it.
+        # Pre-poison sess_out so we'd notice if failure fails to NULL it.
         sess_out[0] = ffi.cast("oct_session_t*", 0xDEADBEEF)
         status = int(lib.oct_session_open(rt, sess_cfg, sess_out))
         assert status == OCT_STATUS_UNSUPPORTED
-        assert sess_out[0] == ffi.NULL, "stub session_open must NULL out on failure"
+        assert sess_out[0] == ffi.NULL, "session_open must NULL out on failure"
     finally:
         lib.oct_runtime_close(rt)
 
 
-def test_session_send_audio_against_stub_returns_unsupported():
+def test_session_send_audio_with_null_session_returns_unsupported():
     """A NativeSession constructed against a NULL handle exercises
-    the entry-point shim. The stub returns UNSUPPORTED; the wrapper
-    raises NativeRuntimeError."""
+    the entry-point shim. Unsupported status is raised as
+    NativeRuntimeError."""
     from octomil.runtime.native.loader import (
         OCT_STATUS_UNSUPPORTED,
         NativeRuntimeError,
@@ -653,8 +674,8 @@ def test_session_send_audio_against_stub_returns_unsupported():
     )
 
     ffi, lib = _get_lib()
-    # Construct a NativeSession against NULL — the stub send_audio
-    # explicitly handles this by setting a thread error and returning
+    # Construct a NativeSession against NULL — send_audio explicitly
+    # handles this by setting a thread error and returning
     # UNSUPPORTED. We need a fake "owner" that only exposes last_error;
     # the simplest is a real (open) NativeRuntime.
     from octomil.runtime.native import NativeRuntime
@@ -671,8 +692,8 @@ def test_session_send_audio_against_stub_returns_unsupported():
 def test_session_send_text_with_null_session_returns_invalid_input():
     """v0.1.0 tightened the NULL-session contract: send_text on a
     NULL session pointer returns INVALID_INPUT, not UNSUPPORTED.
-    The previous slice-2A stub returned UNSUPPORTED uniformly;
-    with real engines wired in, NULL-session is now a caller bug."""
+    The early session shim returned UNSUPPORTED uniformly; with real
+    engines wired in, NULL-session is now a caller bug."""
     from octomil.runtime.native import NativeRuntime
     from octomil.runtime.native.loader import (
         NativeRuntimeError,
@@ -690,12 +711,11 @@ def test_session_send_text_with_null_session_returns_invalid_input():
         assert exc_info.value.status == OCT_STATUS_INVALID_INPUT
 
 
-def test_session_poll_event_against_stub_never_yields_fake_event():
-    """The most-load-bearing stub-behavior assertion. The slice-2
-    poll_event MUST NOT silently return a OCT_STATUS_OK event. If it
-    did, a binding would mistake the stub for a working runtime and
-    drop real payloads on the slice-2-proper handover. The stub
-    returns UNSUPPORTED → wrapper raises."""
+def test_session_poll_event_with_null_session_never_yields_fake_event():
+    """The most-load-bearing unsupported-path assertion. poll_event
+    MUST NOT silently return an OCT_STATUS_OK event. If it did, a
+    binding would mistake the path for a working runtime and drop real
+    payloads when an adapter later lands."""
     from octomil.runtime.native import NativeRuntime
     from octomil.runtime.native.loader import (
         OCT_STATUS_UNSUPPORTED,
@@ -715,9 +735,9 @@ def test_session_poll_event_against_stub_never_yields_fake_event():
 def test_session_cancel_with_null_session_raises_invalid_input():
     """v0.1.0 tightened the NULL-session contract: cancel() on a
     NULL session raises NativeRuntimeError(INVALID_INPUT). The
-    slice-2A "UNSUPPORTED is fine, return as status" idempotent
-    semantic was appropriate when every session entry point was
-    a stub; with real engines wired in, NULL-session at cancel
+    The early "UNSUPPORTED is fine, return as status" idempotent
+    semantic was appropriate before real engines were wired in; with
+    real engines wired in, NULL-session at cancel
     is a programming error."""
     from octomil.runtime.native import NativeRuntime
     from octomil.runtime.native.loader import (
@@ -795,7 +815,7 @@ def test_runtime_close_invalidates_live_sessions():
     ffi, lib = _get_lib()
     rt = NativeRuntime.open()
     # Construct a live NativeSession via the wrapper, registered with
-    # the runtime. The slice-2 stub returns UNSUPPORTED on real opens,
+    # the runtime. Blocked realtime returns UNSUPPORTED on real opens,
     # so we synthesize the registration directly via the path that
     # NativeRuntime.open_session would take after a successful call.
     sess = NativeSession(ffi, lib, ffi.NULL, owner=rt)
@@ -921,8 +941,8 @@ def test_native_model_invalidated_on_runtime_close():
     ffi, lib = _get_lib()
     rt = NativeRuntime.open()
     # Synthesize a NativeModel + register it (mirrors what
-    # open_model would do after a successful C call; stub never
-    # produces a real handle).
+    # open_model would do after a successful C call; this test never
+    # asks the runtime to produce a real handle).
     mdl = NativeModel(ffi, lib, ffi.NULL, owner=rt)
     rt._models.add(mdl)  # noqa: SLF001 — internal wiring under test
 
@@ -1108,8 +1128,10 @@ def test_event_version_bumped_to_2():
 def test_v0_4_step_2_event_type_constants_assigned_correctly():
     """v0.4 step 2 event-type numeric assignments are STABLE forever."""
     from octomil.runtime.native.loader import (
+        OCT_DIARIZATION_SPEAKER_UNKNOWN,
         OCT_EVENT_CACHE_HIT,
         OCT_EVENT_CACHE_MISS,
+        OCT_EVENT_DIARIZATION_SEGMENT,
         OCT_EVENT_MEMORY_PRESSURE,
         OCT_EVENT_METRIC,
         OCT_EVENT_MODEL_EVICTED,
@@ -1130,12 +1152,14 @@ def test_v0_4_step_2_event_type_constants_assigned_correctly():
     assert OCT_EVENT_THERMAL_STATE == 17
     assert OCT_EVENT_WATCHDOG_TIMEOUT == 18
     assert OCT_EVENT_METRIC == 19
+    assert OCT_EVENT_DIARIZATION_SEGMENT == 25
+    assert OCT_DIARIZATION_SPEAKER_UNKNOWN == 65535
 
 
-def test_open_session_with_correlation_ids_stub():
+def test_open_session_with_correlation_ids_reaches_runtime():
     """v0.4 step 2: open_session accepts the new correlation kwargs.
-    Stub still returns UNSUPPORTED (slice-2 stub semantics
-    preserved); the kwargs flow through cleanly."""
+    Blocked realtime still returns UNSUPPORTED; the kwargs flow
+    through cleanly."""
     from octomil.runtime.native import (
         CAPABILITY_AUDIO_REALTIME_SESSION,
         OCT_STATUS_UNSUPPORTED,
@@ -1392,7 +1416,7 @@ def test_open_session_accepts_canonical_correlation_id_shapes():
                 )
             assert (
                 exc_info.value.status == OCT_STATUS_UNSUPPORTED
-            ), f"valid id {good!r} should reach the C ABI and stub return UNSUPPORTED, not be rejected client-side"
+            ), f"valid id {good!r} should reach the C ABI and return UNSUPPORTED, not be rejected client-side"
 
 
 def test_v0_4_step_2_event_constants_exported_publicly():
@@ -1406,6 +1430,7 @@ def test_v0_4_step_2_event_constants_exported_publicly():
         "OCT_EVENT_MODEL_EVICTED",
         "OCT_EVENT_CACHE_HIT",
         "OCT_EVENT_CACHE_MISS",
+        "OCT_EVENT_DIARIZATION_SEGMENT",
         "OCT_EVENT_QUEUED",
         "OCT_EVENT_PREEMPTED",
         "OCT_EVENT_MEMORY_PRESSURE",

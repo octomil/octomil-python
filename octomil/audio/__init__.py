@@ -14,6 +14,15 @@ from __future__ import annotations
 
 from typing import Any, Callable, Optional
 
+from octomil.audio.diarization import (
+    DiarizationSegment,
+    NativeDiarizationBackend,
+    open_diarization_backend,
+)
+from octomil.audio.speaker_embedding import (
+    NativeSpeakerEmbeddingBackend,
+    open_speaker_embedding_backend,
+)
 from octomil.audio.speech import (
     FacadeSpeech,
     FacadeVoices,
@@ -23,7 +32,14 @@ from octomil.audio.speech import (
     VoiceInfo,
 )
 from octomil.audio.transcriptions import AudioTranscriptions
-from octomil.audio.types import TranscriptionResult, TranscriptionSegment
+from octomil.audio.types import (
+    DiarizationResult,
+    SpeakerEmbeddingResult,
+    TranscriptionResult,
+    TranscriptionSegment,
+    VadResult,
+)
+from octomil.audio.vad import NativeVadBackend, VadTransition, open_vad_backend
 from octomil.model_ref import ModelRef
 from octomil.runtime.core.model_runtime import ModelRuntime
 
@@ -41,10 +57,123 @@ class OctomilAudio:
         runtime_resolver: Callable[[ModelRef], Optional[ModelRuntime]],
     ) -> None:
         self._transcriptions = AudioTranscriptions(runtime_resolver)
+        self._vad = FacadeVad()
+        self._speaker_embedding = FacadeSpeakerEmbedding()
+        self._diarization = FacadeDiarization()
 
     @property
     def transcriptions(self) -> AudioTranscriptions:
         return self._transcriptions
+
+    @property
+    def vad(self) -> "FacadeVad":
+        return self._vad
+
+    @property
+    def speaker_embedding(self) -> "FacadeSpeakerEmbedding":
+        return self._speaker_embedding
+
+    @property
+    def diarization(self) -> "FacadeDiarization":
+        return self._diarization
+
+
+class FacadeVad:
+    """Native-only ``client.audio.vad`` namespace.
+
+    This product surface is a thin route over
+    :mod:`octomil.runtime.native.vad_backend`. It never dispatches to
+    cloud and has no Python fallback; unavailable native runtimes raise
+    bounded ``OctomilError`` values from the backend.
+    """
+
+    async def detect(
+        self,
+        *,
+        audio: Any,
+        sample_rate_hz: int = 16000,
+        deadline_ms: Optional[int] = None,
+    ) -> VadResult:
+        """Run native VAD over mono PCM-f32 audio."""
+        import asyncio
+
+        def _run() -> VadResult:
+            with open_vad_backend() as backend:
+                with backend.open_session(sample_rate_hz=sample_rate_hz) as session:
+                    session.feed_chunk(audio, sample_rate_hz=sample_rate_hz)
+                    transitions = list(
+                        session.poll_transitions(
+                            deadline_ms=deadline_ms,
+                            drain_until_completed=True,
+                        )
+                    )
+            return VadResult(transitions=transitions, sample_rate_hz=sample_rate_hz)
+
+        return await asyncio.to_thread(_run)
+
+
+def _embedding_values_to_list(values: Any) -> list[float]:
+    if hasattr(values, "tolist"):
+        values = values.tolist()
+    return [float(value) for value in values]
+
+
+class FacadeSpeakerEmbedding:
+    """Native-only ``client.audio.speaker_embedding`` namespace."""
+
+    async def create(
+        self,
+        *,
+        audio: Any,
+        model: str = "sherpa-eres2netv2-base",
+        sample_rate_hz: int = 16000,
+        deadline_ms: Optional[int] = None,
+    ) -> SpeakerEmbeddingResult:
+        """Create a native speaker embedding for mono PCM-f32 audio."""
+        import asyncio
+
+        def _run() -> SpeakerEmbeddingResult:
+            with open_speaker_embedding_backend(model_name=model) as backend:
+                embedding = _embedding_values_to_list(
+                    backend.embed(
+                        audio,
+                        sample_rate_hz=sample_rate_hz,
+                        deadline_ms=deadline_ms,
+                    )
+                )
+            return SpeakerEmbeddingResult(
+                embedding=embedding,
+                model=model,
+                dimensions=len(embedding),
+                sample_rate_hz=sample_rate_hz,
+            )
+
+        return await asyncio.to_thread(_run)
+
+
+class FacadeDiarization:
+    """Native-only ``client.audio.diarization`` namespace."""
+
+    async def create(
+        self,
+        *,
+        audio: Any,
+        sample_rate_hz: int = 16000,
+        deadline_ms: int = 300_000,
+    ) -> DiarizationResult:
+        """Run native speaker diarization over mono PCM-f32 audio."""
+        import asyncio
+
+        def _run() -> DiarizationResult:
+            with open_diarization_backend() as backend:
+                segments = backend.diarize(
+                    audio,
+                    sample_rate_hz=sample_rate_hz,
+                    deadline_ms=deadline_ms,
+                )
+            return DiarizationResult(segments=segments, sample_rate_hz=sample_rate_hz)
+
+        return await asyncio.to_thread(_run)
 
 
 class FacadeTranscriptions:
@@ -137,6 +266,9 @@ class FacadeAudio:
         self._speech = FacadeSpeech(kernel)
         self._transcriptions = FacadeTranscriptions(kernel)
         self._voices = FacadeVoices(kernel)
+        self._vad = FacadeVad()
+        self._speaker_embedding = FacadeSpeakerEmbedding()
+        self._diarization = FacadeDiarization()
 
     @property
     def speech(self) -> FacadeSpeech:
@@ -150,18 +282,44 @@ class FacadeAudio:
     def voices(self) -> FacadeVoices:
         return self._voices
 
+    @property
+    def vad(self) -> FacadeVad:
+        return self._vad
+
+    @property
+    def speaker_embedding(self) -> FacadeSpeakerEmbedding:
+        return self._speaker_embedding
+
+    @property
+    def diarization(self) -> FacadeDiarization:
+        return self._diarization
+
 
 __all__ = [
     "OctomilAudio",
     "FacadeAudio",
+    "FacadeDiarization",
+    "FacadeSpeakerEmbedding",
     "FacadeSpeech",
     "FacadeTranscriptions",
+    "FacadeVad",
     "FacadeVoices",
     "SpeechResponse",
     "SpeechRoute",
     "VoiceCatalog",
     "VoiceInfo",
     "AudioTranscriptions",
+    "DiarizationResult",
+    "DiarizationSegment",
+    "NativeDiarizationBackend",
+    "NativeSpeakerEmbeddingBackend",
+    "NativeVadBackend",
+    "open_diarization_backend",
+    "open_speaker_embedding_backend",
+    "open_vad_backend",
+    "SpeakerEmbeddingResult",
     "TranscriptionResult",
     "TranscriptionSegment",
+    "VadResult",
+    "VadTransition",
 ]

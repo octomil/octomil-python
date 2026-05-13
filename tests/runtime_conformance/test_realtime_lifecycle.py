@@ -1,21 +1,19 @@
-"""Slice 2A — realtime session lifecycle conformance scaffold.
+"""Realtime session lifecycle conformance for a blocked capability.
 
 Every test in this file is gated on
-``@requires_capability(CAPABILITY_AUDIO_REALTIME_SESSION)``. Until a
-runtime build advertises ``audio.realtime.session`` AND adds the
-capability to ``PYTHON_ORACLE_CAPABILITIES`` (the latter never happens
-— this is a native-first capability), the harness skips every test
-here:
+``@requires_capability(CAPABILITY_AUDIO_REALTIME_SESSION)``. Current
+Python SDK truth: ``audio.realtime.session`` is ``BLOCKED_WITH_PROOF``.
+It is a legal enum name, but current runtimes must not advertise it and
+``session_open`` must reject it with ``OCT_STATUS_UNSUPPORTED``.
 
-  * On the python backend — ``no-python-oracle`` (audio.realtime.session
-    is native-first by design).
-  * On the native backend — ``runtime_capabilities`` (slice-2 stub
-    does not advertise; slice 2-proper Moshi-on-MLX does).
+  * On the python backend — ``no-python-oracle``.
+  * On the native backend — ``runtime_capabilities`` unless a future
+    PR promotes the capability out of ``BLOCKED_WITH_PROOF``.
 
 Goal of this file: have the conformance test bodies WRITTEN and
-pinned NOW, so the slice 2-proper Moshi adapter has a concrete
-checklist of behaviors to satisfy before its tests can flip from
-SKIP to PASS. Cannot mistake a stub for a working runtime.
+pinned NOW, so a future realtime adapter has a concrete checklist of
+behaviors to satisfy before its tests can flip from SKIP to PASS.
+Cannot mistake a reserved enum name for a working runtime.
 """
 
 from __future__ import annotations
@@ -44,12 +42,11 @@ from tests.runtime_conformance.conftest import (
 
 @requires_capability(CAPABILITY_AUDIO_REALTIME_SESSION)
 def test_session_open_then_close(backend: str):
-    """Slice 2-proper acceptance: open a realtime session, then
+    """Future realtime acceptance: open a realtime session, then
     close. The runtime emits SESSION_STARTED before any audio flows."""
     if backend == BACKEND_PYTHON:
-        # Native-first capability — harness skip would have fired.
-        # Defense in depth: the marker's PYTHON_ORACLE_CAPABILITIES
-        # check should have already kicked us out.
+        # BLOCKED_WITH_PROOF capability — harness skip should have
+        # already kicked us out.
         pytest.fail("audio.realtime.session reached python backend; harness misconfigured")
     assert backend == BACKEND_NATIVE
     with NativeRuntime.open() as rt:
@@ -63,14 +60,11 @@ def test_session_cancel_terminates_with_completed_event(backend: str):
     """Cancellation is observable: poll_event after cancel delivers a
     SESSION_COMPLETED event.
 
-    Slice 2A scaffold scope: we only assert the SESSION_COMPLETED
+    Blocked-capability proof scope: we only assert the SESSION_COMPLETED
     type arrives. Asserting ``terminal_status == OCT_STATUS_CANCELLED``
     on the payload requires NativeEvent to expose the
-    ``session_completed`` union branch — that lands in slice 2-proper
-    when NativeEvent grows the payload accessors. Codex R1 missed-case:
-    tracked as a follow-up to tighten this test once the wrapper
-    surfaces the terminal_status field. The post-completion poll
-    asserting OCT_STATUS_CANCELLED is captured here today."""
+    ``session_completed`` union branch. The post-completion poll
+    asserting cancellation is captured here today."""
     assert backend == BACKEND_NATIVE
     with NativeRuntime.open() as rt:
         with rt.open_session(capability=CAPABILITY_AUDIO_REALTIME_SESSION) as sess:
@@ -100,7 +94,7 @@ def test_session_send_audio_round_trip(backend: str):
     proving the audio path actually flowed. The test now requires
     a payload event AFTER the SESSION_STARTED handshake, so a
     runtime that emits SESSION_STARTED but never engages the engine
-    fails this test loudly. Slice 2-proper acceptance criterion."""
+    fails this test loudly. Future realtime acceptance criterion."""
     from octomil.runtime.native import OCT_EVENT_AUDIO_CHUNK, OCT_EVENT_TRANSCRIPT_CHUNK
 
     assert backend == BACKEND_NATIVE
@@ -108,8 +102,8 @@ def test_session_send_audio_round_trip(backend: str):
     with NativeRuntime.open() as rt:
         with rt.open_session(capability=CAPABILITY_AUDIO_REALTIME_SESSION) as sess:
             # 100ms of silence at 16kHz mono float32 = 1600 frames * 4 bytes.
-            # Real Moshi adapter handles silence as a valid input — VAD
-            # gates output but SESSION_STARTED is unconditional.
+            # A real realtime adapter handles silence as valid input;
+            # VAD may gate output but SESSION_STARTED is unconditional.
             silence = b"\x00\x00\x00\x00" * 1600
             sess.send_audio(silence, sample_rate=16000, channels=1)
             saw_payload = False
@@ -129,7 +123,7 @@ def test_session_send_audio_round_trip(backend: str):
 def test_session_open_then_immediate_close_does_not_leak(backend: str):
     """Defensive: open and close back-to-back without polling. The
     runtime must drain queued events and free internal state.
-    Regression target for the slice 2-proper adapter."""
+    Regression target for a future realtime adapter."""
     assert backend == BACKEND_NATIVE
     with NativeRuntime.open() as rt:
         sess = rt.open_session(capability=CAPABILITY_AUDIO_REALTIME_SESSION)
@@ -141,7 +135,7 @@ def test_session_open_then_immediate_close_does_not_leak(backend: str):
 def test_session_send_audio_after_cancel_returns_cancelled(backend: str):
     """After cancel, send_audio returns OCT_STATUS_CANCELLED rather
     than partially consuming the buffer. Pin the contract here so
-    the slice 2-proper adapter doesn't drift."""
+    a future realtime adapter doesn't drift."""
     assert backend == BACKEND_NATIVE
     with NativeRuntime.open() as rt:
         with rt.open_session(capability=CAPABILITY_AUDIO_REALTIME_SESSION) as sess:
@@ -155,28 +149,27 @@ def test_session_send_audio_after_cancel_returns_cancelled(backend: str):
 # Stub-state assertion (always-runs sanity)
 #
 # Not capability-gated: this one runs on every native invocation and
-# pins the stub-state regression — that the slice-2 stub continues to
-# return UNSUPPORTED rather than silently producing fake events.
-# When slice 2-proper lands and advertises the capability, this test
-# DELETES (the gated tests above flip to active).
+# pins the blocked-capability proof: realtime continues to return
+# UNSUPPORTED rather than silently producing fake events. When a future
+# PR promotes realtime out of BLOCKED_WITH_PROOF, this test deletes and
+# the gated tests above flip to active.
 # ---------------------------------------------------------------------------
 
 
-def test_realtime_stub_returns_unsupported_until_advertised(backend: str):
-    """Independent of the capability marker: against the slice-2
-    stub, open_session for realtime MUST raise UNSUPPORTED. This is
-    the regression boundary — it disappears when slice 2-proper
-    flips advertisement on, replaced by the gated lifecycle tests
-    above."""
+def test_realtime_blocked_returns_unsupported_until_promoted(backend: str):
+    """Independent of the capability marker: while realtime is
+    BLOCKED_WITH_PROOF, open_session MUST raise UNSUPPORTED. This
+    disappears only when a future PR promotes the capability and the
+    gated lifecycle tests above become active."""
     if backend == BACKEND_PYTHON:
-        pytest.skip("native-first stub regression — only applies to native backend")
+        pytest.skip("blocked-capability proof only applies to native backend")
     with NativeRuntime.open() as rt:
         caps = rt.capabilities()
         if CAPABILITY_AUDIO_REALTIME_SESSION in caps.supported_capabilities:
             pytest.skip(
-                "runtime advertises audio.realtime.session — stub regression "
-                "test no longer applicable; the gated lifecycle tests cover "
-                "this surface"
+                "runtime advertises audio.realtime.session — blocked proof no "
+                "longer applicable; promote the status and rely on the gated "
+                "lifecycle tests"
             )
         with pytest.raises(NativeRuntimeError) as exc_info:
             rt.open_session(capability=CAPABILITY_AUDIO_REALTIME_SESSION)

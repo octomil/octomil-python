@@ -55,8 +55,11 @@ class AudioTranscriptions:
         if runtime is None:
             raise RuntimeError("No runtime available for transcription model")
 
+        parts = [RuntimeContentPart.audio_part(audio, "audio/wav")]
+        if language:
+            parts.append(RuntimeContentPart.text_part(language))
         request = RuntimeRequest(
-            messages=[RuntimeMessage(role=MessageRole.USER, parts=[RuntimeContentPart.text_part(language or "")])],
+            messages=[RuntimeMessage(role=MessageRole.USER, parts=parts)],
             generation_config=GenerationConfig(max_tokens=0, temperature=0.0),
         )
         response = await runtime.run(request)
@@ -83,20 +86,16 @@ class AudioTranscriptions:
             raise RuntimeError("No runtime available for transcription model")
 
         request = RuntimeRequest(
-            messages=[RuntimeMessage(role=MessageRole.USER, parts=[RuntimeContentPart.text_part("")])],
+            messages=[
+                RuntimeMessage(
+                    role=MessageRole.USER,
+                    parts=[RuntimeContentPart.audio_part(audio, "audio/wav")],
+                )
+            ],
             generation_config=GenerationConfig(max_tokens=0, temperature=0.0),
         )
         segments: list[TranscriptionSegment] = []
-        offset_ms = 0
-
         async for chunk in runtime.stream(request):
             if chunk.text:
-                segment = TranscriptionSegment(
-                    text=chunk.text,
-                    start_ms=offset_ms,
-                    end_ms=offset_ms + 500,
-                )
-                segments.append(segment)
-                offset_ms += 500
-
+                segments.append(TranscriptionSegment(text=chunk.text))
         return segments

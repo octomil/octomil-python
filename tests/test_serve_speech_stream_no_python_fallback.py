@@ -348,18 +348,18 @@ async def test_out_of_range_sid_raises_before_streaming(tmp_path: Any) -> None:
 
 
 async def test_response_sample_rate_header_matches_loaded_model(tmp_path: Any) -> None:
-    """Codex R1 P1 fix: ``X-Octomil-Sample-Rate`` must be the SR the
-    loaded sherpa-onnx model actually emits (24000 Hz for Kokoro,
-    22050 Hz for piper-amy), not a hardcoded constant.
+    """``X-Octomil-Sample-Rate`` comes from the native stream backend.
 
-    We verify by injecting a python-sherpa fake whose ``_sample_rate``
-    is 24000 (Kokoro default) and asserting the header matches.
+    The hard-cut route must ignore the legacy Python Sherpa fake even if
+    it is present in test setup. The fake native backend emits 22050 Hz
+    chunks, so the response header should match the native path rather
+    than the old Kokoro/Python-Sherpa 24000 Hz assumption.
     """
     pytest.importorskip("httpx")
     from httpx import ASGITransport, AsyncClient
 
     sherpa_backend = _FakePythonSherpaBackend()
-    sherpa_backend._sample_rate = 24000  # mimic Kokoro
+    sherpa_backend._sample_rate = 24000  # ignored by the native route
     native_instance = _FakeNativeTtsStreamBackend()
 
     def native_factory() -> Any:
@@ -383,9 +383,8 @@ async def test_response_sample_rate_header_matches_loaded_model(tmp_path: Any) -
                 json={"model": "kokoro-82m", "input": "hi"},
             ) as resp:
                 assert resp.status_code == 200, await resp.aread()
-                assert resp.headers["x-octomil-sample-rate"] == "24000", (
-                    f"sample-rate header must reflect the loaded model's "
-                    f"actual SR (Kokoro=24000), got "
+                assert resp.headers["x-octomil-sample-rate"] == "22050", (
+                    f"sample-rate header must reflect the native stream backend, got "
                     f"{resp.headers['x-octomil-sample-rate']!r}"
                 )
                 async for _ in resp.aiter_bytes():

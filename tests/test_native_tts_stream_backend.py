@@ -1,4 +1,4 @@
-"""v0.1.8 Lane C — NativeTtsStreamBackend tests.
+"""NativeTtsStreamBackend tests.
 
 Three layers of coverage:
 
@@ -14,16 +14,14 @@ Three layers of coverage:
    smoke text Lane A used; asserts ≥1 chunk, last has
    ``is_final=True``, total cumulative_duration_ms ~6.5s ± slack.
 3. **Honesty test**: drives the same two-sentence text and asserts
-   that chunk arrival timestamps cluster together (delta from first
-   to last < 50 ms) — the coalesced-after-synthesis signature. The
-   test failure message tells the v0.1.9 implementer to update the
-   bound when the runtime flips to progressive Generate.
+   that chunks report progressive streaming mode. TTS is
+   LIVE_NATIVE_CONDITIONAL, so this integration layer is skipped unless
+   the runtime advertises ``audio.tts.stream``.
 """
 
 from __future__ import annotations
 
 import os
-import time
 import types
 from typing import Any
 
@@ -289,45 +287,22 @@ class TestNativeTtsStreamBackendIntegration:
         # bound (varies by VITS model + speed). Just assert non-zero.
         assert chunks[-1].cumulative_duration_ms > 1000
 
-    def test_honesty_chunks_arrive_coalesced(self) -> None:
-        """v0.1.8 honesty signature: chunks arrive together at end-
-        of-synth. We measure the wall-clock delta between first and
-        last chunk arrival; for the synchronous-Generate sherpa
-        adapter it is small (<100 ms) because Generate runs to
-        completion inside ONE poll_event call.
-
-        If a future runtime change makes chunks arrive progressively,
-        this test fails with a comment telling the v0.1.9 implementer
-        to update the bound — at which point the SDK gets to drop
-        the ``coalesced_after_synthesis`` honesty marker.
-        """
+    def test_honesty_chunks_report_progressive(self) -> None:
+        """v0.1.9 honesty signature: advertised TTS stream chunks are
+        progressive. The measured first-audio proof lives in the runtime
+        and contract tests; this SDK integration test pins the public
+        chunk metadata exposed to callers."""
         backend = NativeTtsStreamBackend()
         backend.load_model("kokoro-82m")
         try:
-            timestamps_ms: list[float] = []
+            chunks: list[TtsAudioChunk] = []
             for chunk in backend.synthesize_with_chunks(_TWO_SENTENCE_TEXT):
-                timestamps_ms.append(time.monotonic() * 1000.0)
-                assert chunk is not None
+                chunks.append(chunk)
         finally:
             backend.close()
 
-        if len(timestamps_ms) < 2:
-            pytest.skip("Need ≥2 chunks to measure inter-arrival delta")
-
-        delta_ms = timestamps_ms[-1] - timestamps_ms[0]
-        # Coalesced-after-synthesis signature: all chunks land within
-        # a small bookkeeping window (<100 ms) on consumer iteration.
-        # If this fires, the runtime has flipped to progressive
-        # Generate — yay, but bump the v0.1.9 follow-up to update
-        # this test (and drop the X-Octomil-Streaming-Honesty header).
-        assert delta_ms < 100.0, (
-            f"chunks arrived spread across {delta_ms:.1f} ms — "
-            "this exceeds the v0.1.8 coalesced-after-synthesis "
-            "signature. yay progressive delivery — bump v0.1.9 "
-            "follow-up to update this test (and drop the "
-            "X-Octomil-Streaming-Honesty=coalesced_after_synthesis "
-            "response header)."
-        )
+        assert chunks, "expected at least one TTS chunk"
+        assert all(chunk.streaming_mode == "progressive" for chunk in chunks)
 
 
 # ---------------------------------------------------------------------------

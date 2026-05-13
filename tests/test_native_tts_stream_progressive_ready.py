@@ -1,40 +1,23 @@
-"""v0.1.9 Lane 4 — progressive-ready scaffolding tests.
+"""v0.1.9 progressive TTS stream plumbing tests.
 
-These tests pin the SDK plumbing required for the eventual
-progressive-streaming flip. They MUST pass against today's
-coalesced runtime (because they don't actually require progressive
-behavior — just plumbing).
+These tests pin the SDK plumbing for the live-conditional progressive
+TTS stream path. They do not require a runtime artifact; they verify
+the public dataclass and iterator shape that advertised runtimes use.
 
 Coverage:
 
 1. ``TtsAudioChunk`` dataclass shape is forward-compatible: the
    ``streaming_mode`` field is present, has a Literal[coalesced,
-   progressive] type, and defaults to "coalesced" for honesty.
+   progressive] type, and defaults to "progressive" for the current
+   proven runtime behavior.
 2. The iterator pattern works with a mocked drain that emits chunks
    at delayed intervals (simulates a future progressive runtime
    without actually requiring one).
 3. Inter-chunk timing measurement works: given N chunk arrivals at
    monotonic clock times t0 < t1 < ... < t(N-1), the helper produces
    N-1 non-negative finite deltas. Lane 4's job is to verify that
-   inter-chunk deltas CAN BE MEASURED — NOT to encode a progressive
-   threshold. The threshold + per-chunk streaming_mode flip is
-   Lane 3's gate (post-runtime-release).
-
-Honesty pin (DO NOT FLIP without the runtime release):
-    The default streaming_mode is "coalesced" today. A separate
-    test (test_tts_stream_no_premature_progressive_claim.py) blocks
-    flipping the default to "progressive" before the runtime
-    actually proves progressive arrival.
-
-Lane 1 + Lane 2 follow-up (after runtime release lands):
-    1. NativeTtsStreamBackend reads a runtime capability hint OR
-       measures inter-chunk delta_ms (Lane 3 picks the threshold).
-    2. Each TtsAudioChunk's streaming_mode is set per-chunk based
-       on that detection.
-    3. The honesty header X-Octomil-Streaming-Honesty is updated
-       (with a runtime version check gating the flip).
-    4. ``test_tts_stream_no_premature_progressive_claim.py`` is
-       updated in lockstep with that PR.
+   inter-chunk deltas can be measured without encoding a product
+   threshold in this unit test.
 """
 
 from __future__ import annotations
@@ -247,32 +230,27 @@ class TestInterChunkTimingMeasurement:
 
 
 # ---------------------------------------------------------------------------
-# 4. Cross-check against backend module — public name still describes
-# coalesced; method name is still synthesize_with_chunks (NOT 'stream').
+# 4. Cross-check against backend module — method name is still
+# synthesize_with_chunks (NOT 'stream').
 # ---------------------------------------------------------------------------
 
 
-class TestBackendPublicNamesStillCoalescedShape:
+class TestBackendPublicNamesStillIteratorShape:
     """v0.1.9 honesty pin: the public method name + module docstring
-    are still iterator-of-chunks shape, NOT realtime/progressive.
-    The guard test (test_tts_stream_no_premature_progressive_claim.py)
-    is the strictest version of this; this is a quick local pin."""
+    are still iterator-of-chunks shape, NOT realtime audio."""
 
     def test_method_name_is_synthesize_with_chunks(self) -> None:
         from octomil.runtime.native.tts_stream_backend import NativeTtsStreamBackend
 
         assert hasattr(NativeTtsStreamBackend, "synthesize_with_chunks"), (
             "Method synthesize_with_chunks went missing — renaming this "
-            "to .stream() is a public-claim change and requires the "
-            "runtime release to ship first. See guard test."
+            "to .stream() is a public API change. Keep the iterator "
+            "method name stable for current callers."
         )
-        # And that the v0.1.8-shape '.stream' alias does NOT exist.
-        # (If it does, someone may have renamed without going through
-        # the guard; the dedicated guard test is more thorough.)
+        # And that the older proposed '.stream' alias does NOT exist.
         assert not hasattr(NativeTtsStreamBackend, "stream"), (
             "NativeTtsStreamBackend grew a 'stream' attribute. This "
-            "looks like an early progressive-rename. Do NOT introduce "
-            "until the runtime release lands; the v0.1.9 plan keeps "
+            "looks like an API rename. Keep "
             "the public method name 'synthesize_with_chunks'."
         )
 

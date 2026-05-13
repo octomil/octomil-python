@@ -57,6 +57,7 @@ __all__ = ["map_oct_status"]
 #
 #   "digest"                       → CHECKSUM_MISMATCH (artifact integrity fail)
 #   "audio.transcription"          → RUNTIME_UNAVAILABLE (capability not advertised)
+#   "audio.diarization"            → RUNTIME_UNAVAILABLE
 #   "audio.vad"                    → RUNTIME_UNAVAILABLE
 #   "audio.speaker.embedding"      → RUNTIME_UNAVAILABLE
 #   "OCTOMIL_<X>_BIN" / "_MODEL"   → RUNTIME_UNAVAILABLE (artifact env unset)
@@ -74,10 +75,12 @@ __all__ = ["map_oct_status"]
 _DIGEST_MARKERS = ("digest",)
 _CAPABILITY_MARKERS = (
     "audio.transcription",
+    "audio.diarization",
     "audio.vad",
     "audio.speaker.embedding",
 )
 _ENV_UNSET_MARKERS = (
+    "octomil_diarization_segmentation_model",
     "octomil_whisper_bin",
     "octomil_silero_vad_bin",
     "octomil_sherpa_speaker_model",

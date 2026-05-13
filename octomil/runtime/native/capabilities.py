@@ -23,7 +23,7 @@ These constants are used in BOTH directions:
 
 from __future__ import annotations
 
-# Slice 2A baseline (v0.3)
+# Original Layer 2a enum members (v0.3).
 CAPABILITY_AUDIO_REALTIME_SESSION: str = "audio.realtime.session"
 CAPABILITY_AUDIO_STT_BATCH: str = "audio.stt.batch"
 CAPABILITY_AUDIO_STT_STREAM: str = "audio.stt.stream"
@@ -43,11 +43,10 @@ CAPABILITY_EMBEDDINGS_IMAGE: str = "embeddings.image"
 CAPABILITY_EMBEDDINGS_TEXT: str = "embeddings.text"
 CAPABILITY_INDEX_VECTOR_QUERY: str = "index.vector.query"
 
-# v0.5 — Lane G cache ABI skeleton (octomil-contracts#129;
+# v0.5 — Lane G cache ABI (octomil-contracts#129;
 # octomil-runtime#53). Gates oct_runtime_cache_clear_*/introspect.
-# Runtime advertises iff at least one introspectable cache is
-# registered; today's runtimes do not advertise it (skeleton-only,
-# all four ABI entry points return OCT_STATUS_UNSUPPORTED).
+# Live conditional: runtimes advertise this only when at least one
+# privacy-safe native cache provider is compiled in.
 CAPABILITY_CACHE_INTROSPECT: str = "cache.introspect"
 
 #: The canonical set of capabilities the Layer 2a runtime can claim.
@@ -73,8 +72,65 @@ RUNTIME_CAPABILITIES: frozenset[str] = frozenset(
     }
 )
 
+CAPABILITY_STATUS_DONE_NATIVE_CUTOVER: str = "DONE_NATIVE_CUTOVER"
+CAPABILITY_STATUS_LIVE_NATIVE_CONDITIONAL: str = "LIVE_NATIVE_CONDITIONAL"
+CAPABILITY_STATUS_BLOCKED_WITH_PROOF: str = "BLOCKED_WITH_PROOF"
+
+# Current Python SDK truth model for native runtime capabilities.
+#
+# DONE_NATIVE_CUTOVER means the Python product path is cut over to the
+# native runtime and no Python-local product fallback is reachable.
+DONE_NATIVE_CUTOVER_CAPABILITIES: frozenset[str] = frozenset(
+    {
+        CAPABILITY_CHAT_COMPLETION,
+        CAPABILITY_CHAT_STREAM,
+        CAPABILITY_EMBEDDINGS_TEXT,
+    }
+)
+
+# LIVE_NATIVE_CONDITIONAL means a real native adapter exists, but
+# oct_runtime_capabilities advertises it only when this runtime build's
+# build/artifact/digest/sidecar gates pass. These are live, not
+# scaffold, and not guaranteed to appear on every machine.
+LIVE_NATIVE_CONDITIONAL_CAPABILITIES: frozenset[str] = frozenset(
+    {
+        CAPABILITY_AUDIO_DIARIZATION,
+        CAPABILITY_AUDIO_SPEAKER_EMBEDDING,
+        CAPABILITY_AUDIO_STT_BATCH,
+        CAPABILITY_AUDIO_STT_STREAM,
+        CAPABILITY_AUDIO_TRANSCRIPTION,
+        CAPABILITY_AUDIO_TTS_BATCH,
+        CAPABILITY_AUDIO_TTS_STREAM,
+        CAPABILITY_AUDIO_VAD,
+        CAPABILITY_CACHE_INTROSPECT,
+    }
+)
+
+# BLOCKED_WITH_PROOF means the name is legal and bounded by tests, but
+# current runtimes must not advertise it. session_open rejects it with
+# OCT_STATUS_UNSUPPORTED.
+BLOCKED_WITH_PROOF_CAPABILITIES: frozenset[str] = frozenset(
+    {
+        CAPABILITY_AUDIO_REALTIME_SESSION,
+        CAPABILITY_EMBEDDINGS_IMAGE,
+        CAPABILITY_INDEX_VECTOR_QUERY,
+    }
+)
+
+RUNTIME_CAPABILITY_STATUSES: dict[str, str] = {
+    **{capability: CAPABILITY_STATUS_DONE_NATIVE_CUTOVER for capability in DONE_NATIVE_CUTOVER_CAPABILITIES},
+    **{capability: CAPABILITY_STATUS_LIVE_NATIVE_CONDITIONAL for capability in LIVE_NATIVE_CONDITIONAL_CAPABILITIES},
+    **{capability: CAPABILITY_STATUS_BLOCKED_WITH_PROOF for capability in BLOCKED_WITH_PROOF_CAPABILITIES},
+}
+
+assert frozenset(RUNTIME_CAPABILITY_STATUSES) == RUNTIME_CAPABILITIES
+
 
 __all__ = [
+    "BLOCKED_WITH_PROOF_CAPABILITIES",
+    "CAPABILITY_STATUS_BLOCKED_WITH_PROOF",
+    "CAPABILITY_STATUS_DONE_NATIVE_CUTOVER",
+    "CAPABILITY_STATUS_LIVE_NATIVE_CONDITIONAL",
     "CAPABILITY_AUDIO_DIARIZATION",
     "CAPABILITY_AUDIO_REALTIME_SESSION",
     "CAPABILITY_AUDIO_SPEAKER_EMBEDDING",
@@ -90,5 +146,8 @@ __all__ = [
     "CAPABILITY_EMBEDDINGS_IMAGE",
     "CAPABILITY_EMBEDDINGS_TEXT",
     "CAPABILITY_INDEX_VECTOR_QUERY",
+    "DONE_NATIVE_CUTOVER_CAPABILITIES",
+    "LIVE_NATIVE_CONDITIONAL_CAPABILITIES",
     "RUNTIME_CAPABILITIES",
+    "RUNTIME_CAPABILITY_STATUSES",
 ]

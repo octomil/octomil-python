@@ -71,15 +71,17 @@ class ServerState:
 
     backend: Optional[InferenceBackend] = None
     whisper_backend: Any = None  # _WhisperBackend instance (speech-to-text)
-    sherpa_tts_backend: Any = None  # _SherpaTtsBackend instance (text-to-speech, batch path)
-    # v0.1.8 Lane C — native ``audio.tts.stream`` backend. Hard-cut over
-    # the python-sherpa stream path; populated alongside
-    # ``sherpa_tts_backend`` at startup when the runtime advertises
-    # ``audio.tts.stream``. Shape: ``NativeTtsStreamBackend``. Honesty
-    # caveat: in v0.1.8 the underlying runtime Generate is synchronous,
-    # so chunks arrive coalesced after synthesis — see the backend
-    # module docstring.
+    native_tts_batch_backend: Any = None  # NativeTtsBatchBackend instance (text-to-speech, batch path)
+    sherpa_tts_backend: Any = None  # legacy tests/backcompat only; product startup uses native_tts_batch_backend
+    # LIVE_NATIVE_CONDITIONAL native ``audio.tts.stream`` backend.
+    # Populated alongside ``sherpa_tts_backend`` only when the runtime
+    # advertises the capability after its build/artifact/digest/sidecar
+    # gates pass. Delivery is progressive when present; absence is not
+    # a signal to fall back to the Python stream path.
     native_tts_stream_backend: Any = None
+    native_vad_backend: Any = None  # NativeVadBackend instance (voice activity detection)
+    native_speaker_embedding_backend: Any = None  # NativeSpeakerEmbeddingBackend instance
+    native_diarization_backend: Any = None  # NativeDiarizationBackend instance
     embeddings_backend: Any = None  # NativeEmbeddingsBackend instance (embeddings.text)
     model_name: str = ""
     engine_name: str = ""

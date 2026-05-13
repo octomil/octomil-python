@@ -23,13 +23,11 @@ This module exposes:
     ``oct_runtime_capabilities_free``).
   * Last-error (``oct_runtime_last_error``,
     ``oct_last_thread_error``).
-  * Slice 2A — session lifecycle bindings: ``NativeSession`` wraps
+  * Session lifecycle bindings: ``NativeSession`` wraps
     ``oct_session_open / send_audio / send_text / poll_event /
-    cancel / close``. The stub returns ``OCT_STATUS_UNSUPPORTED``
-    for every call until slice 2-proper lands a real session
-    adapter; the wrapper exists so bindings, conformance tests, and
-    higher-level routing code can compile against the real surface
-    NOW and have it auto-skip on capability advertisement.
+    cancel / close``. Live native capabilities use these entry points
+    when the runtime advertises them; blocked capability names reject
+    with bounded ``OCT_STATUS_UNSUPPORTED``.
 
 **Forward-compat advertisement parsing:** capabilities returned by
 the runtime that do NOT appear in :data:`RUNTIME_CAPABILITIES` are
@@ -147,6 +145,9 @@ OCT_EVENT_TTS_AUDIO_CHUNK: int = 23
 # with the next END to derive a span. confidence ∈ [0.0, 1.0] is the
 # average per-window silero probability across the span.
 OCT_EVENT_VAD_TRANSITION: int = 24
+# audio.diarization segment event. One event per speaker turn,
+# followed by OCT_EVENT_SESSION_COMPLETED.
+OCT_EVENT_DIARIZATION_SEGMENT: int = 25
 
 # v0.1.5 PR-2N — closed-enum sentinels for
 # data.vad_transition.transition_kind. UNKNOWN is a future-compat
@@ -174,6 +175,9 @@ OCT_EMBED_POOLING_MEAN: int = 1
 OCT_EMBED_POOLING_CLS: int = 2
 OCT_EMBED_POOLING_LAST: int = 3
 OCT_EMBED_POOLING_RANK: int = 4
+
+# audio.diarization speaker_id sentinel.
+OCT_DIARIZATION_SPEAKER_UNKNOWN: int = 65535
 
 # v0.1.1 — bumped lockstep with runtime.h. session_config v=3 adds
 # the appended `oct_model_t* model` field; chat.completion sessions
@@ -623,8 +627,7 @@ typedef struct oct_event {
             uint32_t    _reserved1;
         } transcript_final;
 
-        /* v0.1.5 — diarization segment (capability not advertised in
-         * PR-2B; declared for union-sizeof parity with the dylib). */
+        /* audio.diarization segment. */
         struct {
             uint32_t    start_ms;
             uint32_t    end_ms;
@@ -634,8 +637,8 @@ typedef struct oct_event {
             const char* speaker_label;
         } diarization_segment;
 
-        /* v0.1.5 — TTS audio chunk (capability not advertised in
-         * PR-2B; declared for union-sizeof parity with the dylib). */
+        /* TTS audio chunk. Emitted by audio.tts.batch and
+         * audio.tts.stream when the native TTS gate advertises. */
         struct {
             const uint8_t* pcm;
             uint32_t       n_bytes;
@@ -731,8 +734,8 @@ int oct_last_thread_error(
     size_t buflen
 );
 
-/* Slice 2A — session lifecycle entry points. The stub returns
- * OCT_STATUS_UNSUPPORTED for everything until slice 2-proper lands. */
+/* Session lifecycle entry points. Live capabilities are adapter-backed;
+ * blocked or unavailable capabilities return OCT_STATUS_UNSUPPORTED. */
 oct_status_t oct_session_open(
     oct_runtime_t* runtime,
     const oct_session_config_t* config,
@@ -833,7 +836,7 @@ oct_status_t oct_runtime_cache_introspect(
 # rather than a typed compatibility error. Codex R1 fix: fail fast
 # at load time with NativeRuntimeError(VERSION_MISMATCH).
 _REQUIRED_ABI_MAJOR: int = 0
-_REQUIRED_ABI_MINOR: int = 9  # v0.1.5 PR-2: STT events (OCT_EVENT_TRANSCRIPT_SEGMENT/FINAL) + audio.transcription session capability + transcript_segment/transcript_final union arms.
+_REQUIRED_ABI_MINOR: int = 10  # v0.1.11: cache introspection ABI symbols and native audio event parity.
 
 
 def _build_lib() -> tuple[Any, Any]:
@@ -1164,14 +1167,13 @@ class NativeRuntime:
     ) -> "NativeSession":
         """Open a session against this runtime.
 
-        Slice 2A: this is the canonical embedded-host entry point for
-        every realtime / TTS / STT / chat capability. The runtime
-        applies strict-reject on ``capability``: any value not in
+        This is the canonical embedded-host entry point for realtime /
+        TTS / STT / chat-style capabilities. The runtime applies
+        strict-reject on ``capability``: any value not in
         :data:`octomil.runtime.native.capabilities.RUNTIME_CAPABILITIES`
-        returns ``OCT_STATUS_UNSUPPORTED``. Against the slice-2 stub
-        EVERY call returns UNSUPPORTED — bindings should treat that
-        as the design state until a runtime advertises the capability
-        via :meth:`capabilities`.
+        returns ``OCT_STATUS_UNSUPPORTED``. Canonical but blocked or
+        unavailable capabilities also reject until a runtime advertises
+        them via :meth:`capabilities`.
 
         ``capability`` MUST be one of the canonical strings
         (``audio.realtime.session``, ``audio.tts.stream`` etc.); the
@@ -1399,7 +1401,7 @@ class RuntimeCapabilities:
 
 
 # ---------------------------------------------------------------------------
-# NativeSession — slice 2A
+# NativeSession
 # ---------------------------------------------------------------------------
 
 
@@ -1412,9 +1414,8 @@ class NativeEvent:
     primitive fields the binding cares about into Python-owned data
     so callers can hold onto it across polls.
 
-    Slice 2A: the stub never produces a non-NONE event; this class
-    exists so the slice-2-proper session adapter has a stable
-    surface to write tests against immediately."""
+    Event payloads are populated only by live advertised capabilities;
+    blocked capabilities reject before producing synthetic events."""
 
     __slots__ = (
         "type",
@@ -1495,6 +1496,13 @@ class NativeEvent:
         "vad_transition_kind",
         "vad_timestamp_ms",
         "vad_confidence",
+        # audio.diarization segment payload. Populated only on
+        # OCT_EVENT_DIARIZATION_SEGMENT. speaker_label is copied out
+        # of the runtime-owned string at poll time.
+        "diarization_start_ms",
+        "diarization_end_ms",
+        "diarization_speaker_id",
+        "diarization_speaker_label",
         # v0.1.8 Lane A — TTS audio chunk fields. Populated only on
         # OCT_EVENT_TTS_AUDIO_CHUNK. ``tts_pcm_bytes`` is a Python bytes
         # object copied out of the runtime-owned ``data.tts_audio_chunk.pcm``
@@ -1548,6 +1556,10 @@ class NativeEvent:
         vad_transition_kind: int = 0,
         vad_timestamp_ms: int = 0,
         vad_confidence: float = 0.0,
+        diarization_start_ms: int = 0,
+        diarization_end_ms: int = 0,
+        diarization_speaker_id: int = OCT_DIARIZATION_SPEAKER_UNKNOWN,
+        diarization_speaker_label: str = "",
         tts_pcm_bytes: bytes = b"",
         tts_sample_rate: int = 0,
         tts_sample_format: int = 0,
@@ -1591,6 +1603,10 @@ class NativeEvent:
         self.vad_transition_kind = vad_transition_kind
         self.vad_timestamp_ms = vad_timestamp_ms
         self.vad_confidence = vad_confidence
+        self.diarization_start_ms = diarization_start_ms
+        self.diarization_end_ms = diarization_end_ms
+        self.diarization_speaker_id = diarization_speaker_id
+        self.diarization_speaker_label = diarization_speaker_label
         self.tts_pcm_bytes = tts_pcm_bytes
         self.tts_sample_rate = tts_sample_rate
         self.tts_sample_format = tts_sample_format
@@ -1616,13 +1632,11 @@ class NativeSession:
     MUST NOT race against each other on the same session. ``cancel``
     is the only entry point safe from any thread.
 
-    Against the slice-2 stub every method returns
-    ``OCT_STATUS_UNSUPPORTED`` (raised as :class:`NativeRuntimeError`).
-    The wrapper exists so:
-      * Conformance tests have a stable target NOW.
-      * The Layer-2b session adapter can be written against the real
-        surface without further binding churn.
-      * Capability-gated tests auto-skip on the stub via
+    Blocked or unavailable capabilities return ``OCT_STATUS_UNSUPPORTED``
+    (raised as :class:`NativeRuntimeError`). The wrapper exists so:
+      * Conformance tests have a stable target.
+      * Live conditional adapters can use the real ABI surface.
+      * Capability-gated tests auto-skip via
         :meth:`NativeRuntime.capabilities` rather than crashing.
     """
 
@@ -1933,6 +1947,11 @@ class NativeSession:
         vad_kind = 0
         vad_ts_ms = 0
         vad_conf = 0.0
+        # audio.diarization payload defaults.
+        diar_start_ms = 0
+        diar_end_ms = 0
+        diar_speaker_id = OCT_DIARIZATION_SPEAKER_UNKNOWN
+        diar_speaker_label = ""
         # v0.1.8 Lane A — TTS audio-chunk payload defaults.
         tts_pcm_bytes = b""
         tts_sample_rate = 0
@@ -2040,6 +2059,17 @@ class NativeSession:
             vad_kind = int(vad.transition_kind)
             vad_ts_ms = int(vad.timestamp_ms)
             vad_conf = float(vad.confidence)
+        elif ev_type == OCT_EVENT_DIARIZATION_SEGMENT:
+            # audio.diarization — speaker-turn segment. Primitive
+            # timestamps plus a runtime-owned speaker_label pointer;
+            # copy the label now because it is valid only until the
+            # next poll on this session.
+            diar = ev.data.diarization_segment
+            diar_start_ms = int(diar.start_ms)
+            diar_end_ms = int(diar.end_ms)
+            diar_speaker_id = int(diar.speaker_id)
+            if diar.speaker_label != ffi.NULL:
+                diar_speaker_label = ffi.string(diar.speaker_label).decode("utf-8", errors="replace")
         return NativeEvent(
             type=ev_type,
             version=int(ev.version),
@@ -2070,6 +2100,10 @@ class NativeSession:
             vad_transition_kind=vad_kind,
             vad_timestamp_ms=vad_ts_ms,
             vad_confidence=vad_conf,
+            diarization_start_ms=diar_start_ms,
+            diarization_end_ms=diar_end_ms,
+            diarization_speaker_id=diar_speaker_id,
+            diarization_speaker_label=diar_speaker_label,
             tts_pcm_bytes=tts_pcm_bytes,
             tts_sample_rate=tts_sample_rate,
             tts_sample_format=tts_sample_format,
@@ -2298,11 +2332,13 @@ __all__ = [
     "OCT_ERR_RAM_INSUFFICIENT",
     "OCT_ERR_TIMEOUT",
     "OCT_ERR_UNKNOWN",
+    "OCT_DIARIZATION_SPEAKER_UNKNOWN",
     "OCT_MODEL_CONFIG_VERSION",
     "OCT_EVENT_AUDIO_CHUNK",
     "OCT_EVENT_CACHE_HIT",
     "OCT_EVENT_CACHE_MISS",
     "OCT_EVENT_CAPABILITY_VERIFIED",
+    "OCT_EVENT_DIARIZATION_SEGMENT",
     "OCT_EVENT_EMBEDDING_VECTOR",
     "OCT_EVENT_ERROR",
     "OCT_EVENT_INPUT_DROPPED",

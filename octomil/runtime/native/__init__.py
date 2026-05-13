@@ -1,16 +1,17 @@
 """Layer 2a embedded host — cffi binding to ``liboctomil-runtime``.
 
 The cffi binding is ONE host path among two. The other is the daemon
-host (slice 3b, gated on slice 2-proper). Both link the same dylib;
-both implement the C ABI mirrored in ``octomil-contracts`` and
-authoritatively defined in the private ``octomil-runtime`` repo's
-``include/octomil/runtime.h``.
+host. Both link the same dylib; both implement the C ABI mirrored in
+``octomil-contracts`` and authoritatively defined in the private
+``octomil-runtime`` repo's ``include/octomil/runtime.h``.
 
-Slice 3 PR1 ships the loader + version handshake + last-error
-wrappers + capabilities reader. Session entry points
-(``oct_session_open`` etc.) intentionally NOT exposed in this PR —
-the slice-2 stub returns ``OCT_STATUS_UNSUPPORTED`` for all of them
-and there is no behavior to bind against until slice 2-proper lands.
+The embedded host exposes version handshake, last-error wrappers,
+capabilities, model/session entry points, and runtime/cache helpers.
+Capability availability follows the status partition in
+:mod:`octomil.runtime.native.capabilities`: done cutovers are native
+product paths, live-conditional capabilities advertise only when their
+build/artifact gates pass, and blocked capabilities reject with bounded
+``OCT_STATUS_UNSUPPORTED`` rather than pretending to be live.
 
 Hard-cutover policy: this module is the EMBEDDED host path. The
 daemon host (slice 3b) implements the same surface via UDS+protobuf.
@@ -30,6 +31,7 @@ Public surface:
 from __future__ import annotations
 
 from octomil.runtime.native.capabilities import (
+    BLOCKED_WITH_PROOF_CAPABILITIES,
     CAPABILITY_AUDIO_DIARIZATION,
     CAPABILITY_AUDIO_REALTIME_SESSION,
     CAPABILITY_AUDIO_SPEAKER_EMBEDDING,
@@ -39,12 +41,19 @@ from octomil.runtime.native.capabilities import (
     CAPABILITY_AUDIO_TTS_BATCH,
     CAPABILITY_AUDIO_TTS_STREAM,
     CAPABILITY_AUDIO_VAD,
+    CAPABILITY_CACHE_INTROSPECT,
     CAPABILITY_CHAT_COMPLETION,
     CAPABILITY_CHAT_STREAM,
     CAPABILITY_EMBEDDINGS_IMAGE,
     CAPABILITY_EMBEDDINGS_TEXT,
     CAPABILITY_INDEX_VECTOR_QUERY,
+    CAPABILITY_STATUS_BLOCKED_WITH_PROOF,
+    CAPABILITY_STATUS_DONE_NATIVE_CUTOVER,
+    CAPABILITY_STATUS_LIVE_NATIVE_CONDITIONAL,
+    DONE_NATIVE_CUTOVER_CAPABILITIES,
+    LIVE_NATIVE_CONDITIONAL_CAPABILITIES,
     RUNTIME_CAPABILITIES,
+    RUNTIME_CAPABILITY_STATUSES,
 )
 from octomil.runtime.native.loader import (
     OCT_ACCEL_ANE,
@@ -52,6 +61,7 @@ from octomil.runtime.native.loader import (
     OCT_ACCEL_CPU,
     OCT_ACCEL_CUDA,
     OCT_ACCEL_METAL,
+    OCT_DIARIZATION_SPEAKER_UNKNOWN,
     OCT_ERR_ACCELERATOR_UNAVAILABLE,
     OCT_ERR_ARTIFACT_DIGEST_MISMATCH,
     OCT_ERR_ENGINE_INIT_FAILED,
@@ -69,6 +79,7 @@ from octomil.runtime.native.loader import (
     # v0.4 step 2 — runtime-scope events.
     OCT_EVENT_CACHE_HIT,
     OCT_EVENT_CACHE_MISS,
+    OCT_EVENT_DIARIZATION_SEGMENT,
     OCT_EVENT_ERROR,
     OCT_EVENT_MEMORY_PRESSURE,
     OCT_EVENT_METRIC,
@@ -106,6 +117,10 @@ from octomil.runtime.native.loader import (
 )
 
 __all__ = [
+    "BLOCKED_WITH_PROOF_CAPABILITIES",
+    "CAPABILITY_STATUS_BLOCKED_WITH_PROOF",
+    "CAPABILITY_STATUS_DONE_NATIVE_CUTOVER",
+    "CAPABILITY_STATUS_LIVE_NATIVE_CONDITIONAL",
     "CAPABILITY_AUDIO_DIARIZATION",
     "CAPABILITY_AUDIO_REALTIME_SESSION",
     "CAPABILITY_AUDIO_SPEAKER_EMBEDDING",
@@ -115,11 +130,14 @@ __all__ = [
     "CAPABILITY_AUDIO_TTS_BATCH",
     "CAPABILITY_AUDIO_TTS_STREAM",
     "CAPABILITY_AUDIO_VAD",
+    "CAPABILITY_CACHE_INTROSPECT",
     "CAPABILITY_CHAT_COMPLETION",
     "CAPABILITY_CHAT_STREAM",
     "CAPABILITY_EMBEDDINGS_IMAGE",
     "CAPABILITY_EMBEDDINGS_TEXT",
     "CAPABILITY_INDEX_VECTOR_QUERY",
+    "DONE_NATIVE_CUTOVER_CAPABILITIES",
+    "LIVE_NATIVE_CONDITIONAL_CAPABILITIES",
     "NativeEvent",
     "NativeModel",
     "NativeRuntime",
@@ -143,9 +161,11 @@ __all__ = [
     "OCT_ERR_RAM_INSUFFICIENT",
     "OCT_ERR_TIMEOUT",
     "OCT_ERR_UNKNOWN",
+    "OCT_DIARIZATION_SPEAKER_UNKNOWN",
     "OCT_EVENT_AUDIO_CHUNK",
     "OCT_EVENT_CACHE_HIT",
     "OCT_EVENT_CACHE_MISS",
+    "OCT_EVENT_DIARIZATION_SEGMENT",
     "OCT_EVENT_ERROR",
     "OCT_EVENT_MEMORY_PRESSURE",
     "OCT_EVENT_METRIC",
@@ -175,5 +195,6 @@ __all__ = [
     "OCT_STATUS_UNSUPPORTED",
     "OCT_STATUS_VERSION_MISMATCH",
     "RUNTIME_CAPABILITIES",
+    "RUNTIME_CAPABILITY_STATUSES",
     "abi_version",
 ]

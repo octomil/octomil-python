@@ -2,19 +2,23 @@
 
 Backend is selected via ``OCTOMIL_CONFORMANCE_BACKEND={python,native,both}``
 (default ``python``). Tests that exercise a runtime capability use
-``@requires_capability(CAP_NAME)`` to enforce ownership: tests for
-capabilities Python doesn't own as oracle skip on python with
-``no-python-oracle``; tests for capabilities the native runtime
-doesn't advertise skip on native with ``runtime_capabilities``.
+``@requires_capability(CAP_NAME)`` to enforce the current native
+capability truth model:
 
-Result: a slice-2-stub native run skips every capability-gated test;
-a python-only run skips native-first tests. Neither backend can
-silently pass a test it doesn't actually own.
+* ``DONE_NATIVE_CUTOVER`` and ``LIVE_NATIVE_CONDITIONAL`` capabilities
+  may run on the python backend when a Python conformance path exists.
+* ``BLOCKED_WITH_PROOF`` capabilities skip on python with
+  ``no-python-oracle`` because the SDK must not treat reserved names as
+  live behavior.
+* Native backend runs only when the live runtime actually advertises
+  the capability; conditional gates that fail skip with
+  ``runtime_capabilities``.
 
-`PYTHON_ORACLE_CAPABILITIES` is the explicit set Python actually
-owns as a behavioral oracle. Each migration slice updates this set
-when a Python kernel becomes the comparison reference (or ceases to
-be, post-migration).
+Neither backend can silently pass a test it doesn't actually own.
+
+`PYTHON_ORACLE_CAPABILITIES` is kept as the backwards-compatible name
+for the conformance-capable set, now derived from the status partition
+instead of migration-slice prose.
 """
 
 from __future__ import annotations
@@ -23,6 +27,15 @@ import os
 from typing import Iterator
 
 import pytest
+
+from octomil.runtime.native.capabilities import (
+    CAPABILITY_STATUS_BLOCKED_WITH_PROOF,
+    CAPABILITY_STATUS_DONE_NATIVE_CUTOVER,
+    CAPABILITY_STATUS_LIVE_NATIVE_CONDITIONAL,
+    DONE_NATIVE_CUTOVER_CAPABILITIES,
+    LIVE_NATIVE_CONDITIONAL_CAPABILITIES,
+    RUNTIME_CAPABILITY_STATUSES,
+)
 
 # ---------------------------------------------------------------------------
 # Backend selector
@@ -57,30 +70,18 @@ def selected_backends() -> list[str]:
 # Capability ownership — Python-side oracle set
 # ---------------------------------------------------------------------------
 
-#: Capabilities Python owns as oracle. Updated lockstep with each
-#: migration slice. Today's set: TTS streaming/batch, STT
-#: streaming/batch, transcription, chat completion/stream — the
-#: existing Python-kernel-backed behaviors.
-#:
-#: NOT in this set:
-#:   * `audio.realtime.session` — native-first; no Python
-#:     implementation. Skips on python with `no-python-oracle`.
-#:
-#: Updated by:
-#:   * Slice 5 PRs (TTS migration) — keeps tts entries here while
-#:     the Python kernel is the oracle; eventually drops them
-#:     after the one-release-window oracle period elapses.
-#:   * Slice 6 PRs (STT/transcription/chat migration) — same
-#:     pattern.
+#: Backwards-compatible name for capabilities that the python backend
+#: may exercise in conformance. It is status-derived: blocked enum names
+#: never run on the python backend, while done and live-conditional native
+#: surfaces can be compared through the Python SDK harness.
 PYTHON_ORACLE_CAPABILITIES: frozenset[str] = frozenset(
+    DONE_NATIVE_CUTOVER_CAPABILITIES | LIVE_NATIVE_CONDITIONAL_CAPABILITIES
+)
+
+_PYTHON_RUNNABLE_STATUSES: frozenset[str] = frozenset(
     {
-        "audio.tts.stream",
-        "audio.tts.batch",
-        "audio.stt.stream",
-        "audio.stt.batch",
-        "audio.transcription",
-        "chat.completion",
-        "chat.stream",
+        CAPABILITY_STATUS_DONE_NATIVE_CUTOVER,
+        CAPABILITY_STATUS_LIVE_NATIVE_CONDITIONAL,
     }
 )
 
@@ -94,11 +95,9 @@ PYTHON_ORACLE_CAPABILITIES: frozenset[str] = frozenset(
 def native_runtime_capabilities() -> frozenset[str]:
     """Snapshot of the live runtime's advertised capability set.
 
-    Returns an empty frozenset on the slice-2 stub (no capabilities
-    advertised). Callers MUST treat this as forward-compatible — a
-    newer runtime advertising more capabilities than the SDK knows
-    about silently drops the unknowns (handled inside
-    `NativeRuntime.capabilities()`).
+    Callers MUST treat this as forward-compatible — a newer runtime
+    advertising more capabilities than the SDK knows about silently
+    drops the unknowns (handled inside `NativeRuntime.capabilities()`).
 
     Skipped if the native binding can't load the dylib (cffi missing,
     OCTOMIL_RUNTIME_DYLIB unset and dev cache empty); the harness
@@ -172,10 +171,10 @@ def backend(request: pytest.FixtureRequest) -> Iterator[str]:
 
     Skip semantics:
 
-    * Python backend + cap not in `PYTHON_ORACLE_CAPABILITIES` →
-      skip ``no-python-oracle: <cap>`` (native-first by design).
+    * Python backend + BLOCKED_WITH_PROOF cap →
+      skip ``no-python-oracle: <cap>``.
     * Native backend + cap not advertised by the runtime →
-      skip ``runtime_capabilities: <cap>`` (slice-2-stub state).
+      skip ``runtime_capabilities: <cap>``.
     """
     backend_value: str = request.param
 
@@ -183,15 +182,23 @@ def backend(request: pytest.FixtureRequest) -> Iterator[str]:
     marker = request.node.get_closest_marker("requires_capability")
     if marker is not None:
         capability = marker.args[0]
+        status = RUNTIME_CAPABILITY_STATUSES.get(capability)
+        if status is None:
+            raise RuntimeError(
+                f"requires_capability({capability!r}) is not in the canonical " "RUNTIME_CAPABILITY_STATUSES partition."
+            )
         if backend_value == BACKEND_PYTHON:
-            if capability not in PYTHON_ORACLE_CAPABILITIES:
-                pytest.skip(f"no-python-oracle: {capability} is native-first; Python has no implementation")
+            if status not in _PYTHON_RUNNABLE_STATUSES:
+                pytest.skip(
+                    f"no-python-oracle: {capability} is {CAPABILITY_STATUS_BLOCKED_WITH_PROOF}; "
+                    "Python has no live conformance path"
+                )
         elif backend_value == BACKEND_NATIVE:
             # Lazy fetch — only on native branch. Python-only runs
             # never touch the native runtime fixture.
             native_caps: frozenset[str] = request.getfixturevalue("native_runtime_capabilities")
             if capability not in native_caps:
-                pytest.skip(f"runtime_capabilities: native runtime does not advertise {capability}")
+                pytest.skip(f"runtime_capabilities: native runtime does not advertise {capability} " f"({status})")
         else:  # pragma: no cover — guarded above
             raise RuntimeError(f"unknown backend {backend_value!r}")
 
@@ -202,7 +209,11 @@ __all__ = [
     "BACKEND_BOTH",
     "BACKEND_NATIVE",
     "BACKEND_PYTHON",
+    "CAPABILITY_STATUS_BLOCKED_WITH_PROOF",
+    "CAPABILITY_STATUS_DONE_NATIVE_CUTOVER",
+    "CAPABILITY_STATUS_LIVE_NATIVE_CONDITIONAL",
     "ENV_BACKEND",
     "PYTHON_ORACLE_CAPABILITIES",
+    "RUNTIME_CAPABILITY_STATUSES",
     "requires_capability",
 ]

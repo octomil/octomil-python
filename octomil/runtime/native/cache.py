@@ -1,4 +1,4 @@
-"""Native runtime cache clear / introspection API — Lane G skeleton.
+"""Native runtime cache clear / introspection API.
 
 Exposes four operations that map 1:1 to the ABI entry points added by
 Lane G (see ``octomil-runtime`` ``include/octomil/runtime.h``):
@@ -8,11 +8,10 @@ Lane G (see ``octomil-runtime`` ``include/octomil/runtime.h``):
   * :func:`clear_scope`        — clear caches at a given scope level.
   * :func:`introspect`         — return a privacy-safe :class:`CacheSnapshot`.
 
-All four operations are **stubs** until Lanes B/C/F wire real cache
-implementations.  The stubs raise :class:`CacheNotImplementedError`
-(a subclass of ``NotImplementedError``) so callers can explicitly catch
-the stub state.  Once real caches land, the same functions return
-normally.
+Capability ``cache.introspect`` is live-conditional: new runtimes advertise it
+when native cache providers are compiled and return aggregate snapshots. Older
+or provider-less runtimes may still return ``OCT_STATUS_UNSUPPORTED``; in that
+case these functions raise :class:`CacheNotImplementedError`.
 
 Privacy contract (enforced by binding tests in
 ``tests/test_native_cache_api.py``):
@@ -82,12 +81,11 @@ _VALID_SCOPES: frozenset[int] = frozenset({SCOPE_REQUEST, SCOPE_SESSION, SCOPE_R
 
 
 class CacheNotImplementedError(NotImplementedError):
-    """Raised when the cache API stub has not yet been implemented.
+    """Raised when the loaded runtime does not support ``cache.introspect``.
 
-    Subclasses ``NotImplementedError`` so callers can catch the stub
-    state explicitly without importing this module's private error type.
-    Once Lanes B/C/F wire real cache implementations, this error will
-    no longer be raised from the happy path.
+    Subclasses ``NotImplementedError`` so callers can catch the
+    not-advertised state explicitly without importing this module's
+    private error type.
     """
 
 
@@ -327,9 +325,9 @@ def clear_all(runtime_handle: Any) -> None:
             from :func:`~octomil.runtime.native.loader.NativeRuntime.open`.
 
     Raises:
-        CacheNotImplementedError: The cache API stub is not yet wired
-            (``OCT_STATUS_UNSUPPORTED``). This is expected until Lanes
-            B/C/F land.
+        CacheNotImplementedError: The cache API is not advertised
+            (``OCT_STATUS_UNSUPPORTED``) while ``cache.introspect`` is
+            ``BLOCKED_WITH_PROOF``.
         NativeRuntimeError: Any other ABI error.
         ValueError: ``runtime_handle`` is None.
 
