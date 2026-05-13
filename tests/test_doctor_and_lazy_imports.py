@@ -76,6 +76,30 @@ def test_doctor_lists_static_recipes_section():
     assert "kokoro-82m" in result.output, result.output
 
 
+def test_managed_venv_reexec_allows_user_facing_octomil_scripts(monkeypatch):
+    """The lightweight installed entrypoint should delegate to the engine venv."""
+    from octomil import venv_reexec
+
+    monkeypatch.delenv("OCTOMIL_DISABLE_MANAGED_VENV_REEXEC", raising=False)
+    monkeypatch.delenv("OCTOMIL_MANAGED_VENV_REEXECED", raising=False)
+    monkeypatch.setattr("sys.argv", ["/Users/example/.local/bin/octomil", "doctor"])
+    monkeypatch.setattr("sys.frozen", False, raising=False)
+
+    assert venv_reexec.should_managed_venv_reexec(include_non_frozen=True) is True
+
+
+def test_managed_venv_reexec_skips_pytest_entrypoint(monkeypatch):
+    """Unit tests and direct module calls must not accidentally exec the user venv."""
+    from octomil import venv_reexec
+
+    monkeypatch.delenv("OCTOMIL_DISABLE_MANAGED_VENV_REEXEC", raising=False)
+    monkeypatch.delenv("OCTOMIL_MANAGED_VENV_REEXECED", raising=False)
+    monkeypatch.setattr("sys.argv", ["/usr/bin/pytest", "tests"])
+    monkeypatch.setattr("sys.frozen", False, raising=False)
+
+    assert venv_reexec.should_managed_venv_reexec(include_non_frozen=True) is False
+
+
 # ---------------------------------------------------------------------------
 # Lazy imports: ``import octomil`` does NOT pull pandas / FL surfaces
 # ---------------------------------------------------------------------------

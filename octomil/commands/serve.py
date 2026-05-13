@@ -235,6 +235,10 @@ def serve(
     Use --json-mode to default all responses to valid JSON output:
         octomil serve gemma3-1b --json-mode
     """
+    from octomil.venv_reexec import try_managed_venv_reexec
+
+    try_managed_venv_reexec(include_non_frozen=True)
+
     # --- Config-driven model resolution ---
     from octomil.config.local import (
         CAPABILITY_CHAT,
@@ -244,6 +248,7 @@ def serve(
     )
 
     config_set = load_standalone_config()
+    has_standalone_config = config_set.project is not None or config_set.user is not None
 
     if model is None:
         defaults = resolve_capability_defaults(CAPABILITY_CHAT, RequestOverrides(), config_set)
@@ -484,7 +489,7 @@ def serve(
         early_exit_config=ee_config if ee_config.enabled else None,
         verbose=verbose,
         cloud_config=_cloud_config,
-        config_set=config_set,
+        config_set=config_set if has_standalone_config else None,
     )
 
 

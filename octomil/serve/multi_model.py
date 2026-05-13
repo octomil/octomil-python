@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import logging
 import time
 import uuid
@@ -225,6 +224,12 @@ def create_multi_model_app(
                 continue
 
             grammar_str, is_json = _resolve_grammar(body, state.default_json_mode)
+            json_mode_config = None
+            if is_json:
+                from .json_mode import resolve_json_mode_config
+
+                rf_for_config = body.response_format or {"type": "json_object"}
+                json_mode_config = resolve_json_mode_config(rf_for_config)
 
             req_messages = list(messages)
             # Cutover follow-up #71: query the declared capability
@@ -245,10 +250,7 @@ def create_multi_model_app(
             )
             schema_for_prompt: Optional[dict[str, Any]] = None
             if is_json and not uses_grammar_natively:
-                rf = body.response_format or {}
-                if rf.get("type") == "json_schema":
-                    raw = rf.get("json_schema") or rf.get("schema")
-                    schema_for_prompt = raw.get("schema", raw) if raw else None
+                schema_for_prompt = json_mode_config.schema if json_mode_config is not None else None
                 req_messages = _inject_json_system_prompt(req_messages, schema_for_prompt)
 
             gen_req = GenerationRequest(
@@ -326,33 +328,36 @@ def create_multi_model_app(
             gen_elapsed_ms = (time.monotonic() - gen_start) * 1000
 
             # JSON validation + retry for non-grammar backends
-            if is_json and not uses_grammar_natively:
-                from ..grammar import extract_json, validate_json_output
+            json_validation_status: Optional[str] = None
+            if is_json:
+                assert json_mode_config is not None
+                from .json_mode import coerce_json_mode_output
 
-                if not validate_json_output(text):
-                    extracted = extract_json(text)
-                    if extracted is not None:
-                        text = json.dumps(extracted)
-                    else:
-                        retry_messages = _inject_json_system_prompt(messages, schema_for_prompt)
-                        # Cutover follow-up #71 (R2 Codex): retry block only fires
-                        # in the non-grammar fallback branch; system prompt is doing
-                        # the JSON constraining. Forwarding json_mode=True would 422
-                        # native with UNSUPPORTED_MODALITY, breaking the retry.
-                        retry_req = GenerationRequest(
-                            model=model_name,
-                            messages=retry_messages,
-                            max_tokens=gen_req.max_tokens,
-                            temperature=max(gen_req.temperature - 0.2, 0.0),
-                            top_p=gen_req.top_p,
-                            stream=False,
-                            json_mode=False,
-                        )
-                        text, metrics = backend.generate(retry_req)
-                        if not validate_json_output(text):
-                            extracted = extract_json(text)
-                            if extracted is not None:
-                                text = json.dumps(extracted)
+                try:
+                    validated = coerce_json_mode_output(text, json_mode_config)
+                    text = validated.text
+                    json_validation_status = validated.status
+                except OctomilError:
+                    if uses_grammar_natively:
+                        raise
+                    retry_messages = _inject_json_system_prompt(messages, schema_for_prompt, force=True)
+                    # Cutover follow-up #71 (R2 Codex): retry block only fires
+                    # in the non-grammar fallback branch; system prompt is doing
+                    # the JSON constraining. Forwarding json_mode=True would 422
+                    # native with UNSUPPORTED_MODALITY, breaking the retry.
+                    retry_req = GenerationRequest(
+                        model=model_name,
+                        messages=retry_messages,
+                        max_tokens=gen_req.max_tokens,
+                        temperature=max(gen_req.temperature - 0.2, 0.0),
+                        top_p=gen_req.top_p,
+                        stream=False,
+                        json_mode=False,
+                    )
+                    text, metrics = backend.generate(retry_req)
+                    validated = coerce_json_mode_output(text, json_mode_config)
+                    text = validated.text
+                    json_validation_status = validated.status
 
             # Report inference_completed
             if _reporter is not None:
@@ -381,7 +386,7 @@ def create_multi_model_app(
                 if reasoning:
                     msg["reasoning_content"] = reasoning
 
-            response_data = {
+            response_data: dict[str, Any] = {
                 "id": req_id,
                 "object": "chat.completion",
                 "created": int(time.time()),
@@ -400,6 +405,13 @@ def create_multi_model_app(
                     "cache_hit": metrics.cache_hit,
                 },
             }
+            if json_validation_status is not None:
+                response_data["usage"]["json_validation"] = {
+                    "mode": "json_object",
+                    "status": json_validation_status,
+                    "strict": json_mode_config.strict if json_mode_config is not None else False,
+                    "schema": bool(json_mode_config.schema) if json_mode_config is not None else False,
+                }
 
             resp = JSONResponse(content=response_data)
             resp.headers["X-Octomil-Routed-Model"] = model_name

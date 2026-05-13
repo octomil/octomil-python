@@ -242,6 +242,10 @@ def doctor_cmd() -> None:
     only when any check reports ERROR; WARN keeps exit 0 so the
     command works in CI gates that only fail on real breakage.
     """
+    from octomil.venv_reexec import try_managed_venv_reexec
+
+    try_managed_venv_reexec(include_non_frozen=True)
+
     click.echo("octomil doctor: scanning local SDK state\n")
 
     any_error = False

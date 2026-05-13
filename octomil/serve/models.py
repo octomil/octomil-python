@@ -32,6 +32,7 @@ class ChatCompletionBody(BaseModel):
     model: str = ""
     messages: list[ChatMessage] = Field(default_factory=list)
     max_tokens: Optional[int] = 512
+    max_completion_tokens: Optional[int] = None
     temperature: float = 0.7
     top_p: float = 1.0
     stream: bool = False

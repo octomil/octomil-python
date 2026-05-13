@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import base64
-import json
 import logging
 import os
 import time
@@ -764,6 +763,12 @@ def create_app(
                     }
 
         grammar_str, is_json = _resolve_grammar(body, state.default_json_mode)
+        json_mode_config = None
+        if is_json:
+            from .json_mode import resolve_json_mode_config
+
+            rf_for_config = body.response_format or {"type": "json_object"}
+            json_mode_config = resolve_json_mode_config(rf_for_config)
 
         messages: list[dict[str, Any]] = [{"role": m.role, "content": m.content or ""} for m in body.messages]
 
@@ -804,19 +809,17 @@ def create_app(
             )
         schema_for_prompt: Optional[dict[str, Any]] = None
         if is_json and not uses_grammar_natively:
-            rf = body.response_format or {}
-            if rf.get("type") == "json_schema":
-                raw = rf.get("json_schema") or rf.get("schema")
-                schema_for_prompt = raw.get("schema", raw) if raw else None
+            schema_for_prompt = json_mode_config.schema if json_mode_config is not None else None
             messages = _inject_json_system_prompt(messages, schema_for_prompt)
 
         # Extract enable_thinking from the request body (Qwen3 / OpenClaw convention)
         _enable_thinking: Optional[bool] = getattr(body, "enable_thinking", None)
+        _max_tokens = body.max_completion_tokens or body.max_tokens or 512
 
         gen_req = GenerationRequest(
             model=body.model or state.model_name,
             messages=messages,
-            max_tokens=body.max_tokens or 512,
+            max_tokens=_max_tokens,
             temperature=body.temperature,
             top_p=body.top_p,
             stream=body.stream,
@@ -990,42 +993,44 @@ def create_app(
         gen_elapsed_ms = (time.monotonic() - gen_start) * 1000
 
         # JSON validation + retry for non-grammar backends
-        if is_json and not uses_grammar_natively:
-            from ..grammar import extract_json, validate_json_output
+        json_validation_status: Optional[str] = None
+        if is_json:
+            assert json_mode_config is not None
+            from .json_mode import coerce_json_mode_output
 
-            if not validate_json_output(text):
-                extracted = extract_json(text)
-                if extracted is not None:
-                    text = json.dumps(extracted)
+            try:
+                validated = coerce_json_mode_output(text, json_mode_config)
+                text = validated.text
+                json_validation_status = validated.status
+            except OctomilError:
+                if uses_grammar_natively:
+                    raise
+                # Retry once with a stronger system prompt
+                retry_messages = _inject_json_system_prompt(messages, schema_for_prompt, force=True)
+                # Cutover follow-up #71 (R2 Codex): the retry block
+                # only fires in the `is_json and not uses_grammar_natively`
+                # branch — by construction the non-grammar fallback. The
+                # system prompt is doing the JSON constraining; forwarding
+                # `json_mode=True` to a non-grammar backend (e.g., native)
+                # would 422 with UNSUPPORTED_MODALITY, so the retry would
+                # always fail instead of producing a corrected response.
+                retry_req = GenerationRequest(
+                    model=gen_req.model,
+                    messages=retry_messages,
+                    max_tokens=gen_req.max_tokens,
+                    temperature=max(gen_req.temperature - 0.2, 0.0),
+                    top_p=gen_req.top_p,
+                    stream=False,
+                    json_mode=False,
+                )
+                if _routing_decision is not None:
+                    text, metrics, _, _ = await _generate_with_routing(state, retry_req, _routing_decision)
                 else:
-                    # Retry once with a stronger system prompt
-                    retry_messages = _inject_json_system_prompt(messages, schema_for_prompt)
-                    # Cutover follow-up #71 (R2 Codex): the retry block
-                    # only fires in the `is_json and not uses_grammar_natively`
-                    # branch — by construction the non-grammar fallback. The
-                    # system prompt is doing the JSON constraining; forwarding
-                    # `json_mode=True` to a non-grammar backend (e.g., native)
-                    # would 422 with UNSUPPORTED_MODALITY, so the retry would
-                    # always fail instead of producing a corrected response.
-                    retry_req = GenerationRequest(
-                        model=gen_req.model,
-                        messages=retry_messages,
-                        max_tokens=gen_req.max_tokens,
-                        temperature=max(gen_req.temperature - 0.2, 0.0),
-                        top_p=gen_req.top_p,
-                        stream=False,
-                        json_mode=False,
-                    )
-                    if _routing_decision is not None:
-                        text, metrics, _, _ = await _generate_with_routing(state, retry_req, _routing_decision)
-                    else:
-                        assert state.backend is not None
-                        text, metrics = state.backend.generate(retry_req)
-                    # Best-effort extraction on retry
-                    if not validate_json_output(text):
-                        extracted = extract_json(text)
-                        if extracted is not None:
-                            text = json.dumps(extracted)
+                    assert state.backend is not None
+                    text, metrics = state.backend.generate(retry_req)
+                validated = coerce_json_mode_output(text, json_mode_config)
+                text = validated.text
+                json_validation_status = validated.status
 
         # Early exit monitoring (best-effort)
         _ee_monitor = state.early_exit_monitor
@@ -1101,6 +1106,11 @@ def create_app(
             }
         if ee_metrics_dict is not None:
             usage["early_exit"] = ee_metrics_dict
+        if json_validation_status is not None:
+            usage["json_validation"] = {
+                "mode": "json_object",
+                "status": json_validation_status,
+            }
 
         response_msg: dict[str, Any] = {"role": "assistant", "content": text}
         if state.is_reasoning_model:
