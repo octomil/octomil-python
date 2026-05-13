@@ -14,35 +14,46 @@ permissions: {}
 
 jobs:
   bump-and-release:
-    name: Bump version and dispatch release
+    name: Bump version or dispatch release
     runs-on: ubuntu-latest
     timeout-minutes: 10
     if: >
       github.event.workflow_run.conclusion == 'success' &&
       github.event.workflow_run.event == 'push'
     permissions:
-      contents: write
       actions: write
+      contents: write
+      pull-requests: write
 
     steps:
+      - name: Generate version bot token
+        id: app-token
+        uses: actions/create-github-app-token@v3
+        with:
+          app-id: ${{ secrets.VERSION_BOT_APP_ID }}
+          private-key: ${{ secrets.VERSION_BOT_PRIVATE_KEY }}
+          owner: octomil
+          repositories: octomil-python
+
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
           ref: main
           fetch-depth: 0
+          token: ${{ steps.app-token.outputs.token }}
 
-      - name: Stop on release bump commits
+      - name: Classify main commit
         id: guard
         run: |
           subject="$(git log -1 --pretty=%s)"
           echo "subject=${subject}"
           if printf '%s\n' "$subject" | grep -Eq '^chore\(release\): v[0-9]+\.[0-9]+\.[0-9]+'; then
-            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "release_commit=true" >> "$GITHUB_OUTPUT"
           else
-            echo "skip=false" >> "$GITHUB_OUTPUT"
+            echo "release_commit=false" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Compute next patch version
-        if: steps.guard.outputs.skip != 'true'
+        if: steps.guard.outputs.release_commit != 'true'
         id: version
         run: |
           python - <<'PY' >> "$GITHUB_OUTPUT"
@@ -84,36 +95,88 @@ jobs:
           print(f"tag={tag}")
           PY
 
-      - name: Commit version bump
-        if: steps.guard.outputs.skip != 'true'
+      - name: Open release pull request
+        if: steps.guard.outputs.release_commit != 'true'
         env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
           VERSION: ${{ steps.version.outputs.version }}
+          TAG: ${{ steps.version.outputs.tag }}
         run: |
+          branch="codex/auto-release-v${VERSION}"
           git config user.name "octomil-version-bot[bot]"
           git config user.email "octomil-version-bot[bot]@users.noreply.github.com"
           git diff -- pyproject.toml
+          git checkout -B "${branch}"
           git add pyproject.toml
           git commit -m "chore(release): v${VERSION}"
-          git pull --ff-only origin main
-          git push origin HEAD:main
+          git push --force-with-lease origin "HEAD:${branch}"
+
+          pr_number="$(
+            gh pr list \
+              --repo "${GITHUB_REPOSITORY}" \
+              --head "${branch}" \
+              --state open \
+              --json number \
+              --jq '.[0].number // empty'
+          )"
+          if [ -z "${pr_number}" ]; then
+            pr_url="$(
+              gh pr create \
+                --repo "${GITHUB_REPOSITORY}" \
+                --base main \
+                --head "${branch}" \
+                --title "chore(release): ${TAG}" \
+                --body "Automated patch release bump for ${TAG} after successful main CI."
+            )"
+            pr_number="${pr_url##*/}"
+          fi
+
+          gh pr merge "${pr_number}" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --squash \
+            --auto \
+            --delete-branch
 
       - name: Dispatch release workflow
-        if: steps.guard.outputs.skip != 'true'
+        if: steps.guard.outputs.release_commit == 'true'
+        id: release_version
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          VERSION: ${{ steps.version.outputs.version }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
+          version="$(
+            python - <<'PY'
+          import pathlib
+          import tomllib
+
+          data = tomllib.loads(pathlib.Path("pyproject.toml").read_text(encoding="utf-8"))
+          print(data["project"]["version"])
+          PY
+          )"
+          tag="v${version}"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+
+          if gh release view "${tag}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
+            echo "Release ${tag} already exists; nothing to dispatch."
+            exit 0
+          fi
+
           gh workflow run release.yml \
             --repo "${GITHUB_REPOSITORY}" \
             --ref main \
-            -f version="${VERSION}"
+            -f version="${version}"
 
       - name: Dispatch binary release workflow
-        if: steps.guard.outputs.skip != 'true'
+        if: steps.guard.outputs.release_commit == 'true'
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAG: ${{ steps.version.outputs.tag }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          TAG: ${{ steps.release_version.outputs.tag }}
         run: |
+          if gh release view "${TAG}" --repo "${GITHUB_REPOSITORY}" --json assets --jq '.assets | length' | grep -q '^[1-9]'; then
+            echo "Release ${TAG} already has assets; skipping binary dispatch."
+            exit 0
+          fi
+
           gh workflow run release-binary.yml \
             --repo "${GITHUB_REPOSITORY}" \
             --ref main \
