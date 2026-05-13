@@ -6,6 +6,7 @@ from typing import AsyncIterator, Optional
 
 import pytest
 
+from octomil._generated.modality import Modality
 from octomil.audio import OctomilAudio
 from octomil.audio.transcriptions import AudioTranscriptions
 from octomil.audio.types import TranscriptionResult
@@ -24,12 +25,14 @@ class _MockTranscriptionRuntime(ModelRuntime):
 
     def __init__(self, text: str = "Hello world") -> None:
         self._text = text
+        self.last_request: RuntimeRequest | None = None
 
     @property
     def capabilities(self) -> RuntimeCapabilities:
         return RuntimeCapabilities()
 
     async def run(self, request: RuntimeRequest) -> RuntimeResponse:
+        self.last_request = request
         return RuntimeResponse(text=self._text)
 
     async def stream(self, request: RuntimeRequest) -> AsyncIterator[RuntimeChunk]:
@@ -50,6 +53,9 @@ class TestAudioTranscriptions:
 
         assert isinstance(result, TranscriptionResult)
         assert result.text == "Hello world transcription"
+        part = mock_runtime.last_request.messages[0].parts[0]  # type: ignore[union-attr]
+        assert part.type == Modality.AUDIO
+        assert part.data == b"fake audio data"
 
     @pytest.mark.asyncio
     async def test_create_with_language(self) -> None:
@@ -63,6 +69,9 @@ class TestAudioTranscriptions:
 
         assert result.text == "Hola mundo"
         assert result.language == "es"
+        parts = mock_runtime.last_request.messages[0].parts  # type: ignore[union-attr]
+        assert parts[0].type == Modality.AUDIO
+        assert parts[1].text == "es"
 
     @pytest.mark.asyncio
     async def test_create_no_runtime_raises(self) -> None:
@@ -74,7 +83,7 @@ class TestAudioTranscriptions:
             await transcriptions.create(audio=b"fake")
 
     @pytest.mark.asyncio
-    async def test_stream_transcription(self) -> None:
+    async def test_stream_transcription_returns_buffered_segments(self) -> None:
         mock_runtime = _MockTranscriptionRuntime("Hello world")
 
         def resolver(ref: ModelRef) -> Optional[ModelRuntime]:
@@ -82,12 +91,7 @@ class TestAudioTranscriptions:
 
         transcriptions = AudioTranscriptions(runtime_resolver=resolver)
         segments = await transcriptions.stream(audio=b"fake")
-
-        assert len(segments) == 2
-        assert segments[0].text == "Hello"
-        assert segments[1].text == "world"
-        assert segments[0].start_ms == 0
-        assert segments[1].start_ms == 500
+        assert [segment.text for segment in segments] == ["Hello", "world"]
 
 
 class TestOctomilAudio:

@@ -400,7 +400,7 @@ class TestLoadModelGate:
         rt.open_model.assert_not_called()
 
     def test_kernel_resolver_reraises_typed_native_errors(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Codex R2 blocker: kernel native-first branch must re-raise
+        """Codex R2 blocker: kernel native-conditional branch must re-raise
         typed OctomilError (CHECKSUM_MISMATCH / RUNTIME_UNAVAILABLE)
         rather than swallow them to None. Otherwise the public
         SDK/CLI surface loses the typed signal and routes to

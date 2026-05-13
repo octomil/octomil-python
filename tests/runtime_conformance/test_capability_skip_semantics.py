@@ -1,16 +1,9 @@
-"""Verify the harness's per-backend skip semantics.
+"""Verify per-backend skip semantics against the current status model.
 
-These are meta-tests of the harness itself, not behavioral
-conformance tests. They exercise:
-
-  * Capability owned by Python: runs on python, runs on native iff
-    advertised.
-  * Capability NOT owned by Python (native-first): skips on python
-    with ``no-python-oracle``, skips on native iff not advertised.
-  * Capability NOT in PYTHON_ORACLE_CAPABILITIES (e.g. ``embeddings.text``,
-    which v0.4 admitted to the runtime enum but Python does NOT yet
-    own as oracle): skips on python with ``no-python-oracle``, skips
-    on native until the runtime advertises it.
+These are meta-tests of the harness itself, not behavioral conformance
+tests. They pin the Python SDK partition to exactly three capability
+states: DONE_NATIVE_CUTOVER, LIVE_NATIVE_CONDITIONAL, and
+BLOCKED_WITH_PROOF.
 """
 
 from __future__ import annotations
@@ -18,9 +11,29 @@ from __future__ import annotations
 import pytest
 
 from octomil.runtime.native.capabilities import (
+    BLOCKED_WITH_PROOF_CAPABILITIES,
+    CAPABILITY_AUDIO_DIARIZATION,
     CAPABILITY_AUDIO_REALTIME_SESSION,
+    CAPABILITY_AUDIO_SPEAKER_EMBEDDING,
+    CAPABILITY_AUDIO_STT_BATCH,
+    CAPABILITY_AUDIO_STT_STREAM,
+    CAPABILITY_AUDIO_TRANSCRIPTION,
+    CAPABILITY_AUDIO_TTS_BATCH,
     CAPABILITY_AUDIO_TTS_STREAM,
+    CAPABILITY_AUDIO_VAD,
+    CAPABILITY_CACHE_INTROSPECT,
     CAPABILITY_CHAT_COMPLETION,
+    CAPABILITY_CHAT_STREAM,
+    CAPABILITY_EMBEDDINGS_IMAGE,
+    CAPABILITY_EMBEDDINGS_TEXT,
+    CAPABILITY_INDEX_VECTOR_QUERY,
+    CAPABILITY_STATUS_BLOCKED_WITH_PROOF,
+    CAPABILITY_STATUS_DONE_NATIVE_CUTOVER,
+    CAPABILITY_STATUS_LIVE_NATIVE_CONDITIONAL,
+    DONE_NATIVE_CUTOVER_CAPABILITIES,
+    LIVE_NATIVE_CONDITIONAL_CAPABILITIES,
+    RUNTIME_CAPABILITIES,
+    RUNTIME_CAPABILITY_STATUSES,
 )
 from tests.runtime_conformance.conftest import (
     BACKEND_NATIVE,
@@ -29,94 +42,98 @@ from tests.runtime_conformance.conftest import (
     requires_capability,
 )
 
-# ---------------------------------------------------------------------------
-# Capability owned by Python (audio.tts.stream)
-# ---------------------------------------------------------------------------
+
+@requires_capability(CAPABILITY_CHAT_COMPLETION)
+def test_done_native_cutover_capability_runs_on_python_backend(backend: str):
+    """DONE_NATIVE_CUTOVER capabilities are runnable on python and
+    native when the runtime advertises them."""
+    if backend == BACKEND_PYTHON:
+        assert CAPABILITY_CHAT_COMPLETION in PYTHON_ORACLE_CAPABILITIES
+        assert RUNTIME_CAPABILITY_STATUSES[CAPABILITY_CHAT_COMPLETION] == CAPABILITY_STATUS_DONE_NATIVE_CUTOVER
+    elif backend == BACKEND_NATIVE:
+        pass
 
 
 @requires_capability(CAPABILITY_AUDIO_TTS_STREAM)
-def test_python_owned_capability(backend: str):
-    """Python owns audio.tts.stream as oracle — runs on the python
-    backend. On native, runs only if the runtime advertises it
-    (slice-2 stub does not advertise → skipped via the marker)."""
+def test_live_native_conditional_capability_runs_on_python_backend(backend: str):
+    """LIVE_NATIVE_CONDITIONAL means real native support exists, but
+    runtime advertisement depends on build/artifact gates."""
     if backend == BACKEND_PYTHON:
-        # Sanity: the marker's PYTHON_ORACLE_CAPABILITIES check
-        # passed, so we got here.
         assert CAPABILITY_AUDIO_TTS_STREAM in PYTHON_ORACLE_CAPABILITIES
+        assert RUNTIME_CAPABILITY_STATUSES[CAPABILITY_AUDIO_TTS_STREAM] == CAPABILITY_STATUS_LIVE_NATIVE_CONDITIONAL
     elif backend == BACKEND_NATIVE:
-        # Only reachable if the native runtime advertises this cap.
-        # Slice-2-stub does not — this branch only runs post-slice-2-proper.
         pass
-
-
-# ---------------------------------------------------------------------------
-# Native-first capability (audio.realtime.session)
-# ---------------------------------------------------------------------------
 
 
 @requires_capability(CAPABILITY_AUDIO_REALTIME_SESSION)
-def test_native_first_capability(backend: str):
-    """audio.realtime.session is native-first — Python has no
-    implementation. On python: skip with no-python-oracle (verified
-    by the fact that this test body never runs on python). On native:
-    skip with runtime_capabilities until slice 2-proper advertises
-    it."""
+def test_blocked_capability_never_reaches_python_backend(backend: str):
+    """BLOCKED_WITH_PROOF capabilities are legal names, not live
+    runtime surfaces. Python skips them; native must not advertise
+    them while they remain blocked."""
     if backend == BACKEND_PYTHON:
-        pytest.fail(
-            "this branch should be unreachable — no-python-oracle skip should have fired BEFORE the test body ran"
-        )
+        pytest.fail("blocked capability reached python backend; harness misconfigured")
     elif backend == BACKEND_NATIVE:
-        # Reachable iff the runtime advertises audio.realtime.session.
-        # Slice-2-stub: skipped via the marker.
-        pass
-
-
-# ---------------------------------------------------------------------------
-# Capability owned by Python (chat.completion)
-# ---------------------------------------------------------------------------
-
-
-@requires_capability(CAPABILITY_CHAT_COMPLETION)
-def test_chat_completion_python_owned(backend: str):
-    """chat.completion is in PYTHON_ORACLE_CAPABILITIES — runs on
-    python. On native: skipped against the slice-2 stub."""
-    if backend == BACKEND_PYTHON:
-        assert CAPABILITY_CHAT_COMPLETION in PYTHON_ORACLE_CAPABILITIES
-
-
-# ---------------------------------------------------------------------------
-# Marker-less test (no capability gate) — runs on every backend
-# ---------------------------------------------------------------------------
+        pytest.fail("blocked capability was advertised by the native runtime")
 
 
 def test_no_marker_runs_on_every_backend(backend: str):
-    """A test without a `requires_capability` marker has no skip
-    rules — runs on whichever backend is selected."""
+    """A test without a marker has no capability skip rules."""
     assert backend in (BACKEND_PYTHON, BACKEND_NATIVE)
 
 
-# ---------------------------------------------------------------------------
-# PYTHON_ORACLE_CAPABILITIES integrity
-# ---------------------------------------------------------------------------
+def test_capability_status_partition_is_complete_and_disjoint():
+    """Every canonical capability belongs to exactly one live status."""
+    allowed_statuses = {
+        CAPABILITY_STATUS_DONE_NATIVE_CUTOVER,
+        CAPABILITY_STATUS_LIVE_NATIVE_CONDITIONAL,
+        CAPABILITY_STATUS_BLOCKED_WITH_PROOF,
+    }
+
+    assert set(RUNTIME_CAPABILITY_STATUSES) == set(RUNTIME_CAPABILITIES)
+    assert set(RUNTIME_CAPABILITY_STATUSES.values()) == allowed_statuses
+    assert DONE_NATIVE_CUTOVER_CAPABILITIES.isdisjoint(LIVE_NATIVE_CONDITIONAL_CAPABILITIES)
+    assert DONE_NATIVE_CUTOVER_CAPABILITIES.isdisjoint(BLOCKED_WITH_PROOF_CAPABILITIES)
+    assert LIVE_NATIVE_CONDITIONAL_CAPABILITIES.isdisjoint(BLOCKED_WITH_PROOF_CAPABILITIES)
+    assert (
+        DONE_NATIVE_CUTOVER_CAPABILITIES | LIVE_NATIVE_CONDITIONAL_CAPABILITIES | BLOCKED_WITH_PROOF_CAPABILITIES
+    ) == RUNTIME_CAPABILITIES
 
 
-def test_python_oracle_does_not_include_realtime():
-    """Native-first realtime is intentionally absent from the
-    Python oracle set."""
-    assert CAPABILITY_AUDIO_REALTIME_SESSION not in PYTHON_ORACLE_CAPABILITIES
+def test_done_native_cutover_set_is_exact():
+    assert DONE_NATIVE_CUTOVER_CAPABILITIES == {
+        CAPABILITY_CHAT_COMPLETION,
+        CAPABILITY_CHAT_STREAM,
+        CAPABILITY_EMBEDDINGS_TEXT,
+    }
 
 
-def test_python_oracle_includes_tts_chat_stt():
-    """Sanity: capabilities Python actually owns are in the set."""
-    assert CAPABILITY_AUDIO_TTS_STREAM in PYTHON_ORACLE_CAPABILITIES
-    assert CAPABILITY_CHAT_COMPLETION in PYTHON_ORACLE_CAPABILITIES
+def test_live_native_conditional_set_is_exact():
+    assert LIVE_NATIVE_CONDITIONAL_CAPABILITIES == {
+        CAPABILITY_AUDIO_DIARIZATION,
+        CAPABILITY_AUDIO_SPEAKER_EMBEDDING,
+        CAPABILITY_AUDIO_STT_BATCH,
+        CAPABILITY_AUDIO_STT_STREAM,
+        CAPABILITY_AUDIO_TRANSCRIPTION,
+        CAPABILITY_AUDIO_TTS_BATCH,
+        CAPABILITY_AUDIO_TTS_STREAM,
+        CAPABILITY_AUDIO_VAD,
+        CAPABILITY_CACHE_INTROSPECT,
+    }
 
 
-def test_python_oracle_does_not_include_embeddings_text():
-    """v0.4: embeddings.text IS in the runtime capability enum
-    (admitted in octomil-contracts#99 + this PR's capabilities.py)
-    BUT Python does NOT yet own it as oracle. The conformance
-    harness skips embeddings.text tests on the python backend with
-    `no-python-oracle` until/unless a Python embedding kernel
-    becomes the comparison reference."""
-    assert "embeddings.text" not in PYTHON_ORACLE_CAPABILITIES
+def test_blocked_with_proof_set_is_exact():
+    assert BLOCKED_WITH_PROOF_CAPABILITIES == {
+        CAPABILITY_AUDIO_REALTIME_SESSION,
+        CAPABILITY_EMBEDDINGS_IMAGE,
+        CAPABILITY_INDEX_VECTOR_QUERY,
+    }
+
+
+def test_python_oracle_is_derived_from_non_blocked_statuses():
+    assert PYTHON_ORACLE_CAPABILITIES == DONE_NATIVE_CUTOVER_CAPABILITIES | LIVE_NATIVE_CONDITIONAL_CAPABILITIES
+    assert PYTHON_ORACLE_CAPABILITIES.isdisjoint(BLOCKED_WITH_PROOF_CAPABILITIES)
+
+
+def test_deprecated_status_names_are_absent():
+    deprecated = {"".join(("SCAFFOLD", "_ONLY")), "".join(("LAYER", "_2B", "_ONLY"))}
+    assert set(RUNTIME_CAPABILITY_STATUSES.values()).isdisjoint(deprecated)

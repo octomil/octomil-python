@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import logging
 import os
@@ -75,6 +76,95 @@ def _active_backend_for_metadata(state: ServerState) -> Any:
     if state.engine_name == "cloud" and state.cloud_backend is not None:
         return state.cloud_backend
     return state.backend or state.cloud_backend
+
+
+def _embedding_values_to_json(values: Any) -> list[float]:
+    if hasattr(values, "tolist"):
+        values = values.tolist()
+    return [float(value) for value in values]
+
+
+async def _run_native_audio_route(call: Any, *, context: str) -> Any:
+    """Run a sync native audio call and bound any raw native status leak."""
+    try:
+        return await asyncio.to_thread(call)
+    except OctomilError:
+        raise
+    except Exception as exc:
+        if exc.__class__.__name__ == "NativeRuntimeError" and hasattr(exc, "status"):
+            from ..runtime.native.error_mapping import map_oct_status
+
+            raise map_oct_status(
+                int(getattr(exc, "status")),
+                str(getattr(exc, "last_error", "") or ""),
+                message=context,
+                default_unsupported_code=OctomilErrorCode.RUNTIME_UNAVAILABLE,
+            ) from exc
+        raise
+
+
+def _parse_positive_int_field(body: dict[str, Any], field: str, default: int) -> int:
+    raw = body.get(field, default)
+    try:
+        value = int(raw)
+    except (TypeError, ValueError) as exc:
+        raise OctomilError(
+            code=OctomilErrorCode.INVALID_INPUT,
+            message=f"`{field}` must be a positive integer, got {raw!r}",
+        ) from exc
+    if value <= 0:
+        raise OctomilError(
+            code=OctomilErrorCode.INVALID_INPUT,
+            message=f"`{field}` must be a positive integer, got {value!r}",
+        )
+    return value
+
+
+def _decode_pcm_f32_body(body: dict[str, Any]) -> Any:
+    """Return mono PCM-f32 request audio as list-like samples or raw bytes.
+
+    JSON callers can pass either ``audio`` / ``audio_pcm_f32`` as a list
+    of floats, or ``audio_pcm_f32_base64`` / ``audio_base64`` as base64
+    encoded float32-LE bytes. Native backends own final validation.
+    """
+    for field in ("audio", "audio_pcm_f32"):
+        if field in body:
+            audio = body[field]
+            if isinstance(audio, list):
+                return audio
+            if isinstance(audio, str):
+                try:
+                    return base64.b64decode(audio, validate=True)
+                except Exception as exc:  # noqa: BLE001
+                    raise OctomilError(
+                        code=OctomilErrorCode.INVALID_INPUT,
+                        message=f"`{field}` must be base64-encoded PCM-f32 bytes when provided as a string.",
+                    ) from exc
+            raise OctomilError(
+                code=OctomilErrorCode.INVALID_INPUT,
+                message=f"`{field}` must be a float list or base64 PCM-f32 string.",
+            )
+
+    for field in ("audio_pcm_f32_base64", "audio_base64"):
+        if field in body:
+            raw = body[field]
+            if not isinstance(raw, str):
+                raise OctomilError(
+                    code=OctomilErrorCode.INVALID_INPUT,
+                    message=f"`{field}` must be a base64 PCM-f32 string.",
+                )
+            try:
+                return base64.b64decode(raw, validate=True)
+            except Exception as exc:  # noqa: BLE001
+                raise OctomilError(
+                    code=OctomilErrorCode.INVALID_INPUT,
+                    message=f"`{field}` must be base64-encoded PCM-f32 bytes.",
+                ) from exc
+
+    raise OctomilError(
+        code=OctomilErrorCode.INVALID_INPUT,
+        message="Missing audio. Provide `audio` as a float list or `audio_pcm_f32_base64` as float32-LE bytes.",
+    )
 
 
 async def _generate_with_backend(backend: Any, request: GenerationRequest) -> tuple[str, Any]:
@@ -369,65 +459,48 @@ def create_app(
             state.whisper_backend = whisper_backend
             state.engine_name = "native-whisper-cpp"
         elif _is_sherpa_tts_model(model_name):
-            # ``_SherpaTtsBackend._resolve_model_dir`` requires an
-            # injected prepared ``model_dir=`` (the PR D cutover
-            # removed the legacy ``~/.octomil/models/sherpa`` and env
-            # fallback). Route TTS startup through ``kernel.prepare``
-            # so PrepareManager materializes the artifact, then
-            # construct + load the backend ONCE against that
-            # ``artifact_dir``.
-            #
-            # We deliberately call ``prepare`` instead of ``warmup``:
-            # warmup also loads + caches a backend in
-            # ``kernel._warmed_backends``, but the lifespan owns the
-            # canonical backend on ``state.sherpa_tts_backend``.
-            # Going through warmup would double model load time and
-            # resident memory while the kernel-cached copy sat
-            # unused for the lifetime of the server.
-            from ..execution.kernel import ExecutionKernel
-            from ..runtime.engines.sherpa import SherpaTtsEngine
+            # Native cutover: batch and stream TTS both route through
+            # octomil-runtime. The runtime advertises these capabilities
+            # only when OCTOMIL_SHERPA_TTS_MODEL points at the canonical
+            # piper-amy ONNX with required sidecars and digest gates.
+            from ..runtime.native.tts_batch_backend import NativeTtsBatchBackend
 
-            tts_kernel = state.kernel or ExecutionKernel(config_set=state.config_set)
             try:
-                prepare_outcome = await asyncio.to_thread(tts_kernel.prepare, model=model_name, capability="tts")
-                artifact_dir = str(prepare_outcome.artifact_dir)
-                sherpa_backend = SherpaTtsEngine().create_backend(
-                    model_name,
-                    model_dir=artifact_dir,
-                )
-                sherpa_backend.load_model(model_name)
+                native_batch_backend = NativeTtsBatchBackend()
+                native_batch_backend.load_model(model_name)
             except Exception as exc:
-                _log_startup_error(model_name, exc)
-                raise
-            state.sherpa_tts_backend = sherpa_backend
-            state.kernel = tts_kernel
-            state.engine_name = "sherpa-onnx"
+                logger.info(
+                    "native audio.tts.batch backend unavailable at startup (%s); "
+                    "/v1/audio/speech will return RUNTIME_UNAVAILABLE on request",
+                    exc,
+                )
+                state.native_tts_batch_backend = None
+            else:
+                state.native_tts_batch_backend = native_batch_backend
+                state.engine_name = native_batch_backend.name
 
-            # v0.1.8 Lane C — try to load the native audio.tts.stream
-            # backend alongside the python-sherpa batch backend. Hard-
-            # cut: when it loads, the /v1/audio/speech/stream route
-            # uses NATIVE; when it does NOT (capability not advertised
-            # / dylib missing), the stream route returns
-            # RUNTIME_UNAVAILABLE rather than fall back to the python
-            # sherpa stream path.
+            # Same runtime/artifact gate, separate capability/session.
             try:
                 from ..runtime.native.tts_stream_backend import NativeTtsStreamBackend
 
                 native_stream_backend = NativeTtsStreamBackend()
                 native_stream_backend.load_model(model_name)
                 state.native_tts_stream_backend = native_stream_backend
+                if not state.engine_name:
+                    state.engine_name = native_stream_backend.name
             except Exception as exc:  # noqa: BLE001
                 # The native runtime might not advertise tts.stream
                 # (sidecars missing, dylib unavailable, etc.). That
-                # is non-fatal at startup — the batch path still
-                # works. The stream route handler raises
-                # RUNTIME_UNAVAILABLE on first hit.
+                # is non-fatal at startup. The stream route handler
+                # raises RUNTIME_UNAVAILABLE on first hit.
                 logger.info(
-                    "v0.1.8 Lane C: native audio.tts.stream backend unavailable at startup (%s); "
+                    "native audio.tts.stream backend unavailable at startup (%s); "
                     "/v1/audio/speech/stream will return RUNTIME_UNAVAILABLE on request",
                     exc,
                 )
                 state.native_tts_stream_backend = None
+            if state.native_tts_batch_backend is None and state.native_tts_stream_backend is None:
+                state.engine_name = "native-sherpa-tts-unavailable"
         elif state.kernel is not None:
             # --- Config-driven startup: use kernel routing to decide backends ---
             await _kernel_driven_startup(state, model_name)
@@ -528,6 +601,23 @@ def create_app(
         except Exception:  # noqa: BLE001
             logger.warning("native embeddings runtime cache reset failed", exc_info=True)
         state.embeddings_backend = None
+        for attr in (
+            "native_vad_backend",
+            "native_speaker_embedding_backend",
+            "native_diarization_backend",
+            "native_tts_batch_backend",
+            "native_tts_stream_backend",
+        ):
+            backend = getattr(state, attr, None)
+            if backend is None:
+                continue
+            close = getattr(backend, "close", None)
+            if callable(close):
+                try:
+                    close()
+                except Exception:  # noqa: BLE001
+                    logger.warning("%s.close failed during shutdown", attr, exc_info=True)
+            setattr(state, attr, None)
 
     app = FastAPI(title="Octomil Serve", version="1.0.0", lifespan=lifespan)
 
@@ -1288,6 +1378,139 @@ def create_app(
             }
         return health_data
 
+    def _native_vad_backend() -> Any:
+        if state.native_vad_backend is None:
+            from ..audio import vad as vad_module
+
+            backend = vad_module.NativeVadBackend()
+            backend.open()
+            state.native_vad_backend = backend
+        return state.native_vad_backend
+
+    def _native_speaker_embedding_backend(model: str) -> Any:
+        if state.native_speaker_embedding_backend is None:
+            from ..audio import speaker_embedding as speaker_module
+
+            backend = speaker_module.NativeSpeakerEmbeddingBackend()
+            backend.load_model(model)
+            state.native_speaker_embedding_backend = backend
+        else:
+            # NativeSpeakerEmbeddingBackend validates unsupported model
+            # names before its idempotent loaded fast path, so this keeps
+            # per-request model rejects bounded without reloading.
+            state.native_speaker_embedding_backend.load_model(model)
+        return state.native_speaker_embedding_backend
+
+    def _native_diarization_backend() -> Any:
+        if state.native_diarization_backend is None:
+            from ..audio import diarization as diarization_module
+
+            backend = diarization_module.NativeDiarizationBackend()
+            backend.open()
+            state.native_diarization_backend = backend
+        return state.native_diarization_backend
+
+    @app.post("/v1/audio/vad")
+    async def detect_voice_activity(body: dict[str, Any]) -> dict[str, Any]:
+        """Native-only voice activity detection endpoint."""
+        audio = _decode_pcm_f32_body(body)
+        sample_rate_hz = _parse_positive_int_field(body, "sample_rate_hz", 16000)
+        deadline_ms = _parse_positive_int_field(body, "deadline_ms", 300_000)
+
+        def _run() -> list[Any]:
+            backend = _native_vad_backend()
+            with backend.open_session(sample_rate_hz=sample_rate_hz) as session:
+                session.feed_chunk(audio, sample_rate_hz=sample_rate_hz)
+                return list(
+                    session.poll_transitions(
+                        deadline_ms=deadline_ms,
+                        drain_until_completed=True,
+                    )
+                )
+
+        transitions = await _run_native_audio_route(_run, context="native audio.vad route failed")
+        state.request_count += 1
+        return {
+            "object": "audio.vad",
+            "model": "silero-vad",
+            "sample_rate_hz": sample_rate_hz,
+            "transitions": [
+                {
+                    "kind": transition.kind,
+                    "timestamp_ms": int(transition.timestamp_ms),
+                    "confidence": float(transition.confidence),
+                }
+                for transition in transitions
+            ],
+        }
+
+    @app.post("/v1/audio/speaker_embeddings")
+    async def create_speaker_embedding(body: dict[str, Any]) -> dict[str, Any]:
+        """Native-only speaker embedding endpoint."""
+        audio = _decode_pcm_f32_body(body)
+        sample_rate_hz = _parse_positive_int_field(body, "sample_rate_hz", 16000)
+        deadline_ms = _parse_positive_int_field(body, "deadline_ms", 300_000)
+        model = str(body.get("model") or "sherpa-eres2netv2-base")
+
+        def _run() -> list[float]:
+            backend = _native_speaker_embedding_backend(model)
+            return _embedding_values_to_json(
+                backend.embed(
+                    audio,
+                    sample_rate_hz=sample_rate_hz,
+                    deadline_ms=deadline_ms,
+                )
+            )
+
+        embedding = await _run_native_audio_route(
+            _run,
+            context="native audio.speaker.embedding route failed",
+        )
+        state.request_count += 1
+        return {
+            "object": "audio.speaker.embedding",
+            "model": model,
+            "sample_rate_hz": sample_rate_hz,
+            "embedding": embedding,
+            "dimensions": len(embedding),
+        }
+
+    @app.post("/v1/audio/diarizations")
+    async def diarize_audio(body: dict[str, Any]) -> dict[str, Any]:
+        """Native-only speaker diarization endpoint."""
+        audio = _decode_pcm_f32_body(body)
+        sample_rate_hz = _parse_positive_int_field(body, "sample_rate_hz", 16000)
+        deadline_ms = _parse_positive_int_field(body, "deadline_ms", 300_000)
+
+        def _run() -> list[Any]:
+            backend = _native_diarization_backend()
+            return list(
+                backend.diarize(
+                    audio,
+                    sample_rate_hz=sample_rate_hz,
+                    deadline_ms=deadline_ms,
+                )
+            )
+
+        segments = await _run_native_audio_route(
+            _run,
+            context="native audio.diarization route failed",
+        )
+        state.request_count += 1
+        return {
+            "object": "audio.diarization",
+            "sample_rate_hz": sample_rate_hz,
+            "segments": [
+                {
+                    "start_ms": int(segment.start_ms),
+                    "end_ms": int(segment.end_ms),
+                    "speaker_id": int(segment.speaker_id),
+                    "speaker_label": str(segment.speaker_label or ""),
+                }
+                for segment in segments
+            ],
+        }
+
     @app.post("/v1/audio/transcriptions")
     async def transcribe_audio(
         file: Any = None,
@@ -1327,7 +1550,7 @@ def create_app(
 
     @app.post("/v1/audio/speech/stream")
     async def synthesize_speech_stream(body: dict[str, Any]) -> Any:
-        """Streaming TTS endpoint — v0.1.8 Lane C native cutover.
+        """Streaming TTS endpoint — live-conditional native cutover.
 
         HARD-CUT to ``NativeTtsStreamBackend`` (octomil-runtime
         ``audio.tts.stream`` capability). No silent fallback to the
@@ -1460,8 +1683,8 @@ def create_app(
         # header serves clients that read headers BEFORE the first
         # chunk arrives. Falls back to 24000 (Kokoro default) if
         # sherpa hasn't surfaced an SR yet.
-        observed_sample_rate = int(getattr(state.sherpa_tts_backend, "_sample_rate", 0) or 0) or 24000
-        model_name = getattr(state.sherpa_tts_backend, "_model_name", "") or state.model_name or ""
+        observed_sample_rate = 22050
+        model_name = getattr(state.native_tts_batch_backend, "_model_name", "") or state.model_name or ""
 
         # Codex R1 P1 fix: open the session SYNCHRONOUSLY here so
         # that an out-of-range numeric sid (e.g. voice="999" against
@@ -1472,8 +1695,8 @@ def create_app(
         # for sid range / send_text / NaN-text lands here as a 4xx
         # body, not as a mid-stream failure after status/headers
         # have been committed. The drain itself runs on a worker
-        # thread to keep the event loop responsive while v0.1.8
-        # sherpa Generate is synchronous.
+        # thread to keep the event loop responsive while progressive
+        # synthesis drains native events.
         chunk_iterator = native_backend.synthesize_with_chunks(
             text,
             voice_id=resolved_voice_str,
@@ -1569,10 +1792,13 @@ def create_app(
         """
         from fastapi.responses import Response
 
-        if state.sherpa_tts_backend is None:
+        if state.native_tts_batch_backend is None:
             raise OctomilError(
-                code=OctomilErrorCode.MODEL_LOAD_FAILED,
-                message="No TTS model loaded. Start server with a sherpa-onnx TTS model: octomil serve kokoro-82m",
+                code=OctomilErrorCode.RUNTIME_UNAVAILABLE,
+                message=(
+                    "native audio.tts.batch backend not loaded. Set OCTOMIL_RUNTIME_DYLIB + "
+                    "OCTOMIL_SHERPA_TTS_MODEL to the canonical piper-amy ONNX bundle and restart the server."
+                ),
             )
 
         text = (body.get("input") or "").strip()
@@ -1597,7 +1823,7 @@ def create_app(
         if response_format != "wav":
             raise OctomilError(
                 code=OctomilErrorCode.INVALID_INPUT,
-                message=f"Unsupported response_format '{response_format}'. Only 'wav' is supported by the local sherpa-onnx engine.",
+                message=f"Unsupported response_format '{response_format}'. Only 'wav' is supported by native audio.tts.batch.",
             )
 
         # Same resolver the streaming route uses — speaker= takes
@@ -1610,15 +1836,13 @@ def create_app(
             selection=None,
             is_app_ref=False,
         )
-        backend = state.sherpa_tts_backend
-        extra = {"speaker_profile": resolved_speaker} if getattr(backend, "accepts_speaker_profile", False) else {}
+        backend = state.native_tts_batch_backend
 
         state.request_count += 1
         result: dict[str, Any] = backend.synthesize(
             text,
             voice=resolved_speaker.native_voice,
             speed=speed,
-            **extra,
         )
         headers = {
             "X-Octomil-Sample-Rate": str(result["sample_rate"]),

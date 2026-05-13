@@ -131,7 +131,7 @@ async def test_transcription_prepare_threads_artifact_dir_into_whisper_backend(t
     plan_only or warmup_supported until the wiring is restored.
 
     v0.1.5 PR-2B: this test exercises the **legacy registry-thread-
-    through** path. The kernel's native-first branch (which routes
+    through** path. The kernel's native-conditional branch (which routes
     through ``NativeSttServeAdapter`` instead of the registry) only
     fires when ``OCTOMIL_WHISPER_BIN`` is set in the env. We
     explicitly clear it here so this test remains a regression

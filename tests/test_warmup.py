@@ -133,26 +133,26 @@ def test_warmupable_capabilities_invariant():
 
 
 # ---------------------------------------------------------------------------
-# Cache hit: post-warmup TTS dispatch reuses the loaded backend
+# Cache hit: post-warmup TTS dispatch reuses the loaded native backend
 # ---------------------------------------------------------------------------
 
 
-class _FakeSherpaBackend:
-    """Stand-in sherpa-onnx backend; counts how many times it's loaded."""
+class _FakeNativeTtsBatchBackend:
+    """Stand-in native TTS batch backend; counts how many times it's loaded."""
 
     load_calls = 0
 
-    def __init__(self, model_name: str, **kwargs: Any) -> None:
+    def __init__(self, model_name: str | None = None, **kwargs: Any) -> None:
         self.model_name = model_name
         self.kwargs = kwargs
 
     def load_model(self, model_name: str) -> None:
-        _FakeSherpaBackend.load_calls += 1
+        _FakeNativeTtsBatchBackend.load_calls += 1
 
 
 @pytest.fixture(autouse=True)
 def _reset_load_counter():
-    _FakeSherpaBackend.load_calls = 0
+    _FakeNativeTtsBatchBackend.load_calls = 0
     yield
 
 
@@ -161,48 +161,46 @@ def test_warmup_loads_backend_and_caches_it(tmp_path):
     artifact_dir.mkdir()
     pm = _FakePM(artifact_dir)
     kernel = ExecutionKernel(prepare_manager=pm)
-    _stub_kernel_resolve(kernel, "kokoro-en-v0_19")
+    _stub_kernel_resolve(kernel, "piper-en-amy")
 
-    selection = _Selection(candidates=[_local_candidate(engine="sherpa-onnx")])
-
-    class _FakeEngine:
-        def create_backend(self, model: str, **kwargs: Any) -> _FakeSherpaBackend:
-            return _FakeSherpaBackend(model, **kwargs)
+    selection = _Selection(candidates=[_local_candidate(engine="sherpa-onnx", artifact_id="piper-en-amy")])
 
     with ExitStack() as stack:
         stack.enter_context(patch("octomil.execution.kernel._resolve_planner_selection", return_value=selection))
-        stack.enter_context(patch("octomil.runtime.engines.sherpa.SherpaTtsEngine", _FakeEngine))
-        outcome = kernel.warmup(model="kokoro-en-v0_19", capability="tts")
+        stack.enter_context(
+            patch("octomil.runtime.native.tts_batch_backend.NativeTtsBatchBackend", _FakeNativeTtsBatchBackend)
+        )
+        outcome = kernel.warmup(model="piper-en-amy", capability="tts")
 
     assert isinstance(outcome, WarmupOutcome)
     assert outcome.capability == "tts"
-    assert outcome.model == "kokoro-en-v0_19"
+    assert outcome.model == "piper-en-amy"
     assert outcome.backend_loaded is True
-    assert outcome.prepare_outcome.artifact_id == "kokoro-en-v0_19"
-    assert pm.prepare_calls == ["kokoro-en-v0_19"]
-    assert _FakeSherpaBackend.load_calls == 1
+    assert outcome.prepare_outcome.artifact_id == "piper-en-amy"
+    assert pm.prepare_calls == ["piper-en-amy"]
+    assert _FakeNativeTtsBatchBackend.load_calls == 1
     # Cache populated under the artifact-identity key.
     cached_keys = list(kernel._warmed_backends.keys())
-    assert any(k[0] == "tts" and k[1] == "kokoro-en-v0_19" for k in cached_keys), cached_keys
+    assert any(k[0] == "tts" and k[1] == "piper-en-amy" for k in cached_keys), cached_keys
 
 
 def test_post_warmup_dispatch_skips_backend_construction(tmp_path):
     """The contract: after warmup, the next ``_resolve_local_tts_backend``
     call returns the cached instance without re-running
-    ``engine.create_backend`` or ``backend.load_model``."""
+    ``NativeTtsBatchBackend()`` or ``backend.load_model``."""
     kernel = ExecutionKernel()
     sentinel_backend = object()
-    candidate = _local_candidate(engine="sherpa-onnx")
-    key = kernel._warmup_cache_key("tts", "kokoro-en-v0_19", candidate)
+    candidate = _local_candidate(engine="sherpa-onnx", artifact_id="piper-en-amy")
+    key = kernel._warmup_cache_key("tts", "piper-en-amy", candidate)
     kernel._warmed_backends[key] = sentinel_backend
 
     selection = _Selection(candidates=[candidate])
 
     with ExitStack() as stack:
         stack.enter_context(patch("octomil.execution.kernel._resolve_planner_selection", return_value=selection))
-        fake_engine = stack.enter_context(patch("octomil.runtime.engines.sherpa.SherpaTtsEngine"))
-        fake_engine.side_effect = AssertionError("engine constructor must not be called on cache hit")
-        result = kernel._resolve_local_tts_backend("kokoro-en-v0_19")
+        fake_backend = stack.enter_context(patch("octomil.runtime.native.tts_batch_backend.NativeTtsBatchBackend"))
+        fake_backend.side_effect = AssertionError("native backend constructor must not be called on cache hit")
+        result = kernel._resolve_local_tts_backend("piper-en-amy")
 
     assert result is sentinel_backend
 
@@ -239,22 +237,24 @@ def test_warmup_returns_partial_success_when_backend_construction_fails(tmp_path
     artifact_dir.mkdir()
     pm = _FakePM(artifact_dir)
     kernel = ExecutionKernel(prepare_manager=pm)
-    _stub_kernel_resolve(kernel, "kokoro-en-v0_19")
+    _stub_kernel_resolve(kernel, "piper-en-amy")
 
-    selection = _Selection(candidates=[_local_candidate(engine="sherpa-onnx")])
+    selection = _Selection(candidates=[_local_candidate(engine="sherpa-onnx", artifact_id="piper-en-amy")])
 
-    class _FailingEngine:
-        def create_backend(self, model: str, **kwargs: Any):
-            raise RuntimeError("sherpa native lib missing on this host")
+    class _FailingNativeTtsBatchBackend:
+        def __init__(self, model_name: str | None = None, **kwargs: Any):
+            raise RuntimeError("native TTS batch backend missing on this host")
 
     with ExitStack() as stack:
         stack.enter_context(patch("octomil.execution.kernel._resolve_planner_selection", return_value=selection))
-        stack.enter_context(patch("octomil.runtime.engines.sherpa.SherpaTtsEngine", _FailingEngine))
-        outcome = kernel.warmup(model="kokoro-en-v0_19", capability="tts")
+        stack.enter_context(
+            patch("octomil.runtime.native.tts_batch_backend.NativeTtsBatchBackend", _FailingNativeTtsBatchBackend)
+        )
+        outcome = kernel.warmup(model="piper-en-amy", capability="tts")
 
     assert outcome.backend_loaded is False
-    assert outcome.prepare_outcome.artifact_id == "kokoro-en-v0_19"
-    assert pm.prepare_calls == ["kokoro-en-v0_19"]
+    assert outcome.prepare_outcome.artifact_id == "piper-en-amy"
+    assert pm.prepare_calls == ["piper-en-amy"]
     assert kernel._warmed_backends == {}
 
 
@@ -279,10 +279,9 @@ def test_release_warmed_backends_clears_cache():
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.asyncio
-async def test_warmup_app_ref_caches_under_runtime_model_not_alias(tmp_path):
+def test_warmup_app_ref_caches_under_runtime_model_not_alias(tmp_path):
     """Reviewer P1: ``client.warmup(model='@app/foo/tts')`` must warm
-    + cache under the *resolved* model id (``kokoro-en-v0_19``), not
+    + cache under the *resolved* model id (``piper-en-amy``), not
     the app alias. The inference path resolves planner selections via
     ``_runtime_model_for_selection``; if warmup keys under the alias,
     the next ``synthesize_speech`` lookup misses the cache and pays
@@ -294,10 +293,10 @@ async def test_warmup_app_ref_caches_under_runtime_model_not_alias(tmp_path):
 
     @dataclass
     class _AppResolution:
-        selected_model: str = "kokoro-en-v0_19"
+        selected_model: str = "piper-en-amy"
 
     selection_with_app = _Selection(
-        candidates=[_local_candidate(engine="sherpa-onnx")],
+        candidates=[_local_candidate(engine="sherpa-onnx", artifact_id="piper-en-amy")],
         app_resolution=_AppResolution(),
     )
 
@@ -316,24 +315,22 @@ async def test_warmup_app_ref_caches_under_runtime_model_not_alias(tmp_path):
         },
     )()
 
-    class _FakeEngine:
-        def create_backend(self, model: str, **kwargs: Any) -> _FakeSherpaBackend:
-            return _FakeSherpaBackend(model, **kwargs)
-
     with ExitStack() as stack:
         stack.enter_context(
             patch("octomil.execution.kernel._resolve_planner_selection", return_value=selection_with_app)
         )
-        stack.enter_context(patch("octomil.runtime.engines.sherpa.SherpaTtsEngine", _FakeEngine))
+        stack.enter_context(
+            patch("octomil.runtime.native.tts_batch_backend.NativeTtsBatchBackend", _FakeNativeTtsBatchBackend)
+        )
         outcome = kernel.warmup(model="@app/foo/tts", capability="tts")
 
     assert outcome.backend_loaded is True
-    assert outcome.model == "kokoro-en-v0_19", (
+    assert outcome.model == "piper-en-amy", (
         f"warmup must report the resolved runtime model, got {outcome.model!r}. "
         "The alias key would miss the inference cache lookup."
     )
     cached_keys = list(kernel._warmed_backends.keys())
-    assert all(k[1] == "kokoro-en-v0_19" for k in cached_keys), cached_keys
+    assert all(k[1] == "piper-en-amy" for k in cached_keys), cached_keys
     assert all(k[1] != "@app/foo/tts" for k in cached_keys), cached_keys
 
 
@@ -602,8 +599,7 @@ def test_lookup_falls_back_to_model_only_when_no_candidate_at_all(tmp_path):
     assert result is sentinel
 
 
-@pytest.mark.asyncio
-async def test_post_warmup_v2_request_does_not_serve_v1_backend(tmp_path):
+def test_post_warmup_v2_request_does_not_serve_v1_backend(tmp_path):
     """End-to-end version of the regression: warmup v1, then issue a
     transcription request whose planner emits a v2 candidate. The
     resolver must not return the v1 backend; it must build a fresh
@@ -804,11 +800,11 @@ def test_warmup_cache_key_uses_planner_candidate_not_substituted_candidate(tmp_p
     recipe's artifact identity, but the dispatch looked up under the
     echo-only planner candidate's identity (all-None artifact tuple),
     missed, and rebuilt the backend on every stream."""
-    artifact_dir = tmp_path / "kokoro"
+    artifact_dir = tmp_path / "piper"
     artifact_dir.mkdir()
     pm = _FakePM(artifact_dir)
     kernel = ExecutionKernel(prepare_manager=pm)
-    _stub_kernel_resolve(kernel, "kokoro-en-v0_19")
+    _stub_kernel_resolve(kernel, "piper-en-amy")
 
     # Echo-only planner: no artifact identity. This is what the
     # offline planner / Ren'Py / sandboxed-CPython case looks like.
@@ -819,8 +815,8 @@ def test_warmup_cache_key_uses_planner_candidate_not_substituted_candidate(tmp_p
         reason="echo",
         engine="sherpa-onnx",
         artifact=RuntimeArtifactPlan(
-            model_id="kokoro-en-v0_19",
-            artifact_id="kokoro-en-v0_19",
+            model_id="piper-en-amy",
+            artifact_id="piper-en-amy",
             # No digest, no format, no quantization — meaningful
             # identity is absent. ``_select_prepare_candidate`` will
             # substitute the static recipe.
@@ -842,8 +838,8 @@ def test_warmup_cache_key_uses_planner_candidate_not_substituted_candidate(tmp_p
         reason="static-recipe",
         engine="sherpa-onnx",
         artifact=RuntimeArtifactPlan(
-            model_id="kokoro-en-v0_19",
-            artifact_id="kokoro-en-v0_19",
+            model_id="piper-en-amy",
+            artifact_id="piper-en-amy",
             digest="sha256:" + "a" * 64,  # recipe-specific digest
             format="onnx",
             download_urls=[ArtifactDownloadEndpoint(url="https://recipe.example.com/")],
@@ -862,12 +858,14 @@ def test_warmup_cache_key_uses_planner_candidate_not_substituted_candidate(tmp_p
     fake_recipe = _FakeRecipe()
 
     class _FakeEngine:
-        def create_backend(self, model: str, **kwargs: Any) -> _FakeSherpaBackend:
-            return _FakeSherpaBackend(model, **kwargs)
+        def create_backend(self, model: str, **kwargs: Any) -> _FakeNativeTtsBatchBackend:
+            return _FakeNativeTtsBatchBackend(model, **kwargs)
 
     with ExitStack() as stack:
         stack.enter_context(patch("octomil.execution.kernel._resolve_planner_selection", return_value=selection))
-        stack.enter_context(patch("octomil.runtime.engines.sherpa.SherpaTtsEngine", _FakeEngine))
+        stack.enter_context(
+            patch("octomil.runtime.native.tts_batch_backend.NativeTtsBatchBackend", _FakeNativeTtsBatchBackend)
+        )
         # Force the substitution path: planner echo + a registered
         # static recipe. Stub ``_select_prepare_candidate`` to return
         # the substituted candidate, mirroring what the real
@@ -884,14 +882,14 @@ def test_warmup_cache_key_uses_planner_candidate_not_substituted_candidate(tmp_p
         stack.enter_context(
             patch("octomil.runtime.lifecycle.materialization.Materializer.materialize", return_value=None)
         )
-        outcome = kernel.warmup(model="kokoro-en-v0_19", capability="tts")
+        outcome = kernel.warmup(model="piper-en-amy", capability="tts")
 
     assert outcome.backend_loaded is True
 
     # The cache key MUST match what the streaming dispatch will look
     # up under — i.e. derived from the planner-original (echo)
     # candidate, NOT the recipe-substituted candidate.
-    expected_key = kernel._warmup_cache_key("tts", "kokoro-en-v0_19", echo_candidate)
+    expected_key = kernel._warmup_cache_key("tts", "piper-en-amy", echo_candidate)
     assert expected_key in kernel._warmed_backends, (
         f"warmup cache missing planner-candidate key {expected_key!r}; "
         f"actual keys: {list(kernel._warmed_backends.keys())!r}. "
@@ -902,8 +900,8 @@ def test_warmup_cache_key_uses_planner_candidate_not_substituted_candidate(tmp_p
     # And confirm the dispatch path actually hits the cache when
     # called with the same echo planner candidate (covering the full
     # round-trip the user-visible bug exhibited).
-    cached = kernel._lookup_warmed_backend("tts", "kokoro-en-v0_19", candidate=echo_candidate)
+    cached = kernel._lookup_warmed_backend("tts", "piper-en-amy", candidate=echo_candidate)
     assert cached is not None
     # The fake backend's load_model was called exactly once during
     # warmup; if dispatch reused the cache, it stays at 1.
-    assert _FakeSherpaBackend.load_calls == 1
+    assert _FakeNativeTtsBatchBackend.load_calls == 1

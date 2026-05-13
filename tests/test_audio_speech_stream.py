@@ -412,9 +412,7 @@ async def test_unknown_voice_raises_voice_not_supported_for_model():
         patch.object(kernel, "_resolve", return_value=defaults),
         patch("octomil.execution.kernel._resolve_planner_selection", return_value=None),
         patch("octomil.execution.kernel._resolve_routing_policy"),
-        patch.object(kernel, "_sherpa_tts_runtime_loadable", return_value=True),
-        patch.object(kernel, "_prepared_cache_may_short_circuit", return_value=True),
-        patch.object(kernel, "_prepared_local_artifact_dir", return_value="/tmp/tts-cache"),
+        patch.object(kernel, "_native_tts_stream_runtime_loadable", return_value=True),
         patch(
             "octomil.execution.kernel._select_locality_for_capability",
             return_value=("on_device", False),
@@ -532,9 +530,11 @@ def _fake_native_tts_stream_backend_factory():
         def __init__(self) -> None:
             self.load_model_called = False
             self.calls: list[dict] = []
+            self._model_name: str | None = None
 
         def load_model(self, model_name: str) -> None:
             self.load_model_called = True
+            self._model_name = model_name
 
         def close(self) -> None:
             pass
@@ -578,6 +578,24 @@ def _fake_native_tts_stream_backend_factory():
     return _FakeNative()
 
 
+class _FakeNativeTtsBatchBackend:
+    """Minimal native batch backend for startup / cutover tests."""
+
+    name = "native-sherpa-onnx-tts-batch"
+
+    def __init__(self) -> None:
+        self.load_model_called = False
+        self.loaded_model_name: str | None = None
+
+    def load_model(self, model_name: str) -> None:
+        self.load_model_called = True
+        self.loaded_model_name = model_name
+
+
+def _fake_native_tts_batch_backend_factory():
+    return _FakeNativeTtsBatchBackend()
+
+
 @pytest.mark.asyncio
 async def test_production_http_speech_stream_route_returns_pcm_with_metadata_headers(tmp_path):
     """End-to-end through the real ``create_app`` factory.
@@ -590,17 +608,22 @@ async def test_production_http_speech_stream_route_returns_pcm_with_metadata_hea
     pytest.importorskip("fastapi")
     pytest.importorskip("httpx")
 
-    backend = FakeStreamingBackend(num_chunks=3, samples_per_chunk=1200, chunk_delay_s=0.005)
-    fake_engine = MagicMock()
-    fake_engine.create_backend.return_value = backend
+    batch_instance = _fake_native_tts_batch_backend_factory()
     native_instance = _fake_native_tts_stream_backend_factory()
 
     from httpx import ASGITransport, AsyncClient
 
     with (
-        patch("octomil.runtime.engines.sherpa.SherpaTtsEngine", return_value=fake_engine),
+        patch(
+            "octomil.runtime.engines.sherpa.SherpaTtsEngine",
+            side_effect=AssertionError("SherpaTtsEngine must not be constructed on native TTS startup"),
+        ),
         patch("octomil.serve.app._is_sherpa_tts_model", return_value=True),
         _stub_kernel_warmup_for_tts(tmp_path),
+        patch(
+            "octomil.runtime.native.tts_batch_backend.NativeTtsBatchBackend",
+            return_value=batch_instance,
+        ),
         patch(
             "octomil.runtime.native.tts_stream_backend.NativeTtsStreamBackend",
             return_value=native_instance,
@@ -637,9 +660,11 @@ async def test_production_http_speech_stream_route_returns_pcm_with_metadata_hea
 
     assert chunks >= 1
     assert total == 3 * 1200 * 2  # 3 chunks * 1200 samples * 2 bytes/sample
-    # python-sherpa stream MUST NOT have been called.
-    assert backend.stream_called is False
+    assert batch_instance.load_model_called is True
+    assert batch_instance.loaded_model_name == "kokoro-82m"
+    assert native_instance.load_model_called is True
     assert len(native_instance.calls) == 1
+    assert native_instance.calls[0] == {"text": "hello", "voice_id": "0"}
 
 
 @pytest.mark.asyncio
@@ -648,17 +673,22 @@ async def test_production_http_speech_stream_route_rejects_unsupported_format(tm
     pytest.importorskip("fastapi")
     pytest.importorskip("httpx")
 
-    backend = FakeStreamingBackend(num_chunks=2, chunk_delay_s=0.001)
-    fake_engine = MagicMock()
-    fake_engine.create_backend.return_value = backend
+    batch_instance = _fake_native_tts_batch_backend_factory()
     native_instance = _fake_native_tts_stream_backend_factory()
 
     from httpx import ASGITransport, AsyncClient
 
     with (
-        patch("octomil.runtime.engines.sherpa.SherpaTtsEngine", return_value=fake_engine),
+        patch(
+            "octomil.runtime.engines.sherpa.SherpaTtsEngine",
+            side_effect=AssertionError("SherpaTtsEngine must not be constructed on native TTS startup"),
+        ),
         patch("octomil.serve.app._is_sherpa_tts_model", return_value=True),
         _stub_kernel_warmup_for_tts(tmp_path),
+        patch(
+            "octomil.runtime.native.tts_batch_backend.NativeTtsBatchBackend",
+            return_value=batch_instance,
+        ),
         patch(
             "octomil.runtime.native.tts_stream_backend.NativeTtsStreamBackend",
             return_value=native_instance,
@@ -731,9 +761,7 @@ async def test_streaming_voice_validation_uses_static_recipe_manifest():
         patch.object(kernel, "_resolve", return_value=defaults),
         patch("octomil.execution.kernel._resolve_planner_selection", return_value=None),
         patch("octomil.execution.kernel._resolve_routing_policy"),
-        patch.object(kernel, "_sherpa_tts_runtime_loadable", return_value=True),
-        patch.object(kernel, "_prepared_cache_may_short_circuit", return_value=True),
-        patch.object(kernel, "_prepared_local_artifact_dir", return_value="/tmp/tts-cache"),
+        patch.object(kernel, "_native_tts_stream_runtime_loadable", return_value=True),
         patch(
             "octomil.execution.kernel._select_locality_for_capability",
             return_value=("on_device", False),
@@ -891,42 +919,28 @@ async def test_stream_does_not_emit_started_for_unsupported_voice(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_tts_server_lifespan_passes_prepared_model_dir_to_sherpa_backend(tmp_path):
-    """The TTS lifespan must inject the prepared ``model_dir`` into
-    ``SherpaTtsEngine.create_backend`` — otherwise
-    ``_SherpaTtsBackend._resolve_model_dir`` raises and ``octomil
-    serve kokoro-82m`` fails before any route is reachable.
-
-    The earlier production-route tests patched the engine factory to
-    return a fake, masking this regression. This test patches at the
-    *engine class* level so we can capture the kwargs the production
-    lifespan uses, AND patches ``kernel.warmup`` so the test doesn't
-    require a real PrepareManager / planner.
-    """
+async def test_tts_server_lifespan_loads_native_backends_without_sherpa_fallback(tmp_path):
+    """Native server startup must wire both native TTS backends and
+    never construct the legacy Sherpa engine."""
     pytest.importorskip("fastapi")
 
-    captured_kwargs: dict = {}
-
-    class _RecordingBackend:
-        supports_streaming = True
-        _sample_rate = SAMPLE_RATE
-        _default_voice = "af"
-        _model_name = "kokoro-82m"
-
-        def load_model(self, model_name: str) -> None:
-            self._model_name = model_name
-
-    class _RecordingEngine:
-        def create_backend(self, model_name, **kwargs):
-            captured_kwargs.update(kwargs)
-            return _RecordingBackend()
+    batch_instance = _fake_native_tts_batch_backend_factory()
+    stream_instance = _fake_native_tts_stream_backend_factory()
 
     with (
         patch(
             "octomil.runtime.engines.sherpa.SherpaTtsEngine",
-            return_value=_RecordingEngine(),
+            side_effect=AssertionError("SherpaTtsEngine must not be constructed on native TTS startup"),
         ),
         patch("octomil.serve.app._is_sherpa_tts_model", return_value=True),
+        patch(
+            "octomil.runtime.native.tts_batch_backend.NativeTtsBatchBackend",
+            return_value=batch_instance,
+        ),
+        patch(
+            "octomil.runtime.native.tts_stream_backend.NativeTtsStreamBackend",
+            return_value=stream_instance,
+        ),
         _stub_kernel_warmup_for_tts(tmp_path),
     ):
         from octomil.serve.app import create_app
@@ -934,71 +948,43 @@ async def test_tts_server_lifespan_passes_prepared_model_dir_to_sherpa_backend(t
         app = create_app("kokoro-82m")
         await _start_lifespan(app)
 
-    # The lifespan MUST pass model_dir=<artifact_dir> so the sherpa
-    # backend can resolve the prepared layout. Pre-fix the lifespan
-    # called create_backend(model_name) with no kwargs and immediately
-    # raised in load_model.
-    assert (
-        "model_dir" in captured_kwargs
-    ), f"TTS lifespan must inject prepared model_dir from kernel.prepare() — captured kwargs: {captured_kwargs}"
-    assert captured_kwargs["model_dir"] == str(tmp_path)
+    assert batch_instance.load_model_called is True
+    assert batch_instance.loaded_model_name == "kokoro-82m"
+    assert stream_instance.load_model_called is True
 
 
 @pytest.mark.asyncio
-async def test_tts_server_lifespan_uses_prepare_not_warmup(tmp_path):
-    """P2: lifespan must call ``kernel.prepare()`` (artifact-only),
-    not ``kernel.warmup()`` (which also loads + caches a second
-    backend in ``kernel._warmed_backends``). Calling warmup would
-    double startup time and resident memory because the lifespan
-    already owns the canonical backend on
-    ``state.sherpa_tts_backend``.
-    """
+async def test_tts_server_lifespan_does_not_construct_sherpa_engine(tmp_path):
+    """The native cutover should keep Sherpa out of startup even
+    when the app serves a local Kokoro model."""
     pytest.importorskip("fastapi")
 
-    class _RecordingBackend:
-        supports_streaming = True
-        _sample_rate = SAMPLE_RATE
-        _default_voice = "af"
-        _model_name = "kokoro-82m"
-
-        def load_model(self, model_name: str) -> None:
-            self._model_name = model_name
-
-    class _RecordingEngine:
-        def create_backend(self, model_name, **kwargs):
-            return _RecordingBackend()
-
-    fake_prepare_outcome = MagicMock()
-    fake_prepare_outcome.artifact_dir = str(tmp_path)
+    batch_instance = _fake_native_tts_batch_backend_factory()
+    stream_instance = _fake_native_tts_stream_backend_factory()
 
     with (
         patch(
             "octomil.runtime.engines.sherpa.SherpaTtsEngine",
-            return_value=_RecordingEngine(),
+            side_effect=AssertionError("SherpaTtsEngine must not be constructed on native TTS startup"),
         ),
         patch("octomil.serve.app._is_sherpa_tts_model", return_value=True),
         patch(
-            "octomil.execution.kernel.ExecutionKernel.prepare",
-            return_value=fake_prepare_outcome,
-        ) as prepare_mock,
+            "octomil.runtime.native.tts_batch_backend.NativeTtsBatchBackend",
+            return_value=batch_instance,
+        ),
         patch(
-            "octomil.execution.kernel.ExecutionKernel.warmup",
-            side_effect=AssertionError("lifespan called warmup() — should call prepare() to avoid double load"),
-        ) as warmup_mock,
+            "octomil.runtime.native.tts_stream_backend.NativeTtsStreamBackend",
+            return_value=stream_instance,
+        ),
+        _stub_kernel_warmup_for_tts(tmp_path),
     ):
         from octomil.serve.app import create_app
 
         app = create_app("kokoro-82m")
         await _start_lifespan(app)
 
-    assert prepare_mock.called, "lifespan must call kernel.prepare() to materialize the artifact"
-    assert not warmup_mock.called, (
-        "lifespan must NOT call kernel.warmup() — that double-loads the model and "
-        "doubles resident memory while the kernel-cached backend sits unused"
-    )
-    call_kwargs = prepare_mock.call_args.kwargs
-    assert call_kwargs.get("model") == "kokoro-82m"
-    assert call_kwargs.get("capability") == "tts"
+    assert batch_instance.load_model_called is True
+    assert stream_instance.load_model_called is True
 
 
 @pytest.mark.asyncio
@@ -1022,16 +1008,21 @@ async def test_http_route_returns_4xx_for_unsupported_voice_before_streaming(tmp
                 )
             return 0, voice or "af_bella"
 
-    backend = _ValidatingBackend(num_chunks=1, samples_per_chunk=10, chunk_delay_s=0.001)
-    fake_engine = MagicMock()
-    fake_engine.create_backend.return_value = backend
+    batch_instance = _fake_native_tts_batch_backend_factory()
     native_instance = _fake_native_tts_stream_backend_factory()
 
     from httpx import ASGITransport, AsyncClient
 
     with (
-        patch("octomil.runtime.engines.sherpa.SherpaTtsEngine", return_value=fake_engine),
+        patch(
+            "octomil.runtime.engines.sherpa.SherpaTtsEngine",
+            side_effect=AssertionError("SherpaTtsEngine must not be constructed on native TTS startup"),
+        ),
         patch("octomil.serve.app._is_sherpa_tts_model", return_value=True),
+        patch(
+            "octomil.runtime.native.tts_batch_backend.NativeTtsBatchBackend",
+            return_value=batch_instance,
+        ),
         _stub_kernel_warmup_for_tts(tmp_path),
         patch(
             "octomil.runtime.native.tts_stream_backend.NativeTtsStreamBackend",
@@ -1062,10 +1053,7 @@ async def test_http_route_returns_4xx_for_unsupported_voice_before_streaming(tmp
             # surface as INVALID_INPUT.
             assert "INVALID_INPUT" in resp.text or "voice" in resp.text.lower()
 
-    # Critically: the legacy python-sherpa backend's stream method
-    # was never invoked, AND the native backend's synthesize path
-    # was never reached (voice rejected before session open).
-    assert backend.stream_called is False
+    assert batch_instance.load_model_called is True
     assert native_instance.calls == []
 
 
@@ -1143,13 +1131,6 @@ async def test_private_kokoro_artifact_with_private_voice_in_voices_txt_is_accep
         private_voice not in public_manifest
     ), f"test premise broken: {private_voice} is in the public recipe manifest"
 
-    # The planner-prepared artifact dir contains a voices.txt that
-    # *does* include the private voice. The fake backend reads the
-    # dir the kernel hands it, so this is what the production code
-    # would see post-PrepareManager.
-    voices_txt = tmp_path / "voices.txt"
-    voices_txt.write_text(f"af_bella\naf_sarah\n{private_voice}\n")
-
     # Synthetic planner candidate that is *meaningful* (digest set)
     # and explicitly does NOT match the static recipe (different
     # artifact_id, different digest). This is the gating signal the
@@ -1173,7 +1154,7 @@ async def test_private_kokoro_artifact_with_private_voice_in_voices_txt_is_accep
     )
 
     # Wire the kernel so the local route lands on our backend without
-    # touching disk for the artifact bytes themselves.
+    # needing the native runtime or a downloaded artifact.
     common_patches = [
         patch.object(kernel, "_resolve", return_value=defaults),
         patch(
@@ -1186,13 +1167,9 @@ async def test_private_kokoro_artifact_with_private_voice_in_voices_txt_is_accep
         ),
         patch("octomil.execution.kernel._resolve_routing_policy"),
         patch.object(kernel, "_sherpa_tts_runtime_loadable", return_value=True),
-        # No prepared static-recipe cache; we want the planner branch
-        # to drive prepare and write the private voices.txt.
-        patch.object(kernel, "_prepared_cache_may_short_circuit", return_value=False),
-        patch.object(kernel, "_local_candidate_is_unpreparable", return_value=False),
-        patch.object(kernel, "_can_prepare_local_tts", return_value=True),
-        patch.object(kernel, "_prepare_local_tts_artifact", return_value=str(tmp_path)),
+        patch.object(kernel, "_native_tts_stream_runtime_loadable", return_value=True),
         patch.object(kernel, "_resolve_local_tts_backend", return_value=backend),
+        patch.object(kernel, "_resolve_local_tts_stream_backend", return_value=backend),
         patch(
             "octomil.execution.kernel._select_locality_for_capability",
             return_value=("on_device", False),

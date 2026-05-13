@@ -100,14 +100,15 @@ from octomil.runtime.core.types import (
 
 logger = logging.getLogger(__name__)
 
-# Capabilities whose adapters actually consume the prepared ``artifact_dir``
-# today. A capability only enters this set once its dispatch path threads
-# the ``model_dir`` from PrepareOutcome into the backend. Anything below
-# is a false-success risk: prepare downloads bytes the next inference call
-# ignores, then cold-starts through the engine's own lookup.
+# Capabilities whose explicit ``prepare`` surface is still supported.
+# Transcription consumes the prepared ``artifact_dir`` directly. TTS is
+# retained for artifact materialization / warmup compatibility while the
+# product speech route is now gated by native ``audio.tts.batch``
+# advertisement instead of a Python backend ``model_dir``.
 #
 # Wiring history:
-#   - tts             (PR 4 + 6 + 7)  — SherpaTtsEngine.create_backend(model_dir)
+#   - tts             (native cutover) — explicit materialization compatibility;
+#                                       product route uses audio.tts.batch.
 #   - transcription   (PR 10a)        — _WhisperBackend honors injected model_dir
 #                                       and skips pywhispercpp's HF download path.
 # Wiring backlog (intentionally NOT in the supported set):
@@ -1760,7 +1761,8 @@ class ExecutionKernel:
         """Routed TTS synthesis. Returns a ``SpeechResponse``.
 
         Resolves the model ref through the same planner pipeline as the
-        other capabilities. Local execution dispatches to ``SherpaTtsEngine``;
+        other capabilities. Local execution dispatches to the native
+        ``audio.tts.batch`` runtime backend;
         cloud execution wraps the existing
         ``octomil.hosted.HostedSpeech.create`` so the kernel does not
         duplicate hosted request shaping or error handling.
@@ -1810,41 +1812,10 @@ class ExecutionKernel:
         )
 
         routing_policy = _resolve_routing_policy(defaults)
-        # Local routing is satisfied if a prepared artifact dir is
-        # already on disk AND the runtime can load it AND the
-        # planner did not select a *different* artifact identity, OR
-        # the planner emitted a preparable sdk_runtime candidate
-        # the kernel can materialize.
-        #
-        # The prepared cache may short-circuit dispatch in three
-        # well-defined cases — anything else means the planner has
-        # picked an artifact and we must defer to it, even if the
-        # static-recipe cache happens to be on disk for the same
-        # runtime model:
-        #
-        #   a) No local sdk_runtime candidate at all (planner
-        #      offline, returned only cloud, etc.).
-        #   b) Candidate is structurally unpreparable
-        #      (``can_prepare`` rejects it: synthetic, no urls,
-        #      no digest, traversal). The planner's intent cannot
-        #      be honored, but a usable prepared artifact already
-        #      exists; that artifact wins instead of failing closed.
-        #   c) Candidate's artifact identity (artifact_id + digest)
-        #      matches the static recipe's. The planner-selected
-        #      artifact IS the static-recipe artifact, just already
-        #      on disk; no re-download needed.
-        #
-        # The new P1 reviewer reproducer: planner emits a
-        # *legitimate* candidate for ``kokoro-82m`` with
-        # ``artifact_id='private-kokoro-v2'``, a real digest, and a
-        # working download_url. None of (a)-(c) hold; we must run
-        # the planner's prepare and load *that* artifact, NOT the
-        # static-recipe cache that happens to share ``runtime_model``.
-        #
-        # Cache-without-runtime is NOT local availability either:
-        # under ``local_first`` we'd otherwise commit to local and
-        # raise "could not load sherpa backend" instead of cleanly
-        # falling back to cloud (PR D P2).
+        # Native TTS local routing is capability-advertisement driven.
+        # Prepared artifact cache state is not enough to select local:
+        # the dylib must advertise ``audio.tts.batch`` after its build,
+        # artifact, digest, and sidecar gates pass.
         local_candidate = _local_sdk_runtime_candidate(selection)
         # PR D round 4: an explicit ``app=`` kwarg is the same
         # scope as an ``@app/...`` model ref — PR B's
@@ -1857,17 +1828,8 @@ class ExecutionKernel:
         # same Task #51 server bug the model-ref form refuses.
         app_scoped = bool(app) or _is_app_ref(requested_model or "")
         prepared_cache_dir: Optional[str] = None
-        if self._sherpa_tts_runtime_loadable(runtime_model) and self._prepared_cache_may_short_circuit(
-            local_candidate, runtime_model, CAPABILITY_TTS, app_scoped=app_scoped
-        ):
-            prepared_cache_dir = self._prepared_local_artifact_dir(CAPABILITY_TTS, runtime_model)
-
-        if prepared_cache_dir is not None:
-            local_available = True
-        elif self._local_candidate_is_unpreparable(selection):
-            local_available = False
-        else:
-            local_available = self._can_prepare_local_tts(runtime_model, selection)
+        native_tts_available = self._sherpa_tts_runtime_loadable(runtime_model)
+        local_available = native_tts_available
         cloud_available = _cloud_available(defaults)
         # PR B: explicit private / local_only policies force
         # cloud_available=False so a planner outage cannot leak the
@@ -1952,12 +1914,12 @@ class ExecutionKernel:
                 unit_kind=cloud_result.get("unit_kind"),
             )
 
-        # Local branch — sherpa-onnx.
+        # Local branch — native audio.tts.batch.
         if response_format.lower() != "wav":
             raise OctomilError(
                 code=OctomilErrorCode.INVALID_INPUT,
                 message=(
-                    f"format_not_supported_for_local_tts: local sherpa-onnx "
+                    f"format_not_supported_for_local_tts: native audio.tts.batch "
                     f"returns WAV. Got response_format='{response_format}'. "
                     "Cloud-routed apps can request other formats; local apps "
                     "should request 'wav' until local transcoding ships."
@@ -1984,18 +1946,11 @@ class ExecutionKernel:
             selection=selection,
             prepared_cache_dir=prepared_cache_dir,
         )
-        # PR D: when a prepared static-recipe cache is what made
-        # local routing available, use it directly and SKIP the
-        # planner-driven prepare. Otherwise a synthetic / broken
-        # planner candidate (e.g. ``artifact_id='private-kokoro-v2'``
-        # with no ``download_urls``) would still hit
-        # ``_prepare_local_tts_artifact(selection)`` →
-        # ``manager.prepare(candidate)`` and surface a
-        # ``no download_urls`` error even though the cache was
-        # already usable. The reorder above admitted the route
-        # because of the cache; honor that here.
-        if prepared_cache_dir is not None:
-            prepared_model_dir: Optional[str] = prepared_cache_dir
+        prepared_model_dir: Optional[str]
+        if native_tts_available:
+            prepared_model_dir = None
+        elif prepared_cache_dir is not None:
+            prepared_model_dir = prepared_cache_dir
         else:
             prepared_model_dir = self._prepare_local_tts_artifact(selection)
         # PR 11 follow-up: thread the planner candidate (already
@@ -2011,50 +1966,24 @@ class ExecutionKernel:
             load_error=load_error,
         )
         if backend is None:
-            # Three distinct failure modes; the old single message
-            # made debugging Eternum / Ren'Py / sandboxed Python
-            # impossible because all three looked identical.
             reason = load_error[0] if load_error else "unknown"
-            if reason.startswith("sherpa_import:"):
-                # (1) The sherpa-onnx Python wheel isn't importable
-                # in this interpreter. Most common in stripped
-                # embedded Pythons (Ren'Py, PyInstaller without
-                # the runtime extra).
+            if reason.startswith("native_tts_import:"):
                 raise OctomilError(
                     code=OctomilErrorCode.RUNTIME_UNAVAILABLE,
                     message=(
-                        f"local_tts_runtime_unavailable: sherpa_onnx is not importable in this Python "
-                        f"interpreter ({reason}). Install the ``[tts]`` extra (``pip install octomil[tts]``) "
-                        f"OR run on a Python that has ``_sherpa_onnx`` available — embedded interpreters "
-                        f"(Ren'Py, stripped PyInstaller bundles) often ship without it."
+                        "local_tts_runtime_unavailable: native audio.tts.batch backend could not import "
+                        f"or bind the runtime loader ({reason}). Set OCTOMIL_RUNTIME_DYLIB to an ABI-10 "
+                        "runtime build that contains the TTS symbols."
                     ),
                 )
-            if not prepared_model_dir:
-                # (2) Sherpa imported, but no prepared artifact dir
-                # was found. Caller never ran ``client.prepare(...)``
-                # and the planner emitted no preparable candidate.
-                raise OctomilError(
-                    code=OctomilErrorCode.RUNTIME_UNAVAILABLE,
-                    message=(
-                        f"local_tts_runtime_unavailable: no prepared artifact dir on disk for model "
-                        f"{runtime_model!r}. Call ``client.prepare(model={runtime_model!r}, capability='tts')`` "
-                        f"first (it downloads + extracts the canonical Kokoro layout), or pass a "
-                        f"planner-emitted candidate carrying download_urls + digest."
-                    ),
-                )
-            # (3) Sherpa imports AND a prepared dir exists, but the
-            # backend rejected it — likely a missing required file,
-            # corrupted extraction, or a model the runtime doesn't
-            # support yet. Surface the actual exception so the user
-            # can see what's wrong.
             raise OctomilError(
                 code=OctomilErrorCode.RUNTIME_UNAVAILABLE,
                 message=(
-                    f"local_tts_runtime_unavailable: prepared artifact dir {prepared_model_dir!r} "
-                    f"exists but the sherpa backend failed to load model {runtime_model!r} from it "
-                    f"({reason}). The directory may be missing required files (model.onnx / "
-                    f"voices.bin / tokens.txt / espeak-ng-data/), corrupted, or the runtime version "
-                    f"may not support this model. Check the directory layout and the underlying error."
+                    f"local_tts_runtime_unavailable: native audio.tts.batch was selected for "
+                    f"{runtime_model!r}, but the runtime backend failed to load or synthesize "
+                    f"against OCTOMIL_SHERPA_TTS_MODEL ({reason}). Ensure the env var points at "
+                    "the canonical piper-amy ONNX with tokens.txt and espeak-ng-data sidecars, "
+                    "and that the runtime advertises audio.tts.batch."
                 ),
             )
 
@@ -2191,8 +2120,6 @@ class ExecutionKernel:
         listing API surfaces the same failures synthesis would.
         """
         from octomil.audio.speech import VoiceCatalog, VoiceInfo
-        from octomil.runtime.engines.sherpa import is_sherpa_tts_model, resolve_voice_catalog
-        from octomil.runtime.lifecycle.static_recipes import get_static_recipe
 
         requested_model = model
         defaults = self._resolve(CAPABILITY_TTS, model=requested_model, policy=policy, app=app)
@@ -2224,18 +2151,8 @@ class ExecutionKernel:
 
         local_candidate = _local_sdk_runtime_candidate(selection)
         app_scoped = bool(app) or _is_app_ref(requested_model or "")
-        prepared_cache_dir: Optional[str] = None
-        if self._sherpa_tts_runtime_loadable(runtime_model) and self._prepared_cache_may_short_circuit(
-            local_candidate, runtime_model, CAPABILITY_TTS, app_scoped=app_scoped
-        ):
-            prepared_cache_dir = self._prepared_local_artifact_dir(CAPABILITY_TTS, runtime_model)
-
-        if prepared_cache_dir is not None:
-            local_available = True
-        elif self._local_candidate_is_unpreparable(selection):
-            local_available = False
-        else:
-            local_available = self._can_prepare_local_tts(runtime_model, selection)
+        native_tts_available = self._sherpa_tts_runtime_loadable(runtime_model)
+        local_available = native_tts_available
 
         cloud_available = _cloud_available(defaults)
         if _is_local_only_policy(policy):
@@ -2277,10 +2194,9 @@ class ExecutionKernel:
 
         if locality == LOCALITY_ON_DEVICE:
             from octomil.execution.tts_speaker_resolver import list_logical_speakers
+            from octomil.runtime.native.tts_batch_backend import NativeTtsBatchBackend
 
-            recipe = (
-                get_static_recipe(runtime_model.lower(), CAPABILITY_TTS) if is_sherpa_tts_model(runtime_model) else None
-            )
+            model_lc = runtime_model.lower()
 
             # Logical speakers from the planner ride alongside the
             # native catalog. For app refs whose planner publishes a
@@ -2288,6 +2204,50 @@ class ExecutionKernel:
             # *prepends* logical speakers so the UI can list them as
             # the canonical speaker ids.
             logical_speakers = list_logical_speakers(selection, selected_candidate=local_candidate)
+            if model_lc in NativeTtsBatchBackend.supported_model_names:
+                batch_logical_voice_infos = tuple(
+                    VoiceInfo(
+                        id=entry["speaker_id"],
+                        sid=None,
+                        default=False,
+                        source="planner_profile",
+                        speaker=entry["speaker_id"],
+                        native_voice=entry.get("native_voice"),
+                        requires_reference=bool(entry.get("reference_audio")),
+                        language=entry.get("language"),
+                    )
+                    for entry in logical_speakers
+                )
+                native_voice_info = VoiceInfo(
+                    id="0",
+                    sid=0,
+                    default=not batch_logical_voice_infos,
+                    source="native_runtime",
+                    speaker=None,
+                    native_voice="0",
+                    requires_reference=False,
+                )
+                cand_artifact = getattr(local_candidate, "artifact", None) if local_candidate is not None else None
+                batch_voices = batch_logical_voice_infos + (native_voice_info,)
+                return VoiceCatalog(
+                    model=runtime_model,
+                    locality="on_device",
+                    source="native_runtime",
+                    voices=batch_voices,
+                    artifact_id=getattr(cand_artifact, "artifact_id", None) if cand_artifact is not None else None,
+                    artifact_version=None,
+                    digest=getattr(cand_artifact, "digest", None) if cand_artifact is not None else None,
+                    default_voice="0",
+                    sample_rate=22050,
+                )
+
+            from octomil.runtime.engines.sherpa import is_sherpa_tts_model, resolve_voice_catalog
+            from octomil.runtime.lifecycle.static_recipes import get_static_recipe
+
+            prepared_cache_dir: Optional[str] = None
+            recipe = (
+                get_static_recipe(runtime_model.lower(), CAPABILITY_TTS) if is_sherpa_tts_model(runtime_model) else None
+            )
 
             # P1 fix: only feed the SDK's static recipe manifest to
             # the resolver when the static recipe IS the chosen
@@ -2365,29 +2325,29 @@ class ExecutionKernel:
             # requires reference at synthesis time; one with only
             # ``native_voice`` is a label alias for the underlying
             # engine voice.
-            logical_voice_infos: list[VoiceInfo] = []
+            planner_logical_voice_infos: list[VoiceInfo] = []
             for entry in logical_speakers:
                 speaker_id = entry["speaker_id"]
-                native_voice = entry.get("native_voice")
+                mapped_native_voice = entry.get("native_voice")
                 # When a logical speaker maps to a native voice that's
                 # already in the catalog, surface the underlying sid so
                 # callers that want to skip the speaker indirection
                 # have it. Otherwise (pure reference-audio profile)
                 # ``sid`` stays ``None``.
                 sid = None
-                if native_voice:
+                if mapped_native_voice:
                     for idx, native_name in enumerate(resolved.voices):
-                        if native_name.lower() == native_voice.lower():
+                        if native_name.lower() == mapped_native_voice.lower():
                             sid = idx
                             break
-                logical_voice_infos.append(
+                planner_logical_voice_infos.append(
                     VoiceInfo(
                         id=speaker_id,
                         sid=sid,
                         default=False,
                         source="planner_profile",
                         speaker=speaker_id,
-                        native_voice=native_voice,
+                        native_voice=mapped_native_voice,
                         requires_reference=bool(entry.get("reference_audio")),
                         # Planner profiles can declare per-speaker
                         # ``language``; thread it through to the
@@ -2397,7 +2357,7 @@ class ExecutionKernel:
                     )
                 )
 
-            voices: tuple[VoiceInfo, ...] = tuple(logical_voice_infos) + native_voices
+            catalog_voices: tuple[VoiceInfo, ...] = tuple(planner_logical_voice_infos) + native_voices
 
             # Identity comes from the actually-chosen artifact, NOT
             # the static recipe, when those differ.
@@ -2420,18 +2380,18 @@ class ExecutionKernel:
             # ``planner_profile`` so the UI doesn't claim
             # ``voices_txt`` or ``static_recipe`` provenance for
             # entries that didn't come from there.
-            catalog_source = "planner_profile" if (logical_voice_infos and not native_voices) else native_source
+            catalog_source = "planner_profile" if (planner_logical_voice_infos and not native_voices) else native_source
 
             return VoiceCatalog(
                 model=runtime_model,
                 locality="on_device",
                 source=catalog_source,
-                voices=voices,
+                voices=catalog_voices,
                 artifact_id=artifact_id,
                 artifact_version=artifact_version,
                 digest=digest,
                 default_voice=effective_default or None,
-                sample_rate=24000 if voices else None,
+                sample_rate=24000 if catalog_voices else None,
             )
 
         # Cloud locality. The SDK doesn't ship a curated hosted
@@ -2540,17 +2500,8 @@ class ExecutionKernel:
         local_candidate = _local_sdk_runtime_candidate(selection)
         app_scoped = bool(app) or _is_app_ref(requested_model or "")
         prepared_cache_dir: Optional[str] = None
-        if self._sherpa_tts_runtime_loadable(runtime_model) and self._prepared_cache_may_short_circuit(
-            local_candidate, runtime_model, CAPABILITY_TTS, app_scoped=app_scoped
-        ):
-            prepared_cache_dir = self._prepared_local_artifact_dir(CAPABILITY_TTS, runtime_model)
-
-        if prepared_cache_dir is not None:
-            local_available = True
-        elif self._local_candidate_is_unpreparable(selection):
-            local_available = False
-        else:
-            local_available = self._can_prepare_local_tts(runtime_model, selection)
+        native_tts_stream_available = self._native_tts_stream_runtime_loadable(runtime_model)
+        local_available = native_tts_stream_available
         cloud_available = _cloud_available(defaults)
         if _is_local_only_policy(policy):
             cloud_available = False
@@ -2638,15 +2589,9 @@ class ExecutionKernel:
             )
 
         # Local realtime stream.
-        if prepared_cache_dir is not None:
-            prepared_model_dir: Optional[str] = prepared_cache_dir
-        else:
-            prepared_model_dir = self._prepare_local_tts_artifact(selection)
-
         load_error: list[str] = []
-        backend = self._resolve_local_tts_backend(
+        backend = self._resolve_local_tts_stream_backend(
             runtime_model,
-            prepared_model_dir=prepared_model_dir,
             planner_candidate=local_candidate,
             load_error=load_error,
         )
@@ -2733,23 +2678,12 @@ class ExecutionKernel:
     def _has_local_tts_backend(self, model: str) -> bool:
         """Return True iff the local TTS path can serve ``model`` *now*.
 
-        After the PR D cutover, "ready" means BOTH:
-
-          1. A complete prepared layout under PrepareManager's
-             artifact cache (``<cache>/artifacts/<key>``) for the
-             static recipe — the on-disk shape ``client.prepare(
-             model, capability='tts')`` produces. The legacy
-             ``OCTOMIL_SHERPA_MODELS_DIR`` / ``~/.octomil/models/sherpa``
-             path was removed; this is the only on-disk source.
-          2. The sherpa-onnx runtime is importable and the model id
-             is recognized. Cache-without-runtime cannot be loaded;
-             admitting it as local availability would let
-             ``local_first`` commit to local and raise "could not
-             load sherpa backend" instead of falling back to cloud.
+        Native TTS readiness is capability-advertisement driven. A
+        prepared artifact cache is not sufficient; the runtime must
+        advertise ``audio.tts.batch`` after its build/artifact/digest
+        gates pass.
         """
-        if not self._sherpa_tts_runtime_loadable(model):
-            return False
-        return self._prepared_local_artifact_dir(CAPABILITY_TTS, model) is not None
+        return self._sherpa_tts_runtime_loadable(model)
 
     def _prepared_cache_may_short_circuit(
         self,
@@ -2986,39 +2920,60 @@ class ExecutionKernel:
 
     @staticmethod
     def _sherpa_tts_runtime_loadable(model: str) -> bool:
-        """Return True iff sherpa-onnx is importable AND ``model`` is a
-        recognized Sherpa TTS id.
-
-        Pure runtime-availability check — does NOT touch disk. Pairs
-        with :meth:`_prepared_local_artifact_dir` to gate
-        :meth:`_has_local_tts_backend`.
-
-        Issue E: when ``octomil.runtime.engines.sherpa`` itself fails
-        to import (e.g. stripped CPython 3.9 without ``audioop``,
-        which the stdlib ``wave`` module pulls in), the previous
-        bare ``except Exception: return False`` silently swallowed
-        the real cause and surfaced as a vague
-        ``local_tts_runtime_unavailable``. Log the underlying
-        exception at WARNING so users on embedded interpreters can
-        diagnose without diving into SDK source. Returning False is
-        still correct — the runtime IS unloadable.
-        """
+        """Return True iff native ``audio.tts.batch`` is advertised now."""
         try:
-            from octomil.runtime.engines.sherpa import is_sherpa_tts_runtime_available
+            from octomil.runtime.native.loader import NativeRuntime
+            from octomil.runtime.native.tts_batch_backend import NativeTtsBatchBackend, runtime_advertises_tts_batch
         except Exception as exc:
             logger.warning(
-                "Sherpa TTS engine module failed to import (%r). The runtime is unavailable in this Python "
-                "interpreter — most often this is a stripped embedded build (Ren'Py / PyInstaller) missing a "
-                "stdlib transitive dep (e.g. ``audioop`` on CPython 3.9). Install the ``[tts]`` extra or run on "
-                "a Python that ships the missing module.",
+                "Native TTS batch module failed to import (%r). The runtime is unavailable in this Python interpreter.",
                 exc,
             )
             return False
-        try:
-            return is_sherpa_tts_runtime_available(model)
-        except Exception as exc:
-            logger.warning("is_sherpa_tts_runtime_available(%r) raised %r", model, exc)
+        if model.lower() not in NativeTtsBatchBackend.supported_model_names:
             return False
+        runtime = None
+        try:
+            runtime = NativeRuntime.open()
+            return runtime_advertises_tts_batch(runtime)
+        except Exception as exc:
+            logger.warning("native audio.tts.batch availability probe for %r raised %r", model, exc)
+            return False
+        finally:
+            if runtime is not None:
+                try:
+                    runtime.close()
+                except Exception:
+                    pass
+
+    @staticmethod
+    def _native_tts_stream_runtime_loadable(model: str) -> bool:
+        """Return True iff native ``audio.tts.stream`` is advertised now."""
+        try:
+            from octomil.runtime.native.loader import NativeRuntime
+            from octomil.runtime.native.tts_batch_backend import NativeTtsBatchBackend
+            from octomil.runtime.native.tts_stream_backend import runtime_advertises_tts_stream
+        except Exception as exc:
+            logger.warning(
+                "Native TTS stream module failed to import (%r). The runtime is unavailable in this Python interpreter.",
+                exc,
+            )
+            return False
+        if model.lower() not in NativeTtsBatchBackend.supported_model_names:
+            return False
+        runtime = None
+        try:
+            runtime = NativeRuntime.open()
+            return runtime_advertises_tts_stream(runtime)
+        except Exception as exc:
+            logger.warning("native audio.tts.stream availability probe for %r raised %r", model, exc)
+            return False
+        finally:
+            if runtime is not None:
+                try:
+                    runtime.close()
+                except Exception:
+                    pass
 
     def _prepared_local_artifact_dir(self, capability: str, model: str) -> Optional[str]:
         """Return ``<cache>/artifacts/<key>`` when ``(model, capability)``
@@ -3034,14 +2989,11 @@ class ExecutionKernel:
         layout (marker missing but archive still on disk) is re-extracted
         from the local archive — still no network.
 
-        Used by ``_has_local_tts_backend`` to count a prepared cache as
-        local availability, and by ``synthesize_speech`` to thread the
-        prepared dir into ``SherpaTtsEngine.create_backend(model_dir=...)``
-        when the planner emitted no candidate (offline / planner outage /
-        purely-static SDK use). Without this, ``client.prepare`` could
-        succeed but ``speech.create`` would still fall through to the
-        legacy staging path and raise ``local_tts_runtime_unavailable``,
-        which was the bug PR D fixes.
+        Historical TTS note: older Python Sherpa routing counted this
+        prepared cache as local availability and threaded it into a
+        backend ``model_dir``. Native TTS routing no longer consumes this
+        helper for product dispatch; ``audio.tts.batch`` advertisement is
+        the local-availability truth.
         """
         try:
             from octomil.runtime.lifecycle.materialization import Materializer
@@ -3336,10 +3288,13 @@ class ExecutionKernel:
         invoked through this method.
 
         Supported capabilities: ``"tts"`` and ``"transcription"`` today.
-        Both have dispatch paths that thread the prepared ``artifact_dir``
-        into their backend:
+        Transcription threads the prepared ``artifact_dir`` into its
+        backend:
 
-        - ``tts`` -> ``SherpaTtsEngine.create_backend(model_dir=...)``.
+        - ``tts`` -> retained for explicit artifact materialization and
+          warmup compatibility; product native TTS routing is gated by
+          runtime ``audio.tts.batch`` advertisement instead of a prepared
+          Python backend directory.
         - ``transcription`` -> ``_WhisperBackend`` honors injected
           ``model_dir`` and prefers PrepareManager's ``<dir>/artifact``
           sentinel before falling back to ``.bin`` / ``.gguf`` / ``.ggml``.
@@ -3847,21 +3802,19 @@ class ExecutionKernel:
         planner_candidate: Optional[Any] = None,
         load_error: Optional[list[str]] = None,
     ) -> Optional[Any]:
-        """Resolve a local Sherpa TTS backend; ``None`` on any failure.
+        """Resolve a native local TTS batch backend; ``None`` on any failure.
 
         ``load_error`` is an optional out-list the caller can pass in;
         when the backend fails to instantiate / load, the helper
         appends the underlying exception's repr so the dispatch path
-        can surface a specific failure mode (sherpa import vs.
-        backend load) rather than the old vague
-        ``local_tts_runtime_unavailable``.
+        can distinguish loader import/bind failures from runtime load
+        failures.
         """
         # PR 11: prefer the warmup cache. When the caller invoked
         # ``client.warmup(model, capability='tts')`` earlier in this
-        # session, the loaded SherpaTts backend is already in
+        # session, a loaded native TTS backend may already be in
         # ``_warmed_backends`` and the next ``synthesize_speech`` call
-        # reuses it without paying ``engine.create_backend`` +
-        # ``backend.load_model`` again.
+        # reuses it without paying another runtime model warmup.
         #
         # The lookup composes the artifact-identity cache key
         # (digest/format/quantization) against the *current* request:
@@ -3874,39 +3827,45 @@ class ExecutionKernel:
         cached = self._lookup_warmed_backend(CAPABILITY_TTS, model, candidate=planner_candidate)
         if cached is not None:
             return cached
-        # Two failure surfaces to distinguish:
-        #   1. ``import SherpaTtsEngine`` raises — the runtime extra
-        #      isn't installed (or ``_sherpa_onnx`` is missing on
-        #      stripped embedded Pythons).
-        #   2. The engine instantiates but ``create_backend`` /
-        #      ``load_model`` fails — the prepared dir is broken
-        #      (wrong layout, missing files) or the runtime can't
-        #      load the bytes.
-        # Both used to raise a single vague
-        # ``local_tts_runtime_unavailable`` error; the dispatch
-        # path now keys on ``load_error`` to pick a specific message.
         try:
-            from octomil.runtime.engines.sherpa import SherpaTtsEngine
+            from octomil.runtime.native.tts_batch_backend import NativeTtsBatchBackend
         except Exception as exc:
             if load_error is not None:
-                load_error.append(f"sherpa_import: {exc!r}")
+                load_error.append(f"native_tts_import: {exc!r}")
             return None
         try:
-            engine = SherpaTtsEngine()
-            backend_kwargs: dict[str, Any] = {}
-            if prepared_model_dir:
-                # PrepareManager materialized the artifact at this path;
-                # load the sherpa-onnx model from there. After the PR D
-                # cutover this is the *only* supported source — the
-                # backend's ``_resolve_model_dir`` raises when no
-                # ``model_dir`` is injected.
-                backend_kwargs["model_dir"] = prepared_model_dir
-            backend = engine.create_backend(model, **backend_kwargs)
+            backend = NativeTtsBatchBackend()
             backend.load_model(model)
             return backend
         except Exception as exc:
             if load_error is not None:
                 load_error.append(f"backend_load: {exc!r}")
+            return None
+
+    def _resolve_local_tts_stream_backend(
+        self,
+        model: str,
+        *,
+        planner_candidate: Optional[Any] = None,
+        load_error: Optional[list[str]] = None,
+    ) -> Optional[Any]:
+        """Resolve a native local TTS stream backend; ``None`` on failure."""
+        cached = self._lookup_warmed_backend(CAPABILITY_TTS, model, candidate=planner_candidate)
+        if cached is not None and _backend_can_stream(cached):
+            return cached
+        try:
+            from octomil.runtime.native.tts_stream_backend import NativeTtsStreamBackend
+        except Exception as exc:
+            if load_error is not None:
+                load_error.append(f"native_tts_stream_import: {exc!r}")
+            return None
+        try:
+            backend = NativeTtsStreamBackend()
+            backend.load_model(model)
+            return backend
+        except Exception as exc:
+            if load_error is not None:
+                load_error.append(f"stream_backend_load: {exc!r}")
             return None
 
     def _validate_local_voice(
@@ -3955,6 +3914,13 @@ class ExecutionKernel:
         """
         if not voice:
             return
+        try:
+            from octomil.runtime.native.tts_batch_backend import NativeTtsBatchBackend
+
+            if model.lower() in NativeTtsBatchBackend.supported_model_names:
+                return
+        except Exception:
+            pass
         from octomil.runtime.engines.sherpa import is_sherpa_tts_model, resolve_voice_catalog
         from octomil.runtime.lifecycle.static_recipes import get_static_recipe
 
@@ -4670,15 +4636,10 @@ def _local_tts_runtime_unavailable(model: str) -> OctomilError:
     return OctomilError(
         code=OctomilErrorCode.RUNTIME_UNAVAILABLE,
         message=(
-            "local_tts_runtime_unavailable: sherpa-onnx is not installed "
-            "or no prepared artifact dir exists for "
-            f"'{model}'. Install sherpa-onnx (`pip install octomil[tts]`) "
-            f"and run `octomil prepare {model} --capability tts` "
-            "(or `client.prepare(model='" + model + "', capability='tts')`) "
-            "before invoking speech.create. The legacy "
-            "OCTOMIL_SHERPA_MODELS_DIR / ~/.octomil/models/sherpa staging "
-            "path was removed in 4.11.0; PrepareManager's artifact cache "
-            "is the only supported source."
+            "local_tts_runtime_unavailable: native audio.tts.batch is not "
+            f"advertised for {model!r}. Set OCTOMIL_RUNTIME_DYLIB to an ABI-10 "
+            "runtime build with Sherpa TTS enabled and set OCTOMIL_SHERPA_TTS_MODEL "
+            "to the canonical piper-amy ONNX bundle with required sidecars."
         ),
     )
 

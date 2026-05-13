@@ -64,12 +64,14 @@ class StubRuntime(ModelRuntime):
 
     def __init__(self, text: str = "stub response") -> None:
         self._text = text
+        self.last_request: RuntimeRequest | None = None
 
     @property
     def capabilities(self) -> RuntimeCapabilities:
         return RuntimeCapabilities(supports_streaming=True)
 
     async def run(self, request: RuntimeRequest) -> RuntimeResponse:
+        self.last_request = request
         return RuntimeResponse(
             text=self._text,
             finish_reason="stop",
@@ -508,6 +510,9 @@ class TestAudioTranscriptions:
         transcriptions = AudioTranscriptions(runtime_resolver=lambda _: stub)
         result = await transcriptions.create(audio=b"fake-audio-data")
         assert result.text == "Hello world"
+        part = stub.last_request.messages[0].parts[0]  # type: ignore[union-attr]
+        assert part.type == Modality.AUDIO
+        assert part.data == b"fake-audio-data"
 
     @pytest.mark.asyncio
     async def test_create_with_language_hint(self) -> None:

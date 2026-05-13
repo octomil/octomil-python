@@ -1,15 +1,15 @@
 """Issue D end-to-end: ``prepare(...)`` then ``synthesize_speech(...)``
-must reuse the prepared artifact dir.
+must respect the native TTS batch gate.
 
 Reviewer P1 frame:
 
     Add an e2e regression: same ExecutionKernel,
-    prepare(model="kokoro-82m", capability="tts"),
-    then synthesize_speech(model="kokoro-82m", policy="private");
-    assert the TTS backend receives model_dir=outcome.artifact_dir.
+    prepare(model="piper-en-amy", capability="tts"),
+    then synthesize_speech(model="piper-en-amy", policy="private");
+    assert the speech path uses the native batch backend gate.
 
 The bug shape that Issue D names: a developer runs
-``client.prepare(model='kokoro-82m', capability='tts')``, the
+``client.prepare(model='piper-en-amy', capability='tts')``, the
 durable downloader + materializer succeed, ``model.onnx`` /
 ``voices.bin`` / ``tokens.txt`` / ``espeak-ng-data/`` are on
 disk — but the very next ``client.audio.speech.create(...)``
@@ -17,13 +17,16 @@ call still raises ``local_tts_runtime_unavailable`` because
 the dispatch path either re-resolves to a different artifact
 dir or surfaces a vague error that hides the real cause.
 
-These tests pin the contract by inspecting how the kernel
-calls the Sherpa engine: the ``model_dir`` it passes MUST be
-the same path ``PrepareManager.prepare()`` returned.
+These tests pin the native cutover contract by inspecting how the
+kernel calls ``NativeTtsBatchBackend``: prepare may materialize an
+artifact dir, but the speech path must route through the native
+batch backend and capability gate instead of threading a legacy
+Sherpa ``model_dir``.
 """
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import tarfile
 from io import BytesIO
@@ -33,13 +36,13 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 
-def _make_kokoro_layout_tarball(dst: Path) -> tuple[Path, str]:
-    archive = dst / "kokoro-en-v0_19.tar.bz2"
+def _make_piper_layout_tarball(dst: Path) -> tuple[Path, str]:
+    archive = dst / "piper-en-amy.tar.bz2"
     layout = {
-        "kokoro-en-v0_19/model.onnx": b"fake-onnx",
-        "kokoro-en-v0_19/voices.bin": b"fake-voices",
-        "kokoro-en-v0_19/tokens.txt": b"fake-tokens",
-        "kokoro-en-v0_19/espeak-ng-data/phontab": b"fake-phontab",
+        "piper-en-amy/model.onnx": b"fake-onnx",
+        "piper-en-amy/voices.bin": b"fake-voices",
+        "piper-en-amy/tokens.txt": b"fake-tokens",
+        "piper-en-amy/espeak-ng-data/phontab": b"fake-phontab",
     }
     with tarfile.open(archive, "w:bz2") as tar:
         for name, data in layout.items():
@@ -51,7 +54,7 @@ def _make_kokoro_layout_tarball(dst: Path) -> tuple[Path, str]:
 
 
 def _register_test_recipe(monkeypatch, digest: str) -> str:
-    """Register a fresh ``kokoro-test`` recipe pinned to ``digest``."""
+    """Register a fresh ``piper-en-amy`` recipe pinned to ``digest``."""
     from octomil.runtime.lifecycle import static_recipes as recipes_mod
     from octomil.runtime.lifecycle.materialization import (
         MaterializationPlan,
@@ -59,44 +62,42 @@ def _register_test_recipe(monkeypatch, digest: str) -> str:
     )
 
     test_recipe = recipes_mod.StaticRecipe(
-        model_id="kokoro-test",
+        model_id="piper-en-amy",
         capability="tts",
         engine="sherpa-onnx",
         files=[
             recipes_mod._StaticArtifactFile(
-                relative_path="kokoro-en-v0_19.tar.bz2",
+                relative_path="piper-en-amy.tar.bz2",
                 url="https://test.example.com/",
                 digest=digest,
             )
         ],
         materialization=MaterializationPlan(
             kind="archive",
-            source="kokoro-en-v0_19.tar.bz2",
+            source="piper-en-amy.tar.bz2",
             archive_format="tar.bz2",
-            strip_prefix="kokoro-en-v0_19/",
+            strip_prefix="piper-en-amy/",
             required_outputs=("model.onnx", "voices.bin", "tokens.txt", "espeak-ng-data/phontab"),
             safety_policy=MaterializationSafetyPolicy(),
         ),
     )
-    monkeypatch.setitem(recipes_mod._RECIPES, ("kokoro-test", "tts"), test_recipe)
-    return "kokoro-test"
+    monkeypatch.setitem(recipes_mod._RECIPES, ("piper-en-amy", "tts"), test_recipe)
+    return "piper-en-amy"
 
 
-@pytest.mark.asyncio
-async def test_prepare_then_synthesize_threads_artifact_dir_to_backend(tmp_path, monkeypatch):
+def test_prepare_then_synthesize_uses_native_batch_backend(tmp_path, monkeypatch):
     """The release-blocker pin: when the caller runs
-    ``prepare(kokoro-test)`` and then ``synthesize_speech(kokoro-test,
-    policy='private')`` on the same kernel, the Sherpa backend MUST
-    be created with ``model_dir=outcome.artifact_dir`` — the same
-    path PrepareManager wrote to. No silent re-resolution to a
-    different cache dir, no scanning of arbitrary ``<model>-*``
-    siblings, no fallthrough to the legacy staging path."""
+    ``prepare(piper-en-amy)`` and then ``synthesize_speech(piper-en-amy,
+    policy='private')`` on the same kernel, the speech path must use
+    ``NativeTtsBatchBackend`` and its native capability gate. Prepare
+    may still write bytes to disk, but the dispatch path should not
+    thread that artifact dir into a legacy Sherpa backend."""
     from octomil.config.local import ResolvedExecutionDefaults
     from octomil.execution.kernel import ExecutionKernel
     from octomil.runtime.lifecycle.durable_download import DownloadResult
     from octomil.runtime.lifecycle.prepare_manager import PrepareManager
 
-    tarball, digest = _make_kokoro_layout_tarball(tmp_path)
+    tarball, digest = _make_piper_layout_tarball(tmp_path)
     model = _register_test_recipe(monkeypatch, digest)
 
     # Single PrepareManager threaded into the kernel — same instance
@@ -146,7 +147,7 @@ async def test_prepare_then_synthesize_threads_artifact_dir_to_backend(tmp_path,
                 model_id=model,
                 artifact_id=model,
                 digest=digest,
-                required_files=["kokoro-en-v0_19.tar.bz2"],
+                required_files=["piper-en-amy.tar.bz2"],
                 download_urls=[ArtifactDownloadEndpoint(url="https://test.example.com/")],
                 source="static_recipe",
                 recipe_id=model,
@@ -160,13 +161,11 @@ async def test_prepare_then_synthesize_threads_artifact_dir_to_backend(tmp_path,
         )
         prepare_outcome = pm.prepare(candidate)
         assert (prepare_outcome.artifact_dir / "model.onnx").is_file()
-        prepared_dir = str(prepare_outcome.artifact_dir)
-
         # Step 2: synthesize_speech with policy='private' (local-only
         # by config) and a direct non-app model ref. Stub _resolve so
         # we don't need a real OctomilConfig + _resolve_planner_selection
-        # so the planner is "offline". Mock the SherpaTtsEngine so we
-        # can capture the model_dir kwarg the kernel passes.
+        # so the planner is "offline". Mock the native batch backend so
+        # we can capture the model passed to the runtime load path.
         defaults = ResolvedExecutionDefaults(
             model=model,
             policy_preset="local_only",
@@ -183,8 +182,6 @@ async def test_prepare_then_synthesize_threads_artifact_dir_to_backend(tmp_path,
             "voice": "af_bella",
             "model": model,
         }
-        fake_engine = MagicMock()
-        fake_engine.create_backend.return_value = fake_backend
 
         with (
             patch.object(kernel, "_resolve", return_value=defaults),
@@ -200,40 +197,40 @@ async def test_prepare_then_synthesize_threads_artifact_dir_to_backend(tmp_path,
                 "octomil.execution.kernel._select_locality_for_capability",
                 return_value=("on_device", False),
             ),
-            patch("octomil.runtime.engines.sherpa.SherpaTtsEngine", return_value=fake_engine),
+            patch(
+                "octomil.runtime.native.tts_batch_backend.NativeTtsBatchBackend",
+                return_value=fake_backend,
+            ),
         ):
-            response = await kernel.synthesize_speech(
-                model=model,
-                input="hello",
-                policy="private",
+            response = asyncio.run(
+                kernel.synthesize_speech(
+                    model=model,
+                    input="hello",
+                    policy="private",
+                )
             )
 
-        # Backend received model_dir=prepared_dir — the kernel did
-        # NOT scan, NOT re-resolve, NOT silently fall through to a
-        # different cache. This is the tight roundtrip Issue D
-        # demanded.
-        fake_engine.create_backend.assert_called_once()
-        kwargs = fake_engine.create_backend.call_args.kwargs
-        assert kwargs.get("model_dir") == prepared_dir, (
-            f"Sherpa backend should be created with model_dir={prepared_dir!r}, "
-            f"got {kwargs.get('model_dir')!r} — kernel is not threading the prepared "
-            f"artifact dir into dispatch."
-        )
+        # Native backend was used, and the prepared artifact dir was
+        # not threaded into a legacy Sherpa backend path.
+        assert fake_backend.load_model.called
+        fake_backend.load_model.assert_called_once_with(model)
+        fake_backend.synthesize.assert_called_once()
+        assert "model_dir" not in fake_backend.load_model.call_args.kwargs
+        assert "model_dir" not in fake_backend.synthesize.call_args.kwargs
         assert response.route.locality == "on_device"
     finally:
         pm._downloader.download = real_download  # type: ignore[method-assign]
 
 
-@pytest.mark.asyncio
-async def test_local_tts_unavailable_message_distinguishes_three_failure_modes(tmp_path, monkeypatch):
+def test_local_tts_unavailable_message_distinguishes_three_failure_modes(tmp_path, monkeypatch):
     """The vague single-line ``local_tts_runtime_unavailable`` was
-    hiding three distinct root causes. After Issue D the dispatch
-    path picks one of three messages so the user can tell which
-    layer failed:
+    hiding three distinct root causes. After the native cutover the
+    dispatch path picks one of three messages so the user can tell
+    which layer failed:
 
-      (1) ``sherpa_onnx`` not importable
-      (2) prepared artifact dir missing
-      (3) prepared dir exists but backend load failed
+      (1) native batch backend import failure
+      (2) native capability gate not advertised
+      (3) prepared dir exists but native backend load failed
     """
     from octomil.config.local import ResolvedExecutionDefaults
     from octomil.errors import OctomilError, OctomilErrorCode
@@ -244,13 +241,13 @@ async def test_local_tts_unavailable_message_distinguishes_three_failure_modes(t
     kernel._warmed_backends = {}
 
     defaults = ResolvedExecutionDefaults(
-        model="kokoro-82m",
+        model="piper-en-amy",
         policy_preset="local_only",
         inline_policy=None,
         cloud_profile=None,
     )
 
-    # ---- (1) sherpa import failure ----------------------------
+    # ---- (1) native batch import failure ----------------------
     with (
         patch.object(kernel, "_resolve", return_value=defaults),
         patch("octomil.execution.kernel._resolve_planner_selection", return_value=None),
@@ -266,36 +263,31 @@ async def test_local_tts_unavailable_message_distinguishes_three_failure_modes(t
             kernel,
             "_resolve_local_tts_backend",
             side_effect=lambda *a, load_error=None, **kw: (
-                load_error.append('sherpa_import: ImportError("_sherpa_onnx")') if load_error is not None else None,
+                load_error.append('native_tts_import: ImportError("_native_tts")') if load_error is not None else None,
                 None,
             )[1],
         ),
     ):
         with pytest.raises(OctomilError) as ei:
-            await kernel.synthesize_speech(model="kokoro-82m", input="hi")
+            asyncio.run(kernel.synthesize_speech(model="piper-en-amy", input="hi"))
         assert ei.value.code == OctomilErrorCode.RUNTIME_UNAVAILABLE
-        assert "sherpa_onnx is not importable" in str(ei.value)
+        assert "native audio.tts.batch backend could not import or bind the runtime loader" in str(ei.value)
 
-    # ---- (2) prepared dir missing -----------------------------
+    # ---- (2) native capability gate unavailable ---------------
     with (
         patch.object(kernel, "_resolve", return_value=defaults),
         patch("octomil.execution.kernel._resolve_planner_selection", return_value=None),
         patch("octomil.execution.kernel._resolve_routing_policy"),
         patch.object(kernel, "_sherpa_tts_runtime_loadable", return_value=False),
-        # cache short-circuit refuses; _prepared_cache_may_short_circuit returns False
-        patch.object(kernel, "_prepared_cache_may_short_circuit", return_value=False),
-        patch.object(kernel, "_prepare_local_tts_artifact", return_value=None),
-        patch.object(kernel, "_can_prepare_local_tts", return_value=True),
         patch(
             "octomil.execution.kernel._select_locality_for_capability",
             return_value=("on_device", False),
         ),
-        patch.object(kernel, "_resolve_local_tts_backend", return_value=None),
     ):
         with pytest.raises(OctomilError) as ei:
-            await kernel.synthesize_speech(model="kokoro-82m", input="hi")
+            asyncio.run(kernel.synthesize_speech(model="piper-en-amy", input="hi"))
         assert ei.value.code == OctomilErrorCode.RUNTIME_UNAVAILABLE
-        assert "no prepared artifact dir on disk" in str(ei.value)
+        assert "native audio.tts.batch is not advertised" in str(ei.value)
 
     # ---- (3) backend load failed ------------------------------
     with (
@@ -313,7 +305,7 @@ async def test_local_tts_unavailable_message_distinguishes_three_failure_modes(t
             kernel,
             "_resolve_local_tts_backend",
             side_effect=lambda *a, load_error=None, **kw: (
-                load_error.append("backend_load: RuntimeError('missing model.onnx')")
+                load_error.append("backend_load: RuntimeError('missing native model')")
                 if load_error is not None
                 else None,
                 None,
@@ -321,9 +313,9 @@ async def test_local_tts_unavailable_message_distinguishes_three_failure_modes(t
         ),
     ):
         with pytest.raises(OctomilError) as ei:
-            await kernel.synthesize_speech(model="kokoro-82m", input="hi")
+            asyncio.run(kernel.synthesize_speech(model="piper-en-amy", input="hi"))
         assert ei.value.code == OctomilErrorCode.RUNTIME_UNAVAILABLE
         msg = str(ei.value)
-        assert "prepared artifact dir" in msg
-        assert "exists but the sherpa backend failed to load" in msg
+        assert "native audio.tts.batch" in msg
+        assert "failed to load or synthesize" in msg
         assert "backend_load:" in msg

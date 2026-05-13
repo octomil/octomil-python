@@ -50,11 +50,13 @@ v0.1.6 PR1). Audio backends use ``RUNTIME_UNAVAILABLE`` as the
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
+import threading
 import time
 from dataclasses import dataclass
-from typing import Any, Iterator, Literal
+from typing import Any, AsyncIterator, Iterator, Literal
 
 from ...audio.text_normalize import PROFILE_ESPEAK_COMPAT, normalize_for_profile
 from ...errors import OctomilError, OctomilErrorCode
@@ -139,11 +141,15 @@ def _runtime_advertises_tts_stream(rt: NativeRuntime) -> bool:
     ``OCTOMIL_SHERPA_TTS_MODEL``, digest mismatch, or sidecar files
     missing). Callers MUST raise ``RUNTIME_UNAVAILABLE`` rather than
     fall back to a Python-local TTS engine on the product path."""
+    return _runtime_advertises_tts_capability(rt, CAPABILITY_AUDIO_TTS_STREAM)
+
+
+def _runtime_advertises_tts_capability(rt: NativeRuntime, capability: str) -> bool:
     try:
         caps = rt.capabilities()
     except Exception:  # noqa: BLE001
         return False
-    return CAPABILITY_AUDIO_TTS_STREAM in caps.supported_capabilities
+    return capability in caps.supported_capabilities
 
 
 # Public alias for planner / kernel imports — same pattern as STT.
@@ -171,11 +177,11 @@ def _runtime_status_to_sdk_error(
 class NativeTtsStreamBackend:
     """Hard-cut ``audio.tts.stream`` backend.
 
-    Honesty caveat (v0.1.8 sherpa adapter): chunks arrive coalesced
-    after synthesis on the polling thread; THIS IS NOT a latency win
-    over audio.tts.batch yet. The iterator-shaped API is forward-
-    compatible with v0.1.9 worker-thread Generate which will deliver
-    real progressive first-chunk latency.
+    This is a LIVE_NATIVE_CONDITIONAL capability: the runtime advertises
+    it only when the Sherpa TTS build and canonical
+    ``OCTOMIL_SHERPA_TTS_MODEL`` artifact/digest/sidecar gates pass.
+    When advertised, chunks are progressive during synthesis; callers
+    must not treat the capability as always available.
 
     Lifecycle mirrors :class:`NativeSttBackend`:
       * One backend instance per (planner-selected) sherpa-onnx TTS
@@ -186,12 +192,13 @@ class NativeTtsStreamBackend:
       * :meth:`synthesize_with_chunks` opens one session per request,
         sends the text, drains ``OCT_EVENT_TTS_AUDIO_CHUNK`` events,
         yields :class:`TtsAudioChunk` objects to the caller as they
-        arrive (in v0.1.8 they all arrive together; in v0.1.9 they
-        will arrive progressively).
+        arrive.
       * :meth:`close` shuts down model and runtime.
     """
 
     name: str = _BACKEND_NAME
+    capability_id: str = CAPABILITY_AUDIO_TTS_STREAM
+    backend_label: str = "TTS-stream"
     DEFAULT_DEADLINE_MS: int = _DEFAULT_DEADLINE_MS
 
     def __init__(
@@ -227,7 +234,13 @@ class NativeTtsStreamBackend:
     # ------------------------------------------------------------------
     # Lifecycle
     # ------------------------------------------------------------------
-    def load_model(self, model_name: str, *, artifact_digest: str = "") -> None:
+    def load_model(
+        self,
+        model_name: str,
+        *,
+        artifact_digest: str = "",
+        model_path: str | None = None,
+    ) -> None:
         """Open the runtime, verify ``audio.tts.stream`` advertised,
         open + warm a sherpa-onnx model handle. Idempotent on re-load
         with the same model_name.
@@ -249,29 +262,32 @@ class NativeTtsStreamBackend:
         self.close()
         self._model_name = model_name
 
+        if model_path:
+            os.environ[_TTS_MODEL_ENV] = model_path
+
         try:
             self._runtime = NativeRuntime.open()
         except NativeRuntimeError as exc:
             raise _runtime_status_to_sdk_error(
                 exc.status,
-                "native TTS-stream backend failed to open runtime",
+                f"native {self.backend_label} backend failed to open runtime",
                 last_error=getattr(exc, "last_error", ""),
             ) from exc
         except ImportError as exc:
             self._runtime = None
             raise OctomilError(
                 code=OctomilErrorCode.RUNTIME_UNAVAILABLE,
-                message=f"native TTS-stream backend: dylib not found ({exc})",
+                message=f"native {self.backend_label} backend: dylib not found ({exc})",
             ) from exc
 
-        if not _runtime_advertises_tts_stream(self._runtime):
+        if not _runtime_advertises_tts_capability(self._runtime, self.capability_id):
             last_error_lc = (self._runtime.last_error() or "").lower()
             self.close()
             if "digest" in last_error_lc:
                 raise OctomilError(
                     code=OctomilErrorCode.CHECKSUM_MISMATCH,
                     message=(
-                        "native TTS-stream backend: sherpa-onnx TTS model "
+                        f"native {self.backend_label} backend: sherpa-onnx TTS model "
                         "SHA-256 does not match the canonical pin. "
                         "Re-download the artifact."
                     ),
@@ -279,20 +295,20 @@ class NativeTtsStreamBackend:
             raise OctomilError(
                 code=OctomilErrorCode.RUNTIME_UNAVAILABLE,
                 message=(
-                    "native TTS-stream backend: runtime does not advertise "
-                    "'audio.tts.stream'. Check OCTOMIL_SHERPA_TTS_MODEL "
+                    f"native {self.backend_label} backend: runtime does not advertise "
+                    f"'{self.capability_id}'. Check OCTOMIL_SHERPA_TTS_MODEL "
                     "(must point at the pinned VITS .onnx with sibling "
                     "tokens.txt + espeak-ng-data/) and that the dylib "
                     "was built with OCT_HAVE_SHERPA_ONNX_TTS."
                 ),
             )
 
-        tts_model_path = os.environ.get(_TTS_MODEL_ENV, "")
+        tts_model_path = model_path or os.environ.get(_TTS_MODEL_ENV, "")
         if not tts_model_path:
             self.close()
             raise OctomilError(
                 code=OctomilErrorCode.RUNTIME_UNAVAILABLE,
-                message=(f"native TTS-stream backend: {_TTS_MODEL_ENV} not set."),
+                message=(f"native {self.backend_label} backend: {_TTS_MODEL_ENV} not set."),
             )
         try:
             self._model = self._runtime.open_model(
@@ -310,7 +326,7 @@ class NativeTtsStreamBackend:
             self.close()
             raise _runtime_status_to_sdk_error(
                 exc.status,
-                "native TTS-stream backend failed to warm sherpa-onnx model",
+                f"native {self.backend_label} backend failed to warm sherpa-onnx model",
                 last_error=getattr(exc, "last_error", ""),
             ) from exc
         logger.debug(
@@ -322,8 +338,10 @@ class NativeTtsStreamBackend:
         # v0.1.11 Lane C — clear frontend cache on close (lifecycle contract).
         self._frontend_cache.clear()
         if self._model is not None:
+            close_model = getattr(self._model, "close", None)
             try:
-                self._model.close()
+                if callable(close_model):
+                    close_model()
             except Exception:  # noqa: BLE001
                 logger.warning(
                     "NativeTtsStreamBackend.close: model.close failed",
@@ -331,8 +349,10 @@ class NativeTtsStreamBackend:
                 )
             self._model = None
         if self._runtime is not None:
+            close_runtime = getattr(self._runtime, "close", None)
             try:
-                self._runtime.close()
+                if callable(close_runtime):
+                    close_runtime()
             except Exception:  # noqa: BLE001
                 logger.warning(
                     "NativeTtsStreamBackend.close: runtime.close failed",
@@ -391,15 +411,12 @@ class NativeTtsStreamBackend:
         speed: float = 1.0,
         language: str = "en-US",
     ) -> Iterator[TtsAudioChunk]:
-        """Yields sentence-bounded chunks. Chunks arrive together at
-        end-of-synth in the v0.1.8 sherpa adapter. Future v0.1.9
-        worker-thread Generate will yield chunks during synthesis
-        without changing this method's signature.
+        """Yields sentence-bounded chunks progressively during synthesis.
 
         Method name: ``synthesize_with_chunks``, NOT ``stream`` — the
-        v0.1.8 contract is iterator-shaped, not realtime / progressive.
-        Callers wired against this method will keep working unchanged
-        when the underlying runtime stops being synchronous.
+        contract is iterator-shaped, not realtime audio. Callers wired
+        against this method can begin playback on the first yielded
+        chunk while retaining the stable SDK method name.
 
         Parameters
         ----------
@@ -514,7 +531,7 @@ class NativeTtsStreamBackend:
             text_to_send = normalized_text
         try:
             sess = self._runtime.open_session(
-                capability=CAPABILITY_AUDIO_TTS_STREAM,
+                capability=self.capability_id,
                 locality="on_device",
                 policy_preset="private",
                 speaker_id=speaker_id_str,
@@ -582,6 +599,49 @@ class NativeTtsStreamBackend:
             cache_hit=cached_value is not None,
         )
 
+    async def synthesize_stream(
+        self,
+        text: str,
+        voice: str | None = None,
+        speed: float = 1.0,
+        **_: Any,
+    ) -> AsyncIterator[dict[str, Any]]:
+        """Async ``SpeechStream`` adapter over native TTS chunks."""
+        loop = asyncio.get_running_loop()
+        queue: asyncio.Queue[Any] = asyncio.Queue()
+        sentinel = object()
+
+        def _worker() -> None:
+            try:
+                for chunk in self.synthesize_with_chunks(text, voice_id=voice, speed=speed):
+                    loop.call_soon_threadsafe(queue.put_nowait, chunk)
+            except BaseException as exc:  # noqa: BLE001
+                loop.call_soon_threadsafe(queue.put_nowait, exc)
+            finally:
+                loop.call_soon_threadsafe(queue.put_nowait, sentinel)
+
+        threading.Thread(target=_worker, daemon=True).start()
+        while True:
+            item = await queue.get()
+            if item is sentinel:
+                break
+            if isinstance(item, BaseException):
+                raise item
+            pcm = _pcm_f32_to_s16le(item.pcm_f32)
+            yield {
+                "pcm_s16le": pcm,
+                "num_samples": len(pcm) // 2,
+                "sample_rate": item.sample_rate_hz,
+            }
+
+    def streaming_capability(self, text: str) -> Any:
+        from ...audio.streaming import TtsStreamingCapability
+
+        return TtsStreamingCapability.sentence(verified=False)
+
+    def text_normalization_profile(self) -> str:
+        return PROFILE_ESPEAK_COMPAT
+
     def _drain(
         self,
         *,
@@ -597,10 +657,9 @@ class NativeTtsStreamBackend:
         get here; from this point on, error events drain through
         the iterator as raised :class:`OctomilError`.
 
-        The yield-on-arrival shape is the load-bearing forward-compat
-        property: in v0.1.9 the runtime will block in poll_event
-        between sentence chunks, so the same loop transparently
-        becomes progressive without binding-side changes.
+        The yield-on-arrival shape is load-bearing: the runtime blocks
+        in poll_event between sentence chunks, so chunks surface to the
+        iterator as they are produced.
         """
         try:
             chunk_index = 0
@@ -738,6 +797,14 @@ class NativeTtsStreamBackend:
             )
         finally:
             sess.close()
+
+
+def _pcm_f32_to_s16le(pcm_f32: Any) -> bytes:
+    import numpy as _np
+
+    arr = _np.asarray(pcm_f32, dtype=_np.float32)
+    clipped = _np.clip(arr, -1.0, 1.0)
+    return (clipped * 32767.0).astype(_np.int16).tobytes()
 
 
 __all__ = [
