@@ -579,8 +579,8 @@ def json_mode_app():
 
 
 @pytest.mark.asyncio
-async def test_response_format_json_object_accepted(echo_app):
-    """response_format=json_object should be accepted without error."""
+async def test_response_format_json_object_enforced_for_echo_backend(echo_app):
+    """response_format=json_object should reject invalid backend output."""
     transport = ASGITransport(app=echo_app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         resp = await client.post(
@@ -591,15 +591,15 @@ async def test_response_format_json_object_accepted(echo_app):
                 "response_format": {"type": "json_object"},
             },
         )
-    assert resp.status_code == 200
+    assert resp.status_code == 503
     data = resp.json()
-    assert data["object"] == "chat.completion"
-    assert data["choices"][0]["message"]["role"] == "assistant"
+    assert data["code"] == "inference_failed"
+    assert "JSON mode validation failed" in data["message"]
 
 
 @pytest.mark.asyncio
-async def test_response_format_json_schema_accepted(echo_app):
-    """response_format=json_schema should be accepted without error."""
+async def test_response_format_json_schema_enforced_for_echo_backend(echo_app):
+    """response_format=json_schema should reject invalid backend output."""
     transport = ASGITransport(app=echo_app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         resp = await client.post(
@@ -619,9 +619,10 @@ async def test_response_format_json_schema_accepted(echo_app):
                 },
             },
         )
-    assert resp.status_code == 200
+    assert resp.status_code == 503
     data = resp.json()
-    assert data["object"] == "chat.completion"
+    assert data["code"] == "inference_failed"
+    assert "JSON mode validation failed" in data["message"]
 
 
 @pytest.mark.asyncio
@@ -654,8 +655,8 @@ async def test_grammar_param_rejected_against_non_grammar_backend(echo_app):
 
 
 @pytest.mark.asyncio
-async def test_json_mode_default_app(json_mode_app):
-    """App created with json_mode=True should accept requests and return 200."""
+async def test_json_mode_default_app_enforces_json_output(json_mode_app):
+    """App created with json_mode=True should reject invalid backend output."""
     transport = ASGITransport(app=json_mode_app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         resp = await client.post(
@@ -665,15 +666,10 @@ async def test_json_mode_default_app(json_mode_app):
                 "messages": [{"role": "user", "content": "list items"}],
             },
         )
-    assert resp.status_code == 200
+    assert resp.status_code == 503
     data = resp.json()
-    assert data["object"] == "chat.completion"
-    assert data["choices"][0]["message"]["role"] == "assistant"
-    # With json_mode=True and echo backend (non-grammar), a JSON system prompt
-    # should have been injected into the messages before generation.
-    # The echo backend echoes the last user message, so we verify the request
-    # succeeded without error and produced a response.
-    assert len(data["choices"][0]["message"]["content"]) > 0
+    assert data["code"] == "inference_failed"
+    assert "JSON mode validation failed" in data["message"]
 
 
 @pytest.mark.asyncio

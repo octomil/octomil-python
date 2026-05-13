@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import os
 import sys
+from pathlib import Path
 
 import click
 
@@ -20,6 +21,34 @@ import click
 def needs_venv_reexec() -> bool:
     """Return True if running from a frozen binary with no native engines."""
     return getattr(sys, "frozen", False) is True
+
+
+def _is_running_inside_managed_venv(venv_py: str) -> bool:
+    try:
+        return Path(sys.executable).resolve() == Path(venv_py).resolve()
+    except OSError:
+        return sys.executable == venv_py
+
+
+def should_managed_venv_reexec(*, include_non_frozen: bool = False) -> bool:
+    """Return True when this process should delegate to the managed engine venv.
+
+    The curl installer creates a lightweight user-facing ``octomil`` entrypoint
+    plus a managed engine venv under ``~/.octomil/engines/venv``. Engine-facing
+    commands need to inspect the managed venv even when the lightweight
+    entrypoint itself is not a frozen PyInstaller binary.
+    """
+    if os.environ.get("OCTOMIL_DISABLE_MANAGED_VENV_REEXEC") == "1":
+        return False
+    if os.environ.get("OCTOMIL_MANAGED_VENV_REEXECED") == "1":
+        return False
+    if needs_venv_reexec():
+        return True
+    if not include_non_frozen:
+        return False
+
+    argv0 = Path(sys.argv[0]).name
+    return argv0 == "octomil"
 
 
 def try_venv_reexec() -> bool:
@@ -48,6 +77,8 @@ def try_venv_reexec() -> bool:
         wait_for_setup()
 
     venv_py = get_venv_python()
+    if venv_py and _is_running_inside_managed_venv(venv_py):
+        return False
     if not venv_py or not is_engine_ready():
         if os.environ.get("OCTOMIL_ALLOW_MANAGED_PYTHON_SETUP") != "1":
             return False
@@ -82,8 +113,19 @@ def try_venv_reexec() -> bool:
             fg="green",
         )
     )
-    os.execv(venv_py, new_argv)
+    os.environ["OCTOMIL_MANAGED_VENV_REEXECED"] = "1"
+    try:
+        os.execv(venv_py, new_argv)
+    finally:
+        os.environ.pop("OCTOMIL_MANAGED_VENV_REEXECED", None)
     return True  # unreachable after execv
+
+
+def try_managed_venv_reexec(*, include_non_frozen: bool = False) -> bool:
+    """Try managed-venv delegation when appropriate for this entrypoint."""
+    if not should_managed_venv_reexec(include_non_frozen=include_non_frozen):
+        return False
+    return try_venv_reexec()
 
 
 def wait_for_setup() -> None:

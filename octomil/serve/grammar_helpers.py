@@ -72,15 +72,23 @@ def _resolve_grammar(body: ChatCompletionBody, default_json_mode: bool = False) 
 def _inject_json_system_prompt(
     messages: list[dict[str, Any]],
     schema: Optional[dict[str, Any]] = None,
+    *,
+    force: bool = False,
 ) -> list[dict[str, Any]]:
     """Prepend a JSON-mode system prompt if one isn't already present."""
     from ..grammar import json_system_prompt
 
     # Don't double-inject
-    if messages and messages[0].get("role") == "system":
+    if not force and messages and messages[0].get("role") == "system":
         existing = messages[0].get("content", "")
         if "JSON" in existing or "json" in existing:
             return messages
 
     prompt = json_system_prompt(schema)
+    if force:
+        prompt = (
+            "The previous response failed JSON validation. "
+            "Return only one valid JSON object. Do not include markdown, prose, or code fences.\n"
+            f"{prompt}"
+        )
     return [{"role": "system", "content": prompt}] + list(messages)
