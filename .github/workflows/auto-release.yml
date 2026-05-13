@@ -1,0 +1,120 @@
+name: Auto Release
+
+on:
+  workflow_run:
+    workflows: ["CI"]
+    branches: [main]
+    types: [completed]
+
+concurrency:
+  group: auto-release-main
+  cancel-in-progress: false
+
+permissions: {}
+
+jobs:
+  bump-and-release:
+    name: Bump version and dispatch release
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    if: >
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push'
+    permissions:
+      contents: write
+      actions: write
+
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Stop on release bump commits
+        id: guard
+        run: |
+          subject="$(git log -1 --pretty=%s)"
+          echo "subject=${subject}"
+          if printf '%s\n' "$subject" | grep -Eq '^chore\(release\): v[0-9]+\.[0-9]+\.[0-9]+'; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Compute next patch version
+        if: steps.guard.outputs.skip != 'true'
+        id: version
+        run: |
+          python - <<'PY' >> "$GITHUB_OUTPUT"
+          import pathlib
+          import re
+          import tomllib
+
+          path = pathlib.Path("pyproject.toml")
+          data = tomllib.loads(path.read_text(encoding="utf-8"))
+          current = data["project"]["version"]
+          match = re.fullmatch(r"(\d+)\.(\d+)\.(\d+)", current)
+          if match is None:
+              raise SystemExit(f"auto-release only supports stable SemVer versions, got {current!r}")
+
+          major, minor, patch = map(int, match.groups())
+          existing = {
+              line.strip()
+              for line in __import__("subprocess").check_output(
+                  ["git", "tag", "--list", "v*"],
+                  text=True,
+              ).splitlines()
+          }
+          while True:
+              patch += 1
+              version = f"{major}.{minor}.{patch}"
+              tag = f"v{version}"
+              if tag not in existing:
+                  break
+
+          text = path.read_text(encoding="utf-8")
+          text = re.sub(
+              r'(?m)^version = "[^"]+"$',
+              f'version = "{version}"',
+              text,
+              count=1,
+          )
+          path.write_text(text, encoding="utf-8")
+          print(f"version={version}")
+          print(f"tag={tag}")
+          PY
+
+      - name: Commit version bump
+        if: steps.guard.outputs.skip != 'true'
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          git config user.name "octomil-version-bot[bot]"
+          git config user.email "octomil-version-bot[bot]@users.noreply.github.com"
+          git diff -- pyproject.toml
+          git add pyproject.toml
+          git commit -m "chore(release): v${VERSION}"
+          git pull --ff-only origin main
+          git push origin HEAD:main
+
+      - name: Dispatch release workflow
+        if: steps.guard.outputs.skip != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          gh workflow run release.yml \
+            --repo "${GITHUB_REPOSITORY}" \
+            --ref main \
+            -f version="${VERSION}"
+
+      - name: Dispatch binary release workflow
+        if: steps.guard.outputs.skip != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          gh workflow run release-binary.yml \
+            --repo "${GITHUB_REPOSITORY}" \
+            --ref main \
+            -f tag="${TAG}"
