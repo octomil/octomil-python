@@ -24,22 +24,23 @@ jobs:
       contents: write
 
     steps:
+      - name: Generate version bot token
+        id: app-token
+        uses: actions/create-github-app-token@v3
+        with:
+          app-id: ${{ secrets.VERSION_BOT_APP_ID }}
+          private-key: ${{ secrets.VERSION_BOT_PRIVATE_KEY }}
+          owner: octomil
+          repositories: octomil-python
+
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
           fetch-depth: 0
+          token: ${{ steps.app-token.outputs.token }}
 
       - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
         with:
           python-version: '3.11'
-
-      - name: Install build tools
-        run: pip install build
-
-      - name: Build package
-        run: python -m build
-
-      - name: Verify wheel facade export
-        run: scripts/check-wheel-facade-export.sh
 
       - name: Determine version tag
         id: version
@@ -53,6 +54,18 @@ jobs:
           else
             echo "tag=${REF_NAME}" >> "$GITHUB_OUTPUT"
           fi
+
+      - name: Apply release version
+        run: python scripts/set-release-version.py "${{ steps.version.outputs.tag }}"
+
+      - name: Install build tools
+        run: pip install build
+
+      - name: Build package
+        run: python -m build
+
+      - name: Verify wheel facade export
+        run: scripts/check-wheel-facade-export.sh
 
       - name: Create tag (if workflow_dispatch)
         if: github.event_name == 'workflow_dispatch'
@@ -91,6 +104,15 @@ jobs:
       contents: write
 
     steps:
+      - name: Generate version bot token
+        id: app-token
+        uses: actions/create-github-app-token@v3
+        with:
+          app-id: ${{ secrets.VERSION_BOT_APP_ID }}
+          private-key: ${{ secrets.VERSION_BOT_PRIVATE_KEY }}
+          owner: octomil
+          repositories: octomil-python
+
       - name: Download artifacts
         uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
@@ -99,7 +121,7 @@ jobs:
 
       - name: Create GitHub Release
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
           VERSION: ${{ needs.build.outputs.version }}
         run: |
           gh release create "${VERSION}" dist/* \
