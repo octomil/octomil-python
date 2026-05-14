@@ -2,10 +2,8 @@ name: Notify Server
 
 on:
   push:
-    branches: [main]
-    paths-ignore:
-      - '*.md'
-      - 'docs/**'
+    tags:
+      - 'v*'
 
 jobs:
   notify:
@@ -25,7 +23,9 @@ jobs:
 
       - name: Get version
         id: version
-        run: echo "version=$(python -c "import octomil; print(octomil.__version__)")" >> $GITHUB_OUTPUT
+        run: |
+          version=$(python -c 'import octomil; print(octomil.__version__)')
+          printf 'version=%s\n' "$version" >> "$GITHUB_OUTPUT"
 
       - name: Dispatch to server
         uses: peter-evans/repository-dispatch@v3
