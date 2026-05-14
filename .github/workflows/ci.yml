@@ -186,3 +186,26 @@ jobs:
           # CVE-2026-3219 is reported against the runner's pip toolchain with
           # no fixed version published yet; keep auditing project dependencies.
           pip-audit --ignore-vuln CVE-2026-3219
+
+  ci-complete:
+    name: CI Complete
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    needs:
+      - test
+      - sonarcloud
+      - security
+    if: always()
+    permissions:
+      contents: read
+    steps:
+      - name: Verify CI jobs succeeded
+        run: |
+          set -euo pipefail
+          results='${{ toJSON(needs.*.result) }}'
+          echo "Needed job results: ${results}"
+          if echo "${results}" | grep -Eq '"(failure|cancelled)"'; then
+            echo "::error::One or more CI jobs failed or were cancelled."
+            exit 1
+          fi
+          echo "CI complete."
