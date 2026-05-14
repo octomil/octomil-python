@@ -1,8 +1,8 @@
 {
-  "ttft_p95_ms": 0.02,
-  "ttft_p50_ms": 0.018,
-  "ttft_mean_ms": 0.019,
-  "e2e_p95_ms": 141.96,
+  "ttft_p95_ms": 0.016,
+  "ttft_p50_ms": 0.014,
+  "ttft_mean_ms": 0.015,
+  "e2e_p95_ms": 141.199,
   "model_name": "echo-bench",
   "iterations": 30
 }
