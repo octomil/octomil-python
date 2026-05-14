@@ -30,8 +30,23 @@ jobs:
           ref: main
           fetch-depth: 0
 
+      - name: Skip non-package commits
+        id: releasable
+        env:
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          subject=$(git log -1 --pretty=%s "$HEAD_SHA")
+          echo "commit subject: $subject"
+          if [[ "$subject" =~ ^(build|chore|ci|docs|refactor|style|test)(\(.+\))?: ]]; then
+            echo "releasable=false" >> "$GITHUB_OUTPUT"
+            echo "Skipping auto-release for non-package commit."
+          else
+            echo "releasable=true" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Compute next release version
         id: version
+        if: steps.releasable.outputs.releasable == 'true'
         run: |
           python - <<'PY' >> "$GITHUB_OUTPUT"
           import pathlib
@@ -83,7 +98,9 @@ jobs:
           PY
 
       - name: Dispatch release workflow
-        if: steps.version.outputs.already_released != 'true'
+        if: >
+          steps.releasable.outputs.releasable == 'true' &&
+          steps.version.outputs.already_released != 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           VERSION: ${{ steps.version.outputs.version }}
@@ -100,7 +117,9 @@ jobs:
             -f version="${VERSION}"
 
       - name: Dispatch binary release workflow
-        if: steps.version.outputs.already_released != 'true'
+        if: >
+          steps.releasable.outputs.releasable == 'true' &&
+          steps.version.outputs.already_released != 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ steps.version.outputs.tag }}
