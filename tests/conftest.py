@@ -47,6 +47,11 @@ _RUNTIME_NO_MARKER_TESTS: frozenset[str] = frozenset(
         "test_fetched_dylib_candidates_no_cross_flavor_contamination",
         "test_fetched_dylib_candidates_mixed_legacy_and_new",
         "test_fetched_dylib_candidates_new_layout_without_sentinel_is_skipped",
+        # Flavor-selection regression tests — use tmp_path caches; no live dylib.
+        "test_both_flavors_cached_default_resolves_chat",
+        "test_env_flavor_stt_selects_stt",
+        "test_env_flavor_invalid_raises",
+        "test_env_flavor_override_applies_to_new_layout_legacy_unaffected",
     }
 )
 
@@ -102,7 +107,7 @@ def _runtime_marker_gate(request, monkeypatch):
     if override:
         if not Path(override).is_file():
             pytest.fail(
-                f"{_loader.ENV_DYLIB_OVERRIDE}={override!r} does not exist; " f"operator override is authoritative."
+                f"{_loader.ENV_DYLIB_OVERRIDE}={override!r} does not exist; operator override is authoritative."
             )
         dylib_path = override
     else:
