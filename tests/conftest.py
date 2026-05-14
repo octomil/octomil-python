@@ -40,6 +40,13 @@ _RUNTIME_NO_MARKER_TESTS: frozenset[str] = frozenset(
         "test_resolve_dylib_returns_newest_cached_version",
         "test_resolve_dylib_skips_cache_without_sentinel",
         "test_safe_extract_refuses_symlink_member",
+        # Flavor-keyed cache layout tests — exercise _fetched_dylib_candidates()
+        # via a fake tmp_path cache; no live dylib needed.
+        "test_fetched_dylib_candidates_new_flavor_keyed_layout",
+        "test_fetched_dylib_candidates_legacy_layout",
+        "test_fetched_dylib_candidates_no_cross_flavor_contamination",
+        "test_fetched_dylib_candidates_mixed_legacy_and_new",
+        "test_fetched_dylib_candidates_new_layout_without_sentinel_is_skipped",
     }
 )
 

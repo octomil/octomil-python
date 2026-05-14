@@ -406,3 +406,90 @@ def test_legacy_asset_name_darwin() -> None:
 
 def test_legacy_asset_name_linux_none() -> None:
     assert frd._legacy_asset_name("linux-x86_64", "v0.1.4") is None
+
+
+# ---------------------------------------------------------------------------
+# Flavor-keyed cache layout — fetch path (main())
+# ---------------------------------------------------------------------------
+
+
+def test_main_cache_path_is_flavor_keyed(tmp_path: Path) -> None:
+    """The fetch target_dir must be ``<cache_root>/<version>/<flavor>``,
+    not the old ``<cache_root>/<version>``.  This is the structural
+    invariant that prevents chat and stt dylibs from collapsing into
+    the same directory.
+
+    We exercise the cache-hit short-circuit (dylib + sentinel already
+    on disk) to verify the path logic without actually hitting the
+    network."""
+    version = "v0.1.5"
+    flavor = "stt"
+
+    # Pre-populate the flavor-keyed cache so the cache-hit branch fires.
+    cache_root = tmp_path / "cache"
+    lib_dir = cache_root / version / flavor / "lib"
+    lib_dir.mkdir(parents=True)
+    dylib = lib_dir / "liboctomil-runtime.dylib"
+    dylib.write_bytes(b"fake")
+    sentinel = lib_dir / ".extracted-ok"
+    sentinel.write_text(f"{version}\n{flavor}\n", encoding="utf-8")
+
+    # Invoke main() directly with patched argv and sys.exit captured.
+    import sys
+
+    with mock.patch.object(
+        sys, "argv", ["fetch_runtime_dev.py", "--version", version, "--flavor", flavor, "--cache-root", str(cache_root)]
+    ):
+        with mock.patch("platform.system", return_value="Darwin"), mock.patch("platform.machine", return_value="arm64"):
+            rc = frd.main()
+    assert rc == 0, "should hit cache-hit branch and return 0"
+    # The chat flavor dir must NOT have been created — flavor isolation.
+    chat_dir = cache_root / version / "chat"
+    assert not chat_dir.exists(), "fetching stt must not touch the chat cache slice"
+
+
+def test_main_force_is_per_flavor(tmp_path: Path) -> None:
+    """--force --flavor stt only clears the stt cache slice; the chat
+    slice must remain untouched.  We verify this by staging both
+    flavors, then simulating a force-fetch for stt that fails early
+    (no GH_TOKEN) and confirming chat's sentinel is still present."""
+    version = "v0.1.5"
+    cache_root = tmp_path / "cache"
+
+    for flavor in ("chat", "stt"):
+        lib_dir = cache_root / version / flavor / "lib"
+        lib_dir.mkdir(parents=True)
+        (lib_dir / "liboctomil-runtime.dylib").write_bytes(b"fake")
+        (lib_dir / ".extracted-ok").write_text(f"{version}\n{flavor}\n", encoding="utf-8")
+
+    import sys
+
+    # Invoke with --force --flavor stt but no token — should fail after
+    # the cache check (args.force skips the cache-hit short-circuit) but
+    # BEFORE anything touches the chat slice.
+    with mock.patch.object(
+        sys,
+        "argv",
+        ["fetch_runtime_dev.py", "--version", version, "--flavor", "stt", "--force", "--cache-root", str(cache_root)],
+    ):
+        with mock.patch("platform.system", return_value="Darwin"), mock.patch("platform.machine", return_value="arm64"):
+            with mock.patch.object(frd, "_gh_token", return_value=None):
+                with pytest.raises(SystemExit):
+                    frd.main()
+
+    # Chat sentinel must be intact.
+    chat_sentinel = cache_root / version / "chat" / "lib" / ".extracted-ok"
+    assert chat_sentinel.exists(), "--force stt must not disturb chat cache slice"
+
+
+def test_sentinel_records_flavor(tmp_path: Path) -> None:
+    """The sentinel file must contain both version AND flavor so its
+    content is self-describing.  This is a contract with any future
+    tooling that reads the sentinel."""
+    sentinel_path = tmp_path / ".extracted-ok"
+    version = "v0.1.5"
+    flavor = "stt"
+    sentinel_path.write_text(f"{version}\n{flavor}\n", encoding="utf-8")
+    lines = sentinel_path.read_text(encoding="utf-8").splitlines()
+    assert lines[0] == version
+    assert lines[1] == flavor

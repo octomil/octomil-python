@@ -353,10 +353,27 @@ _EXTRACTION_SENTINEL = ".extracted-ok"
 def _fetched_dylib_candidates() -> list[Path]:
     """Return any dev-cache dylibs found under ``~/.cache/octomil-runtime``.
 
-    Sorted newest-version-last so the most-recently-fetched release
-    wins when multiple are cached. The fetch script populates this
-    directory and writes ``lib/.extracted-ok`` ONLY after extraction
-    fully succeeds.
+    Sorted oldest-version-first so callers can iterate in reverse to
+    prefer the most recently fetched release.  Within a version, flavors
+    are ordered lexicographically (``chat`` before ``stt``).
+
+    Two cache layouts are supported:
+
+    **New (flavor-keyed, written by fetch_runtime_dev.py post flavor-cache
+    fix):**
+
+        ``<version>/<flavor>/lib/liboctomil-runtime.*``
+        ``<version>/<flavor>/lib/.extracted-ok``
+
+    **Legacy (flavor-blind, written by pre-fix fetch_runtime_dev.py):**
+
+        ``<version>/lib/liboctomil-runtime.*``
+        ``<version>/lib/.extracted-ok``
+
+    Legacy slices are treated as ``flavor="chat"`` for ordering purposes.
+    The new fetcher never touches legacy slices; users with a mixed cache
+    state get both candidates, with the new flavor-keyed one winning when
+    both exist (it appears later in the sorted list).
 
     Codex R3 blocker fix: the loader MUST honor the sentinel that
     the fetch script writes. A crash mid-extraction can leave a
@@ -370,13 +387,36 @@ def _fetched_dylib_candidates() -> list[Path]:
     for version_dir in sorted(_FETCH_CACHE_ROOT.iterdir(), key=_version_sort_key):
         if not version_dir.is_dir():
             continue
-        sentinel = version_dir / "lib" / _EXTRACTION_SENTINEL
-        if not sentinel.is_file():
-            continue
-        for name in _RUNTIME_LIBNAMES:
-            candidate = version_dir / "lib" / name
-            if candidate.is_file():
-                out.append(candidate)
+
+        # --- Legacy layout: <version>/lib/ ---
+        # Detect by checking <version>/lib/.extracted-ok directly.
+        legacy_lib = version_dir / "lib"
+        legacy_sentinel = legacy_lib / _EXTRACTION_SENTINEL
+        if legacy_sentinel.is_file():
+            for name in _RUNTIME_LIBNAMES:
+                candidate = legacy_lib / name
+                if candidate.is_file():
+                    out.append(candidate)
+
+        # --- New flavor-keyed layout: <version>/<flavor>/lib/ ---
+        # Walk immediate subdirs that look like flavor names (non-hidden,
+        # no "lib" or "include" to avoid treating legacy layout dirs as
+        # flavor subdirs, and no "_download*" scratch dirs).
+        flavor_subdirs = sorted(
+            d
+            for d in version_dir.iterdir()
+            if d.is_dir() and not d.name.startswith((".", "_")) and d.name not in ("lib", "include")
+        )
+        for flavor_dir in flavor_subdirs:
+            flavor_lib = flavor_dir / "lib"
+            flavor_sentinel = flavor_lib / _EXTRACTION_SENTINEL
+            if not flavor_sentinel.is_file():
+                continue
+            for name in _RUNTIME_LIBNAMES:
+                candidate = flavor_lib / name
+                if candidate.is_file():
+                    out.append(candidate)
+
     return out
 
 
@@ -389,7 +429,10 @@ def _resolve_dylib() -> Path:
          if the path is missing we raise immediately (silent fallback
          would mask deployment bugs).
       2. Most-recently-fetched dev artifact under
-         ``~/.cache/octomil-runtime/<version>/lib/``. Populated by
+         ``~/.cache/octomil-runtime/<version>/<flavor>/lib/``
+         (new flavor-keyed layout) or
+         ``~/.cache/octomil-runtime/<version>/lib/``
+         (legacy flavor-blind layout). Populated by
          ``scripts/fetch_runtime_dev.py``.
 
     There is NO in-tree source-build fallback. The runtime source

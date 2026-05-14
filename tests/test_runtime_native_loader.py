@@ -49,7 +49,7 @@ def _resolve_external_dylib() -> Path | None:
         path = Path(override)
         if not path.is_file():
             pytest.fail(
-                f"{_loader.ENV_DYLIB_OVERRIDE}={override!r} does not exist; " f"operator override is authoritative."
+                f"{_loader.ENV_DYLIB_OVERRIDE}={override!r} does not exist; operator override is authoritative."
             )
         return path
     candidates = _loader._fetched_dylib_candidates()
@@ -513,10 +513,9 @@ def test_resolve_dylib_returns_newest_cached_version(monkeypatch, tmp_path: Path
     monkeypatch.setattr(loader, "_FETCH_CACHE_ROOT", tmp_path)
 
     resolved = loader._resolve_dylib()
-    assert resolved == newer, (
-        f"_resolve_dylib should pick the newest cached version, got {resolved}; "
-        f"older was {older}, newer was {newer}"
-    )
+    assert (
+        resolved == newer
+    ), f"_resolve_dylib should pick the newest cached version, got {resolved}; older was {older}, newer was {newer}"
 
 
 def test_resolve_dylib_skips_cache_without_sentinel(monkeypatch, tmp_path: Path):
@@ -1463,3 +1462,124 @@ def test_open_session_translates_unicode_encode_error():
             )
         assert exc_info.value.status == OCT_STATUS_INVALID_INPUT
         assert "request_id" in str(exc_info.value)
+
+
+# ---------------------------------------------------------------------------
+# Flavor-keyed cache layout — loader (_fetched_dylib_candidates)
+# ---------------------------------------------------------------------------
+
+
+def test_fetched_dylib_candidates_new_flavor_keyed_layout(monkeypatch, tmp_path: Path):
+    """New layout: <version>/<flavor>/lib/ — both chat and stt discovered."""
+    import octomil.runtime.native.loader as loader
+
+    version = "v0.1.5"
+    for flavor in ("chat", "stt"):
+        lib = tmp_path / version / flavor / "lib"
+        lib.mkdir(parents=True)
+        (lib / "liboctomil-runtime.dylib").write_bytes(b"\x00")
+        (lib / loader._EXTRACTION_SENTINEL).write_text(f"{version}\n{flavor}\n")
+
+    monkeypatch.setattr(loader, "_FETCH_CACHE_ROOT", tmp_path)
+    candidates = loader._fetched_dylib_candidates()
+    names = [str(c) for c in candidates]
+    # Both flavors must appear.
+    assert any("chat" in n for n in names), f"chat not found in {names}"
+    assert any("stt" in n for n in names), f"stt not found in {names}"
+
+
+def test_fetched_dylib_candidates_legacy_layout(monkeypatch, tmp_path: Path):
+    """Legacy layout: <version>/lib/ (pre-flavor-fix era) must still load."""
+    import octomil.runtime.native.loader as loader
+
+    version = "v0.1.4"
+    lib = tmp_path / version / "lib"
+    lib.mkdir(parents=True)
+    dylib = lib / "liboctomil-runtime.dylib"
+    dylib.write_bytes(b"\x00")
+    (lib / loader._EXTRACTION_SENTINEL).write_text(version + "\n")
+
+    monkeypatch.setattr(loader, "_FETCH_CACHE_ROOT", tmp_path)
+    candidates = loader._fetched_dylib_candidates()
+    assert dylib in candidates, f"legacy dylib not discovered; candidates={candidates}"
+
+
+def test_fetched_dylib_candidates_no_cross_flavor_contamination(monkeypatch, tmp_path: Path):
+    """Fetch chat v0.1.5 then stt v0.1.5 — both present but independent.
+    Calling _fetched_dylib_candidates with a flavored cache must return
+    both; neither overwrites the other.  _resolve_dylib falls back to the
+    last candidate (newest version, last flavor alpha), which should be
+    stt (lexicographically after chat)."""
+    import octomil.runtime.native.loader as loader
+
+    version = "v0.1.5"
+    chat_lib = tmp_path / version / "chat" / "lib"
+    stt_lib = tmp_path / version / "stt" / "lib"
+
+    for lib, flavor in ((chat_lib, "chat"), (stt_lib, "stt")):
+        lib.mkdir(parents=True)
+        (lib / "liboctomil-runtime.dylib").write_bytes(b"\x00")
+        (lib / loader._EXTRACTION_SENTINEL).write_text(f"{version}\n{flavor}\n")
+
+    monkeypatch.setattr(loader, "_FETCH_CACHE_ROOT", tmp_path)
+    candidates = loader._fetched_dylib_candidates()
+
+    # Both slices must be independently discoverable — no contamination.
+    assert len(candidates) == 2, f"expected 2 candidates (chat + stt), got {candidates}"
+    paths_str = [str(c) for c in candidates]
+    assert any("chat" in p for p in paths_str)
+    assert any("stt" in p for p in paths_str)
+
+    # chat must appear before stt (lexicographic within-version ordering).
+    chat_idx = next(i for i, p in enumerate(paths_str) if "chat" in p)
+    stt_idx = next(i for i, p in enumerate(paths_str) if "stt" in p)
+    assert chat_idx < stt_idx, "chat should sort before stt within the same version"
+
+
+def test_fetched_dylib_candidates_mixed_legacy_and_new(monkeypatch, tmp_path: Path):
+    """Mixed cache state: v0.1.4 uses legacy layout; v0.1.5 uses new
+    flavor-keyed layout.  Both must be discoverable; v0.1.5/chat wins
+    because it's the newest version and appears last."""
+    import octomil.runtime.native.loader as loader
+
+    # Legacy slice: v0.1.4/lib/
+    legacy_lib = tmp_path / "v0.1.4" / "lib"
+    legacy_lib.mkdir(parents=True)
+    legacy_dylib = legacy_lib / "liboctomil-runtime.dylib"
+    legacy_dylib.write_bytes(b"\x00")
+    (legacy_lib / loader._EXTRACTION_SENTINEL).write_text("v0.1.4\n")
+
+    # New flavor-keyed slice: v0.1.5/chat/lib/
+    new_lib = tmp_path / "v0.1.5" / "chat" / "lib"
+    new_lib.mkdir(parents=True)
+    new_dylib = new_lib / "liboctomil-runtime.dylib"
+    new_dylib.write_bytes(b"\x00")
+    (new_lib / loader._EXTRACTION_SENTINEL).write_text("v0.1.5\nchat\n")
+
+    monkeypatch.setattr(loader, "_FETCH_CACHE_ROOT", tmp_path)
+    monkeypatch.delenv("OCTOMIL_RUNTIME_DYLIB", raising=False)
+    monkeypatch.setattr(loader, "_FFI", None)
+    monkeypatch.setattr(loader, "_LIB", None)
+
+    candidates = loader._fetched_dylib_candidates()
+    assert legacy_dylib in candidates, "legacy v0.1.4 must be discoverable"
+    assert new_dylib in candidates, "new v0.1.5/chat must be discoverable"
+
+    # _resolve_dylib picks the last candidate (newest version wins via reverse()).
+    resolved = loader._resolve_dylib()
+    assert resolved == new_dylib, f"newest flavor-keyed dylib should win; got {resolved}"
+
+
+def test_fetched_dylib_candidates_new_layout_without_sentinel_is_skipped(monkeypatch, tmp_path: Path):
+    """New layout without sentinel (incomplete extraction) must be skipped."""
+    import octomil.runtime.native.loader as loader
+
+    version = "v0.1.5"
+    lib = tmp_path / version / "chat" / "lib"
+    lib.mkdir(parents=True)
+    (lib / "liboctomil-runtime.dylib").write_bytes(b"\x00")
+    # No sentinel written.
+
+    monkeypatch.setattr(loader, "_FETCH_CACHE_ROOT", tmp_path)
+    candidates = loader._fetched_dylib_candidates()
+    assert candidates == [], f"incomplete extraction must be ignored; got {candidates}"

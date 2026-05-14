@@ -22,14 +22,24 @@ Resolution:
   * Downloads the platform tarball, ``octomil-runtime-headers-<ver>.tar.gz``,
     and ``SHA256SUMS``.
   * Verifies sha256 for each asset.
-  * Extracts to ``~/.cache/octomil-runtime/<version>/lib`` and
-    ``~/.cache/octomil-runtime/<version>/include``.
+  * Extracts to ``~/.cache/octomil-runtime/<version>/<flavor>/lib`` and
+    ``~/.cache/octomil-runtime/<version>/<flavor>/include``.
   * Prints the resolved dylib path.
 
 Supported platforms (v0.1.5+ manifest-driven):
   - darwin-arm64  (chat, stt)
   - linux-x86_64  (chat, stt)
   - android-arm64 (chat only — Phase 5a)
+
+Cache layout is flavor-keyed to prevent cross-flavor contamination:
+
+    ~/.cache/octomil-runtime/<version>/<flavor>/lib/liboctomil-runtime.*
+    ~/.cache/octomil-runtime/<version>/<flavor>/lib/.extracted-ok
+    ~/.cache/octomil-runtime/<version>/<flavor>/include/octomil/runtime.h
+
+Fetching ``--flavor chat`` and ``--flavor stt`` for the same version
+produces independent cache slices. ``--force`` is per-flavor: only the
+requested flavor's slice is cleared; other flavors remain intact.
 
 Once extracted, the cffi loader picks the dylib up automatically
 via ``octomil.runtime.native.loader._fetched_dylib_candidates()``;
@@ -374,7 +384,11 @@ def main() -> int:
     version = args.version
     flavor: str = args.flavor
     cache_root = Path(args.cache_root).expanduser()
-    target_dir = cache_root / version
+    # Flavor-keyed cache layout: <cache_root>/<version>/<flavor>/
+    # This ensures chat and stt cache slices are fully independent —
+    # no silent reuse, no --force cross-contamination between flavors.
+    version_dir = cache_root / version
+    target_dir = version_dir / flavor
     lib_dir = target_dir / "lib"
     inc_dir = target_dir / "include"
 
@@ -411,7 +425,9 @@ def main() -> int:
 
     print(f"fetching octomil-runtime {version} ({flavor}/{arch}) into {target_dir}")
     target_dir.mkdir(parents=True, exist_ok=True)
-    work = target_dir / "_download"
+    # Download scratch dir lives at the version level (shared across flavors
+    # so concurrent fetches of different flavors don't collide).
+    work = version_dir / f"_download-{flavor}"
     work.mkdir(exist_ok=True)
 
     try:
@@ -469,7 +485,8 @@ def main() -> int:
         # Sentinel: indicates a fully-completed extraction. The next
         # non-force run treats the cache as valid only if this file
         # exists. Codex R2 missed-case fix.
-        sentinel.write_text(version + "\n", encoding="utf-8")
+        # Record version and flavor so the content is self-describing.
+        sentinel.write_text(f"{version}\n{flavor}\n", encoding="utf-8")
     finally:
         # Clean up the download scratch dir whether we succeeded or
         # bailed on a sha256 mismatch / missing asset / extraction
