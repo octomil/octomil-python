@@ -303,6 +303,15 @@ class NativeRuntimeError(RuntimeError):
 
 ENV_DYLIB_OVERRIDE: str = "OCTOMIL_RUNTIME_DYLIB"
 
+# Env var that selects a specific runtime flavor when set.
+# Valid values: "chat", "stt".  Authoritative — no fallback when set.
+_ENV_FLAVOR: str = "OCTOMIL_RUNTIME_FLAVOR"
+
+# Preference order for flavor selection when no env override is set.
+# chat covers the most common consumer paths (chat completion, embeddings);
+# stt is opt-in.  First entry is most preferred (tried first by resolver).
+_FLAVOR_PREFERENCE: tuple[str, ...] = ("chat", "stt")
+
 # Default location for a fetched dev artifact. The fetch script
 # (`scripts/fetch_runtime_dev.py`) extracts release tarballs into
 # `~/.cache/octomil-runtime/<version>/lib/liboctomil-runtime.dylib`.
@@ -351,32 +360,110 @@ _EXTRACTION_SENTINEL = ".extracted-ok"
 
 
 def _fetched_dylib_candidates() -> list[Path]:
-    """Return any dev-cache dylibs found under ``~/.cache/octomil-runtime``.
+    """Return dev-cache dylibs found under ``~/.cache/octomil-runtime``,
+    ordered most-preferred first (newest version, preferred flavor).
 
-    Sorted newest-version-last so the most-recently-fetched release
-    wins when multiple are cached. The fetch script populates this
-    directory and writes ``lib/.extracted-ok`` ONLY after extraction
-    fully succeeds.
+    **Flavor selection:**
 
-    Codex R3 blocker fix: the loader MUST honor the sentinel that
-    the fetch script writes. A crash mid-extraction can leave a
-    truncated dylib on disk; without the sentinel check the SDK
-    would happily load it. We refuse caches that don't have a
-    matching sentinel — operator can fix by re-running the fetch
-    script."""
+    * If ``OCTOMIL_RUNTIME_FLAVOR`` is set, only that flavor's candidates
+      are returned.  An unrecognised value raises ``ImportError`` immediately
+      — there is no silent fallback.
+    * When unset, flavors are ordered by :data:`_FLAVOR_PREFERENCE`
+      (``chat`` before ``stt``).  Unknown flavor names sort after all known
+      ones.
+
+    **Version ordering:** newest version first (``_version_sort_key``
+    reversed).  Combining both axes gives a list ordered as:
+
+        ``[v0.1.5-chat, v0.1.5-stt, v0.1.4-chat, v0.1.4-stt, ...]``
+
+    Callers iterate *forward* — the first candidate that exists and loads
+    wins (no ``reversed()`` needed).
+
+    **Two cache layouts are supported:**
+
+    *New (flavor-keyed, written by fetch_runtime_dev.py post flavor-cache
+    fix):*
+
+        ``<version>/<flavor>/lib/liboctomil-runtime.*``
+        ``<version>/<flavor>/lib/.extracted-ok``
+
+    *Legacy (flavor-blind, written by pre-fix fetch_runtime_dev.py):*
+
+        ``<version>/lib/liboctomil-runtime.*``
+        ``<version>/lib/.extracted-ok``
+
+    Legacy slices are treated as ``flavor="chat"`` for ordering purposes.
+
+    **Sentinel requirement:** the loader MUST honor the sentinel written by
+    the fetch script.  A crash mid-extraction can leave a truncated dylib on
+    disk; without the sentinel check the SDK would happily load it.  Caches
+    that lack a matching sentinel are silently skipped — re-run the fetch
+    script to fix."""
+    # --- Flavor env-var override ---
+    env_flavor = os.environ.get(_ENV_FLAVOR)
+    if env_flavor is not None:
+        valid = set(_FLAVOR_PREFERENCE)
+        if env_flavor not in valid:
+            raise ImportError(
+                f"{_ENV_FLAVOR}={env_flavor!r} is not a recognised flavor.\n"
+                f"Valid values: {sorted(valid)}.\n"
+                f"Unset the variable to use the default flavor preference."
+            )
+
+    def _flavor_sort_key(flavor_name: str) -> tuple:
+        try:
+            return (0, _FLAVOR_PREFERENCE.index(flavor_name))
+        except ValueError:
+            return (1, flavor_name)
+
     if not _FETCH_CACHE_ROOT.is_dir():
         return []
     out: list[Path] = []
-    for version_dir in sorted(_FETCH_CACHE_ROOT.iterdir(), key=_version_sort_key):
+    # Sort newest-first so we can append in order without reversing later.
+    for version_dir in sorted(_FETCH_CACHE_ROOT.iterdir(), key=_version_sort_key, reverse=True):
         if not version_dir.is_dir():
             continue
-        sentinel = version_dir / "lib" / _EXTRACTION_SENTINEL
-        if not sentinel.is_file():
-            continue
-        for name in _RUNTIME_LIBNAMES:
-            candidate = version_dir / "lib" / name
-            if candidate.is_file():
-                out.append(candidate)
+
+        # Collect (flavor_sort_key, Path) pairs for this version, then sort.
+        version_candidates: list[tuple[tuple, Path]] = []
+
+        # --- Legacy layout: <version>/lib/ ---
+        # Detect by checking <version>/lib/.extracted-ok directly.
+        # Treated as flavor="chat" for sorting purposes.
+        legacy_lib = version_dir / "lib"
+        legacy_sentinel = legacy_lib / _EXTRACTION_SENTINEL
+        if legacy_sentinel.is_file():
+            if env_flavor is None or env_flavor == "chat":
+                for name in _RUNTIME_LIBNAMES:
+                    candidate = legacy_lib / name
+                    if candidate.is_file():
+                        version_candidates.append((_flavor_sort_key("chat"), candidate))
+
+        # --- New flavor-keyed layout: <version>/<flavor>/lib/ ---
+        # Walk immediate subdirs that look like flavor names (non-hidden,
+        # no "lib" or "include" to avoid treating legacy layout dirs as
+        # flavor subdirs, and no "_download*" scratch dirs).
+        for flavor_dir in version_dir.iterdir():
+            if not flavor_dir.is_dir():
+                continue
+            if flavor_dir.name.startswith((".", "_")) or flavor_dir.name in ("lib", "include"):
+                continue
+            if env_flavor is not None and flavor_dir.name != env_flavor:
+                continue
+            flavor_lib = flavor_dir / "lib"
+            flavor_sentinel = flavor_lib / _EXTRACTION_SENTINEL
+            if not flavor_sentinel.is_file():
+                continue
+            for name in _RUNTIME_LIBNAMES:
+                candidate = flavor_lib / name
+                if candidate.is_file():
+                    version_candidates.append((_flavor_sort_key(flavor_dir.name), candidate))
+
+        # Sort within this version by flavor preference; most-preferred first.
+        version_candidates.sort(key=lambda x: x[0])
+        out.extend(p for _, p in version_candidates)
+
     return out
 
 
@@ -389,8 +476,15 @@ def _resolve_dylib() -> Path:
          if the path is missing we raise immediately (silent fallback
          would mask deployment bugs).
       2. Most-recently-fetched dev artifact under
-         ``~/.cache/octomil-runtime/<version>/lib/``. Populated by
+         ``~/.cache/octomil-runtime/<version>/<flavor>/lib/``
+         (new flavor-keyed layout) or
+         ``~/.cache/octomil-runtime/<version>/lib/``
+         (legacy flavor-blind layout). Populated by
          ``scripts/fetch_runtime_dev.py``.
+
+    Flavor selection within the cache is governed by
+    ``OCTOMIL_RUNTIME_FLAVOR`` (explicit) or :data:`_FLAVOR_PREFERENCE`
+    (default: chat first).  See :func:`_fetched_dylib_candidates`.
 
     There is NO in-tree source-build fallback. The runtime source
     lives in the private ``octomil-runtime`` repo. SDK builds consume
@@ -406,12 +500,11 @@ def _resolve_dylib() -> Path:
             f"env var to use the dev-cache fallback.\n"
             f"For local dev, run: python scripts/fetch_runtime_dev.py"
         )
-    # `_fetched_dylib_candidates()` returns oldest-version-first.
-    # Iterate in reverse so the most-recently-fetched release wins —
-    # otherwise the version-tuple sort fix is defeated by the
-    # iteration order. Codex R2 blocker fix.
+    # `_fetched_dylib_candidates()` returns candidates in preference order:
+    # newest version first, most-preferred flavor (chat) first within a
+    # version.  Iterate forward — first candidate that exists wins.
     tried: list[str] = []
-    for path in reversed(_fetched_dylib_candidates()):
+    for path in _fetched_dylib_candidates():
         if path.is_file():
             return path
         tried.append(str(path))
@@ -2309,6 +2402,8 @@ class NativeModel:
 
 __all__ = [
     "ENV_DYLIB_OVERRIDE",
+    "_ENV_FLAVOR",
+    "_FLAVOR_PREFERENCE",
     "NativeEvent",
     "NativeModel",
     "NativeRuntime",
