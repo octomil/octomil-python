@@ -388,7 +388,10 @@ def main() -> int:
     # Resolve the expected dylib path for a quick cache-hit check.
     # We do this before hitting the network. Note: on Linux the
     # extension is .so, not .dylib.
-    arch, _sysname = _platform_key()
+    # `_platform_key()` returns (arch, sysname). We use `arch` for
+    # the manifest lookup below and discard `sysname` because the
+    # dylib extension is derived from platform.system() directly.
+    arch, _ = _platform_key()
     dylib_ext = ".dylib" if platform.system() == "Darwin" else ".so"
     dylib = lib_dir / f"liboctomil-runtime{dylib_ext}"
 

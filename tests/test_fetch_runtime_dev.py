@@ -96,7 +96,7 @@ def _fake_manifest(version: str = "v0.1.5") -> dict:
     }
 
 
-def _fake_assets(manifest: dict, version: str = "v0.1.5") -> dict[str, dict]:
+def _fake_assets(manifest: dict, _version: str = "v0.1.5") -> dict[str, dict]:
     """Build a fake assets dict containing all assets named in the manifest."""
     names = set()
     for arch_map in manifest.get("platforms", {}).values():
@@ -352,7 +352,10 @@ def test_load_manifest_parses_downloaded_json(tmp_path: Path) -> None:
     }
 
     # Patch _download to write the fake manifest to disk.
-    def fake_download(url: str, dest: Path, token: str) -> None:
+    def fake_download(_url: str, dest: Path, _token: str) -> None:
+        # _url + _token are required by `_download`'s interface but the
+        # fake doesn't use them — content comes from the closure-captured
+        # manifest_bytes.
         dest.write_bytes(manifest_bytes)
 
     with mock.patch.object(frd, "_download", side_effect=fake_download):
