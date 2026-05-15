@@ -93,7 +93,7 @@ DONE_NATIVE_CUTOVER_CAPABILITIES: frozenset[str] = frozenset(
 # build/artifact/digest/sidecar gates pass. These are live, not
 # scaffold, and not guaranteed to appear on every machine.
 #
-# v0.1.13: embeddings.image flipped from BLOCKED_WITH_PROOF to
+# v0.1.14: embeddings.image flipped from BLOCKED_WITH_PROOF to
 # LIVE_NATIVE_CONDITIONAL. Runtime PR #91 (89d8005) merged the
 # darwin-arm64 adapter — sherpa-onnx vendoring + Xenova SigLIP-base-
 # patch16-224 uint8 ONNX (`vision_model_uint8.onnx`). Linux/Android

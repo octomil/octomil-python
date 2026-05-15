@@ -1975,7 +1975,7 @@ class NativeSession:
 
     def send_image(
         self,
-        image_bytes: bytes,
+        image_bytes: bytes | bytearray | memoryview,
         *,
         mime: int,
     ) -> None:
@@ -2089,7 +2089,7 @@ class NativeSession:
     ) -> list[float]:
         """Run a one-shot image embedding on this session.
 
-        v0.1.13 — pairs with the runtime-side adapter merged on
+        v0.1.14 — pairs with the runtime-side adapter merged on
         ``darwin-arm64`` (runtime PR #91, sherpa-onnx vendoring +
         Xenova SigLIP-base-patch16-224 ``vision_model_uint8.onnx``).
         Pushes one image via :meth:`send_image`, then drains the

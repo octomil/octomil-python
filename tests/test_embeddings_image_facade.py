@@ -232,7 +232,7 @@ def test_embeddings_image_unknown_mime_raises(patch_runtime):
 
 
 def test_embeddings_image_webp_raises_unsupported(patch_runtime):
-    """The vendored stb_image in the v0.1.13 runtime does not include
+    """The vendored stb_image in the v0.1.14 runtime does not include
     WebP. Surface this at the Python facade with a clearer diagnostic
     so callers don't get a confusing UNSUPPORTED from below the ABI."""
     patch_runtime(advertised=("embeddings.image",))

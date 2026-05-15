@@ -258,7 +258,7 @@ def test_send_image_raises_unsupported_when_capability_not_advertised(monkeypatc
 
 
 def test_embeddings_image_public_surface_forwards_to_send_image_and_polls(monkeypatch):
-    """v0.1.13: ``NativeSession.embeddings_image`` is no longer a
+    """v0.1.14: ``NativeSession.embeddings_image`` is no longer a
     NotImplementedError placeholder. It MUST forward to
     :meth:`send_image` and drain ``OCT_EVENT_EMBEDDING_VECTOR`` +
     ``OCT_EVENT_SESSION_COMPLETED``, returning a list[float]. This

@@ -142,7 +142,7 @@ class FacadeEmbeddings:
         )
 
     # ------------------------------------------------------------------
-    # v0.1.13 — embeddings.image public facade
+    # v0.1.14 — embeddings.image public facade
     # ------------------------------------------------------------------
     def image(
         self,
@@ -218,7 +218,7 @@ class FacadeEmbeddings:
             raise OctomilUnsupportedError(
                 CAPABILITY_EMBEDDINGS_IMAGE,
                 "embeddings.image: WebP not yet supported. The vendored stb_image "
-                "decoder in the v0.1.13 runtime does not include WebP. Pre-decode "
+                "decoder in the v0.1.14 runtime does not include WebP. Pre-decode "
                 "to RGB8 (224×224, exactly OCT_IMAGE_RGB8_FIXED_BYTES = 150528 "
                 "uint8 bytes) and pass mime=OCT_IMAGE_MIME_RGB8 instead.",
             )
@@ -314,7 +314,7 @@ class FacadeEmbeddings:
 class ImageEmbedding:
     """Result of a one-shot ``client.embeddings.image(...)`` call.
 
-    v0.1.13 — pairs with the darwin-arm64 native runtime adapter
+    v0.1.14 — pairs with the darwin-arm64 native runtime adapter
     (runtime PR #91) and the canonical Xenova SigLIP-base-patch16-224
     ``vision_model_uint8.onnx`` artifact. The ``vector`` is a pooled
     L2-normalized fp32 embedding suitable for downstream cosine
