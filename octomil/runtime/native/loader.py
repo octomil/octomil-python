@@ -228,6 +228,31 @@ OCT_ERR_QUOTA_EXCEEDED: int = 10
 OCT_ERR_INTERNAL: int = 11
 OCT_ERR_UNKNOWN: int = 0xFFFFFFFF  # forward-compat sentinel — UINT32_MAX
 
+# v0.1.12 / ABI minor 11 — image-input MIME discriminator for
+# ``oct_image_view_t.mime``. Closed enum with a forward-compat
+# sentinel at 0 (same rule as OCT_EMBED_POOLING_UNKNOWN and
+# OCT_VAD_TRANSITION_UNKNOWN). PNG/JPEG/WEBP are encoded forms
+# decoded engine-side via the vendored stb_image; RGB8 is a raw
+# decoded uint8 RGB pixel buffer (dimensions inferred from
+# n_bytes once the adapter contract pins width*height).
+#
+# Symbol presence in the dylib is gated by ABI minor >= 11;
+# capability use is gated by ``oct_runtime_capabilities``
+# advertising "embeddings.image". See
+# docs/runtime/embeddings-image-abi-scope.md (#85).
+OCT_IMAGE_MIME_UNKNOWN: int = 0  # future-compat sentinel; never set by callers
+OCT_IMAGE_MIME_PNG: int = 1  # image/png — encoded
+OCT_IMAGE_MIME_JPEG: int = 2  # image/jpeg — encoded
+OCT_IMAGE_MIME_WEBP: int = 3  # image/webp — encoded
+OCT_IMAGE_MIME_RGB8: int = 4  # raw decoded uint8 RGB pixel buffer
+
+# v0.1.12 / ABI minor 11 — appended embedding pooling discriminator
+# for CLIP/SigLIP-style image embeddings (single pooled vector per
+# image, NOT a text mean-pool). Disambiguates image vs text
+# embeddings at the consumer side. Existing OCT_EMBED_POOLING_*
+# values 0..4 are unchanged; this is a pure append.
+OCT_EMBED_POOLING_IMAGE_CLIP: int = 5
+
 
 def _status_name(code: int) -> str:
     return _STATUS_NAMES.get(code, f"OCT_STATUS_UNKNOWN({code})")
@@ -295,6 +320,23 @@ class NativeRuntimeError(RuntimeError):
         )
         self.status: int = status
         self.last_error: str = last_error
+
+
+class OctomilUnsupportedError(NativeRuntimeError):
+    """Raised by binding-side gates when a capability is not actually
+    usable on the loaded runtime — either the dylib's ABI minor lacks
+    the necessary symbol table, or ``oct_runtime_capabilities`` does
+    not advertise the capability string.
+
+    Carries ``OCT_STATUS_UNSUPPORTED`` so callers that already match
+    on the numeric status code see the same value. Distinct subclass
+    so capability gates can be caught precisely without swallowing
+    every NativeRuntimeError.
+    """
+
+    def __init__(self, capability: str, message: str) -> None:
+        super().__init__(OCT_STATUS_UNSUPPORTED, message)
+        self.capability: str = capability
 
 
 # ---------------------------------------------------------------------------
@@ -920,6 +962,32 @@ oct_status_t oct_runtime_cache_introspect(
     char*          out_json_buf,
     size_t         buf_len
 );
+
+/* v0.1.12 / ABI minor 11 — embeddings.image input surface (STUB on
+ * the runtime side until the SigLIP-base int8 adapter PR lands).
+ *
+ * Symbol presence is gated by the dylib's reported minor; capability
+ * usage is gated by ``oct_runtime_capabilities`` advertising
+ * "embeddings.image". This binding cdef's the symbols unconditionally
+ * so the build is stable across both minor=10 and minor=11 dylibs;
+ * the lib singleton resolves the actual function pointers
+ * conditionally (see `_resolve_image_symbols` below) and any caller
+ * is double-gated: capability advertised AND symbol resolved.
+ *
+ * Per docs/runtime/embeddings-image-abi-scope.md (#85). */
+typedef struct {
+    const uint8_t* bytes;
+    size_t         n_bytes;
+    uint32_t       mime;
+    uint32_t       _reserved0;
+} oct_image_view_t;
+
+size_t oct_image_view_size(void);
+
+oct_status_t oct_session_send_image(
+    oct_session_t*          session,
+    const oct_image_view_t* view
+);
 """
 
 
@@ -978,7 +1046,68 @@ def _build_lib() -> tuple[Any, Any]:
         _REQUIRED_ABI_MAJOR,
         _REQUIRED_ABI_MINOR,
     )
+    # v0.1.12 / ABI minor 11 — optional image-input symbols.
+    # _REQUIRED_ABI_MINOR stays at 10; these symbols are bound only
+    # when the dylib advertises minor >= 11. On older minor=10
+    # runtimes the resolved entry is None and the binding NEVER raises
+    # during load — callers double-gate via capability advertisement
+    # before invoking. Symbol-presence drives whether the C-side
+    # symbol table even contains the export; capability advertisement
+    # drives whether the runtime will accept the call (the runtime
+    # itself stubs the call to OCT_STATUS_UNSUPPORTED until the
+    # SigLIP-base int8 adapter lands and removes embeddings.image
+    # from the BLOCKED_WITH_PROOF set).
+    _resolve_optional_image_symbols(lib, dylib_minor)
     return ffi, lib  # noqa: RET504 — explicit ffi/lib pair documents both
+
+
+# v0.1.12 / ABI minor 11 — sidecar storing the resolved optional
+# image-input function pointers (or None when the loaded dylib's
+# minor is < 11). Indexed by the cdef'd symbol name. Populated by
+# ``_resolve_optional_image_symbols`` once at load time.
+#
+# This is deliberately a plain dict instead of monkey-patching
+# attributes onto the cffi ``lib`` object: cffi raises AttributeError
+# on attribute access when a cdef'd symbol is absent from the
+# loaded dylib, so a sentinel store decouples the binding's
+# probe path from cffi's lazy resolution failure mode.
+_OPTIONAL_IMAGE_SYMBOLS: dict[str, Any] = {
+    "oct_image_view_size": None,
+    "oct_session_send_image": None,
+}
+
+
+def _resolve_optional_image_symbols(lib: Any, dylib_minor: int) -> None:
+    """Conditionally resolve the ABI minor 11 image-input symbols.
+
+    NEVER raises on a minor=10 dylib — image-input is OPT-IN and the
+    required ABI floor stays at 10. When the runtime advertises
+    minor >= 11 but the symbol is unexpectedly missing (corrupt
+    build, partial relink) the slot stays None and the capability
+    gate at call time surfaces the same UNSUPPORTED error path.
+    """
+    # Reset to None on each load — _build_lib may run multiple times
+    # in tests that reset the singleton.
+    for name in _OPTIONAL_IMAGE_SYMBOLS:
+        _OPTIONAL_IMAGE_SYMBOLS[name] = None
+    if dylib_minor < 11:
+        logger.debug(
+            "skipping ABI minor 11 image-input symbol bind: dylib advertises minor=%d (< 11)",
+            dylib_minor,
+        )
+        return
+    for name in _OPTIONAL_IMAGE_SYMBOLS:
+        try:
+            _OPTIONAL_IMAGE_SYMBOLS[name] = getattr(lib, name)
+        except AttributeError:
+            # Symbol cdef'd by the binding but missing from the
+            # loaded dylib's export table. Leave as None; capability
+            # gate at call time will reject UNSUPPORTED.
+            logger.debug(
+                "ABI minor 11 image-input symbol %s missing from dylib despite minor=%d",
+                name,
+                dylib_minor,
+            )
 
 
 _FFI: Optional[Any] = None
@@ -1835,6 +1964,137 @@ class NativeSession:
                 "oct_session_send_audio failed",
                 last_error=self._owner.last_error(),
             )
+
+    def send_image(
+        self,
+        image_bytes: bytes,
+        *,
+        mime: int,
+    ) -> None:
+        """v0.1.12 / ABI minor 11 — push an image to the session's
+        input queue. STUB on the runtime side until the SigLIP-base
+        int8 adapter PR lands; on the binding side this is gated
+        double-blind:
+
+          1. The loaded dylib MUST have advertised ABI minor >= 11.
+             Older runtimes don't export ``oct_session_send_image``.
+          2. The runtime MUST advertise the ``embeddings.image``
+             capability via ``oct_runtime_capabilities``. While
+             ``embeddings.image`` is BLOCKED_WITH_PROOF, no real
+             runtime should advertise it; this binding refuses the
+             call rather than letting the runtime stub return
+             UNSUPPORTED with a less specific error envelope.
+
+        Both gates raise :class:`OctomilUnsupportedError` so capability-
+        sensitive callers can catch precisely without swallowing every
+        :class:`NativeRuntimeError`. There is NO public ``embeddings_image()``
+        SDK surface in this PR — see the module docstring for the
+        sequencing constraint.
+        """
+        self._check_open()
+        capability = "embeddings.image"
+        # Gate 1: symbol resolved at load time.
+        send_image_fn = _OPTIONAL_IMAGE_SYMBOLS.get("oct_session_send_image")
+        if send_image_fn is None:
+            major, minor, _patch = abi_version()
+            raise OctomilUnsupportedError(
+                capability,
+                f"{capability} is not available: loaded liboctomil-runtime "
+                f"ABI {major}.{minor} does not export oct_session_send_image "
+                f"(requires minor >= 11). This is the optional image-input "
+                f"surface added in v0.1.12; the required ABI floor for this "
+                f"binding stays at {_REQUIRED_ABI_MAJOR}.{_REQUIRED_ABI_MINOR}.",
+            )
+        # Gate 2: capability advertised by runtime.
+        advertised = self._owner.capabilities().supported_capabilities
+        if capability not in advertised:
+            major, minor, _patch = abi_version()
+            raise OctomilUnsupportedError(
+                capability,
+                f"{capability} is not advertised by this runtime "
+                f"(v{major}.{minor}). The image-input symbol table is "
+                f"present but the capability is not live — "
+                f"oct_runtime_capabilities does not include "
+                f"{capability!r}. While the capability is "
+                f"BLOCKED_WITH_PROOF the SigLIP-base int8 adapter has "
+                f"not yet wired the embeddings.image session class.",
+            )
+        # NOTE: Even if both gates pass, the runtime itself currently
+        # stubs oct_session_send_image to OCT_STATUS_UNSUPPORTED until
+        # the adapter PR lands. We forward the call so any future
+        # capability-flipped runtime gets exercised through the same
+        # path the conformance harness uses.
+        ffi = self._ffi
+        if not isinstance(image_bytes, (bytes, bytearray, memoryview)):
+            raise NativeRuntimeError(
+                OCT_STATUS_INVALID_INPUT,
+                f"send_image: image_bytes must be a bytes-like object, got {type(image_bytes).__name__}",
+            )
+        # Normalize to a byte-format memoryview. For non-byte memoryviews
+        # (e.g., memoryview over array.array('I') with itemsize=4),
+        # ``len(image_bytes)`` returns the ELEMENT count, not the BYTE
+        # count — using that for ``oct_image_view_t.n_bytes`` would
+        # under-report the buffer length by a factor of itemsize. The
+        # ``mv.cast("B")`` forces byte semantics so ``mv.nbytes`` equals
+        # the true byte length AND the downstream ``uint8_t*`` cast on
+        # ``ffi.from_buffer(mv)`` is safe regardless of original itemsize.
+        if isinstance(image_bytes, memoryview):
+            mv = image_bytes
+        else:
+            mv = memoryview(image_bytes)
+        mv = mv.cast("B")
+        n_bytes = mv.nbytes
+        if n_bytes == 0:
+            raise NativeRuntimeError(
+                OCT_STATUS_INVALID_INPUT,
+                "send_image: image_bytes is empty (n_bytes=0)",
+            )
+        if mime == OCT_IMAGE_MIME_UNKNOWN or mime not in (
+            OCT_IMAGE_MIME_PNG,
+            OCT_IMAGE_MIME_JPEG,
+            OCT_IMAGE_MIME_WEBP,
+            OCT_IMAGE_MIME_RGB8,
+        ):
+            raise NativeRuntimeError(
+                OCT_STATUS_INVALID_INPUT,
+                f"send_image: mime must be one of OCT_IMAGE_MIME_PNG/JPEG/WEBP/RGB8 (got {mime})",
+            )
+        view = ffi.new("oct_image_view_t*")
+        view.bytes = ffi.cast("const uint8_t*", ffi.from_buffer(mv))
+        view.n_bytes = n_bytes
+        view.mime = mime
+        view._reserved0 = 0
+        status = int(send_image_fn(self._handle, view))
+        if status != OCT_STATUS_OK:
+            raise NativeRuntimeError(
+                status,
+                "oct_session_send_image failed",
+                last_error=self._owner.last_error(),
+            )
+
+    def embeddings_image(self, image_bytes: bytes, *, mime: int) -> None:
+        """Public-facing image embedding entry point.
+
+        BLOCKED: ``embeddings.image`` is BLOCKED_WITH_PROOF. The
+        runtime exports ``oct_session_send_image`` as of ABI minor 11
+        but the SigLIP-base int8 adapter has not been wired, so this
+        method raises :class:`NotImplementedError` rather than
+        forwarding to the stubbed C call. The lower-level
+        :meth:`send_image` method exists for the conformance harness
+        and future adapter-flip testing; production callers should
+        treat ``embeddings.image`` as unavailable until this method's
+        body actually forwards to ``oct_session_send_image``.
+
+        TODO(v0.1.13): wire to :meth:`send_image` once the adapter
+        flips ``embeddings.image`` out of ``BLOCKED_WITH_PROOF_CAPABILITIES``
+        and the runtime advertises the capability.
+        """
+        raise NotImplementedError(
+            "embeddings.image is BLOCKED_WITH_PROOF: ABI minor 11 binding "
+            "stubs are in place, but no public SDK surface forwards to "
+            "oct_session_send_image until the SigLIP-base int8 adapter "
+            "lands and removes embeddings.image from the blocked set."
+        )
 
     def send_text(self, utf8: str) -> None:
         """Push a UTF-8 text turn to the session.
