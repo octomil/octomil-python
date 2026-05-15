@@ -373,6 +373,32 @@ def test_verify_sha256_raises_when_not_listed(tmp_path: Path) -> None:
         frd._verify_sha256(asset, sums)
 
 
+def test_verify_sha256_normalizes_dot_slash_prefix(tmp_path: Path) -> None:
+    """SHA256SUMS entries produced by ``shasum -a 256 ./*.tar.gz``
+    have a ``./`` prefix on every filename. The fetcher looks up
+    assets by ``path.name`` (no prefix), so the parser must strip
+    ``./`` when building the lookup table. This is the exact shape
+    of the live v0.1.10 release SHA256SUMS — without this fix,
+    every fetch against v0.1.10 fails with a misleading
+    ``not listed in SHA256SUMS``."""
+    bin_content = b"liboctomil-runtime binary data"
+    bin_asset = tmp_path / "liboctomil-runtime-v0.1.10-chat-linux-x86_64.tar.gz"
+    bin_asset.write_bytes(bin_content)
+    bin_sha = hashlib.sha256(bin_content).hexdigest()
+
+    hdr_content = b"headers tarball data"
+    hdr_asset = tmp_path / "octomil-runtime-headers-v0.1.10.tar.gz"
+    hdr_asset.write_bytes(hdr_content)
+    hdr_sha = hashlib.sha256(hdr_content).hexdigest()
+
+    sums = tmp_path / "SHA256SUMS"
+    sums.write_text(f"{bin_sha}  ./{bin_asset.name}\n{hdr_sha}  ./{hdr_asset.name}\n")
+
+    # Both must verify cleanly despite the ./ prefix on each line.
+    frd._verify_sha256(bin_asset, sums)
+    frd._verify_sha256(hdr_asset, sums)
+
+
 # ---------------------------------------------------------------------------
 # _load_manifest
 # ---------------------------------------------------------------------------

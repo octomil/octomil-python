@@ -323,7 +323,12 @@ def _verify_sha256(path: Path, sums_file: Path) -> None:
                 continue
             parts = line.split(maxsplit=1)
             if len(parts) == 2:
-                expected[parts[1]] = parts[0]
+                # `shasum -a 256 ./*.tar.gz` (used by release.yml's
+                # publish-release aggregation) emits `./<name>` rather
+                # than the bare filename. Normalize so both shapes
+                # resolve to the same key when we look up `path.name`.
+                filename = parts[1].lstrip().removeprefix("./")
+                expected[filename] = parts[0]
     name = path.name
     if name not in expected:
         raise SystemExit(f"error: {name} not listed in SHA256SUMS")
