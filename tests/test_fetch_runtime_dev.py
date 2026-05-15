@@ -169,6 +169,52 @@ def test_manifest_missing_arch_raises_for_non_darwin() -> None:
     assert "linux-x86_64" in msg
 
 
+def test_manifest_present_missing_arch_does_not_fall_through_to_legacy() -> None:
+    """Regression for v0.1.10 fetcher fix: when MANIFEST.json IS present
+    but does NOT list the host arch, the fetcher MUST NOT silently retry
+    the legacy ``octomil-runtime-<arch>-<ver>.tar.gz`` shape and report a
+    misleading "missing legacy asset" error.
+
+    The truthful failure is "platform not available in this release."
+    This covers both darwin-arm64 (which DOES have a legacy shape) and
+    linux-x86_64 (which does NOT), to lock in that the legacy fallback
+    is gated on `manifest is None`."""
+    # Real v0.1.10-style manifest: linux-x86_64 + android, no darwin.
+    m = {
+        "version": "v0.1.10",
+        "abi": {"major": 0, "minor": 11, "patch": 0},
+        "platforms": {
+            "linux-x86_64": {
+                "chat": "liboctomil-runtime-v0.1.10-chat-linux-x86_64.tar.gz",
+                "stt": "liboctomil-runtime-v0.1.10-stt-linux-x86_64.tar.gz",
+            },
+            "android-arm64": {
+                "chat": "liboctomil-runtime-v0.1.10-chat-android-arm64.tar.gz",
+            },
+            "android-x86_64": {
+                "chat": "liboctomil-runtime-v0.1.10-chat-android-x86_64.tar.gz",
+            },
+        },
+        "headers": None,
+    }
+    # Only assets that exist in this release — note: NO legacy darwin asset.
+    assets = _fake_assets(m, "v0.1.10")
+
+    with pytest.raises(SystemExit) as exc_info:
+        frd._resolve_bin_asset_name(m, assets, "darwin-arm64", "chat", "v0.1.10")
+    msg = str(exc_info.value)
+    # Must be the truthful "not available" error...
+    assert "darwin-arm64" in msg
+    assert "not available" in msg
+    assert "v0.1.10" in msg
+    # ...listing the actually-available platforms...
+    assert "linux-x86_64" in msg
+    assert "android-arm64" in msg
+    # ...and NOT the misleading legacy "missing expected legacy asset" path.
+    assert "legacy" not in msg.lower()
+    assert "missing expected" not in msg
+
+
 # ---------------------------------------------------------------------------
 # _resolve_bin_asset_name — legacy fallback path
 # ---------------------------------------------------------------------------
@@ -340,6 +386,100 @@ def test_load_manifest_returns_none_when_absent(tmp_path: Path) -> None:
     }
     result = frd._load_manifest(assets, tmp_path, "faketoken")
     assert result is None
+
+
+def test_main_tolerates_headers_null_in_manifest(tmp_path: Path) -> None:
+    """Regression for v0.1.10 fetcher fix: when ``MANIFEST.json.headers``
+    is null (release deliberately ships no headers tarball), the fetcher
+    must skip the headers fetch instead of bailing out with a missing-asset
+    error.
+
+    We drive ``main()`` end-to-end against a fully-faked release: no real
+    GitHub call, no real archive download — the manifest is injected via
+    ``_load_manifest`` and the bin tarball is materialised on disk by a
+    fake ``_download`` that writes a valid tar.gz containing the dylib.
+    Success is defined as ``main()`` returning 0 and the dylib appearing
+    in the flavor-keyed cache slice, with no attempt to fetch any
+    ``octomil-runtime-headers-*`` asset (which is not in the release)."""
+    version = "v0.1.10"
+    flavor = "chat"
+    arch = "linux-x86_64"
+    bin_name = f"liboctomil-runtime-{version}-{flavor}-{arch}.tar.gz"
+
+    # v0.1.10-style manifest: headers is null.
+    manifest_data = {
+        "version": version,
+        "abi": {"major": 0, "minor": 11, "patch": 0},
+        "platforms": {
+            arch: {flavor: bin_name},
+            "android-arm64": {"chat": f"liboctomil-runtime-{version}-chat-android-arm64.tar.gz"},
+        },
+        "headers": None,
+    }
+
+    # Materialise a real bin tarball + SHA256SUMS so the verify + extract
+    # path runs unmodified.
+    cache_root = tmp_path / "cache"
+    work_root = tmp_path / "work"
+    work_root.mkdir()
+    bin_tar = work_root / bin_name
+    _make_tarball([("lib/liboctomil-runtime.so", b"fake-dylib-bytes")], bin_tar)
+    bin_sha = hashlib.sha256(bin_tar.read_bytes()).hexdigest()
+    sums_text = f"{bin_sha}  {bin_name}\n"
+
+    # Only the binary, SHA256SUMS and MANIFEST.json are in the release —
+    # NO headers tarball. If the fetcher tries to fetch a headers asset,
+    # `required not in assets` will fire and the test will fail.
+    release_assets = {
+        bin_name: {"name": bin_name, "url": f"https://fake/{bin_name}"},
+        "SHA256SUMS": {"name": "SHA256SUMS", "url": "https://fake/SHA256SUMS"},
+        "MANIFEST.json": {"name": "MANIFEST.json", "url": "https://fake/MANIFEST.json"},
+    }
+
+    fetched_names: list[str] = []
+
+    def fake_download(url: str, dest: Path, _token: str) -> None:
+        # Record which asset was requested so we can assert no headers fetch.
+        name = url.rsplit("/", 1)[-1]
+        fetched_names.append(name)
+        if name == "MANIFEST.json":
+            dest.write_text(json.dumps(manifest_data), encoding="utf-8")
+        elif name == "SHA256SUMS":
+            dest.write_text(sums_text, encoding="utf-8")
+        elif name == bin_name:
+            dest.write_bytes(bin_tar.read_bytes())
+        else:
+            raise AssertionError(f"unexpected fetch attempted: {name}")
+
+    import sys
+
+    argv = [
+        "fetch_runtime_dev.py",
+        "--version",
+        version,
+        "--flavor",
+        flavor,
+        "--cache-root",
+        str(cache_root),
+    ]
+    with (
+        mock.patch.object(sys, "argv", argv),
+        mock.patch("platform.system", return_value="Linux"),
+        mock.patch("platform.machine", return_value="x86_64"),
+        mock.patch.object(frd, "_gh_token", return_value="faketoken"),
+        mock.patch.object(frd, "_release_assets_via_api", return_value=release_assets),
+        mock.patch.object(frd, "_download", side_effect=fake_download),
+    ):
+        rc = frd.main()
+
+    assert rc == 0, "main() must succeed when manifest.headers is null"
+    # The dylib must have been extracted under the flavor-keyed cache slice.
+    extracted = cache_root / version / flavor / "lib" / "liboctomil-runtime.so"
+    assert extracted.exists(), f"dylib not extracted to {extracted}"
+    # No headers asset must have been requested.
+    assert not any(
+        "headers" in n for n in fetched_names
+    ), f"fetcher must not request headers when manifest.headers is null; fetched: {fetched_names}"
 
 
 def test_load_manifest_parses_downloaded_json(tmp_path: Path) -> None:
