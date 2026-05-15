@@ -40,6 +40,7 @@ from __future__ import annotations
 import logging
 import os
 import struct as _emb_struct  # used by poll_event for OCT_EVENT_EMBEDDING_VECTOR
+import time as _time  # used by embeddings_image for deadline polling
 from pathlib import Path
 from typing import Any, Optional
 
@@ -245,6 +246,13 @@ OCT_IMAGE_MIME_PNG: int = 1  # image/png — encoded
 OCT_IMAGE_MIME_JPEG: int = 2  # image/jpeg — encoded
 OCT_IMAGE_MIME_WEBP: int = 3  # image/webp — encoded
 OCT_IMAGE_MIME_RGB8: int = 4  # raw decoded uint8 RGB pixel buffer
+
+# v0.1.13 — expected byte count for an RGB8 image consumed by the
+# canonical Xenova SigLIP-base-patch16-224 vision tower. 224 * 224 * 3
+# = 150528 uint8 bytes. The runtime adapter rejects mismatched RGB8
+# payloads; the SDK pre-validates so callers see a precise error
+# naming the constant rather than a generic UNSUPPORTED from below.
+OCT_IMAGE_RGB8_FIXED_BYTES: int = 224 * 224 * 3  # 150528
 
 # v0.1.12 / ABI minor 11 — appended embedding pooling discriminator
 # for CLIP/SigLIP-style image embeddings (single pooled vector per
@@ -2072,29 +2080,131 @@ class NativeSession:
                 last_error=self._owner.last_error(),
             )
 
-    def embeddings_image(self, image_bytes: bytes, *, mime: int) -> None:
-        """Public-facing image embedding entry point.
+    def embeddings_image(
+        self,
+        image_bytes: bytes | bytearray | memoryview,
+        *,
+        mime: int,
+        deadline_ms: int = 300_000,
+    ) -> list[float]:
+        """Run a one-shot image embedding on this session.
 
-        BLOCKED: ``embeddings.image`` is BLOCKED_WITH_PROOF. The
-        runtime exports ``oct_session_send_image`` as of ABI minor 11
-        but the SigLIP-base int8 adapter has not been wired, so this
-        method raises :class:`NotImplementedError` rather than
-        forwarding to the stubbed C call. The lower-level
-        :meth:`send_image` method exists for the conformance harness
-        and future adapter-flip testing; production callers should
-        treat ``embeddings.image`` as unavailable until this method's
-        body actually forwards to ``oct_session_send_image``.
+        v0.1.13 — pairs with the runtime-side adapter merged on
+        ``darwin-arm64`` (runtime PR #91, sherpa-onnx vendoring +
+        Xenova SigLIP-base-patch16-224 ``vision_model_uint8.onnx``).
+        Pushes one image via :meth:`send_image`, then drains the
+        session event stream for a single ``OCT_EVENT_EMBEDDING_VECTOR``
+        followed by ``OCT_EVENT_SESSION_COMPLETED`` and returns the
+        pooled (CLIP/SigLIP) vector as a list of ``float``.
 
-        TODO(v0.1.13): wire to :meth:`send_image` once the adapter
-        flips ``embeddings.image`` out of ``BLOCKED_WITH_PROOF_CAPABILITIES``
-        and the runtime advertises the capability.
+        The session MUST already be open with
+        ``capability="embeddings.image"``. The capability + symbol
+        gates raised by :meth:`send_image` apply transitively here —
+        unsupported runtimes raise :class:`OctomilUnsupportedError`
+        without ever entering the poll loop.
+
+        Parameters
+        ----------
+        image_bytes
+            Encoded PNG / JPEG bytes OR a raw RGB8 pixel buffer.
+            Bytes-like (``bytes``, ``bytearray``, or ``memoryview``)
+            normalized to a byte-format memoryview before the FFI
+            call. WEBP is rejected at the public facade with a
+            clearer diagnostic; callers using this method directly
+            with WEBP get the runtime's UNSUPPORTED response.
+        mime
+            One of ``OCT_IMAGE_MIME_PNG``, ``OCT_IMAGE_MIME_JPEG``,
+            ``OCT_IMAGE_MIME_RGB8``. ``OCT_IMAGE_MIME_UNKNOWN`` and
+            ``OCT_IMAGE_MIME_WEBP`` reject INVALID_INPUT (the
+            runtime rejects WEBP today; surfaces here as the same
+            shape :meth:`send_image` raises).
+        deadline_ms
+            Per-call poll deadline. Mirrors the
+            :class:`NativeEmbeddingsBackend` 5-minute default. Negative
+            / zero values raise INVALID_INPUT.
+
+        Returns
+        -------
+        list[float]
+            One 768-dim L2-normalized fp32 vector (SigLIP-base).
+            Returned as a Python list rather than a numpy array to
+            match the text-embedding shape exposed via
+            :class:`NativeEvent.values` / the embeddings backend.
+
+        Raises
+        ------
+        OctomilUnsupportedError
+            From the underlying :meth:`send_image` if either ABI
+            symbol-table or runtime capability gate fails.
+        NativeRuntimeError
+            ``OCT_EVENT_ERROR`` from the adapter, terminal status !=
+            ``OCT_STATUS_OK``, or a non-OK ``poll_event``.
+        ValueError
+            ``deadline_ms <= 0``.
+        TimeoutError
+            ``deadline_ms`` elapsed before ``OCT_EVENT_SESSION_COMPLETED``.
         """
-        raise NotImplementedError(
-            "embeddings.image is BLOCKED_WITH_PROOF: ABI minor 11 binding "
-            "stubs are in place, but no public SDK surface forwards to "
-            "oct_session_send_image until the SigLIP-base int8 adapter "
-            "lands and removes embeddings.image from the blocked set."
-        )
+        self._check_open()
+        if deadline_ms <= 0:
+            raise ValueError(f"embeddings_image: deadline_ms must be > 0, got {deadline_ms}")
+
+        # Gates 1 + 2 (symbol + capability) and input validation live
+        # inside send_image. send_image raises OctomilUnsupportedError
+        # or NativeRuntimeError as appropriate before we enter the
+        # poll loop.
+        self.send_image(image_bytes, mime=mime)
+
+        # Drain events. The runtime emits one EMBEDDING_VECTOR for the
+        # single image, then SESSION_COMPLETED(OK). On failure: ERROR
+        # + SESSION_COMPLETED with the matching status.
+        vector: list[float] = []
+        n_dim = 0
+        terminal_status: int = OCT_STATUS_OK
+        saw_error = False
+        error_code = 0
+
+        deadline_seconds = deadline_ms / 1000.0
+        deadline = _time.monotonic() + deadline_seconds
+        while _time.monotonic() < deadline:
+            ev = self.poll_event(timeout_ms=200)
+            if ev is None or ev.type == OCT_EVENT_NONE:
+                continue
+            if ev.type == OCT_EVENT_SESSION_STARTED:
+                continue
+            if ev.type == OCT_EVENT_EMBEDDING_VECTOR:
+                if vector:
+                    raise NativeRuntimeError(
+                        OCT_STATUS_INTERNAL,
+                        f"embeddings_image: runtime emitted >1 EMBEDDING_VECTOR "
+                        f"for a single-image session (got index={ev.index})",
+                    )
+                n_dim = int(ev.n_dim)
+                vector = list(ev.values)
+                continue
+            if ev.type == OCT_EVENT_ERROR:
+                saw_error = True
+                error_code = int(ev.error_code)
+                continue
+            if ev.type == OCT_EVENT_SESSION_COMPLETED:
+                terminal_status = int(ev.terminal_status)
+                break
+        else:
+            raise TimeoutError(f"embeddings_image: timed out after {deadline_ms}ms " f"waiting for SESSION_COMPLETED")
+
+        if saw_error or terminal_status != OCT_STATUS_OK:
+            raise NativeRuntimeError(
+                terminal_status if terminal_status != OCT_STATUS_OK else OCT_STATUS_INVALID_INPUT,
+                f"embeddings_image: runtime reported error "
+                f"(terminal_status={terminal_status}, error_code={error_code})",
+                last_error=self._owner.last_error(),
+            )
+
+        if not vector or n_dim == 0:
+            raise NativeRuntimeError(
+                OCT_STATUS_INTERNAL,
+                "embeddings_image: SESSION_COMPLETED(OK) without an EMBEDDING_VECTOR event",
+            )
+        return vector
 
     def send_text(self, utf8: str) -> None:
         """Push a UTF-8 text turn to the session.
