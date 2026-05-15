@@ -294,6 +294,17 @@ def _safe_extract(tarball: Path, target_dir: Path) -> None:
     Filters out macOS AppleDouble (``._*``) metadata."""
     target_real = target_dir.resolve()
     with tarfile.open(tarball) as tf:
+        # Two-pass extraction so hardlinks always see their target on
+        # disk by the time tarfile.extract() runs. tar archives are
+        # not required to order link entries after the file they
+        # reference; if a hardlink to "lib/foo" appears in the
+        # archive BEFORE "lib/foo" itself, tarfile.extract() raises
+        # ``KeyError: 'linkname'`` mid-extraction and we lose the
+        # partial state. Symlinks don't share this hazard (the kernel
+        # creates the symlink without resolving the target), but
+        # sorting them together keeps the logic simple.
+        members_regular: list[tarfile.TarInfo] = []
+        members_links: list[tarfile.TarInfo] = []
         for member in tf.getmembers():
             mname = member.name
             if _is_appledouble(mname):
@@ -330,6 +341,13 @@ def _safe_extract(tarball: Path, target_dir: Path) -> None:
                     raise SystemExit(
                         f"error: link entry {mname!r} target {linkname!r} would escape {target_dir} on resolution"
                     ) from e
+                members_links.append(member)
+            else:
+                members_regular.append(member)
+
+        for member in members_regular:
+            tf.extract(member, target_dir)
+        for member in members_links:
             tf.extract(member, target_dir)
 
 
@@ -351,13 +369,30 @@ def _flatten_archive_top_dir(target_dir: Path, bin_name: str) -> None:
         dest = target_dir / child.name
         if dest.exists():
             # Headers tarball may have created `include/octomil/runtime.h`
-            # before the bin tarball is flattened. Merge directories;
-            # error out on file collisions (shouldn't happen in practice).
+            # before the bin tarball is flattened. Merge directories
+            # explicitly; refuse FILE collisions so a tarball cannot
+            # silently overwrite a sibling artifact (e.g. an attacker
+            # cannot ship a malicious LICENSE that clobbers an existing
+            # one).
             if child.is_dir() and dest.is_dir():
                 for inner in child.rglob("*"):
                     if inner.is_file():
                         rel = inner.relative_to(child)
                         target_path = dest / rel
+                        if target_path.exists():
+                            # Headers tarball and bin tarball both ship
+                            # ``include/octomil/runtime.h`` from the same
+                            # tag — content-identical overlap is expected
+                            # and silently skipped. Content-different
+                            # collision is refused outright (would let
+                            # a malicious wrapper clobber a sibling
+                            # tarball's asset).
+                            if target_path.read_bytes() == inner.read_bytes():
+                                continue
+                            raise SystemExit(
+                                f"error: flattening {archive_basename}/ would overwrite existing file {target_path} "
+                                f"(content differs)"
+                            )
                         target_path.parent.mkdir(parents=True, exist_ok=True)
                         shutil.copy2(inner, target_path)
                 shutil.rmtree(child)

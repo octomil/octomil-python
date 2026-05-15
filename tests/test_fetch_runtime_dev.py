@@ -340,6 +340,35 @@ def test_safe_extract_rejects_symlink_escaping_target_dir(tmp_path: Path) -> Non
         frd._safe_extract(tb, target)
 
 
+def test_safe_extract_hardlink_before_target_in_archive_order(tmp_path: Path) -> None:
+    """Codex #597 follow-up: tarfile.extract() raises KeyError when a
+    hardlink is processed before its target file. We MUST sort all
+    regular files ahead of all link entries so hardlinks always see
+    their referenced inode on disk."""
+    tb = tmp_path / "hardlink-out-of-order.tar.gz"
+    real_content = b"liboctomil-runtime body"
+    with tarfile.open(tb, "w:gz") as tf:
+        # Hardlink appears FIRST in archive order — without two-pass
+        # extraction, tarfile.extract() would fail on this entry.
+        link = tarfile.TarInfo(name="lib/liboctomil-runtime.0.dylib")
+        link.type = tarfile.LNKTYPE
+        link.linkname = "lib/liboctomil-runtime.0.1.10.dylib"
+        link.size = 0
+        tf.addfile(link, io.BytesIO(b""))
+        # Real file appears AFTER the hardlink.
+        info = tarfile.TarInfo(name="lib/liboctomil-runtime.0.1.10.dylib")
+        info.size = len(real_content)
+        tf.addfile(info, io.BytesIO(real_content))
+
+    target = tmp_path / "out-hardlink-order"
+    target.mkdir()
+    frd._safe_extract(tb, target)
+    # Real file extracted.
+    assert (target / "lib" / "liboctomil-runtime.0.1.10.dylib").read_bytes() == real_content
+    # Hardlink resolved successfully.
+    assert (target / "lib" / "liboctomil-runtime.0.dylib").exists()
+
+
 def test_safe_extract_allows_intra_archive_symlink(tmp_path: Path) -> None:
     """macOS dylib chains (liboctomil-runtime.dylib ->
     liboctomil-runtime.0.dylib -> liboctomil-runtime.0.1.10.dylib)
@@ -387,6 +416,87 @@ def test_safe_extract_skips_appledouble(tmp_path: Path) -> None:
     frd._safe_extract(tb, target)
     assert not (target / "lib" / "._liboctomil-runtime.dylib").exists()
     assert (target / "lib" / "liboctomil-runtime.dylib").exists()
+
+
+# ---------------------------------------------------------------------------
+# _flatten_archive_top_dir — collision behavior
+# ---------------------------------------------------------------------------
+
+
+def test_flatten_archive_top_dir_refuses_content_different_collision(tmp_path: Path) -> None:
+    """Codex #597 follow-up: when the wrapper dir contains a regular
+    file whose path collides with an existing file in target_dir and
+    the BYTES DIFFER, the flatten must refuse rather than silently
+    overwrite. A malicious tarball could otherwise clobber a sibling
+    tarball's LICENSE / NOTICE / SHA256SUMS via the wrapper."""
+    target = tmp_path / "out"
+    target.mkdir()
+    # Pre-populate a runtime.h with one content.
+    (target / "include" / "octomil").mkdir(parents=True)
+    (target / "include" / "octomil" / "runtime.h").write_text("// headers-version\n")
+
+    # Wrapper's bin tarball ships a DIFFERENT runtime.h.
+    wrapper = target / "liboctomil-runtime-v0.1.10-chat-darwin-arm64"
+    (wrapper / "include" / "octomil").mkdir(parents=True)
+    (wrapper / "include" / "octomil" / "runtime.h").write_text("// bin-version-MALICIOUS\n")
+
+    with pytest.raises(SystemExit, match="content differs"):
+        frd._flatten_archive_top_dir(target, "liboctomil-runtime-v0.1.10-chat-darwin-arm64.tar.gz")
+
+    # Original runtime.h must be intact.
+    assert (target / "include" / "octomil" / "runtime.h").read_text() == "// headers-version\n"
+
+
+def test_flatten_archive_top_dir_silently_skips_content_identical_collision(tmp_path: Path) -> None:
+    """The expected v0.1.10 darwin shape: headers tarball ships
+    `include/octomil/runtime.h`, bin tarball's wrapper ships the
+    SAME file. Identical bytes → silently skipped, no error."""
+    runtime_h = "// canonical runtime.h\n"
+    target = tmp_path / "out"
+    target.mkdir()
+    (target / "include" / "octomil").mkdir(parents=True)
+    (target / "include" / "octomil" / "runtime.h").write_text(runtime_h)
+
+    wrapper = target / "liboctomil-runtime-v0.1.10-chat-darwin-arm64"
+    (wrapper / "include" / "octomil").mkdir(parents=True)
+    (wrapper / "include" / "octomil" / "runtime.h").write_text(runtime_h)
+    (wrapper / "lib").mkdir()
+    (wrapper / "lib" / "liboctomil-runtime.dylib").write_text("dylib")
+
+    frd._flatten_archive_top_dir(target, "liboctomil-runtime-v0.1.10-chat-darwin-arm64.tar.gz")
+
+    assert (target / "include" / "octomil" / "runtime.h").read_text() == runtime_h
+    assert (target / "lib" / "liboctomil-runtime.dylib").exists()
+    assert not wrapper.exists()
+
+
+def test_flatten_archive_top_dir_merges_directories_without_collision(tmp_path: Path) -> None:
+    """When the wrapper's `include/` dir has files that don't collide
+    with what's already there, the merge succeeds (this is the
+    expected v0.1.10 darwin shape — headers tarball populates
+    `include/octomil/runtime.h`, then bin tarball's include/ merges
+    in additional files if any)."""
+    target = tmp_path / "out"
+    target.mkdir()
+    # Pre-populate from headers tarball.
+    (target / "include" / "octomil").mkdir(parents=True)
+    (target / "include" / "octomil" / "runtime.h").write_text("// runtime.h\n")
+
+    # Wrapper has a different file under include/.
+    wrapper = target / "liboctomil-runtime-v0.1.10-chat-darwin-arm64"
+    (wrapper / "include" / "octomil").mkdir(parents=True)
+    (wrapper / "include" / "octomil" / "extra.h").write_text("// extra.h\n")
+    (wrapper / "lib").mkdir()
+    (wrapper / "lib" / "liboctomil-runtime.dylib").write_text("dylib")
+
+    frd._flatten_archive_top_dir(target, "liboctomil-runtime-v0.1.10-chat-darwin-arm64.tar.gz")
+
+    # Both files present after merge.
+    assert (target / "include" / "octomil" / "runtime.h").read_text() == "// runtime.h\n"
+    assert (target / "include" / "octomil" / "extra.h").read_text() == "// extra.h\n"
+    assert (target / "lib" / "liboctomil-runtime.dylib").exists()
+    # Wrapper removed.
+    assert not wrapper.exists()
 
 
 # ---------------------------------------------------------------------------
