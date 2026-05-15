@@ -89,6 +89,19 @@ _WHISPER_SAMPLE_RATE_HZ: int = 16000
 # last_error is rendered.
 _WHISPER_BIN_ENV: str = "OCTOMIL_WHISPER_BIN"
 
+# OCT-113 v2: env var the runtime checks to relax its built-in
+# digest-registry gate for user-uploaded artifacts. The runtime
+# enforces a registry match against shipped canonical Whisper SHAs
+# by default; when this flag is set the runtime accepts any
+# whisper-shaped artifact whose ``artifact_digest`` matches the
+# file's actual SHA-256 (integrity-only check). Required for the
+# user-upload load path below. Runtime support: TODO in
+# ``octomil-runtime`` — until that ships, this env var is set
+# defensively by the SDK and ``load_uploaded_model`` will surface
+# the runtime's registry-mismatch error with a clear diagnostic
+# pointing operators at the missing runtime support.
+_WHISPER_ALLOW_USER_ARTIFACTS_ENV: str = "OCT_WHISPER_ALLOW_USER_ARTIFACTS"
+
 
 @dataclass(frozen=True)
 class _WhisperArtifactSpec:
@@ -505,6 +518,193 @@ class NativeSttBackend:
         # Codex R1 nit: was logger.info; lowered to debug so the
         # cutover-rule "no new stderr/metric emission" stays clean.
         logger.debug("NativeSttBackend: runtime opened + %s warmed", spec.model_name)
+
+    def load_uploaded_model(
+        self,
+        *,
+        model_name: str,
+        artifact_path: str,
+        expected_sha256: str,
+    ) -> None:
+        """OCT-113 v2: load a user-uploaded Whisper artifact by path,
+        skipping the canonical ``_WHISPER_ARTIFACTS`` SHA registry.
+
+        Use this entry point when the model was uploaded by an org
+        (server-side ``ArtifactPackage.origin_source == "upload"``)
+        rather than served from the canonical catalog. The caller
+        supplies the artifact's own SHA-256 (typically read from the
+        catalog's ``checksum_sha256``); the SDK verifies the file
+        actually hashes to that value (integrity check) and asks the
+        runtime to open it with that digest.
+
+        Parameters
+        ----------
+        model_name : str
+            User-facing model slug. Used only as a label in logs +
+            error messages; not validated against the canonical
+            registry.
+        artifact_path : str
+            Filesystem path to the .gguf / .bin file the runtime
+            should open. The SDK reads it to verify the SHA matches
+            ``expected_sha256`` before model_open.
+        expected_sha256 : str
+            64-char hex SHA-256 the caller expects. Anything else
+            raises ``CHECKSUM_MISMATCH`` before the runtime is
+            invoked.
+
+        Raises
+        ------
+        OctomilError
+            * ``INVALID_INPUT`` when the SDK is already serving a
+              different model (caller must close + re-open) or when
+              ``expected_sha256`` is malformed.
+            * ``MODEL_NOT_FOUND`` when ``artifact_path`` doesn't
+              exist or isn't readable.
+            * ``CHECKSUM_MISMATCH`` when the file's actual SHA-256
+              doesn't match ``expected_sha256``.
+            * ``RUNTIME_UNAVAILABLE`` when the runtime dylib or the
+              ``audio.transcription`` capability is missing, or when
+              the runtime refuses the artifact because user uploads
+              aren't enabled in this runtime build. The error message
+              names the missing runtime support so operators know to
+              upgrade the runtime side.
+
+        Runtime support requirement
+        ---------------------------
+        The runtime must honor ``OCT_WHISPER_ALLOW_USER_ARTIFACTS=1``
+        and skip its built-in digest-registry check, otherwise
+        ``oct_runtime_advertise_caps`` will refuse to surface
+        ``audio.transcription`` for the user's artifact. When that
+        runtime support is missing we raise ``RUNTIME_UNAVAILABLE``
+        with a diagnostic pointing operators at the gap rather than
+        silently falling back to the canonical pin.
+        """
+        if not isinstance(expected_sha256, str) or len(expected_sha256) != 64:
+            raise OctomilError(
+                code=OctomilErrorCode.INVALID_INPUT,
+                message=("native STT (uploaded): expected_sha256 must be a " "64-char hex string"),
+            )
+
+        requested_model = model_name.lower()
+        if self._runtime is not None:
+            if self._model_name.lower() == requested_model:
+                return  # idempotent — same model already loaded
+            raise OctomilError(
+                code=OctomilErrorCode.INVALID_INPUT,
+                message=(
+                    f"native STT backend already loaded "
+                    f"{self._model_name!r}; cannot reuse it for "
+                    f"uploaded model {requested_model!r}"
+                ),
+            )
+
+        # Verify the file's actual SHA matches the catalog-supplied
+        # checksum. Integrity check: protects against bytes mutating
+        # between server-side storage and on-device load.
+        try:
+            st = os.stat(artifact_path)
+        except OSError as exc:
+            raise OctomilError(
+                code=OctomilErrorCode.MODEL_NOT_FOUND,
+                message=(f"native STT (uploaded): artifact path not found " f"or unreadable: {artifact_path}"),
+            ) from exc
+        if not stat.S_ISREG(st.st_mode):
+            raise OctomilError(
+                code=OctomilErrorCode.MODEL_NOT_FOUND,
+                message=(f"native STT (uploaded): artifact path is not a " f"regular file: {artifact_path}"),
+            )
+        try:
+            actual_digest = _sha256_file_hex(artifact_path)
+        except OSError as exc:
+            raise OctomilError(
+                code=OctomilErrorCode.MODEL_NOT_FOUND,
+                message=(f"native STT (uploaded): could not read artifact " f"for SHA check: {artifact_path}"),
+            ) from exc
+        if actual_digest != expected_sha256:
+            raise OctomilError(
+                code=OctomilErrorCode.CHECKSUM_MISMATCH,
+                message=(
+                    "native STT (uploaded): on-disk artifact "
+                    f"SHA-256 ({actual_digest[:12]}…) does not match "
+                    f"catalog-supplied checksum ({expected_sha256[:12]}…). "
+                    "Re-download the artifact."
+                ),
+            )
+
+        # Set OCT_WHISPER_ALLOW_USER_ARTIFACTS so the runtime (if
+        # built with v2 support) skips its built-in digest registry
+        # and admits any whisper-shaped artifact whose passed
+        # ``artifact_digest`` matches the file's SHA.
+        os.environ[_WHISPER_ALLOW_USER_ARTIFACTS_ENV] = "1"
+        # Point the runtime at the user's artifact via the same env
+        # var the canonical path uses.
+        os.environ[_WHISPER_BIN_ENV] = artifact_path
+
+        self._model_name = requested_model
+        try:
+            self._runtime = NativeRuntime.open()
+        except NativeRuntimeError as exc:
+            raise _runtime_status_to_sdk_error(
+                exc.status,
+                "native STT (uploaded): failed to open runtime",
+                last_error=getattr(exc, "last_error", ""),
+            ) from exc
+        except ImportError as exc:
+            self._runtime = None
+            raise OctomilError(
+                code=OctomilErrorCode.RUNTIME_UNAVAILABLE,
+                message=(f"native STT (uploaded): dylib not found ({exc})"),
+            ) from exc
+
+        if not _runtime_advertises_audio_transcription(self._runtime):
+            last_error_lc = (self._runtime.last_error() or "").lower()
+            self.close()
+            # The runtime rejected our artifact. Without user-upload
+            # support, this happens because the SHA isn't in the
+            # built-in canonical registry. Surface a diagnostic that
+            # explicitly names the missing runtime feature.
+            if "digest" in last_error_lc:
+                raise OctomilError(
+                    code=OctomilErrorCode.RUNTIME_UNAVAILABLE,
+                    message=(
+                        "native STT (uploaded): runtime refused the "
+                        "artifact's SHA-256 because it isn't in the "
+                        "built-in canonical Whisper registry. This "
+                        "runtime build does not yet support user-"
+                        "uploaded Whisper artifacts; rebuild with "
+                        "OCT_WHISPER_ALLOW_USER_ARTIFACTS support."
+                    ),
+                )
+            raise OctomilError(
+                code=OctomilErrorCode.RUNTIME_UNAVAILABLE,
+                message=(
+                    "native STT (uploaded): runtime does not "
+                    "advertise 'audio.transcription' after pointing "
+                    f"at user artifact {artifact_path!r}."
+                ),
+            )
+
+        try:
+            self._model = self._runtime.open_model(
+                model_uri=artifact_path,
+                # Pass the file's actual SHA — runtime integrity
+                # check now passes by construction.
+                artifact_digest=f"sha256:{actual_digest}",
+                engine_hint="whisper_cpp",
+            )
+            self._model.warm()
+        except NativeRuntimeError as exc:
+            self.close()
+            raise _runtime_status_to_sdk_error(
+                exc.status,
+                (f"native STT (uploaded): failed to warm " f"{requested_model!r} model"),
+                last_error=getattr(exc, "last_error", ""),
+            ) from exc
+        logger.debug(
+            "NativeSttBackend: uploaded model %s warmed (sha %s…)",
+            requested_model,
+            actual_digest[:12],
+        )
 
     def close(self) -> None:
         # Close the model BEFORE the runtime so oct_runtime_close
