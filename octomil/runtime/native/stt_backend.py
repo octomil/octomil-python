@@ -377,6 +377,17 @@ class NativeSttBackend:
         self._default_deadline_ms: int = (
             default_deadline_ms if default_deadline_ms is not None else self.DEFAULT_DEADLINE_MS
         )
+        # OCT-113 v2 review2 P1 #2: idempotency triple for
+        # load_uploaded_model. Same model_name with a different path
+        # or sha is a NEW load, not a no-op.
+        self._uploaded_path: str | None = None
+        self._uploaded_sha: str | None = None
+        # OCT-113 v2 review2 P1 #3: snapshot of env vars we mutate
+        # so close()/failure paths can restore. None means "we
+        # haven't touched env yet". The dict's values capture the
+        # original env state — None means "var was unset" so we
+        # delete-on-restore rather than setting to empty.
+        self._prior_env: dict[str, str | None] | None = None
 
     def load_model(self, model_name: str) -> None:
         """Open the runtime and verify ``audio.transcription`` is
@@ -587,8 +598,28 @@ class NativeSttBackend:
 
         requested_model = model_name.lower()
         if self._runtime is not None:
-            if self._model_name.lower() == requested_model:
-                return  # idempotent — same model already loaded
+            # OCT-113 v2 review2 P1 #2: idempotency keyed on the
+            # FULL triple. Same model_name + same path + same sha →
+            # genuine no-op. Any change (re-downloaded file, new
+            # version pointed at the same slug, different sha) →
+            # this is a NEW load and we refuse silent-serve-stale.
+            same_name = self._model_name.lower() == requested_model
+            same_path = self._uploaded_path == artifact_path
+            same_sha = self._uploaded_sha == expected_sha256
+            if same_name and same_path and same_sha:
+                return  # genuine idempotent re-load
+            if same_name and (not same_path or not same_sha):
+                raise OctomilError(
+                    code=OctomilErrorCode.INVALID_INPUT,
+                    message=(
+                        f"native STT (uploaded): model "
+                        f"{requested_model!r} already loaded with a "
+                        f"different artifact_path or expected_sha256. "
+                        "Call close() before re-loading; the SDK won't "
+                        "silently keep serving stale bytes under the "
+                        "same slug."
+                    ),
+                )
             raise OctomilError(
                 code=OctomilErrorCode.INVALID_INPUT,
                 message=(
@@ -631,19 +662,24 @@ class NativeSttBackend:
                 ),
             )
 
-        # Set OCT_WHISPER_ALLOW_USER_ARTIFACTS so the runtime (if
-        # built with v2 support) skips its built-in digest registry
-        # and admits any whisper-shaped artifact whose passed
-        # ``artifact_digest`` matches the file's SHA.
-        os.environ[_WHISPER_ALLOW_USER_ARTIFACTS_ENV] = "1"
-        # Point the runtime at the user's artifact via the same env
-        # var the canonical path uses.
-        os.environ[_WHISPER_BIN_ENV] = artifact_path
+        # OCT-113 v2 review2 P1 #3: capture prior env values BEFORE
+        # mutating, so close() and failure paths can restore. We
+        # store the original value (or None for "was unset") so
+        # restore can delete-on-None rather than re-setting to empty.
+        # _set_env_for_uploaded handles the snapshot + set; we restore
+        # via _restore_env any time we raise after this point.
+        self._set_env_for_uploaded(artifact_path)
 
         self._model_name = requested_model
+        self._uploaded_path = artifact_path
+        self._uploaded_sha = expected_sha256
         try:
             self._runtime = NativeRuntime.open()
         except NativeRuntimeError as exc:
+            self._restore_env()
+            self._model_name = ""
+            self._uploaded_path = None
+            self._uploaded_sha = None
             raise _runtime_status_to_sdk_error(
                 exc.status,
                 "native STT (uploaded): failed to open runtime",
@@ -651,6 +687,10 @@ class NativeSttBackend:
             ) from exc
         except ImportError as exc:
             self._runtime = None
+            self._restore_env()
+            self._model_name = ""
+            self._uploaded_path = None
+            self._uploaded_sha = None
             raise OctomilError(
                 code=OctomilErrorCode.RUNTIME_UNAVAILABLE,
                 message=(f"native STT (uploaded): dylib not found ({exc})"),
@@ -658,7 +698,7 @@ class NativeSttBackend:
 
         if not _runtime_advertises_audio_transcription(self._runtime):
             last_error_lc = (self._runtime.last_error() or "").lower()
-            self.close()
+            self.close()  # restores env + clears all state
             # The runtime rejected our artifact. Without user-upload
             # support, this happens because the SHA isn't in the
             # built-in canonical registry. Surface a diagnostic that
@@ -694,7 +734,7 @@ class NativeSttBackend:
             )
             self._model.warm()
         except NativeRuntimeError as exc:
-            self.close()
+            self.close()  # restores env + clears all state
             raise _runtime_status_to_sdk_error(
                 exc.status,
                 (f"native STT (uploaded): failed to warm " f"{requested_model!r} model"),
@@ -705,6 +745,37 @@ class NativeSttBackend:
             requested_model,
             actual_digest[:12],
         )
+
+    def _set_env_for_uploaded(self, artifact_path: str) -> None:
+        """Snapshot prior values then set the user-upload env vars.
+
+        Called by ``load_uploaded_model``. ``close`` (or any failure
+        path that calls ``_restore_env`` / ``self.close()``) reverses
+        these mutations so subsequent canonical loads or other
+        backend instances in the same process don't inherit
+        ``OCTOMIL_WHISPER_BIN=<user_path>``.
+        """
+        if self._prior_env is None:
+            self._prior_env = {
+                _WHISPER_ALLOW_USER_ARTIFACTS_ENV: os.environ.get(_WHISPER_ALLOW_USER_ARTIFACTS_ENV),
+                _WHISPER_BIN_ENV: os.environ.get(_WHISPER_BIN_ENV),
+            }
+        os.environ[_WHISPER_ALLOW_USER_ARTIFACTS_ENV] = "1"
+        os.environ[_WHISPER_BIN_ENV] = artifact_path
+
+    def _restore_env(self) -> None:
+        """Reverse the env mutations applied by
+        ``_set_env_for_uploaded``. Idempotent — safe to call from
+        ``close()`` even when load_uploaded_model wasn't used.
+        """
+        if self._prior_env is None:
+            return
+        for key, prior in self._prior_env.items():
+            if prior is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = prior
+        self._prior_env = None
 
     def close(self) -> None:
         # Close the model BEFORE the runtime so oct_runtime_close
@@ -721,6 +792,17 @@ class NativeSttBackend:
             except Exception:  # noqa: BLE001
                 logger.warning("NativeSttBackend.close: runtime.close failed", exc_info=True)
             self._runtime = None
+        # OCT-113 v2 review2 P1 #3: restore the env vars
+        # load_uploaded_model mutated. Subsequent canonical loads or
+        # other backend instances in the same process now see the
+        # original OCTOMIL_WHISPER_BIN (or no env var at all if it
+        # wasn't set pre-load).
+        self._restore_env()
+        # Reset uploaded-mode bookkeeping so a future load via
+        # either load_model or load_uploaded_model starts clean.
+        self._model_name = ""
+        self._uploaded_path = None
+        self._uploaded_sha = None
 
     def __del__(self) -> None:
         try:
