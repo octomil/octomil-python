@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, AsyncIterator
 
 from .auth_config import PublishableKeyAuth
@@ -139,6 +140,190 @@ class FacadeEmbeddings:
             None,
             lambda: self._client.embed(model, input, timeout=timeout),
         )
+
+    # ------------------------------------------------------------------
+    # v0.1.14 — embeddings.image public facade
+    # ------------------------------------------------------------------
+    def image(
+        self,
+        image_bytes: bytes | bytearray | memoryview,
+        *,
+        mime: int,
+        deadline_ms: int = 300_000,
+    ) -> "ImageEmbedding":
+        """Compute a single image embedding via the native runtime.
+
+        Live on darwin-arm64 runtime with sherpa-onnx vendoring +
+        canonical Xenova ``SigLIP-base-patch16-224`` ``vision_model_uint8.onnx``
+        artifact at the path named by the
+        ``OCTOMIL_EMBEDDINGS_IMAGE_MODEL_PATH`` environment variable.
+        Returns a 768-dim float32 vector (SigLIP-base-patch16-224 output).
+
+        Raises :class:`octomil.runtime.native.OctomilUnsupportedError`
+        (subclass of :class:`NativeRuntimeError`, carries
+        ``capability="embeddings.image"`` + ``OCT_STATUS_UNSUPPORTED``)
+        on Linux/Android (v1 platform support; tracked at
+        ``docs/runtime/embeddings-image-abi-scope.md`` §12), on
+        darwin-arm64 builds whose ``oct_runtime_capabilities`` does not
+        advertise ``embeddings.image`` (e.g., dylib missing the
+        sherpa-onnx vendor or the SigLIP artifact env var unset), AND
+        on WebP inputs (vendored ``stb_image`` does not decode WebP;
+        callers must pre-decode to RGB8). Runtime-side decode / inference
+        failures surface as :class:`octomil.errors.OctomilError` with
+        ``INFERENCE_FAILED``.
+
+        Parameters
+        ----------
+        image_bytes
+            Encoded PNG / JPEG bytes OR a raw RGB8 uint8 pixel buffer.
+            For RGB8, must be exactly ``OCT_IMAGE_RGB8_FIXED_BYTES``
+            (= 224 × 224 × 3 = 150528). PNG / JPEG dimensions are
+            normalized engine-side via vendored stb_image; callers do
+            not need to pre-resize.
+        mime
+            One of ``OCT_IMAGE_MIME_PNG``, ``OCT_IMAGE_MIME_JPEG``,
+            ``OCT_IMAGE_MIME_RGB8``. ``OCT_IMAGE_MIME_UNKNOWN``
+            raises :class:`ValueError`. ``OCT_IMAGE_MIME_WEBP``
+            raises :class:`OctomilUnsupportedError` (WebP decode is
+            not yet wired into the vendored stb_image; pre-decode to
+            RGB8 if needed).
+        deadline_ms
+            Per-call poll deadline. Defaults to 5 minutes (same shape
+            as :class:`NativeEmbeddingsBackend`).
+
+        Returns
+        -------
+        ImageEmbedding
+            ``vector`` (list[float], 768 dims), ``n_dim``, ``model``
+            (the artifact path used by this session).
+        """
+        from .errors import OctomilError, OctomilErrorCode
+        from .runtime.native.capabilities import CAPABILITY_EMBEDDINGS_IMAGE
+        from .runtime.native.loader import (
+            OCT_IMAGE_MIME_RGB8,
+            OCT_IMAGE_MIME_UNKNOWN,
+            OCT_IMAGE_MIME_WEBP,
+            OCT_IMAGE_RGB8_FIXED_BYTES,
+            NativeRuntime,
+            NativeRuntimeError,
+            OctomilUnsupportedError,
+        )
+
+        if mime == OCT_IMAGE_MIME_UNKNOWN:
+            raise ValueError(
+                "embeddings.image: mime=OCT_IMAGE_MIME_UNKNOWN is a forward-compat "
+                "sentinel and never valid for callers — pass PNG, JPEG, or RGB8."
+            )
+        if mime == OCT_IMAGE_MIME_WEBP:
+            raise OctomilUnsupportedError(
+                CAPABILITY_EMBEDDINGS_IMAGE,
+                "embeddings.image: WebP not yet supported. The vendored stb_image "
+                "decoder in the v0.1.14 runtime does not include WebP. Pre-decode "
+                "to RGB8 (224×224, exactly OCT_IMAGE_RGB8_FIXED_BYTES = 150528 "
+                "uint8 bytes) and pass mime=OCT_IMAGE_MIME_RGB8 instead.",
+            )
+
+        # RGB8 has a fixed buffer size (224 * 224 * 3 = 150528). The
+        # runtime adapter would reject mismatched RGB8 too, but we
+        # pre-validate so callers see a precise error naming the
+        # constant rather than a generic UNSUPPORTED.
+        if mime == OCT_IMAGE_MIME_RGB8:
+            try:
+                n = len(image_bytes)  # type: ignore[arg-type]
+            except TypeError as exc:
+                raise ValueError(
+                    f"embeddings.image: RGB8 image_bytes must be a sized "
+                    f"bytes-like object; got {type(image_bytes).__name__}"
+                ) from exc
+            # memoryview with itemsize > 1 reports element count, not bytes.
+            if isinstance(image_bytes, memoryview):
+                n = image_bytes.nbytes
+            if n != OCT_IMAGE_RGB8_FIXED_BYTES:
+                raise ValueError(
+                    f"embeddings.image: RGB8 buffer must be exactly "
+                    f"OCT_IMAGE_RGB8_FIXED_BYTES = {OCT_IMAGE_RGB8_FIXED_BYTES} "
+                    f"bytes (224×224×3, canonical SigLIP-base-patch16-224 "
+                    f"input shape); got {n} bytes."
+                )
+
+        # Resolve the artifact path. The runtime adapter loads
+        # vision_model_uint8.onnx from this path; operators stage the
+        # file themselves — no model-fetch helper in v1.
+        model_path = os.environ.get("OCTOMIL_EMBEDDINGS_IMAGE_MODEL_PATH", "")
+
+        runtime: NativeRuntime | None = None
+        sess: Any = None
+        try:
+            runtime = NativeRuntime.open()
+            # Honest capability check up front so the caller sees
+            # OctomilUnsupportedError(CAPABILITY_EMBEDDINGS_IMAGE) on
+            # Linux/Android / dylibs missing sherpa-onnx, instead of
+            # a less specific session_open UNSUPPORTED.
+            advertised = runtime.capabilities().supported_capabilities
+            if CAPABILITY_EMBEDDINGS_IMAGE not in advertised:
+                raise OctomilUnsupportedError(
+                    CAPABILITY_EMBEDDINGS_IMAGE,
+                    f"embeddings.image is not advertised by the loaded runtime "
+                    f"(advertised={sorted(advertised)!r}). On darwin-arm64 this "
+                    f"means the dylib was built without sherpa-onnx OR the "
+                    f"OCTOMIL_EMBEDDINGS_IMAGE_MODEL_PATH artifact is missing. "
+                    f"On Linux/Android the capability is refused by the runtime "
+                    f"adapter (v1 platform support; see "
+                    f"docs/runtime/embeddings-image-abi-scope.md §12).",
+                )
+            sess = runtime.open_session(
+                capability=CAPABILITY_EMBEDDINGS_IMAGE,
+                model_uri=model_path,
+                locality="on_device",
+                policy_preset="private",
+            )
+            vector = sess.embeddings_image(image_bytes, mime=mime, deadline_ms=deadline_ms)
+        except OctomilUnsupportedError:
+            # OctomilUnsupportedError already subclasses NativeRuntimeError
+            # and carries .capability + OCT_STATUS_UNSUPPORTED — pass it
+            # through unchanged so capability-sensitive callers can catch
+            # precisely (matches the contract pinned in the
+            # test_runtime_native_image_bindings.py gate tests).
+            raise
+        except NativeRuntimeError as exc:
+            raise OctomilError(
+                code=OctomilErrorCode.INFERENCE_FAILED,
+                message=f"embeddings.image failed: {exc}",
+                cause=exc,
+            ) from exc
+        finally:
+            if sess is not None:
+                try:
+                    sess.close()
+                except Exception:  # noqa: BLE001
+                    pass
+            if runtime is not None:
+                try:
+                    runtime.close()
+                except Exception:  # noqa: BLE001
+                    pass
+
+        return ImageEmbedding(
+            vector=vector,
+            n_dim=len(vector),
+            model=model_path,
+        )
+
+
+@dataclass
+class ImageEmbedding:
+    """Result of a one-shot ``client.embeddings.image(...)`` call.
+
+    v0.1.14 — pairs with the darwin-arm64 native runtime adapter
+    (runtime PR #91) and the canonical Xenova SigLIP-base-patch16-224
+    ``vision_model_uint8.onnx`` artifact. The ``vector`` is a pooled
+    L2-normalized fp32 embedding suitable for downstream cosine
+    similarity / vector-index storage.
+    """
+
+    vector: list[float]
+    n_dim: int
+    model: str
 
 
 class Octomil:

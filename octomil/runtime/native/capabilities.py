@@ -92,6 +92,16 @@ DONE_NATIVE_CUTOVER_CAPABILITIES: frozenset[str] = frozenset(
 # oct_runtime_capabilities advertises it only when this runtime build's
 # build/artifact/digest/sidecar gates pass. These are live, not
 # scaffold, and not guaranteed to appear on every machine.
+#
+# v0.1.14: embeddings.image flipped from BLOCKED_WITH_PROOF to
+# LIVE_NATIVE_CONDITIONAL. Runtime PR #91 (89d8005) merged the
+# darwin-arm64 adapter — sherpa-onnx vendoring + Xenova SigLIP-base-
+# patch16-224 uint8 ONNX (`vision_model_uint8.onnx`). Linux/Android
+# remain refused by the runtime adapter; oct_runtime_capabilities
+# does not advertise embeddings.image on those platforms. See
+# docs/runtime/embeddings-image-abi-scope.md §12 for the platform
+# matrix. The Python SDK forwards refusal honestly via the existing
+# oct_runtime_capabilities advertisement gate in NativeSession.send_image.
 LIVE_NATIVE_CONDITIONAL_CAPABILITIES: frozenset[str] = frozenset(
     {
         CAPABILITY_AUDIO_DIARIZATION,
@@ -103,6 +113,7 @@ LIVE_NATIVE_CONDITIONAL_CAPABILITIES: frozenset[str] = frozenset(
         CAPABILITY_AUDIO_TTS_STREAM,
         CAPABILITY_AUDIO_VAD,
         CAPABILITY_CACHE_INTROSPECT,
+        CAPABILITY_EMBEDDINGS_IMAGE,
     }
 )
 
@@ -112,7 +123,6 @@ LIVE_NATIVE_CONDITIONAL_CAPABILITIES: frozenset[str] = frozenset(
 BLOCKED_WITH_PROOF_CAPABILITIES: frozenset[str] = frozenset(
     {
         CAPABILITY_AUDIO_REALTIME_SESSION,
-        CAPABILITY_EMBEDDINGS_IMAGE,
         CAPABILITY_INDEX_VECTOR_QUERY,
     }
 )

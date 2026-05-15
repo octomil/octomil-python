@@ -118,13 +118,13 @@ def test_live_native_conditional_set_is_exact():
         CAPABILITY_AUDIO_TTS_STREAM,
         CAPABILITY_AUDIO_VAD,
         CAPABILITY_CACHE_INTROSPECT,
+        CAPABILITY_EMBEDDINGS_IMAGE,
     }
 
 
 def test_blocked_with_proof_set_is_exact():
     assert BLOCKED_WITH_PROOF_CAPABILITIES == {
         CAPABILITY_AUDIO_REALTIME_SESSION,
-        CAPABILITY_EMBEDDINGS_IMAGE,
         CAPABILITY_INDEX_VECTOR_QUERY,
     }
 
