@@ -230,17 +230,17 @@ def _resolve_bin_asset_name(
                 f"Available flavors for {arch}: {available}\n"
                 f"Use --flavor to pick one of the available flavors."
             )
-        # Arch not in manifest at all — fall through to legacy for darwin-arm64,
-        # hard error for anything else (no legacy shape exists).
-        if arch != "darwin-arm64":
-            available_arches = sorted(platforms.keys())
-            raise SystemExit(
-                f"error: platform {arch!r} not available in this release.\n"
-                f"Available platforms: {available_arches}\n"
-                f"Check octomil-runtime release notes."
-            )
+        # Manifest is authoritative when present: if the host arch is not
+        # listed, do NOT silently fall through to the legacy v0.1.4 asset
+        # shape — that produces a misleading "missing legacy asset" error.
+        # Report the truthful "platform not available in this release" case.
+        available_arches = sorted(platforms.keys())
+        raise SystemExit(
+            f"error: Platform {arch!r} is not available in runtime release {version}. "
+            f"Available platforms: {', '.join(available_arches)}."
+        )
 
-    # Legacy fallback (no manifest, or arch not in manifest for darwin-arm64).
+    # Legacy fallback path (manifest is None, i.e. v0.1.4 and earlier).
     legacy = _legacy_asset_name(arch, version)
     if legacy is not None and legacy in assets:
         return legacy
@@ -323,7 +323,12 @@ def _verify_sha256(path: Path, sums_file: Path) -> None:
                 continue
             parts = line.split(maxsplit=1)
             if len(parts) == 2:
-                expected[parts[1]] = parts[0]
+                # `shasum -a 256 ./*.tar.gz` (used by release.yml's
+                # publish-release aggregation) emits `./<name>` rather
+                # than the bare filename. Normalize so both shapes
+                # resolve to the same key when we look up `path.name`.
+                filename = parts[1].lstrip().removeprefix("./")
+                expected[filename] = parts[0]
     name = path.name
     if name not in expected:
         raise SystemExit(f"error: {name} not listed in SHA256SUMS")
@@ -443,36 +448,64 @@ def main() -> int:
         # --- Manifest-driven lookup (v0.1.5+) with legacy fallback (v0.1.4) ---
         manifest = _load_manifest(assets, work, token)
         if manifest is not None:
-            print(f"  manifest found: v{manifest.get('version', '?')} ABI {manifest.get('abi', {})}")
+            # `version` already starts with 'v' (e.g. "v0.1.10"); print it
+            # verbatim instead of prepending another 'v'.
+            print(f"  manifest found: {manifest.get('version', '?')} ABI {manifest.get('abi', {})}")
         else:
             print("  no MANIFEST.json in release; using legacy asset name shape")
 
         bin_name = _resolve_bin_asset_name(manifest, assets, arch, flavor, version)
 
-        # Headers asset name: canonical shape is the same in both eras.
-        # Prefer manifest["headers"] when available; fall back to the
-        # well-known pattern.
-        if manifest is not None and manifest.get("headers"):
-            headers_name: str = manifest["headers"]
+        # Headers asset name resolution.
+        # The headers tarball is a dev-build convenience (used for SDK
+        # regeneration / cgo bindings). Some releases ship without it,
+        # signalled by ``MANIFEST.json.headers == null``. The runtime
+        # dylib is self-contained at the C ABI level, so a missing
+        # headers tarball does not block the dev fetch — we skip the
+        # headers download entirely and emit a one-line notice.
+        headers_name: str | None
+        if manifest is not None:
+            # Manifest is authoritative: a null `headers` field means
+            # this release deliberately does not package headers.
+            if "headers" in manifest:
+                headers_value = manifest.get("headers")
+                headers_name = headers_value if headers_value else None
+            else:
+                # Legacy manifest without a `headers` key — fall back to
+                # the canonical name pattern.
+                headers_name = f"octomil-runtime-headers-{version}.tar.gz"
         else:
             headers_name = f"octomil-runtime-headers-{version}.tar.gz"
 
+        if headers_name is None:
+            print(
+                f"  notice: release {version} does not package a headers tarball (MANIFEST.json headers=null); skipping headers fetch"
+            )
+
         sums_name = "SHA256SUMS"
 
-        for required in (bin_name, headers_name, sums_name):
+        required_assets: list[str] = [bin_name, sums_name]
+        if headers_name is not None:
+            required_assets.insert(1, headers_name)
+
+        for required in required_assets:
             if required not in assets:
                 raise SystemExit(f"error: release {version} missing asset {required!r}")
             _download(assets[required]["url"], work / required, token)
 
         _verify_sha256(work / bin_name, work / sums_name)
-        _verify_sha256(work / headers_name, work / sums_name)
+        if headers_name is not None:
+            _verify_sha256(work / headers_name, work / sums_name)
 
         if lib_dir.exists():
             shutil.rmtree(lib_dir)
         if inc_dir.exists():
             shutil.rmtree(inc_dir)
 
-        for tarball in (work / bin_name, work / headers_name):
+        tarballs_to_extract: list[Path] = [work / bin_name]
+        if headers_name is not None:
+            tarballs_to_extract.append(work / headers_name)
+        for tarball in tarballs_to_extract:
             _safe_extract(tarball, target_dir)
 
         # Locate the dylib after extraction (handles .dylib / .so / glob).
