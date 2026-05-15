@@ -63,7 +63,7 @@ import urllib.request
 from pathlib import Path
 
 REPO = "octomil/octomil-runtime"
-DEFAULT_VERSION = "v0.1.4"  # v0.1.4: native embeddings.text + chat-template control-token cleanup (OCT_EVENT_EMBEDDING_VECTOR + LlamaCppEmbeddingsSession + per-context pooling-type gate)
+DEFAULT_VERSION = "v0.1.10"  # v0.1.10: runtime release pin (manifest-driven, MANIFEST.json + per-flavor tarballs)
 CACHE_ROOT = Path.home() / ".cache" / "octomil-runtime"
 MANIFEST_ASSET_NAME = "MANIFEST.json"
 
