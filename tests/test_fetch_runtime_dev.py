@@ -310,7 +310,7 @@ def test_safe_extract_rejects_absolute_path(tmp_path: Path) -> None:
         frd._safe_extract(tb, target)
 
 
-def test_safe_extract_rejects_symlink(tmp_path: Path) -> None:
+def test_safe_extract_rejects_symlink_to_absolute_path(tmp_path: Path) -> None:
     tb = tmp_path / "sym.tar.gz"
     with tarfile.open(tb, "w:gz") as tf:
         info = tarfile.TarInfo(name="lib/evil")
@@ -320,8 +320,57 @@ def test_safe_extract_rejects_symlink(tmp_path: Path) -> None:
         tf.addfile(info, io.BytesIO(b""))
     target = tmp_path / "out"
     target.mkdir()
-    with pytest.raises(SystemExit, match="link entry"):
+    with pytest.raises(SystemExit, match="absolute target"):
         frd._safe_extract(tb, target)
+
+
+def test_safe_extract_rejects_symlink_escaping_target_dir(tmp_path: Path) -> None:
+    """Relative symlink whose target resolves OUTSIDE the extraction
+    dir must be refused — the classic CVE shape for archive escape."""
+    tb = tmp_path / "escape.tar.gz"
+    with tarfile.open(tb, "w:gz") as tf:
+        info = tarfile.TarInfo(name="lib/escape")
+        info.type = tarfile.SYMTYPE
+        info.linkname = "../../etc/passwd"
+        info.size = 0
+        tf.addfile(info, io.BytesIO(b""))
+    target = tmp_path / "out"
+    target.mkdir()
+    with pytest.raises(SystemExit, match="would escape"):
+        frd._safe_extract(tb, target)
+
+
+def test_safe_extract_allows_intra_archive_symlink(tmp_path: Path) -> None:
+    """macOS dylib chains (liboctomil-runtime.dylib ->
+    liboctomil-runtime.0.dylib -> liboctomil-runtime.0.1.10.dylib)
+    use symlinks within the archive. These resolve INSIDE the
+    extraction dir and must be allowed — refusing them blocks
+    v0.1.10 darwin-arm64 consumption entirely."""
+    tb = tmp_path / "dylib-chain.tar.gz"
+    with tarfile.open(tb, "w:gz") as tf:
+        # Real file
+        data = b"fake-dylib-body"
+        info = tarfile.TarInfo(name="lib/liboctomil-runtime.0.1.10.dylib")
+        info.size = len(data)
+        tf.addfile(info, io.BytesIO(data))
+        # Symlink to it
+        link = tarfile.TarInfo(name="lib/liboctomil-runtime.0.dylib")
+        link.type = tarfile.SYMTYPE
+        link.linkname = "liboctomil-runtime.0.1.10.dylib"
+        link.size = 0
+        tf.addfile(link, io.BytesIO(b""))
+        # Symlink to symlink
+        link2 = tarfile.TarInfo(name="lib/liboctomil-runtime.dylib")
+        link2.type = tarfile.SYMTYPE
+        link2.linkname = "liboctomil-runtime.0.dylib"
+        link2.size = 0
+        tf.addfile(link2, io.BytesIO(b""))
+    target = tmp_path / "out"
+    target.mkdir()
+    frd._safe_extract(tb, target)
+    assert (target / "lib" / "liboctomil-runtime.0.1.10.dylib").exists()
+    assert (target / "lib" / "liboctomil-runtime.0.dylib").is_symlink()
+    assert (target / "lib" / "liboctomil-runtime.dylib").is_symlink()
 
 
 def test_safe_extract_skips_appledouble(tmp_path: Path) -> None:

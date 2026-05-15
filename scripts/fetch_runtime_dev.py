@@ -279,15 +279,19 @@ def _safe_extract(tarball: Path, target_dir: Path) -> None:
     use because the package floor is 3.9). Refuses:
 
       * path-traversal / absolute paths,
-      * symlinks (any),
-      * hardlinks (any),
-      * character / block / fifo device entries,
-      * any link target that escapes ``target_dir``.
+      * symlinks/hardlinks whose target resolves OUTSIDE ``target_dir``,
+      * character / block / fifo device entries.
 
-    Filters out macOS AppleDouble (``._*``) metadata. The link-target
-    refusal is intentionally strict: SDK dev artifacts don't need
-    them and allowing one creates an arbitrary-write primitive. Codex
-    R2 blocker fix."""
+    Symlinks whose targets resolve INSIDE ``target_dir`` are allowed —
+    macOS dylib versioning chains (``liboctomil-runtime.dylib`` →
+    ``liboctomil-runtime.0.dylib`` → ``liboctomil-runtime.0.1.10.dylib``)
+    rely on intra-archive symlinks, and Linux ``.so`` SONAME chains
+    similarly. The escape check (resolved target must stay within
+    ``target_real``) is the same property as Python 3.12's
+    ``filter="data"`` and prevents the arbitrary-write primitive
+    that motivated the original strict refusal.
+
+    Filters out macOS AppleDouble (``._*``) metadata."""
     target_real = target_dir.resolve()
     with tarfile.open(tarball) as tf:
         for member in tf.getmembers():
@@ -296,22 +300,71 @@ def _safe_extract(tarball: Path, target_dir: Path) -> None:
                 continue
             if mname.startswith("/") or ".." in Path(mname).parts:
                 raise SystemExit(f"error: refusing to extract suspicious tar entry {mname!r} from {tarball.name}")
-            if member.issym() or member.islnk():
-                raise SystemExit(
-                    f"error: refusing to extract link entry {mname!r} "
-                    f"(symlinks/hardlinks not allowed in dev artifacts)."
-                )
             if member.ischr() or member.isblk() or member.isfifo() or member.isdev():
                 raise SystemExit(f"error: refusing to extract device entry {mname!r} from {tarball.name}")
-            # Final safety: confirm the resolved destination stays
-            # inside target_dir even if the member's name passes the
-            # textual checks above.
+            # Resolved destination must stay inside target_dir.
             dest = (target_dir / mname).resolve()
             try:
                 dest.relative_to(target_real)
             except ValueError as e:
                 raise SystemExit(f"error: tar entry {mname!r} would escape {target_dir} on resolution") from e
+            # For symlinks/hardlinks: resolve the link target against the
+            # destination's parent directory (relative target) or against
+            # the extraction root (absolute target — refused outright).
+            # The resolved target must also be inside target_dir.
+            if member.issym() or member.islnk():
+                linkname = member.linkname
+                if linkname.startswith("/"):
+                    raise SystemExit(
+                        f"error: refusing to extract link entry {mname!r} with absolute target {linkname!r}"
+                    )
+                # Symlink target is relative to the symlink's own directory.
+                # Hardlink target in tar is relative to the archive root.
+                if member.issym():
+                    link_dest = (dest.parent / linkname).resolve()
+                else:
+                    link_dest = (target_dir / linkname).resolve()
+                try:
+                    link_dest.relative_to(target_real)
+                except ValueError as e:
+                    raise SystemExit(
+                        f"error: link entry {mname!r} target {linkname!r} would escape {target_dir} on resolution"
+                    ) from e
             tf.extract(member, target_dir)
+
+
+def _flatten_archive_top_dir(target_dir: Path, bin_name: str) -> None:
+    """Move the contents of the bin tarball's top-level directory up one
+    level into ``target_dir``.
+
+    The release.yml ``Stage archive`` step packages each platform
+    tarball with a top-level directory matching the archive basename
+    (``liboctomil-runtime-<ver>-<flavor>-<arch>/lib/...``). The loader
+    expects ``<target>/lib/...``, so we flatten one level after
+    extraction. No-op if the expected subdirectory does not exist
+    (e.g. legacy v0.1.4 tarballs that lack the wrapper)."""
+    archive_basename = bin_name.removesuffix(".tar.gz")
+    top = target_dir / archive_basename
+    if not top.is_dir():
+        return
+    for child in top.iterdir():
+        dest = target_dir / child.name
+        if dest.exists():
+            # Headers tarball may have created `include/octomil/runtime.h`
+            # before the bin tarball is flattened. Merge directories;
+            # error out on file collisions (shouldn't happen in practice).
+            if child.is_dir() and dest.is_dir():
+                for inner in child.rglob("*"):
+                    if inner.is_file():
+                        rel = inner.relative_to(child)
+                        target_path = dest / rel
+                        target_path.parent.mkdir(parents=True, exist_ok=True)
+                        shutil.copy2(inner, target_path)
+                shutil.rmtree(child)
+                continue
+            raise SystemExit(f"error: flattening {archive_basename}/ would overwrite existing {dest}")
+        shutil.move(str(child), str(dest))
+    top.rmdir()
 
 
 def _verify_sha256(path: Path, sums_file: Path) -> None:
@@ -507,6 +560,14 @@ def main() -> int:
             tarballs_to_extract.append(work / headers_name)
         for tarball in tarballs_to_extract:
             _safe_extract(tarball, target_dir)
+
+        # The bin tarball produced by release.yml's `Stage archive` step
+        # wraps its payload in a top-level directory matching the archive
+        # basename (e.g. ``liboctomil-runtime-v0.1.10-chat-darwin-arm64/lib/...``).
+        # Flatten that one level so the loader finds ``<target>/lib/...``
+        # at the expected canonical path. The headers tarball has no such
+        # wrapper (it is ``include/octomil/...`` at the root).
+        _flatten_archive_top_dir(target_dir, bin_name)
 
         # Locate the dylib after extraction (handles .dylib / .so / glob).
         resolved_dylib = _find_dylib_in_lib(lib_dir)
