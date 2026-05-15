@@ -257,21 +257,70 @@ def test_send_image_raises_unsupported_when_capability_not_advertised(monkeypatc
     assert "not advertised" in str(err).lower()
 
 
-def test_embeddings_image_public_surface_raises_not_implemented(monkeypatch):
-    """The public-facing :meth:`embeddings_image` MUST raise
-    NotImplementedError citing BLOCKED_WITH_PROOF until the
-    SigLIP-base int8 adapter wires the path. This pins the
-    intent: no live image-embeddings API in this PR."""
+def test_embeddings_image_public_surface_forwards_to_send_image_and_polls(monkeypatch):
+    """v0.1.13: ``NativeSession.embeddings_image`` is no longer a
+    NotImplementedError placeholder. It MUST forward to
+    :meth:`send_image` and drain ``OCT_EVENT_EMBEDDING_VECTOR`` +
+    ``OCT_EVENT_SESSION_COMPLETED``, returning a list[float]. This
+    pins the post-flip contract paired with runtime PR #91."""
     from octomil.runtime.native import loader
 
-    owner = _StubOwner(advertised=("embeddings.image",))  # even if advertised
-    sess = _make_stub_session(monkeypatch, owner)
+    ffi = _build_ffi_with_cdef()
 
-    with pytest.raises(NotImplementedError) as exc_info:
-        sess.embeddings_image(b"\x89PNG\r\n\x1a\n\x00", mime=loader.OCT_IMAGE_MIME_PNG)
-    msg = str(exc_info.value)
-    assert "BLOCKED_WITH_PROOF" in msg
-    assert "embeddings.image" in msg
+    # Pretend the runtime advertises the capability AND the symbol is
+    # resolved.
+    sent = {}
+
+    def fake_send_image(handle, view_ptr):
+        sent["n_bytes"] = int(view_ptr.n_bytes)
+        sent["mime"] = int(view_ptr.mime)
+        return loader.OCT_STATUS_OK
+
+    monkeypatch.setitem(loader._OPTIONAL_IMAGE_SYMBOLS, "oct_session_send_image", fake_send_image)
+    monkeypatch.setattr(loader, "abi_version", lambda: (0, 11, 0))
+
+    owner = _StubOwner(advertised=("embeddings.image",))
+    sess = _make_stub_session(monkeypatch, owner)
+    sess._ffi = ffi
+
+    # Stub poll_event to emit one EMBEDDING_VECTOR followed by
+    # SESSION_COMPLETED(OK). We construct NativeEvent objects directly
+    # via the public constructor.
+    expected_vector = [0.1, 0.2, 0.3, 0.4]
+
+    from typing import Any as _Any
+
+    def _ev(ev_type: int, **extra: _Any) -> loader.NativeEvent:
+        return loader.NativeEvent(
+            type=ev_type,
+            version=loader.OCT_EVENT_VERSION,
+            monotonic_ns=0,
+            user_data_ptr=0,
+            **extra,
+        )
+
+    polls = iter(
+        [
+            _ev(loader.OCT_EVENT_SESSION_STARTED),
+            _ev(
+                loader.OCT_EVENT_EMBEDDING_VECTOR,
+                values=expected_vector,
+                n_dim=len(expected_vector),
+                index=0,
+                pooling_type=loader.OCT_EMBED_POOLING_IMAGE_CLIP,
+                is_normalized=True,
+            ),
+            _ev(
+                loader.OCT_EVENT_SESSION_COMPLETED,
+                terminal_status=loader.OCT_STATUS_OK,
+            ),
+        ]
+    )
+    monkeypatch.setattr(sess, "poll_event", lambda timeout_ms=0: next(polls))
+
+    result = sess.embeddings_image(b"\x89PNG\r\n\x1a\n\x00", mime=loader.OCT_IMAGE_MIME_PNG)
+    assert result == expected_vector
+    assert sent["mime"] == loader.OCT_IMAGE_MIME_PNG
 
 
 def _build_ffi_with_cdef():

@@ -2189,7 +2189,7 @@ class NativeSession:
                 terminal_status = int(ev.terminal_status)
                 break
         else:
-            raise TimeoutError(f"embeddings_image: timed out after {deadline_ms}ms " f"waiting for SESSION_COMPLETED")
+            raise TimeoutError(f"embeddings_image: timed out after {deadline_ms}ms waiting for SESSION_COMPLETED")
 
         if saw_error or terminal_status != OCT_STATUS_OK:
             raise NativeRuntimeError(
