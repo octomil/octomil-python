@@ -2030,7 +2030,21 @@ class NativeSession:
                 OCT_STATUS_INVALID_INPUT,
                 f"send_image: image_bytes must be a bytes-like object, got {type(image_bytes).__name__}",
             )
-        if len(image_bytes) == 0:
+        # Normalize to a byte-format memoryview. For non-byte memoryviews
+        # (e.g., memoryview over array.array('I') with itemsize=4),
+        # ``len(image_bytes)`` returns the ELEMENT count, not the BYTE
+        # count — using that for ``oct_image_view_t.n_bytes`` would
+        # under-report the buffer length by a factor of itemsize. The
+        # ``mv.cast("B")`` forces byte semantics so ``mv.nbytes`` equals
+        # the true byte length AND the downstream ``uint8_t*`` cast on
+        # ``ffi.from_buffer(mv)`` is safe regardless of original itemsize.
+        if isinstance(image_bytes, memoryview):
+            mv = image_bytes
+        else:
+            mv = memoryview(image_bytes)
+        mv = mv.cast("B")
+        n_bytes = mv.nbytes
+        if n_bytes == 0:
             raise NativeRuntimeError(
                 OCT_STATUS_INVALID_INPUT,
                 "send_image: image_bytes is empty (n_bytes=0)",
@@ -2046,8 +2060,8 @@ class NativeSession:
                 f"send_image: mime must be one of OCT_IMAGE_MIME_PNG/JPEG/WEBP/RGB8 (got {mime})",
             )
         view = ffi.new("oct_image_view_t*")
-        view.bytes = ffi.cast("const uint8_t*", ffi.from_buffer(image_bytes))
-        view.n_bytes = len(image_bytes)
+        view.bytes = ffi.cast("const uint8_t*", ffi.from_buffer(mv))
+        view.n_bytes = n_bytes
         view.mime = mime
         view._reserved0 = 0
         status = int(send_image_fn(self._handle, view))

@@ -274,6 +274,116 @@ def test_embeddings_image_public_surface_raises_not_implemented(monkeypatch):
     assert "embeddings.image" in msg
 
 
+def _build_ffi_with_cdef():
+    """Build a fresh cffi FFI parsing the loader's full cdef. Lets us
+    materialize a real ``oct_image_view_t*`` without loading the dylib."""
+    from cffi import FFI
+
+    from octomil.runtime.native import loader
+
+    ffi = FFI()
+    ffi.cdef(loader._CDEF)
+    return ffi
+
+
+def test_send_image_uses_byte_count_for_non_byte_memoryview(monkeypatch):
+    """Regression for the memoryview byte-count bug: when the caller
+    passes a ``memoryview`` whose underlying buffer has itemsize > 1
+    (e.g., ``memoryview(array.array('I', [...]))``), ``len(mv)`` is the
+    ELEMENT count, NOT the BYTE count. The C struct
+    ``oct_image_view_t.n_bytes`` MUST be the true byte length. This
+    test pins the fix by stubbing the C-call and asserting on the
+    populated view fields."""
+    import array
+
+    from octomil.runtime.native import loader
+
+    ffi = _build_ffi_with_cdef()
+
+    captured: dict[str, object] = {}
+
+    def fake_send_image(handle, view_ptr):
+        # cffi exposes the struct fields by attribute access on the
+        # dereferenced pointer; capture n_bytes for assertion below.
+        captured["n_bytes"] = int(view_ptr.n_bytes)
+        captured["mime"] = int(view_ptr.mime)
+        captured["handle"] = handle
+        return loader.OCT_STATUS_OK
+
+    monkeypatch.setitem(loader._OPTIONAL_IMAGE_SYMBOLS, "oct_session_send_image", fake_send_image)
+    monkeypatch.setattr(loader, "abi_version", lambda: (0, 11, 0))
+
+    owner = _StubOwner(advertised=("embeddings.image",))
+    sess = _make_stub_session(monkeypatch, owner)
+    sess._ffi = ffi  # real ffi so view = ffi.new(...) works
+
+    # array.array('I') -> itemsize=4 on every platform we ship to;
+    # len(mv) returns N (element count), but n_bytes MUST be N * 4.
+    arr = array.array("I", [0xDEADBEEF, 0xCAFEBABE, 0x12345678, 0xFEEDFACE])
+    mv = memoryview(arr)
+    assert mv.itemsize == 4
+    assert len(mv) == 4  # element count
+    assert mv.nbytes == 16  # byte count
+
+    sess.send_image(mv, mime=loader.OCT_IMAGE_MIME_RGB8)
+
+    # The fix: n_bytes is the TRUE byte length (16), not the element
+    # count (4). If this asserts 4 the bug regressed.
+    assert (
+        captured["n_bytes"] == 16
+    ), f"n_bytes should be byte count (16), got {captured['n_bytes']}; memoryview byte-count bug regressed"
+    assert captured["mime"] == loader.OCT_IMAGE_MIME_RGB8
+
+
+def test_send_image_byte_memoryview_round_trips_correctly(monkeypatch):
+    """Sanity: a plain ``memoryview(bytes)`` (itemsize=1) still
+    populates ``n_bytes`` correctly after the cast-to-byte
+    normalization."""
+    from octomil.runtime.native import loader
+
+    ffi = _build_ffi_with_cdef()
+    captured: dict[str, int] = {}
+
+    def fake_send_image(handle, view_ptr):
+        captured["n_bytes"] = int(view_ptr.n_bytes)
+        return loader.OCT_STATUS_OK
+
+    monkeypatch.setitem(loader._OPTIONAL_IMAGE_SYMBOLS, "oct_session_send_image", fake_send_image)
+    monkeypatch.setattr(loader, "abi_version", lambda: (0, 11, 0))
+
+    owner = _StubOwner(advertised=("embeddings.image",))
+    sess = _make_stub_session(monkeypatch, owner)
+    sess._ffi = ffi
+
+    payload = b"\x89PNG\r\n\x1a\n\x00\x00\x00\x0d"
+    sess.send_image(memoryview(payload), mime=loader.OCT_IMAGE_MIME_PNG)
+    assert captured["n_bytes"] == len(payload)
+
+
+def test_send_image_bytearray_uses_byte_count(monkeypatch):
+    """Sanity: bytearray path still populates ``n_bytes`` correctly
+    after the memoryview-cast normalization."""
+    from octomil.runtime.native import loader
+
+    ffi = _build_ffi_with_cdef()
+    captured: dict[str, int] = {}
+
+    def fake_send_image(handle, view_ptr):
+        captured["n_bytes"] = int(view_ptr.n_bytes)
+        return loader.OCT_STATUS_OK
+
+    monkeypatch.setitem(loader._OPTIONAL_IMAGE_SYMBOLS, "oct_session_send_image", fake_send_image)
+    monkeypatch.setattr(loader, "abi_version", lambda: (0, 11, 0))
+
+    owner = _StubOwner(advertised=("embeddings.image",))
+    sess = _make_stub_session(monkeypatch, owner)
+    sess._ffi = ffi
+
+    payload = bytearray(b"\xff\xd8\xff\xe0\x00\x10JFIF")
+    sess.send_image(payload, mime=loader.OCT_IMAGE_MIME_JPEG)
+    assert captured["n_bytes"] == len(payload)
+
+
 def test_unsupported_error_is_subclass_of_native_runtime_error():
     """Callers that already catch :class:`NativeRuntimeError` for the
     UNSUPPORTED status code MUST still catch
