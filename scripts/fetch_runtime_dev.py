@@ -63,7 +63,7 @@ import urllib.request
 from pathlib import Path
 
 REPO = "octomil/octomil-runtime"
-DEFAULT_VERSION = "v0.1.10"  # v0.1.10: runtime release pin (manifest-driven, MANIFEST.json + per-flavor tarballs)
+DEFAULT_VERSION = "v0.1.16"  # v0.1.16: runtime release pin (manifest-driven, MANIFEST.json + per-flavor tarballs; live SigLIP image embeddings on darwin stt)
 CACHE_ROOT = Path.home() / ".cache" / "octomil-runtime"
 MANIFEST_ASSET_NAME = "MANIFEST.json"
 
