@@ -53,27 +53,11 @@ jobs:
               --strip-components=1 \
               -C .contract
             echo "source=bundle" >> "$GITHUB_OUTPUT"
-          elif [ "$version" = "1.29.0" ]; then
-            # v1.29.0 was released before octomil-contracts#211 started
-            # publishing contract-bundle assets. Keep this one pinned
-            # fallback so the transition PR can pass; future versions must
-            # publish a bundle or this gate should fail.
-            echo "::warning::contract-bundle-${version}.tar.gz predates bundle publishing; falling back to pinned source checkout."
-            echo "source=source" >> "$GITHUB_OUTPUT"
           else
             echo "::error::contract-bundle-${version}.tar.gz is not published."
             echo "::error::Expected octomil-contracts release v${version} to include the SDK contract bundle."
             exit 1
           fi
-
-      - name: Fetch pre-bundle contracts source fallback
-        if: steps.contract.outputs.source != 'bundle'
-        uses: actions/checkout@v6
-        with:
-          repository: octomil/octomil-contracts
-          ref: v${{ steps.contract.outputs.version }}
-          path: .contract
-          token: ${{ secrets.CROSS_REPO_READ_TOKEN || github.token }}
 
       - name: Validate contract root
         env:
