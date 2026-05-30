@@ -80,19 +80,25 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.CROSS_REPO_READ_TOKEN || github.token }}
         run: |
-          SHA=$(gh run list --repo octomil/octomil-server --workflow ci.yml \
-                --branch main --status success --limit 1 --json headSha -q '.[0].headSha')
-          mkdir -p "$GITHUB_WORKSPACE/.snapshot"
-          if gh run download --repo octomil/octomil-server --name "openapi-snapshot-${SHA}" --dir "$GITHUB_WORKSPACE/.snapshot" 2>/dev/null; then
-            echo "Fetched snapshot for SHA $SHA"
-            ls -la "$GITHUB_WORKSPACE/.snapshot/"
-          else
-            echo "::warning::No openapi-snapshot artifact for $SHA — skipping strict check"
-            echo "SKIP_STRICT=1" >> $GITHUB_ENV
+          set -euo pipefail
+          SERVER_RUN=$(gh run list --repo octomil/octomil-server --workflow ci.yml \
+                --branch main --status success --limit 1 --json databaseId,headSha \
+                -q '.[0] | "\(.databaseId) \(.headSha)"')
+          read -r RUN_ID SHA <<< "$SERVER_RUN"
+          if [ -z "${RUN_ID:-}" ] || [ -z "${SHA:-}" ] || [ "$RUN_ID" = "null" ]; then
+            echo "::error::Could not resolve a successful octomil-server ci.yml run. Check CROSS_REPO_READ_TOKEN actions:read access."
+            exit 1
           fi
+          mkdir -p "$GITHUB_WORKSPACE/.snapshot"
+          if ! gh run download "$RUN_ID" --repo octomil/octomil-server --name "openapi-snapshot-${SHA}" --dir "$GITHUB_WORKSPACE/.snapshot"; then
+            echo "::error::Could not download openapi-snapshot-${SHA} from octomil-server run ${RUN_ID}. Check artifact publication and CROSS_REPO_READ_TOKEN actions:read access."
+            exit 1
+          fi
+          test -f "$GITHUB_WORKSPACE/.snapshot/openapi-snapshot.json"
+          echo "Fetched snapshot for SHA $SHA from server run $RUN_ID"
+          ls -la "$GITHUB_WORKSPACE/.snapshot/"
 
       - name: Strict spec->server gate (this SDK's contracts SHA has a real server route)
-        if: env.SKIP_STRICT != '1'
         run: |
           # Verify every contract method this SDK was generated against
           # has a real server route. Without this, the SDK could ship
