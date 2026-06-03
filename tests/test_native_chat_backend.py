@@ -5,14 +5,14 @@ Per the v0.1.2 cutover spec these tests must prove:
      NOT the legacy ``LlamaCppBackend``.
   2. The legacy ``LlamaCppBackend`` constructor is NOT called for
      planner-selected native chat.
-  3. Unsupported request features (grammar, json_mode,
-     enable_thinking, streaming) raise bounded ``OctomilError`` —
-     no silent fallback to the Python path.
-  4. The product flow does NOT require ``OCTOMIL_LLAMA_CPP_GGUF``;
+  3. Unsupported request features (grammar, json_mode) raise bounded
+     ``OctomilError`` — no silent fallback to the Python path.
+  4. Streaming uses the native runtime event stream.
+  5. The product flow does NOT require ``OCTOMIL_LLAMA_CPP_GGUF``;
      GGUF resolution comes from the PrepareManager-materialized
      ``model_dir``.
-  5. Cloud / non-GGUF routes are unchanged (sanity smoke).
-  6. The cached ``NativeModel`` is reused across requests on the
+  6. Cloud / non-GGUF routes are unchanged (sanity smoke).
+  7. The cached ``NativeModel`` is reused across requests on the
      same backend instance.
 
 Most tests are GGUF-gated (need a real artifact for end-to-end
@@ -200,26 +200,54 @@ async def test_native_chat_backend_generate_stream_end_to_end():
 
 
 @pytest.mark.asyncio
-async def test_native_chat_backend_streaming_rejects_enable_thinking():
-    """Cutover follow-up #72 R2 Codex: gate parity — the streaming
-    path must reject `enable_thinking` (Qwen3 / OpenClaw chain-of-
-    thought toggle) the same way `generate()` does. Pre-fix the
-    streaming path could have skipped the gate; pin it here."""
-    from octomil.errors import OctomilError, OctomilErrorCode
+async def test_native_chat_backend_streaming_forwards_enable_thinking_false():
+    """The native runtime now supports Qwen-style thinking control, so
+    streaming must forward ``enable_thinking=False`` to ``send_chat``."""
+    from octomil.runtime.native.chat_backend import NativeChatBackend
+    from octomil.runtime.native.loader import OCT_EVENT_SESSION_COMPLETED, OCT_STATUS_OK
     from octomil.serve.types import GenerationRequest
 
-    backend = _make_unloaded_backend()
+    sent: dict[str, Any] = {}
+
+    class _FakeEvent:
+        type = OCT_EVENT_SESSION_COMPLETED
+        terminal_status = OCT_STATUS_OK
+        text = ""
+
+    class _FakeSession:
+        def send_chat(self, messages, **kwargs):  # noqa: ANN001
+            sent["messages"] = messages
+            sent["kwargs"] = kwargs
+
+        def poll_event(self, *_a: Any, **_k: Any) -> Any:
+            return _FakeEvent()
+
+        def close(self) -> None:
+            return None
+
+    class _FakeRuntime:
+        def open_session(self, **_k: Any) -> Any:
+            return _FakeSession()
+
+        def last_error(self) -> str:
+            return ""
+
+    backend = NativeChatBackend()
+    backend._runtime = _FakeRuntime()  # type: ignore[assignment]
+    backend._model = object()  # type: ignore[assignment]
     req = GenerationRequest(
         model="x.gguf",
         messages=[{"role": "user", "content": "hi"}],
         max_tokens=8,
-        stream=True,
-        enable_thinking=True,
+        enable_thinking=False,
     )
-    with pytest.raises(OctomilError) as exc_info:
-        async for _chunk in backend.generate_stream(req):
-            pass
-    assert exc_info.value.code == OctomilErrorCode.UNSUPPORTED_MODALITY
+    chunks = []
+    async for chunk in backend.generate_stream(req):
+        chunks.append(chunk)
+    assert chunks and chunks[-1].finish_reason == "stop"
+    assert sent["messages"] == [{"role": "user", "content": "hi"}]
+    assert sent["kwargs"]["max_tokens"] == 8
+    assert sent["kwargs"]["enable_thinking"] is False
 
 
 @pytest.mark.asyncio
@@ -429,6 +457,103 @@ def test_native_chat_backend_metrics_collect_cache_and_latency_telemetry():
     # total_duration_ms prefers runtime-reported total_latency_ms.
     assert metrics.total_duration_ms == 180.0
     assert metrics.total_tokens == 1
+
+
+def test_native_chat_backend_retries_template_failure_with_plain_prompt():
+    """Compatibility guard for older native dylibs: if a runtime still
+    reports a llama.cpp chat-template application failure, the Python
+    backend retries the same request once as a plain prompt instead of
+    surfacing the raw template error."""
+    from octomil.runtime.native.chat_backend import NativeChatBackend
+    from octomil.runtime.native.loader import (
+        OCT_EVENT_ERROR,
+        OCT_EVENT_SESSION_COMPLETED,
+        OCT_EVENT_TRANSCRIPT_CHUNK,
+        OCT_STATUS_INVALID_INPUT,
+        OCT_STATUS_OK,
+    )
+    from octomil.serve.types import GenerationRequest
+
+    class _Ev:
+        def __init__(self, **kw: Any) -> None:
+            self.type = kw["type"]
+            self.text = kw.get("text", "")
+            self.terminal_status = kw.get("terminal_status", 0)
+            self.cache_saved_tokens = 0
+            self.setup_ms = 0.0
+            self.engine_first_chunk_ms = 0.0
+            self.queued_ms = 0.0
+            self.total_latency_ms = 0.0
+
+    sent: dict[str, Any] = {"send_chat": 0, "plain_prompt": ""}
+
+    class _TemplateFailSession:
+        def __init__(self) -> None:
+            self._events = iter(
+                [
+                    _Ev(type=OCT_EVENT_ERROR),
+                    _Ev(type=OCT_EVENT_SESSION_COMPLETED, terminal_status=OCT_STATUS_INVALID_INPUT),
+                ]
+            )
+
+        def send_chat(self, *_a: Any, **_k: Any) -> None:
+            sent["send_chat"] += 1
+
+        def poll_event(self, *_a: Any, **_k: Any) -> Any:
+            return next(self._events)
+
+        def close(self) -> None:
+            return None
+
+    class _PlainPromptSession:
+        def __init__(self) -> None:
+            self._events = iter(
+                [
+                    _Ev(type=OCT_EVENT_TRANSCRIPT_CHUNK, text="ok"),
+                    _Ev(type=OCT_EVENT_SESSION_COMPLETED, terminal_status=OCT_STATUS_OK),
+                ]
+            )
+
+        def send_text(self, prompt: str) -> None:
+            sent["plain_prompt"] = prompt
+
+        def poll_event(self, *_a: Any, **_k: Any) -> Any:
+            return next(self._events)
+
+        def close(self) -> None:
+            return None
+
+    class _FakeRuntime:
+        def __init__(self) -> None:
+            self._sessions = [_TemplateFailSession(), _PlainPromptSession()]
+
+        def open_session(self, **_k: Any) -> Any:
+            return self._sessions.pop(0)
+
+        def last_error(self) -> str:
+            return "llama_cpp.chat_template: llama_chat_apply_template failed (len -1)"
+
+    backend = NativeChatBackend()
+    backend._runtime = _FakeRuntime()  # type: ignore[assignment]
+    backend._model = object()  # type: ignore[assignment]
+    backend._model_name = "gemma-4-e4b-it-q3_k_m.gguf"  # noqa: SLF001
+
+    req = GenerationRequest(
+        model="gemma",
+        messages=[
+            {"role": "system", "content": "Translate only."},
+            {"role": "user", "content": "Hold my hand"},
+        ],
+        max_tokens=8,
+    )
+    text, metrics = backend.generate(req)
+
+    assert text == "ok"
+    assert metrics.total_tokens == 1
+    assert sent["send_chat"] == 1
+    assert "System:\nTranslate only." in sent["plain_prompt"]
+    assert "User:\nHold my hand" in sent["plain_prompt"]
+    assert sent["plain_prompt"].endswith("Assistant:\n")
 
 
 def test_native_chat_backend_get_verbose_metadata_surfaces_telemetry():
@@ -758,22 +883,50 @@ def test_native_chat_backend_rejects_json_mode():
     assert exc_info.value.code == OctomilErrorCode.UNSUPPORTED_MODALITY
 
 
-def test_native_chat_backend_rejects_enable_thinking():
-    from octomil.errors import OctomilError, OctomilErrorCode
+def test_native_chat_backend_forwards_enable_thinking_false():
+    from unittest.mock import MagicMock
+
+    from octomil.runtime.native.chat_backend import NativeChatBackend
+    from octomil.runtime.native.loader import OCT_EVENT_SESSION_COMPLETED, OCT_STATUS_OK
     from octomil.serve.types import GenerationRequest
 
-    backend = _make_unloaded_backend()
-    backend._runtime = object()  # noqa: SLF001
-    backend._model = object()  # noqa: SLF001
+    backend = NativeChatBackend()
+    fake_session = MagicMock()
+    sent: dict[str, object] = {}
+
+    def _fake_send_chat(messages, **kwargs):  # noqa: ANN001
+        sent["messages"] = messages
+        sent["kwargs"] = kwargs
+
+    fake_session.send_chat.side_effect = _fake_send_chat
+    completed_ev = MagicMock()
+    completed_ev.type = OCT_EVENT_SESSION_COMPLETED
+    completed_ev.terminal_status = OCT_STATUS_OK
+    completed_ev.text = ""
+    fake_session.poll_event.return_value = completed_ev
+    fake_session.close.return_value = None
+
+    fake_runtime = MagicMock()
+    fake_runtime.open_session.return_value = fake_session
+    fake_runtime.last_error.return_value = ""
+
+    backend._runtime = fake_runtime  # noqa: SLF001
+    backend._model = MagicMock()  # noqa: SLF001
     req = GenerationRequest(
         model="x.gguf",
         messages=[{"role": "user", "content": "hi"}],
         max_tokens=8,
-        enable_thinking=True,
+        enable_thinking=False,
     )
-    with pytest.raises(OctomilError) as exc_info:
-        backend.generate(req)
-    assert exc_info.value.code == OctomilErrorCode.UNSUPPORTED_MODALITY
+    text, metrics = backend.generate(req)
+
+    fake_session.send_chat.assert_called_once()
+    assert sent["messages"] == [{"role": "user", "content": "hi"}]
+    kwargs = sent["kwargs"]
+    assert kwargs["max_tokens"] == 8
+    assert kwargs["enable_thinking"] is False
+    assert isinstance(text, str)
+    assert metrics.total_tokens == 0
 
 
 @pytest.mark.asyncio

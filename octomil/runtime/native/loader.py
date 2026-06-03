@@ -180,11 +180,9 @@ OCT_EMBED_POOLING_RANK: int = 4
 # audio.diarization speaker_id sentinel.
 OCT_DIARIZATION_SPEAKER_UNKNOWN: int = 65535
 
-# v0.1.1 — bumped lockstep with runtime.h. session_config v=3 adds
-# the appended `oct_model_t* model` field; chat.completion sessions
-# REQUIRE non-NULL config.model on v=3 (runtime returns INVALID_INPUT
-# otherwise — bindings MUST upgrade or stay on non-chat capabilities).
-OCT_SESSION_CONFIG_VERSION: int = 3
+# v0.1.18 — bumped lockstep with runtime.h. session_config v=4 adds
+# STT language/task hints after the v3 `oct_model_t* model` field.
+OCT_SESSION_CONFIG_VERSION: int = 4
 OCT_EVENT_VERSION: int = 2
 
 # v0.4 step 1 — model lifecycle config struct (unchanged in v0.1.1).
@@ -841,6 +839,9 @@ typedef struct {
      * Caller retains ownership; the binding MUST keep the model
      * alive until the session has been closed. */
     oct_model_t*   model;
+    /* v0.1.18 (session_config v=4) — STT decode hints. NULL ok. */
+    const char*    language;
+    const char*    transcription_task;
 } oct_session_config_t;
 
 typedef struct {
@@ -1395,6 +1396,9 @@ class NativeRuntime:
         # non-NULL model on a v=3 session_config. Other capabilities
         # may pass model=None and resolve via model_uri (slice-2A).
         model: "NativeModel | None" = None,
+        # v0.1.18 — STT decode controls. Non-STT engines ignore these.
+        language: str | None = None,
+        transcription_task: str | None = None,
     ) -> "NativeSession":
         """Open a session against this runtime.
 
@@ -1481,6 +1485,8 @@ class NativeRuntime:
             cfg.model = model._handle
         else:
             cfg.model = ffi.NULL
+        cfg.language = _cstr(language) if language else ffi.NULL
+        cfg.transcription_task = _cstr(transcription_task) if transcription_task else ffi.NULL
         out = ffi.new("oct_session_t**")
         status = int(lib.oct_session_open(self._handle, cfg, out))
         if status != OCT_STATUS_OK:
@@ -2231,6 +2237,7 @@ class NativeSession:
         max_completion_tokens: int | None = None,
         temperature: float | None = None,
         top_p: float | None = None,
+        enable_thinking: bool | None = None,
     ) -> None:
         """v0.1.2: send a `chat.completion` turn with caller-controlled
         generation options.
@@ -2269,6 +2276,10 @@ class NativeSession:
         top_p
             v0.1.2 ships greedy-only; only 1.0 is accepted. Non-1.0
             values reject UNSUPPORTED.
+        enable_thinking
+            Optional model-template control for reasoning models such as
+            Qwen3. ``False`` asks the runtime to prefill a closed thinking
+            block when the embedded chat template supports that variable.
         """
         import json as _json
 
@@ -2281,6 +2292,8 @@ class NativeSession:
             options["temperature"] = float(temperature)
         if top_p is not None:
             options["top_p"] = float(top_p)
+        if enable_thinking is not None:
+            options["enable_thinking"] = bool(enable_thinking)
         payload: dict[str, Any] = {"messages": messages}
         if options:
             payload["options"] = options

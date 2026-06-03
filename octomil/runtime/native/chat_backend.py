@@ -26,6 +26,8 @@ Hard rules (per the cutover spec):
 2. Native supports the v0.1.2 subset only:
      - messages with roles ∈ {system, user, assistant}
      - max_tokens / max_completion_tokens (1..n_ctx=4096)
+     - enable_thinking (optional bool; runtime applies model-template
+       support when available)
      - temperature (0.0 only — greedy)
      - top_p (1.0 only — greedy)
    Anything else is a bounded ``INVALID_INPUT`` (caller-misuse) or
@@ -93,6 +95,17 @@ _SUPPORTED_ROLES: frozenset[str] = frozenset({"system", "user", "assistant"})
 # metrics / planner candidate lists make the cutover visible.
 _BACKEND_NAME = "native-llama-cpp"
 _GGUF_MAGIC = b"GGUF"
+_CHAT_TEMPLATE_FAILURE_MARKERS = (
+    "llama_chat_apply_template",
+    "chat_template",
+    "apply_template",
+    "apply template",
+)
+
+
+class _ChatTemplateFailure(RuntimeError):
+    """Internal signal that the runtime failed before generation while
+    applying an embedded llama.cpp chat template."""
 
 
 def _looks_like_gguf_file(path: str) -> bool:
@@ -177,6 +190,36 @@ def _validate_messages_for_native(messages: list[dict[str, Any]]) -> list[dict[s
     return cleaned
 
 
+def _is_chat_template_failure(message: str) -> bool:
+    message_lc = (message or "").lower()
+    return any(marker in message_lc for marker in _CHAT_TEMPLATE_FAILURE_MARKERS)
+
+
+def _messages_to_plain_prompt(messages: list[dict[str, str]]) -> str:
+    """Flatten chat messages into a conservative plain completion prompt.
+
+    Used only as a native fallback when llama.cpp rejects the model's
+    embedded chat template before generation. This keeps the same runtime
+    and warmed model while bypassing template application for models whose
+    GGUF metadata is ahead of the native adapter.
+    """
+    labels = {
+        "system": "System",
+        "user": "User",
+        "assistant": "Assistant",
+    }
+    parts: list[str] = []
+    for message in messages:
+        content = message["content"].strip()
+        if not content:
+            continue
+        label = labels.get(message["role"], message["role"].title())
+        parts.append(f"{label}:\n{content}")
+    if not messages or messages[-1]["role"] != "assistant":
+        parts.append("Assistant:")
+    return "\n\n".join(parts).strip() + "\n"
+
+
 def _gate_unsupported_request_features(request: GenerationRequest) -> None:
     """Reject request shapes the v0.1.2 native runtime cannot serve.
     The planner SHOULD have routed these elsewhere; if execution
@@ -198,14 +241,10 @@ def _gate_unsupported_request_features(request: GenerationRequest) -> None:
             code=OctomilErrorCode.UNSUPPORTED_MODALITY,
             message="json_mode is not supported by the native chat backend in v0.1.2",
         )
-    # request.enable_thinking is a model-side feature (chain-of-thought
-    # tag handling) — not part of the v0.1.2 native subset. Reject
-    # explicitly so callers don't assume it works.
-    if request.enable_thinking is not None:
-        raise OctomilError(
-            code=OctomilErrorCode.UNSUPPORTED_MODALITY,
-            message="enable_thinking is not supported by the native chat backend in v0.1.2",
-        )
+    # request.enable_thinking is a model-side chat-template hint. Newer
+    # native runtimes honor it for templates that expose the variable;
+    # older runtimes will reject the unknown option and map to a bounded
+    # INVALID_INPUT/UNSUPPORTED error from the event stream.
     # NOTE on temperature / top_p: v0.1.2 ships greedy-only on the
     # runtime side, but the SDK's GenerationRequest defaults
     # temperature=0.7 and top_p=1.0 — meaning every default-shape
@@ -407,6 +446,36 @@ class NativeChatBackend(InferenceBackend):
         deadline_seconds = self._resolve_deadline_seconds(request)
 
         try:
+            return self._generate_once(
+                request,
+                clean_messages=clean_messages,
+                deadline_seconds=deadline_seconds,
+                plain_prompt_fallback=False,
+            )
+        except _ChatTemplateFailure as exc:
+            logger.warning(
+                "NativeChatBackend: chat template application failed for %s; retrying with plain prompt fallback: %s",
+                self._model_name or request.model,
+                exc,
+            )
+            return self._generate_once(
+                request,
+                clean_messages=clean_messages,
+                deadline_seconds=deadline_seconds,
+                plain_prompt_fallback=True,
+            )
+
+    def _generate_once(
+        self,
+        request: GenerationRequest,
+        *,
+        clean_messages: list[dict[str, str]],
+        deadline_seconds: float,
+        plain_prompt_fallback: bool,
+    ) -> tuple[str, InferenceMetrics]:
+        assert self._runtime is not None
+        assert self._model is not None
+        try:
             sess = self._runtime.open_session(
                 capability="chat.completion",
                 locality="on_device",
@@ -442,15 +511,25 @@ class NativeChatBackend(InferenceBackend):
                     request.top_p,
                 )
             try:
-                sess.send_chat(
-                    clean_messages,
-                    max_tokens=int(request.max_tokens),
-                )
+                if plain_prompt_fallback:
+                    sess.send_text(_messages_to_plain_prompt(clean_messages))
+                else:
+                    chat_kwargs: dict[str, Any] = {"max_tokens": int(request.max_tokens)}
+                    if request.enable_thinking is not None:
+                        chat_kwargs["enable_thinking"] = request.enable_thinking
+                    sess.send_chat(clean_messages, **chat_kwargs)
             except NativeRuntimeError as exc:
+                last_error = getattr(exc, "last_error", "") or str(exc)
+                if not plain_prompt_fallback and _is_chat_template_failure(last_error):
+                    raise _ChatTemplateFailure(last_error) from exc
                 raise _runtime_status_to_sdk_error(
                     exc.status,
-                    "native chat backend send_chat failed",
-                    last_error=getattr(exc, "last_error", ""),
+                    (
+                        "native chat backend plain-prompt fallback failed"
+                        if plain_prompt_fallback
+                        else "native chat backend send_chat failed"
+                    ),
+                    last_error=last_error,
                 ) from exc
 
             # Drain events. The runtime emits one TRANSCRIPT_CHUNK per
@@ -529,9 +608,15 @@ class NativeChatBackend(InferenceBackend):
                 )
 
             if saw_error or terminal_status != OCT_STATUS_OK:
+                if not plain_prompt_fallback and _is_chat_template_failure(error_message):
+                    raise _ChatTemplateFailure(error_message)
                 raise _runtime_status_to_sdk_error(
                     terminal_status if terminal_status != OCT_STATUS_OK else OCT_STATUS_INVALID_INPUT,
-                    "native chat backend reported error during generation",
+                    (
+                        "native chat backend reported error during plain-prompt fallback"
+                        if plain_prompt_fallback
+                        else "native chat backend reported error during generation"
+                    ),
                     last_error=error_message,
                 )
 
@@ -622,8 +707,12 @@ class NativeChatBackend(InferenceBackend):
                     request.top_p,
                 )
             try:
+                chat_kwargs: dict[str, Any] = {"max_tokens": int(request.max_tokens)}
+                if request.enable_thinking is not None:
+                    chat_kwargs["enable_thinking"] = request.enable_thinking
                 await loop.run_in_executor(
-                    self._executor, lambda: sess.send_chat(clean_messages, max_tokens=int(request.max_tokens))
+                    self._executor,
+                    lambda: sess.send_chat(clean_messages, **chat_kwargs),
                 )
             except NativeRuntimeError as exc:
                 raise _runtime_status_to_sdk_error(
