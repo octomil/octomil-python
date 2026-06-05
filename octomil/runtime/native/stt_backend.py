@@ -202,6 +202,20 @@ _WHISPER_ARTIFACTS: dict[str, _WhisperArtifactSpec] = {
         sha256="60ed5bc3dd14eea856493d334349b405782ddcaf0028d4b5df4088345fba2efe",
         size_bytes=147_951_465,
     ),
+    "whisper-small": _WhisperArtifactSpec(
+        model_name="whisper-small",
+        size_name="small",
+        filename="ggml-small.bin",
+        sha256="1be3a9b2063867b937e64e2ec7483364a79917e157fa98c5d94b5c1fffea987b",
+        size_bytes=487_601_967,
+    ),
+    "whisper-medium": _WhisperArtifactSpec(
+        model_name="whisper-medium",
+        size_name="medium",
+        filename="ggml-medium.bin",
+        sha256="6c14d5adee5f86394037b4e4e8b59f1673b6cee10e3cf0b11bbdbee79c156208",
+        size_bytes=1_533_763_059,
+    ),
 }
 _SUPPORTED_MODEL_NAMES: tuple[str, ...] = tuple(_WHISPER_ARTIFACTS)
 
@@ -585,9 +599,10 @@ class NativeSttBackend:
         """Open the runtime and verify ``audio.transcription`` is
         advertised. Idempotent — a second call is a no-op.
 
-        W1 hard rule: the SDK accepts exactly the native whisper.cpp
-        model names backed by runtime registry rows (``whisper-tiny``
-        and ``whisper-base``). Other whisper sizes are NOT supported;
+        The SDK accepts exactly the native whisper.cpp model names
+        backed by runtime registry rows (``whisper-tiny``,
+        ``whisper-base``, ``whisper-small``, and ``whisper-medium``).
+        Other whisper sizes are NOT supported;
         silently substituting one registered artifact for another
         would be a correctness bug (different model identity means
         different WER / RTF profile).
@@ -596,7 +611,7 @@ class NativeSttBackend:
         ------
         OctomilError
             ``UNSUPPORTED_MODALITY`` if the requested model name is
-            not one of ``whisper-tiny`` or ``whisper-base``.
+            not one of the registered native sizes.
             ``RUNTIME_UNAVAILABLE`` if the runtime fails to open or
             does not advertise ``audio.transcription`` (operator
             forgot ``OCTOMIL_WHISPER_BIN`` or the dylib was built
@@ -615,7 +630,7 @@ class NativeSttBackend:
                 message=(
                     f"native STT backend: model {model_name!r} is not supported by the native runtime. "
                     f"Supported native sizes are {', '.join(_SUPPORTED_MODEL_NAMES)}. "
-                    "whisper-small, whisper-medium, and whisper-large-v3 are not enabled."
+                    "whisper-large-v3 is not enabled."
                 ),
             )
         if self._runtime is not None:
@@ -678,7 +693,8 @@ class NativeSttBackend:
                     "native STT backend: runtime does not advertise "
                     "'audio.transcription'. Check OCTOMIL_WHISPER_BIN "
                     "(must point at a registered ggml-tiny.bin or "
-                    "ggml-base.bin artifact) and that the dylib was built with "
+                    "ggml-base.bin, ggml-small.bin, or ggml-medium.bin artifact) "
+                    "and that the dylib was built with "
                     "OCT_ENABLE_ENGINE_WHISPER_CPP=ON."
                 ),
             )

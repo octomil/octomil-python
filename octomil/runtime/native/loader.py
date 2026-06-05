@@ -207,13 +207,14 @@ OCT_SESSION_CONFIG_VERSION: int = 6
 # handshake — mirrors runtime.h OCT_EVENT_VERSION 3. The end_input *symbol*
 # (minor 12) is what raises _REQUIRED_ABI_MINOR; partials ride this.
 #
-# v0.1.25 bump 3->4: appends avg_logprob + no_speech_prob to
-# data.transcript_segment (per-segment decode diagnostics). Tail-additive —
-# existing field offsets are unchanged and the out->size handshake reports
-# the larger event, so an EVENT_VERSION-3 binding reading the older shape is
-# unaffected. No new ABI symbol, so _REQUIRED_ABI_MINOR stays 12. Mirrors
-# runtime.h OCT_EVENT_VERSION 4.
-OCT_EVENT_VERSION: int = 4
+# v0.1.29 bump 4->5: appends final-segment provenance diagnostics to
+# data.transcript_segment. Tail-additive; no new ABI symbol, so
+# _REQUIRED_ABI_MINOR stays 12. Mirrors runtime.h OCT_EVENT_VERSION 5.
+OCT_EVENT_VERSION: int = 5
+
+OCT_TRANSCRIPT_SOURCE_NORMAL: int = 0
+OCT_TRANSCRIPT_SOURCE_TAIL_RECOVERY: int = 1
+OCT_TRANSCRIPT_SOURCE_FALLBACK: int = 2
 
 # session_config v=5 stt_no_context tri-state (mirrors runtime.h
 # OCT_STT_NO_CONTEXT_*). DEFAULT preserves the runtime's historical
@@ -798,6 +799,15 @@ typedef struct oct_event {
              * builds predating the getters). */
             float       avg_logprob;
             float       no_speech_prob;
+            uint32_t    source_window_index;
+            uint32_t    source_window_start_ms;
+            uint32_t    source_window_end_ms;
+            uint32_t    partial_revision_start;
+            uint32_t    partial_revision_end;
+            uint8_t     source_kind;
+            uint8_t     vad_active;
+            uint8_t     no_speech_decision;
+            uint8_t     _reserved2;
         } transcript_segment;
 
         /* v0.1.5 PR-2 — STT end-of-transcript. Followed by
@@ -1846,6 +1856,15 @@ class NativeEvent:
         # v0.1.25 (OCT_EVENT_VERSION 4) — per-segment decode diagnostics.
         "segment_avg_logprob",
         "segment_no_speech_prob",
+        # v0.1.29 (OCT_EVENT_VERSION 5) — final-segment provenance.
+        "segment_source_window_index",
+        "segment_source_window_start_ms",
+        "segment_source_window_end_ms",
+        "segment_partial_revision_start",
+        "segment_partial_revision_end",
+        "segment_source_kind",
+        "segment_vad_active",
+        "segment_no_speech_decision",
         "final_n_segments",
         "final_duration_ms",
         # v0.1.5 PR-2N — VAD transition payload. Populated only on
@@ -1927,6 +1946,14 @@ class NativeEvent:
         segment_is_final: bool = False,
         segment_avg_logprob: float = 0.0,
         segment_no_speech_prob: float = 0.0,
+        segment_source_window_index: int = 0,
+        segment_source_window_start_ms: int = 0,
+        segment_source_window_end_ms: int = 0,
+        segment_partial_revision_start: int = 0,
+        segment_partial_revision_end: int = 0,
+        segment_source_kind: int = OCT_TRANSCRIPT_SOURCE_NORMAL,
+        segment_vad_active: bool = False,
+        segment_no_speech_decision: bool = False,
         final_n_segments: int = 0,
         final_duration_ms: int = 0,
         vad_transition_kind: int = 0,
@@ -1981,6 +2008,14 @@ class NativeEvent:
         self.segment_is_final = segment_is_final
         self.segment_avg_logprob = segment_avg_logprob
         self.segment_no_speech_prob = segment_no_speech_prob
+        self.segment_source_window_index = segment_source_window_index
+        self.segment_source_window_start_ms = segment_source_window_start_ms
+        self.segment_source_window_end_ms = segment_source_window_end_ms
+        self.segment_partial_revision_start = segment_partial_revision_start
+        self.segment_partial_revision_end = segment_partial_revision_end
+        self.segment_source_kind = segment_source_kind
+        self.segment_vad_active = segment_vad_active
+        self.segment_no_speech_decision = segment_no_speech_decision
         self.final_n_segments = final_n_segments
         self.final_duration_ms = final_duration_ms
         self.vad_transition_kind = vad_transition_kind
@@ -2571,6 +2606,14 @@ class NativeSession:
         seg_is_final = False
         seg_avg_logprob = 0.0
         seg_no_speech_prob = 0.0
+        seg_source_window_index = 0
+        seg_source_window_start_ms = 0
+        seg_source_window_end_ms = 0
+        seg_partial_revision_start = 0
+        seg_partial_revision_end = 0
+        seg_source_kind = OCT_TRANSCRIPT_SOURCE_NORMAL
+        seg_vad_active = False
+        seg_no_speech_decision = False
         final_n_segments = 0
         final_duration_ms = 0
         # v0.1.5 PR-2N — VAD transition payload defaults.
@@ -2643,6 +2686,14 @@ class NativeSession:
             # runtime that does not emit them leaves these at 0.0.
             seg_avg_logprob = float(seg.avg_logprob)
             seg_no_speech_prob = float(seg.no_speech_prob)
+            seg_source_window_index = int(seg.source_window_index)
+            seg_source_window_start_ms = int(seg.source_window_start_ms)
+            seg_source_window_end_ms = int(seg.source_window_end_ms)
+            seg_partial_revision_start = int(seg.partial_revision_start)
+            seg_partial_revision_end = int(seg.partial_revision_end)
+            seg_source_kind = int(seg.source_kind)
+            seg_vad_active = bool(seg.vad_active)
+            seg_no_speech_decision = bool(seg.no_speech_decision)
         elif ev_type == OCT_EVENT_TRANSCRIPT_FINAL:
             # v0.1.5 PR-2 — STT end-of-transcript. utf8 + n_segments +
             # duration_ms. Same lifetime rule as segment.
@@ -2752,6 +2803,14 @@ class NativeSession:
             segment_is_final=seg_is_final,
             segment_avg_logprob=seg_avg_logprob,
             segment_no_speech_prob=seg_no_speech_prob,
+            segment_source_window_index=seg_source_window_index,
+            segment_source_window_start_ms=seg_source_window_start_ms,
+            segment_source_window_end_ms=seg_source_window_end_ms,
+            segment_partial_revision_start=seg_partial_revision_start,
+            segment_partial_revision_end=seg_partial_revision_end,
+            segment_source_kind=seg_source_kind,
+            segment_vad_active=seg_vad_active,
+            segment_no_speech_decision=seg_no_speech_decision,
             final_n_segments=final_n_segments,
             final_duration_ms=final_duration_ms,
             vad_transition_kind=vad_kind,
@@ -3063,6 +3122,9 @@ __all__ = [
     "OCT_STT_NO_CONTEXT_DEFAULT",
     "OCT_STT_NO_CONTEXT_ENABLED",
     "OCT_STT_NO_CONTEXT_DISABLED",
+    "OCT_TRANSCRIPT_SOURCE_FALLBACK",
+    "OCT_TRANSCRIPT_SOURCE_NORMAL",
+    "OCT_TRANSCRIPT_SOURCE_TAIL_RECOVERY",
     "OCT_STATUS_BUSY",
     "OCT_STATUS_CANCELLED",
     "OCT_STATUS_INTERNAL",

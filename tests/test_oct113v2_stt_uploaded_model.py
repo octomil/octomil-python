@@ -367,10 +367,15 @@ class TestIdempotency:
 
 def test_canonical_load_model_still_works(tmp_path: Path) -> None:
     """OCT-113 v2 must not break the canonical ``load_model`` path —
-    pilots using whisper-tiny / whisper-base via the registry get the
+    pilots using registered Whisper artifacts via the registry get the
     same behavior they had pre-PR."""
     from octomil.runtime.native.stt_backend import _WHISPER_ARTIFACTS
 
     # Smoke check: the constant set of registered Whisper names
     # hasn't changed.
-    assert set(_WHISPER_ARTIFACTS.keys()) == {"whisper-tiny", "whisper-base"}
+    assert set(_WHISPER_ARTIFACTS.keys()) == {
+        "whisper-tiny",
+        "whisper-base",
+        "whisper-small",
+        "whisper-medium",
+    }

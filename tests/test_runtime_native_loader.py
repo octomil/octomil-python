@@ -1140,10 +1140,11 @@ def test_oct_session_config_t_has_v6_chunk_fields():
 def test_event_version_current():
     """Event version bump chain: v0.4 step 2 (1→2), v0.1.24 (2→3,
     TRANSCRIPT_PARTIAL), v0.1.25 (3→4, tail-additive transcript_segment
-    decode diagnostics). Pinned to the current runtime.h value."""
+    decode diagnostics), v0.1.29 (4→5, tail-additive final-segment
+    provenance diagnostics). Pinned to the current runtime.h value."""
     from octomil.runtime.native.loader import OCT_EVENT_VERSION
 
-    assert OCT_EVENT_VERSION == 4
+    assert OCT_EVENT_VERSION == 5
 
 
 def test_v0_4_step_2_event_type_constants_assigned_correctly():

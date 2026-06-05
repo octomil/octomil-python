@@ -19,12 +19,14 @@ superseded by ``revision_id``, final segments authoritative, and
 
 from __future__ import annotations
 
+import gc
 from typing import Any
 
 import pytest
 
 from octomil.audio.transcriptions import AudioTranscriptions
 from octomil.audio.types import TranscriptionPartial, TranscriptionSegment
+from octomil.model_ref import ModelRefFactory
 from octomil.runtime.native import loader as L
 
 # ---------------------------------------------------------------------------
@@ -48,6 +50,14 @@ class _FakeEvent:
         self.segment_end_ms = fields.get("segment_end_ms", 0)
         self.segment_avg_logprob = fields.get("segment_avg_logprob", 0.0)
         self.segment_no_speech_prob = fields.get("segment_no_speech_prob", 0.0)
+        self.segment_source_window_index = fields.get("segment_source_window_index", 0)
+        self.segment_source_window_start_ms = fields.get("segment_source_window_start_ms", 0)
+        self.segment_source_window_end_ms = fields.get("segment_source_window_end_ms", 0)
+        self.segment_partial_revision_start = fields.get("segment_partial_revision_start", 0)
+        self.segment_partial_revision_end = fields.get("segment_partial_revision_end", 0)
+        self.segment_source_kind = fields.get("segment_source_kind", L.OCT_TRANSCRIPT_SOURCE_NORMAL)
+        self.segment_vad_active = fields.get("segment_vad_active", False)
+        self.segment_no_speech_decision = fields.get("segment_no_speech_decision", False)
 
 
 def _none() -> _FakeEvent:
@@ -126,6 +136,14 @@ def _scenario_session() -> _FakeStreamSession:
             segment_end_ms=1000,
             segment_avg_logprob=-0.2,
             segment_no_speech_prob=0.01,
+            segment_source_window_index=2,
+            segment_source_window_start_ms=0,
+            segment_source_window_end_ms=30000,
+            segment_partial_revision_start=1,
+            segment_partial_revision_end=3,
+            segment_source_kind=L.OCT_TRANSCRIPT_SOURCE_TAIL_RECOVERY,
+            segment_vad_active=True,
+            segment_no_speech_decision=False,
         ),
         _FakeEvent(
             L.OCT_EVENT_TRANSCRIPT_SEGMENT,
@@ -203,6 +221,14 @@ async def test_finals_authoritative_and_diagnostics() -> None:
     assert segs[0].start_ms == 0 and segs[0].end_ms == 1000
     assert segs[0].avg_logprob == pytest.approx(-0.2)
     assert segs[0].no_speech_prob == pytest.approx(0.01)
+    assert segs[0].source_window_index == 2
+    assert segs[0].source_window_start_ms == 0
+    assert segs[0].source_window_end_ms == 30000
+    assert segs[0].partial_revision_start == 1
+    assert segs[0].partial_revision_end == 3
+    assert segs[0].source_kind == L.OCT_TRANSCRIPT_SOURCE_TAIL_RECOVERY
+    assert segs[0].vad_active is True
+    assert segs[0].no_speech_decision is False
 
 
 @pytest.mark.asyncio
@@ -249,3 +275,64 @@ async def _collect_async(transcriptions: AudioTranscriptions, source: Any) -> li
     async for ev in transcriptions.stream_transcribe(source):
         out.append(ev)
     return out
+
+
+def test_default_factory_keeps_native_backend_alive(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The public factory must keep the NativeSttBackend alive until
+    session.close(); otherwise the parent runtime closes under the session."""
+
+    class _LifetimeSession:
+        def __init__(self) -> None:
+            self.invalidated = False
+            self.closed = False
+
+        def send_audio(self, samples: bytes, *, sample_rate: int, channels: int = 1) -> None:
+            if self.invalidated:
+                raise AssertionError("session invalidated by backend lifetime bug")
+
+        def end_input(self) -> int:
+            return L.OCT_STATUS_OK
+
+        def poll_event(self, timeout_ms: int = 0) -> _FakeEvent:
+            return _none()
+
+        def close(self) -> None:
+            self.closed = True
+
+    class _LifetimeBackend:
+        last: "_LifetimeBackend | None" = None
+
+        def __init__(self) -> None:
+            self.session = _LifetimeSession()
+            self.closed = False
+            self.loaded_model = ""
+            _LifetimeBackend.last = self
+
+        def load_model(self, model_name: str) -> None:
+            self.loaded_model = model_name
+
+        def open_stream_session(self, *, language: str | None = None) -> _LifetimeSession:
+            return self.session
+
+        def close(self) -> None:
+            self.closed = True
+            self.session.invalidated = True
+
+        def __del__(self) -> None:
+            self.close()
+
+    import octomil.runtime.native.stt_backend as stt_backend
+
+    monkeypatch.setattr(stt_backend, "NativeSttBackend", _LifetimeBackend)
+    tx = AudioTranscriptions(runtime_resolver=lambda ref: None)
+    factory = tx._default_stream_session_factory(language="ja")
+    session = factory(ModelRefFactory.id("whisper-medium"))
+    gc.collect()
+
+    backend = _LifetimeBackend.last
+    assert backend is not None
+    assert backend.loaded_model == "whisper-medium"
+    session.send_audio(b"\x00\x00\x00\x00", sample_rate=16000)
+    assert backend.closed is False
+    session.close()
+    assert backend.closed is True

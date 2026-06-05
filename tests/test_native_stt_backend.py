@@ -289,13 +289,15 @@ class TestRuntimeAdvertises:
 
 
 class TestModelNameGate:
-    """W1 wires tiny/base only; later sizes must reject rather than
+    """Native registry accepts the runtime-backed sizes; later sizes reject rather than
     silently substituting a different registered artifact."""
 
     def test_supported_native_whisper_model_helper(self) -> None:
         assert is_supported_native_whisper_model("whisper-tiny") is True
         assert is_supported_native_whisper_model("whisper-base") is True
-        assert is_supported_native_whisper_model("whisper-small") is False
+        assert is_supported_native_whisper_model("whisper-small") is True
+        assert is_supported_native_whisper_model("whisper-medium") is True
+        assert is_supported_native_whisper_model("whisper-large-v3") is False
 
     def test_whisper_base_loads_with_expected_digest(self) -> None:
         backend = NativeSttBackend()
@@ -319,11 +321,49 @@ class TestModelNameGate:
         )
         model.warm.assert_called_once()
 
-    def test_whisper_small_rejects_unsupported_modality(self) -> None:
+    def test_whisper_medium_loads_with_expected_digest(self) -> None:
         backend = NativeSttBackend()
-        with pytest.raises(OctomilError) as exc_info:
+        rt = MagicMock()
+        rt.capabilities.return_value = MagicMock(supported_capabilities=("audio.transcription",))
+        model = MagicMock()
+        rt.open_model.return_value = model
+        with (
+            patch(
+                "octomil.runtime.native.stt_backend.NativeRuntime.open",
+                return_value=rt,
+            ),
+            patch("octomil.runtime.native.stt_backend._verify_whisper_artifact_matches_spec") as verify_mock,
+        ):
+            backend.load_model("whisper-medium")
+        verify_mock.assert_called_once_with(_FAKE_WHISPER_BIN, _WHISPER_ARTIFACTS["whisper-medium"])
+        rt.open_model.assert_called_once_with(
+            model_uri=_FAKE_WHISPER_BIN,
+            artifact_digest=_WHISPER_ARTIFACTS["whisper-medium"].artifact_digest,
+            engine_hint="whisper_cpp",
+        )
+        model.warm.assert_called_once()
+
+    def test_whisper_small_loads_with_expected_digest(self) -> None:
+        backend = NativeSttBackend()
+        rt = MagicMock()
+        rt.capabilities.return_value = MagicMock(supported_capabilities=("audio.transcription",))
+        model = MagicMock()
+        rt.open_model.return_value = model
+        with (
+            patch(
+                "octomil.runtime.native.stt_backend.NativeRuntime.open",
+                return_value=rt,
+            ),
+            patch("octomil.runtime.native.stt_backend._verify_whisper_artifact_matches_spec") as verify_mock,
+        ):
             backend.load_model("whisper-small")
-        assert exc_info.value.code == OctomilErrorCode.UNSUPPORTED_MODALITY
+        verify_mock.assert_called_once_with(_FAKE_WHISPER_BIN, _WHISPER_ARTIFACTS["whisper-small"])
+        rt.open_model.assert_called_once_with(
+            model_uri=_FAKE_WHISPER_BIN,
+            artifact_digest=_WHISPER_ARTIFACTS["whisper-small"].artifact_digest,
+            engine_hint="whisper_cpp",
+        )
+        model.warm.assert_called_once()
 
     def test_whisper_large_rejects_unsupported_modality(self) -> None:
         backend = NativeSttBackend()
@@ -531,7 +571,7 @@ class TestLoadModelGate:
             assert result is None
 
     def test_kernel_resolver_rejects_unregistered_whisper_with_none(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """When env is set and model is whisper-small/etc.,
+        """When env is set and model is whisper-large-v3/etc.,
         kernel returns None (caller's cloud-fallback gate decides).
         The native backend itself raises UNSUPPORTED_MODALITY but
         the kernel resolver short-circuits to None before
@@ -547,7 +587,7 @@ class TestLoadModelGate:
         object.__setattr__(kernel, "_lookup_warmed_backend", lambda *a, **kw: None)
         with patch("octomil.runtime.engines.get_registry") as reg_mock:
             reg_mock.return_value.detect_all.return_value = []
-            result = kernel._resolve_local_transcription_backend("whisper-small")
+            result = kernel._resolve_local_transcription_backend("whisper-large-v3")
         assert result is None
 
     def test_kernel_resolver_accepts_whisper_base_native(self, monkeypatch: pytest.MonkeyPatch) -> None:

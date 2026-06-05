@@ -69,6 +69,31 @@ class StreamSession(Protocol):
 StreamSessionFactory = Callable[[ModelRef], StreamSession]
 
 
+class _OwnedStreamSession:
+    """Keep the native backend alive for as long as its session is alive."""
+
+    def __init__(self, session: StreamSession, owner: object) -> None:
+        self._session = session
+        self._owner = owner
+
+    def send_audio(self, samples: bytes, *, sample_rate: int, channels: int = 1) -> None:
+        self._session.send_audio(samples, sample_rate=sample_rate, channels=channels)
+
+    def end_input(self) -> int:
+        return self._session.end_input()
+
+    def poll_event(self, timeout_ms: int = 0) -> object:
+        return self._session.poll_event(timeout_ms=timeout_ms)
+
+    def close(self) -> None:
+        try:
+            self._session.close()
+        finally:
+            close_owner = getattr(self._owner, "close", None)
+            if callable(close_owner):
+                close_owner()
+
+
 class AudioTranscriptions:
     """Audio transcription API.
 
@@ -304,7 +329,8 @@ class AudioTranscriptions:
             model_name = getattr(ref, "model_id", None) or getattr(ref, "name", "") or ""
             backend = NativeSttBackend()
             backend.load_model(str(model_name))
-            return backend.open_stream_session(language=language)  # type: ignore[no-any-return]
+            session = backend.open_stream_session(language=language)
+            return _OwnedStreamSession(session, backend)
 
         return _factory
 
@@ -407,4 +433,12 @@ def _segment_from_event(ev: object) -> TranscriptionSegment:
         end_ms=int(getattr(ev, "segment_end_ms", 0)),
         avg_logprob=float(getattr(ev, "segment_avg_logprob", 0.0)),
         no_speech_prob=float(getattr(ev, "segment_no_speech_prob", 0.0)),
+        source_window_index=int(getattr(ev, "segment_source_window_index", 0)),
+        source_window_start_ms=int(getattr(ev, "segment_source_window_start_ms", 0)),
+        source_window_end_ms=int(getattr(ev, "segment_source_window_end_ms", 0)),
+        partial_revision_start=int(getattr(ev, "segment_partial_revision_start", 0)),
+        partial_revision_end=int(getattr(ev, "segment_partial_revision_end", 0)),
+        source_kind=int(getattr(ev, "segment_source_kind", 0)),
+        vad_active=bool(getattr(ev, "segment_vad_active", False)),
+        no_speech_decision=bool(getattr(ev, "segment_no_speech_decision", False)),
     )

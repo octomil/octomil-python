@@ -66,6 +66,16 @@ class TranscriptionSegment:
     # that predate the getters (cloud / echo / legacy whisper).
     avg_logprob: float = 0.0
     no_speech_prob: float = 0.0
+    # v0.1.29 final provenance diagnostics. source_kind uses the
+    # OCT_TRANSCRIPT_SOURCE_* integer constants from runtime.native.loader.
+    source_window_index: int = 0
+    source_window_start_ms: int = 0
+    source_window_end_ms: int = 0
+    partial_revision_start: int = 0
+    partial_revision_end: int = 0
+    source_kind: int = 0
+    vad_active: bool = False
+    no_speech_decision: bool = False
 
 
 @dataclass
