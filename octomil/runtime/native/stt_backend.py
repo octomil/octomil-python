@@ -55,7 +55,7 @@ from dataclasses import dataclass, field
 from typing import Any, Sequence
 
 from ...errors import OctomilError, OctomilErrorCode
-from .capabilities import CAPABILITY_AUDIO_TRANSCRIPTION
+from .capabilities import CAPABILITY_AUDIO_STT_STREAM, CAPABILITY_AUDIO_TRANSCRIPTION
 from .error_mapping import map_oct_status
 from .loader import (
     OCT_EVENT_ERROR,
@@ -1001,6 +1001,48 @@ class NativeSttBackend:
             self.close()
         except Exception:  # noqa: BLE001
             pass
+
+    # ------------------------------------------------------------------
+    # Streaming
+    # ------------------------------------------------------------------
+    def open_stream_session(
+        self,
+        *,
+        language: str | None = None,
+        sample_rate_hz: int = 16000,
+    ) -> Any:
+        """Open an ``audio.stt.stream`` session for incremental decode.
+
+        Unlike :meth:`transcribe` (which opens an ``audio.transcription``
+        session, feeds the whole buffer, and drains to completion), this
+        returns the live :class:`~octomil.runtime.native.loader.NativeSession`
+        so the caller drives ``send_audio`` / ``end_input`` / ``poll_event``
+        itself — the seam :meth:`octomil.audio.transcriptions.AudioTranscriptions.stream_transcribe`
+        builds on. The model must already be warmed via ``load_model``.
+        """
+        if self._model is None or self._runtime is None:
+            raise OctomilError(
+                code=OctomilErrorCode.RUNTIME_UNAVAILABLE,
+                message=(
+                    "NativeSttBackend.open_stream_session: model not warmed; "
+                    "load_model() must succeed before open_stream_session()"
+                ),
+            )
+        try:
+            return self._runtime.open_session(
+                capability=CAPABILITY_AUDIO_STT_STREAM,
+                locality="on_device",
+                policy_preset="private",
+                sample_rate_in=sample_rate_hz,
+                model=self._model,
+                language=language,
+            )
+        except NativeRuntimeError as exc:
+            raise _runtime_status_to_sdk_error(
+                exc.status,
+                "native STT backend failed to open stream session",
+                last_error=getattr(exc, "last_error", ""),
+            ) from exc
 
     # ------------------------------------------------------------------
     # Inference

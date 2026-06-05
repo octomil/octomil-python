@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Optional
+from typing import Any, Optional
 
 from octomil._generated.message_role import MessageRole
 from octomil._generated.modality import Modality
@@ -112,6 +112,22 @@ class RuntimeToolDef:
 
 
 @dataclass
+class SttOptions:
+    """Speech-to-text request options that don't fit ``GenerationConfig``.
+
+    Carried on :class:`RuntimeRequest` as a small, optional STT-only
+    seam so ``audio.transcriptions.create()`` chunk controls reach the
+    backend without bloating the generic ``GenerationConfig`` (which is
+    shared by chat / text / tool-calling paths). ``None`` fields mean
+    "backend default" — when every field is None the request is
+    byte-identical to a pre-v0.1.27 transcription request.
+    """
+
+    chunk_window_ms: Optional[int] = None
+    chunk_overlap_ms: Optional[int] = None
+
+
+@dataclass
 class RuntimeRequest:
     """Runtime inference request.
 
@@ -123,6 +139,9 @@ class RuntimeRequest:
     tool_definitions: Optional[list[RuntimeToolDef]] = None
     json_schema: Optional[str] = None
     model: Optional[str] = None  # Per-request model override
+    # STT-only carrier for chunked-transcribe controls. Default None
+    # keeps every non-transcription request unchanged.
+    stt_options: Optional[SttOptions] = None
 
 
 @dataclass
@@ -155,6 +174,16 @@ class RuntimeResponse:
     # constructor that omits these fields backwards-compatible.
     ttft_ms: Optional[float] = None
     tokens_per_second: Optional[float] = None
+    # STT-only response carriers (v0.1.27 facade surfacing). A
+    # transcription runtime populates these; chat / text runtimes leave
+    # them at their defaults, so existing constructors are unchanged.
+    # Typed ``Any`` to avoid a core -> audio import cycle: the producer
+    # sets ``octomil.audio.types.TranscriptionSegment`` /
+    # ``ChunkDiagnostics`` instances, and ``transcriptions.create()``
+    # projects them straight onto the public result.
+    stt_segments: Optional[list[Any]] = None
+    stt_duration_ms: Optional[int] = None
+    stt_chunk_diagnostics: Optional[Any] = None
 
 
 @dataclass

@@ -24,6 +24,7 @@ Extracted sub-modules (prefer importing from them directly):
 from __future__ import annotations
 
 import asyncio
+import functools
 import hashlib
 import inspect
 import logging
@@ -142,6 +143,26 @@ _WARMUPABLE_CAPABILITIES = frozenset({CAPABILITY_TTS, CAPABILITY_TRANSCRIPTION, 
 # ---------------------------------------------------------------------------
 # Result types (ExecutionResult, StreamChunk, ChatRoutingDecision stay here)
 # ---------------------------------------------------------------------------
+
+
+def _transcribe_accepts_chunk_kwargs(transcribe: Any) -> bool:
+    """True when ``backend.transcribe`` accepts chunk-window kwargs.
+
+    The native serve adapter takes ``chunk_window_ms`` /
+    ``chunk_overlap_ms``; the legacy pywhispercpp backend's signature is
+    ``transcribe(path)`` only. Probing the signature (rather than
+    try/except on TypeError) keeps the legacy path's behaviour explicit:
+    we never forward kwargs it can't consume, so chunk requests on a
+    legacy backend silently run full-buffer (no diagnostics), per the
+    cutover contract.
+    """
+    try:
+        params = inspect.signature(transcribe).parameters.values()
+    except (TypeError, ValueError):  # builtins / C callables without a signature
+        return False
+    names = {p.name for p in params}
+    has_var_kw = any(p.kind == inspect.Parameter.VAR_KEYWORD for p in params)
+    return has_var_kw or {"chunk_window_ms", "chunk_overlap_ms"} <= names
 
 
 @dataclass
@@ -1578,8 +1599,16 @@ class ExecutionKernel:
         policy: Optional[str] = None,
         app: Optional[str] = None,
         language: Optional[str] = None,
+        chunk_window_ms: Optional[int] = None,
+        chunk_overlap_ms: Optional[int] = None,
     ) -> ExecutionResult:
-        """Transcribe audio to text."""
+        """Transcribe audio to text.
+
+        ``chunk_window_ms`` / ``chunk_overlap_ms`` (native path only)
+        enable the runtime's fixed-window chunked transcribe. ``None``
+        (default) runs a single full-buffer decode — unchanged from the
+        pre-v0.1.27 behaviour.
+        """
         defaults = self._resolve(CAPABILITY_TRANSCRIPTION, model=model, policy=policy, app=app)
         effective_model = defaults.model
         if not effective_model:
@@ -1665,6 +1694,8 @@ class ExecutionKernel:
             is_fallback,
             prepared_model_dir=prepared_dir,
             planner_candidate=local_candidate,
+            chunk_window_ms=chunk_window_ms,
+            chunk_overlap_ms=chunk_overlap_ms,
         )
         latency_ms = (time.monotonic() - t0) * 1000
         result.route = route
@@ -1730,6 +1761,8 @@ class ExecutionKernel:
         *,
         prepared_model_dir: Optional[str] = None,
         planner_candidate: Optional[Any] = None,
+        chunk_window_ms: Optional[int] = None,
+        chunk_overlap_ms: Optional[int] = None,
     ) -> ExecutionResult:
         """Dispatch audio transcription to a local Whisper-compatible backend.
 
@@ -1750,11 +1783,25 @@ class ExecutionKernel:
         if backend is None:
             raise RuntimeError(f"No local transcription runtime found for model '{model}'.")
 
+        # Only forward chunk controls when the caller asked for them, and
+        # only to a backend whose ``transcribe`` actually accepts them.
+        # The native serve adapter takes ``chunk_window_ms`` /
+        # ``chunk_overlap_ms``; the legacy pywhispercpp backend has a
+        # ``transcribe(path)``-only signature and would raise TypeError —
+        # we drop the kwargs there (legacy path simply omits diagnostics,
+        # per the cutover contract). Default (no chunk kwargs) calls
+        # ``backend.transcribe(path)`` exactly as before.
+        transcribe_kwargs: dict[str, Any] = {}
+        if chunk_window_ms is not None or chunk_overlap_ms is not None:
+            if _transcribe_accepts_chunk_kwargs(backend.transcribe):
+                transcribe_kwargs["chunk_window_ms"] = chunk_window_ms
+                transcribe_kwargs["chunk_overlap_ms"] = chunk_overlap_ms
+
         fd, tmp_path = tempfile.mkstemp(suffix=".wav")
         try:
             os.write(fd, audio_data)
             os.close(fd)
-            result = await asyncio.to_thread(backend.transcribe, tmp_path)
+            result = await asyncio.to_thread(functools.partial(backend.transcribe, tmp_path, **transcribe_kwargs))
         finally:
             try:
                 os.close(fd)

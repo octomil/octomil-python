@@ -33,8 +33,11 @@ from octomil.audio.speech import (
 )
 from octomil.audio.transcriptions import AudioTranscriptions
 from octomil.audio.types import (
+    ChunkDiagnostics,
+    ChunkWindow,
     DiarizationResult,
     SpeakerEmbeddingResult,
+    TranscriptionPartial,
     TranscriptionResult,
     TranscriptionSegment,
     VadResult,
@@ -193,6 +196,94 @@ def _reject_cloud_policy_without_credentials(policy: Optional[str]) -> None:
         )
 
 
+def _segments_from_execution(raw_segments: Any) -> list[TranscriptionSegment]:
+    """Build public segments from the kernel ``ExecutionResult.segments``.
+
+    The native serve adapter emits dicts with additive ``start_ms`` /
+    ``end_ms`` / ``avg_logprob`` / ``no_speech_prob`` keys alongside the
+    legacy ``start`` / ``end`` (seconds) keys. We prefer the ``*_ms``
+    keys when present and fall back to the seconds keys (legacy / cloud
+    shapes) so older backends still project cleanly with logprob 0.0.
+    """
+    segments: list[TranscriptionSegment] = []
+    if not raw_segments:
+        return segments
+    for seg in raw_segments:
+        if not isinstance(seg, dict):
+            continue
+        if "start_ms" in seg or "end_ms" in seg:
+            start_ms = int(seg.get("start_ms", 0))
+            end_ms = int(seg.get("end_ms", 0))
+        else:
+            start_ms = int(round(float(seg.get("start", 0.0)) * 1000.0))
+            end_ms = int(round(float(seg.get("end", 0.0)) * 1000.0))
+        segments.append(
+            TranscriptionSegment(
+                text=str(seg.get("text", "")),
+                start_ms=start_ms,
+                end_ms=end_ms,
+                avg_logprob=float(seg.get("avg_logprob", 0.0)),
+                no_speech_prob=float(seg.get("no_speech_prob", 0.0)),
+            )
+        )
+    return segments
+
+
+def _chunk_diagnostics_from_raw(raw: Any) -> Optional[ChunkDiagnostics]:
+    """Build the public ``ChunkDiagnostics`` from the backend dict.
+
+    Returns ``None`` when chunking was off (the backend omits or nulls
+    ``chunk_diagnostics``), keeping the default path identical to today.
+    """
+    if not isinstance(raw, dict):
+        return None
+    diag = raw.get("chunk_diagnostics")
+    if not isinstance(diag, dict):
+        return None
+    windows = [
+        ChunkWindow(
+            index=int(w.get("index", 0)),
+            start_ms=int(w.get("start_ms", 0)),
+            end_ms=int(w.get("end_ms", 0)),
+            off_ms=int(w.get("off_ms", 0)),
+            is_last=bool(w.get("is_last", False)),
+        )
+        for w in diag.get("windows", []) or []
+        if isinstance(w, dict)
+    ]
+    return ChunkDiagnostics(
+        window_ms=int(diag.get("window_ms", 0)),
+        overlap_ms=int(diag.get("overlap_ms", 0)),
+        step_ms=int(diag.get("step_ms", 0)),
+        window_count=int(diag.get("window_count", 0)),
+        windows=windows,
+        segment_owner_window=[int(i) for i in diag.get("segment_owner_window", []) or []],
+        audio_duration_ms=int(diag.get("audio_duration_ms", 0)),
+        final_segment_end_ms=int(diag.get("final_segment_end_ms", 0)),
+        tail_gap_ms=int(diag.get("tail_gap_ms", 0)),
+    )
+
+
+def _execution_result_to_transcription(result: Any, language: Optional[str]) -> TranscriptionResult:
+    """Project a kernel ``ExecutionResult`` onto the public result.
+
+    Segments / diagnostics are only present on the native path; cloud /
+    legacy results leave ``segments`` empty and ``chunk_diagnostics``
+    None, so the default surface is unchanged.
+    """
+    raw = getattr(result, "raw", None)
+    duration_ms = 0
+    if isinstance(raw, dict):
+        duration_ms = int(raw.get("duration_ms", 0) or 0)
+    return TranscriptionResult(
+        text=getattr(result, "output_text", "") or "",
+        language=language,
+        segments=_segments_from_execution(getattr(result, "segments", None)),
+        duration_ms=duration_ms,
+        chunk_diagnostics=_chunk_diagnostics_from_raw(raw),
+    )
+
+
 class FacadeTranscriptions:
     """``client.audio.transcriptions`` namespace on the unified Octomil facade.
 
@@ -218,6 +309,8 @@ class FacadeTranscriptions:
         response_format: Optional[str] = None,
         policy: Optional[str] = None,
         app: Optional[str] = None,
+        chunk_window_ms: Optional[int] = None,
+        chunk_overlap_ms: Optional[int] = None,
     ) -> "TranscriptionResult":
         """Transcribe audio through the unified routing kernel.
 
@@ -244,6 +337,13 @@ class FacadeTranscriptions:
             explicit ``policy=``, the kernel raises rather than silently
             falling back to cloud (mirrors the TTS / chat / embeddings
             refusal gate).
+        chunk_window_ms:
+            Optional fixed decode-window size for chunked transcription
+            (native path only). ``None`` (default) runs a single
+            full-buffer decode — unchanged from prior behaviour.
+        chunk_overlap_ms:
+            Optional overlap between consecutive decode windows. Ignored
+            unless ``chunk_window_ms`` is set.
         """
         if not self._cloud_allowed:
             _reject_cloud_policy_without_credentials(policy)
@@ -253,11 +353,10 @@ class FacadeTranscriptions:
             policy=policy,
             app=app,
             language=language,
+            chunk_window_ms=chunk_window_ms,
+            chunk_overlap_ms=chunk_overlap_ms,
         )
-        return TranscriptionResult(
-            text=getattr(result, "output_text", "") or "",
-            language=language,
-        )
+        return _execution_result_to_transcription(result, language)
 
 
 class FacadeAudio:
@@ -338,6 +437,9 @@ __all__ = [
     "open_speaker_embedding_backend",
     "open_vad_backend",
     "SpeakerEmbeddingResult",
+    "ChunkDiagnostics",
+    "ChunkWindow",
+    "TranscriptionPartial",
     "TranscriptionResult",
     "TranscriptionSegment",
     "VadResult",

@@ -125,6 +125,45 @@ def _wav_to_pcm_f32_bytes(audio_path: str) -> tuple[bytes, int]:
     )
 
 
+def _diagnostics_to_dict(
+    diagnostics: Any,
+    kept_native_indices: list[int],
+) -> dict[str, Any] | None:
+    """Project the native ``ChunkDiagnostics`` onto a JSON-able dict.
+
+    Returns ``None`` when chunking was off (full-buffer decode) so the
+    default path stays identical to today. ``segment_owner_window`` is
+    re-indexed to the RETURNED (non-empty) segments via
+    ``kept_native_indices`` so it lines up with the emitted segments
+    list rather than the native (pre-drop) one.
+    """
+    if diagnostics is None:
+        return None
+    owner = list(getattr(diagnostics, "segment_owner_window", []) or [])
+    kept_owner = [owner[i] for i in kept_native_indices if 0 <= i < len(owner)]
+    windows = [
+        {
+            "index": int(w.index),
+            "start_ms": int(w.start_ms),
+            "end_ms": int(w.end_ms),
+            "off_ms": int(w.off_ms),
+            "is_last": bool(w.is_last),
+        }
+        for w in getattr(diagnostics, "windows", []) or []
+    ]
+    return {
+        "window_ms": int(diagnostics.window_ms),
+        "overlap_ms": int(diagnostics.overlap_ms),
+        "step_ms": int(diagnostics.step_ms),
+        "window_count": int(diagnostics.window_count),
+        "windows": windows,
+        "segment_owner_window": kept_owner,
+        "audio_duration_ms": int(diagnostics.audio_duration_ms),
+        "final_segment_end_ms": int(diagnostics.final_segment_end_ms),
+        "tail_gap_ms": int(diagnostics.tail_gap_ms),
+    }
+
+
 class NativeSttServeAdapter:
     """File-path adapter on top of :class:`NativeSttBackend`.
 
@@ -144,14 +183,36 @@ class NativeSttServeAdapter:
         self._model_name = model_name
         self._backend.load_model(model_name)
 
-    def transcribe(self, audio_path: str) -> dict[str, Any]:
+    def transcribe(
+        self,
+        audio_path: str,
+        *,
+        chunk_window_ms: int | None = None,
+        chunk_overlap_ms: int | None = None,
+    ) -> dict[str, Any]:
         """Transcribe an audio file (WAV) and return the legacy dict
-        shape::
+        shape, extended with v0.1.27 facade fields::
 
-            {"text": "...", "segments": [{"start": float, "end": float, "text": "..."}, ...]}
+            {
+                "text": "...",
+                "segments": [
+                    {
+                        "start": float, "end": float, "text": "...",
+                        "start_ms": int, "end_ms": int,
+                        "avg_logprob": float, "no_speech_prob": float,
+                    },
+                    ...
+                ],
+                "duration_ms": int,
+                "chunk_diagnostics": {...} | None,
+            }
 
         ``start`` / ``end`` are seconds (float, 2-decimal rounded) to
-        match the legacy pywhispercpp shape.
+        match the legacy pywhispercpp shape; the ``*_ms`` /
+        ``avg_logprob`` / ``no_speech_prob`` keys are additive so legacy
+        readers keep working. ``chunk_window_ms`` / ``chunk_overlap_ms``
+        (when set) enable the runtime's fixed-window chunked transcribe;
+        ``chunk_diagnostics`` is populated only on that path.
         """
         try:
             audio, sr = _wav_to_pcm_f32_bytes(audio_path)
@@ -167,23 +228,39 @@ class NativeSttServeAdapter:
                 ),
             ) from exc
 
-        result: TranscriptionResult = self._backend.transcribe(audio, sample_rate_hz=sr)
+        result: TranscriptionResult = self._backend.transcribe(
+            audio,
+            sample_rate_hz=sr,
+            chunk_window_ms=chunk_window_ms,
+            chunk_overlap_ms=chunk_overlap_ms,
+        )
 
+        # Track which RETURNED (non-empty) segment index maps to which
+        # native segment index, so per-segment owner-window provenance
+        # stays aligned after empty-text segments are dropped.
         segments_legacy: list[dict[str, Any]] = []
-        for seg in result.segments:
+        kept_native_indices: list[int] = []
+        for native_idx, seg in enumerate(result.segments):
             text = seg.text.strip()
             if not text:
                 continue
+            kept_native_indices.append(native_idx)
             segments_legacy.append(
                 {
                     "start": round(seg.start_ms / 1000.0, 2),
                     "end": round(seg.end_ms / 1000.0, 2),
                     "text": text,
+                    "start_ms": int(seg.start_ms),
+                    "end_ms": int(seg.end_ms),
+                    "avg_logprob": float(seg.avg_logprob),
+                    "no_speech_prob": float(seg.no_speech_prob),
                 }
             )
         return {
             "text": result.text.strip(),
             "segments": segments_legacy,
+            "duration_ms": int(result.duration_ms),
+            "chunk_diagnostics": _diagnostics_to_dict(result.chunk_diagnostics, kept_native_indices),
         }
 
     def close(self) -> None:

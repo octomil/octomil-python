@@ -44,12 +44,14 @@ def test_facade_audio_exposes_transcriptions_namespace():
 async def test_facade_transcriptions_forwards_app_and_policy_to_kernel():
     captured: dict[str, Any] = {}
 
-    async def fake_transcribe(audio_data, *, model, policy, app, language):
+    async def fake_transcribe(audio_data, *, model, policy, app, language, chunk_window_ms=None, chunk_overlap_ms=None):
         captured["audio_data"] = audio_data
         captured["model"] = model
         captured["policy"] = policy
         captured["app"] = app
         captured["language"] = language
+        captured["chunk_window_ms"] = chunk_window_ms
+        captured["chunk_overlap_ms"] = chunk_overlap_ms
         return ExecutionResult(
             id="t1",
             model=model or "",
@@ -75,6 +77,9 @@ async def test_facade_transcriptions_forwards_app_and_policy_to_kernel():
     assert captured["policy"] == "local_only"
     assert captured["app"] == "notes"
     assert captured["language"] == "en"
+    # Default (no chunk kwargs) -> both None, byte-identical to prior path.
+    assert captured["chunk_window_ms"] is None
+    assert captured["chunk_overlap_ms"] is None
     assert result.text == "hello"
     assert result.language == "en"
 
@@ -170,7 +175,7 @@ async def test_facade_transcriptions_local_only_routes_through_kernel():
     would never fire on the public path."""
     captured: dict[str, Any] = {}
 
-    async def fake_transcribe(audio_data, *, model, policy, app, language):
+    async def fake_transcribe(audio_data, *, model, policy, app, language, chunk_window_ms=None, chunk_overlap_ms=None):
         captured["policy"] = policy
         return ExecutionResult(
             id="t1",
