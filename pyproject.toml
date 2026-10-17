@@ -54,6 +54,7 @@ serve = [
   # (uvloop, httptools, websockets, watchfiles) for production serving;
   # `pip install octomil[serve]` stays valid and now opts into the perf path.
   "uvicorn[standard]>=0.20.0",
+  "python-multipart>=0.0.9",
 ]
 mlx = [
   "mlx-lm>=0.10.0",
@@ -147,6 +148,7 @@ all = [
 ]
 test = [
   "pytest>=7.0.0",
+  "python-multipart>=0.0.9",
   "pytest-cov>=4.0.0",
   "pytest-asyncio>=0.21.0",
   # ``pytest-xdist`` parallelizes the suite across worker processes
