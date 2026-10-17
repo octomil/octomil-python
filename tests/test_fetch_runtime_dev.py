@@ -834,3 +834,18 @@ def test_sentinel_records_flavor(tmp_path: Path) -> None:
     lines = sentinel_path.read_text(encoding="utf-8").splitlines()
     assert lines[0] == version
     assert lines[1] == flavor
+
+
+def test_redirect_strips_auth_only_cross_host() -> None:
+    import urllib.request
+
+    handler = frd._StripAuthOnCrossHostRedirect()
+
+    def follow(target: str) -> urllib.request.Request:
+        req = urllib.request.Request("https://github.com/a", headers={"Authorization": "Bearer t"})
+        new = handler.redirect_request(req, None, 302, "Found", {}, target)
+        assert new is not None
+        return new
+
+    assert not follow("https://objects.example.com/b").has_header("Authorization")
+    assert follow("https://github.com/b").has_header("Authorization")
