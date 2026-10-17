@@ -356,7 +356,7 @@ def create_app(
     """
     from contextlib import asynccontextmanager
 
-    from fastapi import FastAPI, Request
+    from fastapi import FastAPI
     from fastapi.responses import JSONResponse, StreamingResponse
 
     from ..errors import OctomilError, OctomilErrorCode  # noqa: F811
