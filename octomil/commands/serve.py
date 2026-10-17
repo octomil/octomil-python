@@ -27,7 +27,13 @@ def register(cli: click.Group) -> None:
 @click.command()
 @click.argument("model", required=False, default=None, shell_complete=_complete_model_name)
 @click.option("--port", "-p", default=8080, help="Port to listen on.")
-@click.option("--host", default="0.0.0.0", help="Host to bind to.")
+@click.option("--host", default="127.0.0.1", help="Host to bind to. Non-loopback hosts require --auth-token.")
+@click.option(
+    "--auth-token",
+    default=None,
+    envvar="OCTOMIL_SERVE_TOKEN",
+    help="Require this bearer token on all requests (except /health). Also reads OCTOMIL_SERVE_TOKEN.",
+)
 @click.option("--benchmark", is_flag=True, help="Run latency benchmark on startup.")
 @click.option("--share", is_flag=True, help="Share anonymous benchmark data with Octomil.")
 @click.option(
@@ -177,6 +183,7 @@ def serve(
     model: str | None,
     port: int,
     host: str,
+    auth_token: str | None,
     benchmark: bool,
     share: bool,
     json_mode: bool,
@@ -282,6 +289,12 @@ def serve(
         )
         sys.exit(1)
 
+    from octomil.serve.security import LOOPBACK_HOSTS
+
+    if host not in LOOPBACK_HOSTS and not auth_token:
+        click.echo(f"Error: binding to {host} requires --auth-token (or OCTOMIL_SERVE_TOKEN).", err=True)
+        sys.exit(1)
+
     if auto_route and model_list and len(model_list) < 2:
         click.echo(
             "Error: --auto-route requires at least 2 models in --models.",
@@ -302,6 +315,7 @@ def serve(
             cache_enabled=cache_enabled,
             engine=engine,
             route_strategy=route_strategy,
+            auth_token=auth_token,
         )
         return
 
@@ -490,6 +504,7 @@ def serve(
         verbose=verbose,
         cloud_config=_cloud_config,
         config_set=config_set if has_standalone_config else None,
+        auth_token=auth_token,
     )
 
 
@@ -504,6 +519,7 @@ def _serve_multi_model(
     cache_enabled: bool,
     engine: str | None,
     route_strategy: str,
+    auth_token: str | None = None,
 ) -> None:
     """Start multi-model serving with query routing."""
     from octomil.routing import assign_tiers
@@ -543,6 +559,7 @@ def _serve_multi_model(
         cache_enabled=cache_enabled,
         engine=engine,
         route_strategy=route_strategy,
+        auth_token=auth_token,
     )
 
 

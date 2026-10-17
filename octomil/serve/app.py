@@ -306,6 +306,7 @@ def create_app(
     verbose: bool = False,
     cloud_config: Optional[CloudConfig] = None,
     config_set: Any = None,
+    auth_token: Optional[str] = None,
 ) -> Any:
     """Create a FastAPI app with OpenAI-compatible endpoints.
 
@@ -348,7 +349,6 @@ def create_app(
     from contextlib import asynccontextmanager
 
     from fastapi import FastAPI, Request
-    from fastapi.middleware.cors import CORSMiddleware
     from fastapi.responses import JSONResponse, StreamingResponse
 
     from ..errors import OctomilError, OctomilErrorCode  # noqa: F811
@@ -640,13 +640,6 @@ def create_app(
             },
         )
 
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=["*"],
-        allow_methods=["*"],
-        allow_headers=["*"],
-    )
-
     @app.middleware("http")
     async def agent_context_middleware(request, call_next):  # type: ignore[no-untyped-def]
         """Log and store agent context from the X-Octomil-Agent-Context header.
@@ -656,7 +649,7 @@ def create_app(
         """
         agent_ctx = request.headers.get("X-Octomil-Agent-Context")
         if agent_ctx:
-            logger.info("Agent context: %s", agent_ctx)
+            logger.info("Agent context: %r", agent_ctx[:512])
             # Store on request state for downstream use
             request.state.agent_context = agent_ctx
         else:
@@ -1875,6 +1868,10 @@ def create_app(
 
     register_anthropic_routes(app, state)
 
+    from .security import install_security
+
+    install_security(app, auth_token)
+
     return app
 
 
@@ -1882,7 +1879,7 @@ def run_server(
     model_name: str,
     *,
     port: int = 8080,
-    host: str = "0.0.0.0",
+    host: str = "127.0.0.1",
     api_key: Optional[str] = None,
     api_base: str = "https://api.octomil.com/api/v1",
     json_mode: bool = False,
@@ -1901,6 +1898,7 @@ def run_server(
     verbose: bool = False,
     cloud_config: Optional[CloudConfig] = None,
     config_set: Any = None,
+    auth_token: Optional[str] = None,
 ) -> None:
     """Start the inference server (blocking).
 
@@ -1958,5 +1956,6 @@ def run_server(
         verbose=verbose,
         cloud_config=cloud_config,
         config_set=config_set,
+        auth_token=auth_token,
     )
     uvicorn.run(app, host=host, port=port, log_level="info")
