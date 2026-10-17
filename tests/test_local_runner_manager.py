@@ -361,6 +361,35 @@ class TestTokenSecurity:
         assert t1 != t2
 
 
+class TestKillRunnerPidVerification:
+    def _manifest(self) -> RunnerManifest:
+        return RunnerManifest(
+            pid=4242, port=51200, base_url="http://127.0.0.1:51200", token_file="/tmp/t", model="m",
+            engine="auto", started_at=1.0,
+        )  # fmt: skip
+
+    def test_unrelated_pid_is_not_signalled(self) -> None:
+        mgr = LocalRunnerManager()
+        with (
+            patch.object(LocalRunnerManager, "_pid_is_runner", return_value=False),
+            patch("octomil.local_runner.manager.os.kill") as mock_kill,
+        ):
+            mgr._kill_runner(self._manifest())
+        mock_kill.assert_not_called()
+
+    def test_pid_is_runner_matches_cmdline(self) -> None:
+        good = "python -m octomil _local-runner-serve --model m --port 51200 --token-file t"
+
+        def fake_run(out: str):
+            return lambda *a, **k: type("R", (), {"stdout": out})()
+
+        with patch("octomil.local_runner.manager.subprocess.run", fake_run(good)):
+            assert LocalRunnerManager._pid_is_runner(4242, 51200)
+            assert not LocalRunnerManager._pid_is_runner(4242, 9999)
+        with patch("octomil.local_runner.manager.subprocess.run", fake_run("/usr/sbin/sshd -D")):
+            assert not LocalRunnerManager._pid_is_runner(4242, 51200)
+
+
 class TestIdleWatchdog:
     def test_touch_resets_timer(self) -> None:
         from octomil.local_runner.server import _IdleWatchdog
