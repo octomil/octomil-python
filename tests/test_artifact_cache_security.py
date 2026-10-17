@@ -49,3 +49,11 @@ def test_manifest_written_atomically(tmp_path: Path) -> None:
     cache.put("m", _digest(b"data"), src)
     assert not list((tmp_path / "cache").glob(".manifest-*"))
     assert ArtifactCache(tmp_path / "cache").get("m", _digest(b"data")) is not None
+
+
+def test_filename_from_url_never_returns_dot_segments() -> None:
+    from octomil.runtime.lifecycle.download import _filename_from_url
+
+    assert _filename_from_url("https://h/a/..", "art") not in ("..", ".", "")
+    assert _filename_from_url("https://h/a/.", "../x") not in ("..", ".", "")
+    assert _filename_from_url("https://h/a/model.gguf", "art") == "model.gguf"
