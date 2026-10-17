@@ -23,6 +23,14 @@ from .models import ChatCompletionBody
 from .streaming import _queued_stream_response, _stream_response
 from .types import GenerationRequest
 
+try:
+    # Module-level so FastAPI can resolve the string annotations under `from __future__ import annotations`.
+    from fastapi import File, UploadFile
+except ImportError:  # pragma: no cover
+    pass
+
+_MAX_UPLOAD_BYTES = 25 * 1024 * 1024
+
 if TYPE_CHECKING:
     from ..early_exit import EarlyExitConfig
 
@@ -1516,7 +1524,7 @@ def create_app(
 
     @app.post("/v1/audio/transcriptions")
     async def transcribe_audio(
-        file: Any = None,
+        file: UploadFile = File(...),
         model: str = "",
     ) -> dict[str, Any]:
         """OpenAI Whisper API-compatible audio transcription endpoint.
@@ -1530,19 +1538,22 @@ def create_app(
                 message="No whisper model loaded. Start server with a whisper model: octomil serve whisper-base",
             )
 
-        if file is None:
-            raise OctomilError(code=OctomilErrorCode.INVALID_INPUT, message="No audio file provided")
-
         # Save uploaded file to a temp location
         import tempfile
 
-        filename = getattr(file, "filename", "audio.wav") or "audio.wav"
+        from fastapi import HTTPException
+
+        filename = file.filename or "audio.wav"
         suffix = os.path.splitext(filename)[1] or ".wav"
         fd, tmp_path = tempfile.mkstemp(suffix=suffix)
         try:
-            content = await file.read()
-            os.write(fd, content)
-            os.close(fd)
+            with os.fdopen(fd, "wb") as out:
+                written = 0
+                while chunk := await file.read(1024 * 1024):
+                    written += len(chunk)
+                    if written > _MAX_UPLOAD_BYTES:
+                        raise HTTPException(status_code=413, detail="Audio file too large")
+                    out.write(chunk)
 
             state.request_count += 1
             result: dict[str, Any] = state.whisper_backend.transcribe(tmp_path)

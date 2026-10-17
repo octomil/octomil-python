@@ -42,3 +42,21 @@ def test_cors_not_wildcard(monkeypatch):
     assert "access-control-allow-origin" not in evil.headers
     local = c.get("/v1/models", headers={"Origin": "http://localhost:3000"})
     assert local.headers["access-control-allow-origin"] == "http://localhost:3000"
+
+
+def test_transcription_upload_cap(monkeypatch):
+    from unittest.mock import MagicMock, patch
+
+    import octomil.serve.app as serve_app
+
+    monkeypatch.setattr(serve_app, "_MAX_UPLOAD_BYTES", 1024)
+    adapter = MagicMock()
+    adapter.transcribe.return_value = {"text": "hi"}
+    with patch("octomil.serve.stt_serve_adapter.NativeSttServeAdapter", return_value=adapter):
+        with TestClient(serve_app.create_app("whisper-base")) as c:
+            ok = c.post("/v1/audio/transcriptions", files={"file": ("a.wav", b"x" * 100)})
+            big = c.post("/v1/audio/transcriptions", files={"file": ("a.wav", b"x" * 4096)})
+            missing = c.post("/v1/audio/transcriptions")
+    assert ok.status_code == 200
+    assert big.status_code == 413
+    assert missing.status_code == 422
