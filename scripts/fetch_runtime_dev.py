@@ -616,7 +616,8 @@ def main() -> int:
         # non-force run treats the cache as valid only if this file
         # exists. Codex R2 missed-case fix.
         # Record version and flavor so the content is self-describing.
-        sentinel.write_text(f"{version}\n{flavor}\n", encoding="utf-8")
+        # Line 3 pins the dylib digest; the loader re-hashes before dlopen.
+        sentinel.write_text(f"{version}\n{flavor}\n{_sha256(resolved_dylib)}  {resolved_dylib.name}\n", encoding="utf-8")
     finally:
         # Clean up the download scratch dir whether we succeeded or
         # bailed on a sha256 mismatch / missing asset / extraction

@@ -37,8 +37,10 @@ matches the asymmetric reader rule from the contract.
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import os
+import secrets
 import struct as _emb_struct  # used by poll_event for OCT_EVENT_EMBEDDING_VECTOR
 import time as _time  # used by embeddings_image for deadline polling
 from pathlib import Path
@@ -394,6 +396,7 @@ class OctomilUnsupportedError(NativeRuntimeError):
 # ---------------------------------------------------------------------------
 
 ENV_DYLIB_OVERRIDE: str = "OCTOMIL_RUNTIME_DYLIB"
+ENV_DYLIB_OVERRIDE_SHA256: str = "OCTOMIL_RUNTIME_DYLIB_SHA256"
 
 # Env var that selects a specific runtime flavor when set.
 # Valid values: "chat", "stt", "tts".  Authoritative — no fallback when set.
@@ -450,6 +453,25 @@ def _version_sort_key(p: Path) -> tuple:
 
 
 _EXTRACTION_SENTINEL = ".extracted-ok"
+
+
+def _cached_dylib_digest_ok(dylib: Path) -> bool:
+    """True when the sentinel beside ``dylib`` pins a sha256 that matches the file on disk."""
+    try:
+        lines = (dylib.parent / _EXTRACTION_SENTINEL).read_text(encoding="utf-8").splitlines()
+        expected = next(
+            (parts[0] for ln in lines if len(parts := ln.split(maxsplit=1)) == 2 and parts[1].strip() == dylib.name),
+            None,
+        )
+        if expected is None:
+            return False
+        digest = hashlib.sha256()
+        with dylib.open("rb") as fh:
+            for chunk in iter(lambda: fh.read(1 << 20), b""):
+                digest.update(chunk)
+    except OSError:
+        return False
+    return secrets.compare_digest(digest.hexdigest(), expected.lower())
 
 
 def _fetched_dylib_candidates() -> list[Path]:
@@ -586,6 +608,13 @@ def _resolve_dylib() -> Path:
     if override:
         override_path = Path(override)
         if override_path.is_file():
+            pin = os.environ.get(ENV_DYLIB_OVERRIDE_SHA256)
+            if pin:
+                got = hashlib.sha256(override_path.read_bytes()).hexdigest()
+                if not secrets.compare_digest(got, pin.strip().lower()):
+                    raise ImportError(
+                        f"{ENV_DYLIB_OVERRIDE} sha256 mismatch for {override!r}: expected {pin}, got {got}."
+                    )
             return override_path
         raise ImportError(
             f"{ENV_DYLIB_OVERRIDE} points at {override!r} which does not exist.\n"
@@ -599,7 +628,9 @@ def _resolve_dylib() -> Path:
     tried: list[str] = []
     for path in _fetched_dylib_candidates():
         if path.is_file():
-            return path
+            if _cached_dylib_digest_ok(path):
+                return path
+            logger.warning("Skipping %s: missing or mismatched sha256 in %s", path, _EXTRACTION_SENTINEL)
         tried.append(str(path))
     raise ImportError(
         "Could not locate liboctomil-runtime.\n"
