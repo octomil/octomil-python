@@ -10,9 +10,13 @@ import hashlib
 import json
 import logging
 import os
+import tempfile
+import threading
 import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
+
+from ._fs_key import safe_filesystem_key
 
 logger = logging.getLogger(__name__)
 
@@ -94,6 +98,7 @@ class ArtifactCache:
         self._cache_dir.mkdir(parents=True, exist_ok=True)
         self._manifest_path = self._cache_dir / _MANIFEST_FILENAME
         self._manifest = self._load_manifest()
+        self._lock = threading.RLock()
 
     @property
     def cache_dir(self) -> Path:
@@ -103,18 +108,35 @@ class ArtifactCache:
     def manifest(self) -> ArtifactManifest:
         return self._manifest
 
+    def _resolve_entry_path(self, rel: str) -> Path | None:
+        """Resolve a manifest-relative path, refusing anything that escapes the cache root."""
+        root = self._cache_dir.resolve()
+        resolved = (self._cache_dir / rel).resolve()
+        if resolved == root or root not in resolved.parents:
+            logger.warning("Ignoring manifest path outside cache: %r", rel)
+            return None
+        return resolved
+
     def get(self, artifact_id: str, digest: str) -> Path | None:
         """Return the cached artifact path if it exists and passes verification.
 
         Returns None if the artifact is not cached or if the digest does not match.
         On digest mismatch, the corrupt entry is removed.
         """
+        with self._lock:
+            return self._get_locked(artifact_id, digest)
+
+    def _get_locked(self, artifact_id: str, digest: str) -> Path | None:
         key = self._make_key(artifact_id, digest)
         entry = self._manifest.entries.get(key)
         if entry is None:
             return None
 
-        artifact_path = self._cache_dir / entry.path
+        artifact_path = self._resolve_entry_path(entry.path)
+        if artifact_path is None:
+            del self._manifest.entries[key]
+            self._save_manifest()
+            return None
         if not artifact_path.exists():
             # File was deleted externally
             logger.debug("Cached artifact file missing: %s", artifact_path)
@@ -150,7 +172,7 @@ class ArtifactCache:
             raise FileNotFoundError(f"Source artifact not found: {data_path}")
 
         # Determine destination
-        safe_id = artifact_id.replace("/", "_").replace("\\", "_")
+        safe_id = safe_filesystem_key(artifact_id)
         artifact_dir = self._cache_dir / safe_id
         artifact_dir.mkdir(parents=True, exist_ok=True)
         dest = artifact_dir / data_path.name
@@ -164,28 +186,31 @@ class ArtifactCache:
         # Register in manifest
         now = time.time()
         key = self._make_key(artifact_id, digest)
-        self._manifest.entries[key] = ArtifactEntry(
-            artifact_id=artifact_id,
-            digest=digest,
-            path=str(dest.relative_to(self._cache_dir)),
-            size_bytes=dest.stat().st_size,
-            last_used=now,
-            created_at=now,
-        )
-        self._save_manifest()
+        with self._lock:
+            self._manifest.entries[key] = ArtifactEntry(
+                artifact_id=artifact_id,
+                digest=digest,
+                path=str(dest.relative_to(self._cache_dir)),
+                size_bytes=dest.stat().st_size,
+                last_used=now,
+                created_at=now,
+            )
+            self._save_manifest()
         return dest
 
     def remove(self, artifact_id: str, digest: str) -> bool:
         """Remove an artifact from the cache. Returns True if it was found."""
         key = self._make_key(artifact_id, digest)
-        entry = self._manifest.entries.get(key)
-        if entry is None:
-            return False
+        with self._lock:
+            entry = self._manifest.entries.get(key)
+            if entry is None:
+                return False
 
-        artifact_path = self._cache_dir / entry.path
-        self._remove_artifact_file(artifact_path)
-        del self._manifest.entries[key]
-        self._save_manifest()
+            artifact_path = self._resolve_entry_path(entry.path)
+            if artifact_path is not None:
+                self._remove_artifact_file(artifact_path)
+            del self._manifest.entries[key]
+            self._save_manifest()
         return True
 
     def list_entries(self) -> list[ArtifactEntry]:
@@ -237,10 +262,19 @@ class ArtifactCache:
 
     def _save_manifest(self) -> None:
         """Persist manifest to disk."""
+        tmp_name = None
         try:
-            self._manifest_path.write_text(self._manifest.to_json(), encoding="utf-8")
+            fd, tmp_name = tempfile.mkstemp(dir=self._cache_dir, prefix=".manifest-", suffix=".tmp")
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                fh.write(self._manifest.to_json())
+            os.replace(tmp_name, self._manifest_path)
         except OSError:
             logger.warning("Failed to write artifact manifest", exc_info=True)
+            if tmp_name:
+                try:
+                    os.unlink(tmp_name)
+                except OSError:
+                    pass
 
     @staticmethod
     def _remove_artifact_file(path: Path) -> None:
