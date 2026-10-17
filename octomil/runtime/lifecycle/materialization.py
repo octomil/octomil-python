@@ -55,6 +55,7 @@ from __future__ import annotations
 
 import logging
 import os
+import shutil
 import tarfile
 import zipfile
 from dataclasses import dataclass, field
@@ -321,72 +322,43 @@ class Materializer:
                         ),
                     )
                 safe_members.append(m)
-            # Refuse to write through a pre-existing symlink at the
-            # destination itself, even one that resolves *inside*
-            # artifact_dir but redirects file writes elsewhere via
-            # tarfile's own machinery. Pre-clear any such symlinks
-            # whose paths we're about to write.
-            for m in safe_members:
-                dest_string = m.name
-                dest = artifact_dir_resolved / dest_string
-                # Walk parent chain — if any ancestor inside the
-                # safe_members destination tree is a symlink that
-                # points outside, skip this member. (resolve()
-                # already neutralized the outside-pointing case in
-                # ``_safe_join_under``; this catches an in-tree
-                # symlink whose target ALSO lives in tree but
-                # points at a sensitive existing path.)
-                if dest.is_symlink():
-                    continue
-            try:
+            if hasattr(tarfile, "data_filter"):
                 tar.extractall(path=artifact_dir, members=safe_members, filter="data")  # type: ignore[arg-type]
-            except (TypeError, AttributeError):
-                # Python 3.9 doesn't support filter='data'. Fall back
-                # to manual per-member extract so we can apply the
-                # resolved-containment check ONE more time at write
-                # time (defense in depth).
-                for member in safe_members:
-                    member_dest = _safe_join_under(artifact_dir_resolved, member.name)
-                    if member_dest is None:
-                        continue
-                    if member.isdir():
-                        member_dest.mkdir(parents=True, exist_ok=True)
-                        continue
-                    member_dest.parent.mkdir(parents=True, exist_ok=True)
-                    if member_dest.is_symlink():
-                        # Refuse to overwrite a symlink with a regular
-                        # file (or vice versa); skip the member.
-                        continue
-                    extracted = tar.extractfile(member)
-                    if extracted is None:
-                        continue
-                    with extracted as src, open(member_dest, "wb") as dst:
-                        while True:
-                            chunk = src.read(64 * 1024)
-                            if not chunk:
-                                break
-                            dst.write(chunk)
+                return
+            # No data filter on this interpreter: write only plain files and
+            # directories, re-checking containment at write time.
+            for member in safe_members:
+                member_dest = _safe_join_under(artifact_dir_resolved, member.name)
+                if member_dest is None:
+                    continue
+                if member.isdir():
+                    member_dest.mkdir(parents=True, exist_ok=True)
+                    continue
+                if not member.isreg():
+                    continue
+                member_dest.parent.mkdir(parents=True, exist_ok=True)
+                if member_dest.is_symlink():
+                    continue
+                extracted = tar.extractfile(member)
+                if extracted is None:
+                    continue
+                with extracted as src, open(member_dest, "wb") as dst:
+                    shutil.copyfileobj(src, dst, 64 * 1024)
 
     def _extract_zip(self, archive_path: Path, artifact_dir: Path, plan: MaterializationPlan) -> None:
         policy = plan.safety_policy
         total_unpacked = 0
         with zipfile.ZipFile(archive_path) as z:
             for info in z.infolist():
-                # zipfile has no symlink/hardlink concept by default.
+                if (info.external_attr >> 16) & 0o170000 == 0o120000 and not policy.allow_symlinks:
+                    continue
                 target_name = self._apply_strip_prefix(info.filename, plan.strip_prefix)
                 if target_name is None:
                     continue
                 if not _safe_relative(target_name):
                     continue
-                total_unpacked += info.file_size
-                if total_unpacked > policy.max_total_uncompressed_bytes:
-                    raise OctomilError(
-                        code=OctomilErrorCode.INVALID_INPUT,
-                        message=(
-                            f"Materializer: zip {archive_path.name!r} exceeds safety policy "
-                            f"max_total_uncompressed_bytes; refusing."
-                        ),
-                    )
+                if total_unpacked + info.file_size > policy.max_total_uncompressed_bytes:
+                    raise self._zip_too_large(archive_path)
                 # Reviewer P1: resolve the destination under
                 # ``artifact_dir`` and verify containment. A
                 # pre-existing ``artifact_dir/linkdir → /tmp/outside``
@@ -406,12 +378,23 @@ class Materializer:
                 # symlink, but defense in depth).
                 if dest.is_symlink():
                     continue
+                # Header sizes can lie; count what is actually written.
                 with z.open(info) as src, open(dest, "wb") as dst:
-                    while True:
-                        chunk = src.read(64 * 1024)
-                        if not chunk:
-                            break
+                    while chunk := src.read(64 * 1024):
+                        total_unpacked += len(chunk)
+                        if total_unpacked > policy.max_total_uncompressed_bytes:
+                            raise self._zip_too_large(archive_path)
                         dst.write(chunk)
+
+    @staticmethod
+    def _zip_too_large(archive_path: Path) -> OctomilError:
+        return OctomilError(
+            code=OctomilErrorCode.INVALID_INPUT,
+            message=(
+                f"Materializer: zip {archive_path.name!r} exceeds safety policy "
+                f"max_total_uncompressed_bytes; refusing."
+            ),
+        )
 
     # ------------------------------------------------------------------
     # Helpers
