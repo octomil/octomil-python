@@ -25,7 +25,7 @@ from .types import GenerationRequest
 
 try:
     # Module-level so FastAPI can resolve the string annotations under `from __future__ import annotations`.
-    from fastapi import File, UploadFile
+    from fastapi import Request
 except ImportError:  # pragma: no cover
     pass
 
@@ -1524,7 +1524,7 @@ def create_app(
 
     @app.post("/v1/audio/transcriptions")
     async def transcribe_audio(
-        file: UploadFile = File(...),
+        request: Request,
         model: str = "",
     ) -> dict[str, Any]:
         """OpenAI Whisper API-compatible audio transcription endpoint.
@@ -1542,6 +1542,15 @@ def create_app(
         import tempfile
 
         from fastapi import HTTPException
+
+        # Parsed in-handler so python-multipart stays optional at route registration.
+        try:
+            form = await request.form()
+        except AssertionError:
+            raise HTTPException(status_code=501, detail="Audio upload requires python-multipart") from None
+        file = form.get("file")
+        if file is None or isinstance(file, str):
+            raise HTTPException(status_code=422, detail="Missing 'file' upload")
 
         filename = file.filename or "audio.wav"
         suffix = os.path.splitext(filename)[1] or ".wav"
