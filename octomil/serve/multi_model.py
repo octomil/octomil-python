@@ -51,6 +51,7 @@ def create_multi_model_app(
     cache_enabled: bool = True,
     engine: Optional[str] = None,
     route_strategy: str = "complexity",
+    auth_token: Optional[str] = None,
 ) -> Any:
     """Create a FastAPI app that loads multiple models and routes queries.
 
@@ -64,7 +65,6 @@ def create_multi_model_app(
     from contextlib import asynccontextmanager
 
     from fastapi import FastAPI, Request  # noqa: F811
-    from fastapi.middleware.cors import CORSMiddleware
     from fastapi.responses import JSONResponse, StreamingResponse
 
     from ..decomposer import ResultMerger, SubTaskResult
@@ -167,13 +167,6 @@ def create_multi_model_app(
                 "category": classification.category.value if classification else "unknown",
             },
         )
-
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=["*"],
-        allow_methods=["*"],
-        allow_headers=["*"],
-    )
 
     @app.get("/v1/models")
     async def list_models() -> dict[str, Any]:
@@ -628,6 +621,10 @@ def create_multi_model_app(
         resp.headers["X-Octomil-Tier"] = ordered_results[0].tier
         return resp
 
+    from .security import install_security
+
+    install_security(app, auth_token)
+
     return app
 
 
@@ -635,7 +632,7 @@ def run_multi_model_server(
     model_names: list[str],
     *,
     port: int = 8080,
-    host: str = "0.0.0.0",
+    host: str = "127.0.0.1",
     api_key: Optional[str] = None,
     api_base: str = "https://api.octomil.com/api/v1",
     json_mode: bool = False,
@@ -643,6 +640,7 @@ def run_multi_model_server(
     cache_enabled: bool = True,
     engine: Optional[str] = None,
     route_strategy: str = "complexity",
+    auth_token: Optional[str] = None,
 ) -> None:
     """Start a multi-model inference server with query routing (blocking).
 
@@ -664,5 +662,6 @@ def run_multi_model_server(
         cache_enabled=cache_enabled,
         engine=engine,
         route_strategy=route_strategy,
+        auth_token=auth_token,
     )
     uvicorn.run(app, host=host, port=port, log_level="info")

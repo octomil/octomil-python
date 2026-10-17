@@ -23,6 +23,14 @@ from .models import ChatCompletionBody
 from .streaming import _queued_stream_response, _stream_response
 from .types import GenerationRequest
 
+try:
+    # Module-level so FastAPI can resolve the string annotations under `from __future__ import annotations`.
+    from fastapi import Request
+except ImportError:  # pragma: no cover
+    pass
+
+_MAX_UPLOAD_BYTES = 25 * 1024 * 1024
+
 if TYPE_CHECKING:
     from ..early_exit import EarlyExitConfig
 
@@ -306,6 +314,7 @@ def create_app(
     verbose: bool = False,
     cloud_config: Optional[CloudConfig] = None,
     config_set: Any = None,
+    auth_token: Optional[str] = None,
 ) -> Any:
     """Create a FastAPI app with OpenAI-compatible endpoints.
 
@@ -347,8 +356,7 @@ def create_app(
     """
     from contextlib import asynccontextmanager
 
-    from fastapi import FastAPI, Request
-    from fastapi.middleware.cors import CORSMiddleware
+    from fastapi import FastAPI
     from fastapi.responses import JSONResponse, StreamingResponse
 
     from ..errors import OctomilError, OctomilErrorCode  # noqa: F811
@@ -640,13 +648,6 @@ def create_app(
             },
         )
 
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=["*"],
-        allow_methods=["*"],
-        allow_headers=["*"],
-    )
-
     @app.middleware("http")
     async def agent_context_middleware(request, call_next):  # type: ignore[no-untyped-def]
         """Log and store agent context from the X-Octomil-Agent-Context header.
@@ -656,7 +657,7 @@ def create_app(
         """
         agent_ctx = request.headers.get("X-Octomil-Agent-Context")
         if agent_ctx:
-            logger.info("Agent context: %s", agent_ctx)
+            logger.info("Agent context: %r", agent_ctx[:512])
             # Store on request state for downstream use
             request.state.agent_context = agent_ctx
         else:
@@ -1523,7 +1524,7 @@ def create_app(
 
     @app.post("/v1/audio/transcriptions")
     async def transcribe_audio(
-        file: Any = None,
+        request: Request,
         model: str = "",
     ) -> dict[str, Any]:
         """OpenAI Whisper API-compatible audio transcription endpoint.
@@ -1537,19 +1538,31 @@ def create_app(
                 message="No whisper model loaded. Start server with a whisper model: octomil serve whisper-base",
             )
 
-        if file is None:
-            raise OctomilError(code=OctomilErrorCode.INVALID_INPUT, message="No audio file provided")
-
         # Save uploaded file to a temp location
         import tempfile
 
-        filename = getattr(file, "filename", "audio.wav") or "audio.wav"
+        from fastapi import HTTPException
+
+        # Parsed in-handler so python-multipart stays optional at route registration.
+        try:
+            form = await request.form()
+        except AssertionError:
+            raise HTTPException(status_code=501, detail="Audio upload requires python-multipart") from None
+        file = form.get("file")
+        if file is None or isinstance(file, str):
+            raise HTTPException(status_code=422, detail="Missing 'file' upload")
+
+        filename = file.filename or "audio.wav"
         suffix = os.path.splitext(filename)[1] or ".wav"
         fd, tmp_path = tempfile.mkstemp(suffix=suffix)
         try:
-            content = await file.read()
-            os.write(fd, content)
-            os.close(fd)
+            with os.fdopen(fd, "wb") as out:
+                written = 0
+                while chunk := await file.read(1024 * 1024):
+                    written += len(chunk)
+                    if written > _MAX_UPLOAD_BYTES:
+                        raise HTTPException(status_code=413, detail="Audio file too large")
+                    out.write(chunk)
 
             state.request_count += 1
             result: dict[str, Any] = state.whisper_backend.transcribe(tmp_path)
@@ -1875,6 +1888,10 @@ def create_app(
 
     register_anthropic_routes(app, state)
 
+    from .security import install_security
+
+    install_security(app, auth_token)
+
     return app
 
 
@@ -1882,7 +1899,7 @@ def run_server(
     model_name: str,
     *,
     port: int = 8080,
-    host: str = "0.0.0.0",
+    host: str = "127.0.0.1",
     api_key: Optional[str] = None,
     api_base: str = "https://api.octomil.com/api/v1",
     json_mode: bool = False,
@@ -1901,6 +1918,7 @@ def run_server(
     verbose: bool = False,
     cloud_config: Optional[CloudConfig] = None,
     config_set: Any = None,
+    auth_token: Optional[str] = None,
 ) -> None:
     """Start the inference server (blocking).
 
@@ -1958,5 +1976,6 @@ def run_server(
         verbose=verbose,
         cloud_config=cloud_config,
         config_set=config_set,
+        auth_token=auth_token,
     )
     uvicorn.run(app, host=host, port=port, log_level="info")

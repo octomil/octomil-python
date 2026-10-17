@@ -28,8 +28,10 @@ def generate_token(token_file: Path) -> str:
     """Generate a secure bearer token and write it to a file with 0600 permissions."""
     token = secrets.token_urlsafe(48)
     token_file.parent.mkdir(parents=True, exist_ok=True)
-    token_file.write_text(token)
-    os.chmod(token_file, 0o600)
+    fd = os.open(token_file, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as fh:
+        fh.write(token)
+    os.chmod(token_file, 0o600)  # O_CREAT mode is ignored when the file already exists
     return token
 
 
@@ -138,7 +140,7 @@ def run_local_runner(
 
         # Check bearer token
         auth = request.headers.get("Authorization", "")
-        if not auth.startswith("Bearer ") or auth[7:] != token:
+        if not auth.startswith("Bearer ") or not secrets.compare_digest(auth[7:].encode(), token.encode()):
             return JSONResponse(status_code=401, content={"error": "Unauthorized"})
 
         # Record activity for idle watchdog

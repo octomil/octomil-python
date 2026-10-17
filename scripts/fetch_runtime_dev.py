@@ -59,6 +59,7 @@ import subprocess
 import sys
 import tarfile
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 
@@ -128,6 +129,20 @@ def _legacy_asset_name(arch: str, version: str) -> str | None:
     return None
 
 
+class _StripAuthOnCrossHostRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):  # type: ignore[no-untyped-def]
+        new = super().redirect_request(req, fp, code, msg, headers, newurl)
+        if new is not None and urllib.parse.urlsplit(newurl).netloc != urllib.parse.urlsplit(req.full_url).netloc:
+            for h in list(new.headers):
+                if h.lower() in ("authorization", "cookie"):
+                    del new.headers[h]
+            new.unredirected_hdrs.pop("Authorization", None)
+        return new
+
+
+_opener = urllib.request.build_opener(_StripAuthOnCrossHostRedirect)
+
+
 def _download(url: str, dest: Path, token: str) -> None:
     req = urllib.request.Request(
         url,
@@ -139,7 +154,7 @@ def _download(url: str, dest: Path, token: str) -> None:
     )
     print(f"  download {url}")
     try:
-        with urllib.request.urlopen(req, timeout=120) as resp:
+        with _opener.open(req, timeout=120) as resp:
             with dest.open("wb") as fh:
                 shutil.copyfileobj(resp, fh)
     except urllib.error.HTTPError as e:
@@ -161,7 +176,7 @@ def _release_assets_via_api(version: str, token: str) -> dict[str, dict]:
             "User-Agent": "octomil-python/fetch_runtime_dev.py",
         },
     )
-    with urllib.request.urlopen(req, timeout=30) as resp:
+    with _opener.open(req, timeout=30) as resp:
         data = json.load(resp)
     return {a["name"]: a for a in data.get("assets", [])}
 
@@ -473,6 +488,15 @@ def main() -> int:
         action="store_true",
         help="re-download and re-extract even if the cache is populated",
     )
+    p.add_argument(
+        "--sums-sha256",
+        default=os.environ.get("OCTOMIL_RUNTIME_SHA256SUMS_DIGEST"),
+        help=(
+            "expected sha256 of the release's SHA256SUMS file, obtained out-of-band. "
+            "Without it, checksums come from the same release as the artifacts and only "
+            "detect corruption, not a compromised release. Also reads OCTOMIL_RUNTIME_SHA256SUMS_DIGEST."
+        ),
+    )
     args = p.parse_args()
 
     version = args.version
@@ -582,6 +606,13 @@ def main() -> int:
                 raise SystemExit(f"error: release {version} missing asset {required!r}")
             _download(assets[required]["url"], work / required, token)
 
+        if args.sums_sha256:
+            if _sha256(work / sums_name) != args.sums_sha256.strip().lower():
+                raise SystemExit(f"error: {sums_name} does not match the pinned --sums-sha256 digest")
+        else:
+            print(
+                f"  warning: {sums_name} is unpinned (same release as the artifacts); pass --sums-sha256 to authenticate it"
+            )
         _verify_sha256(work / bin_name, work / sums_name)
         if headers_name is not None:
             _verify_sha256(work / headers_name, work / sums_name)
@@ -616,7 +647,10 @@ def main() -> int:
         # non-force run treats the cache as valid only if this file
         # exists. Codex R2 missed-case fix.
         # Record version and flavor so the content is self-describing.
-        sentinel.write_text(f"{version}\n{flavor}\n", encoding="utf-8")
+        # Line 3 pins the dylib digest; the loader re-hashes before dlopen.
+        sentinel.write_text(
+            f"{version}\n{flavor}\n{_sha256(resolved_dylib)}  {resolved_dylib.name}\n", encoding="utf-8"
+        )
     finally:
         # Clean up the download scratch dir whether we succeeded or
         # bailed on a sha256 mismatch / missing asset / extraction

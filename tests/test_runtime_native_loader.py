@@ -115,6 +115,18 @@ def runtime_dylib() -> Path:
 # ---------------------------------------------------------------------------
 
 
+
+def _write_sentinel(lib: Path, header: str) -> None:
+    """Write a sentinel that pins the sha256 of every runtime dylib already in ``lib``."""
+    import hashlib
+
+    import octomil.runtime.native.loader as loader
+
+    pins = "".join(
+        f"{hashlib.sha256(f.read_bytes()).hexdigest()}  {f.name}\n" for f in sorted(lib.glob("liboctomil-runtime*"))
+    )
+    (lib / loader._EXTRACTION_SENTINEL).write_text(header + pins)
+
 def test_abi_version_returns_three_tuple():
     from octomil.runtime.native import abi_version
 
@@ -505,7 +517,7 @@ def test_resolve_dylib_returns_newest_cached_version(monkeypatch, tmp_path: Path
         dylib = lib / "liboctomil-runtime.dylib"
         dylib.write_bytes(b"\x00")  # not actually loaded; just must exist
         if with_sentinel:
-            (lib / loader._EXTRACTION_SENTINEL).write_text(version + "\n")
+            _write_sentinel(lib, version + "\n")
         return dylib
 
     older = make_cached_dylib("v0.0.2")
@@ -1502,7 +1514,7 @@ def test_fetched_dylib_candidates_new_flavor_keyed_layout(monkeypatch, tmp_path:
         lib = tmp_path / version / flavor / "lib"
         lib.mkdir(parents=True)
         (lib / "liboctomil-runtime.dylib").write_bytes(b"\x00")
-        (lib / loader._EXTRACTION_SENTINEL).write_text(f"{version}\n{flavor}\n")
+        _write_sentinel(lib, f"{version}\n{flavor}\n")
 
     monkeypatch.setattr(loader, "_FETCH_CACHE_ROOT", tmp_path)
     candidates = loader._fetched_dylib_candidates()
@@ -1522,7 +1534,7 @@ def test_fetched_dylib_candidates_legacy_layout(monkeypatch, tmp_path: Path):
     lib.mkdir(parents=True)
     dylib = lib / "liboctomil-runtime.dylib"
     dylib.write_bytes(b"\x00")
-    (lib / loader._EXTRACTION_SENTINEL).write_text(version + "\n")
+    _write_sentinel(lib, version + "\n")
 
     monkeypatch.setattr(loader, "_FETCH_CACHE_ROOT", tmp_path)
     candidates = loader._fetched_dylib_candidates()
@@ -1543,7 +1555,7 @@ def test_fetched_dylib_candidates_no_cross_flavor_contamination(monkeypatch, tmp
     for lib, flavor in ((chat_lib, "chat"), (stt_lib, "stt")):
         lib.mkdir(parents=True)
         (lib / "liboctomil-runtime.dylib").write_bytes(b"\x00")
-        (lib / loader._EXTRACTION_SENTINEL).write_text(f"{version}\n{flavor}\n")
+        _write_sentinel(lib, f"{version}\n{flavor}\n")
 
     monkeypatch.setattr(loader, "_FETCH_CACHE_ROOT", tmp_path)
     monkeypatch.delenv(loader._ENV_FLAVOR, raising=False)
@@ -1573,14 +1585,14 @@ def test_fetched_dylib_candidates_mixed_legacy_and_new(monkeypatch, tmp_path: Pa
     legacy_lib.mkdir(parents=True)
     legacy_dylib = legacy_lib / "liboctomil-runtime.dylib"
     legacy_dylib.write_bytes(b"\x00")
-    (legacy_lib / loader._EXTRACTION_SENTINEL).write_text("v0.1.4\n")
+    _write_sentinel(legacy_lib, "v0.1.4\n")
 
     # New flavor-keyed slice: v0.1.5/chat/lib/
     new_lib = tmp_path / "v0.1.5" / "chat" / "lib"
     new_lib.mkdir(parents=True)
     new_dylib = new_lib / "liboctomil-runtime.dylib"
     new_dylib.write_bytes(b"\x00")
-    (new_lib / loader._EXTRACTION_SENTINEL).write_text("v0.1.5\nchat\n")
+    _write_sentinel(new_lib, "v0.1.5\nchat\n")
 
     monkeypatch.setattr(loader, "_FETCH_CACHE_ROOT", tmp_path)
     monkeypatch.delenv("OCTOMIL_RUNTIME_DYLIB", raising=False)
@@ -1634,7 +1646,7 @@ def test_both_flavors_cached_default_resolves_chat(monkeypatch, tmp_path: Path):
         lib = tmp_path / version / flavor / "lib"
         lib.mkdir(parents=True)
         (lib / "liboctomil-runtime.dylib").write_bytes(b"\x00")
-        (lib / loader._EXTRACTION_SENTINEL).write_text(f"{version}\n{flavor}\n")
+        _write_sentinel(lib, f"{version}\n{flavor}\n")
 
     monkeypatch.setattr(loader, "_FETCH_CACHE_ROOT", tmp_path)
     monkeypatch.delenv(loader._ENV_FLAVOR, raising=False)
@@ -1661,7 +1673,7 @@ def test_env_flavor_stt_selects_stt(monkeypatch, tmp_path: Path):
         lib = tmp_path / version / flavor / "lib"
         lib.mkdir(parents=True)
         (lib / "liboctomil-runtime.dylib").write_bytes(b"\x00")
-        (lib / loader._EXTRACTION_SENTINEL).write_text(f"{version}\n{flavor}\n")
+        _write_sentinel(lib, f"{version}\n{flavor}\n")
 
     monkeypatch.setattr(loader, "_FETCH_CACHE_ROOT", tmp_path)
     monkeypatch.setenv(loader._ENV_FLAVOR, "stt")
@@ -1688,7 +1700,7 @@ def test_env_flavor_tts_selects_tts(monkeypatch, tmp_path: Path):
         lib = tmp_path / version / flavor / "lib"
         lib.mkdir(parents=True)
         (lib / "liboctomil-runtime.dylib").write_bytes(b"\x00")
-        (lib / loader._EXTRACTION_SENTINEL).write_text(f"{version}\n{flavor}\n")
+        _write_sentinel(lib, f"{version}\n{flavor}\n")
 
     monkeypatch.setattr(loader, "_FETCH_CACHE_ROOT", tmp_path)
     monkeypatch.setenv(loader._ENV_FLAVOR, "tts")
@@ -1714,7 +1726,7 @@ def test_env_flavor_invalid_raises(monkeypatch, tmp_path: Path):
     lib = tmp_path / version / "chat" / "lib"
     lib.mkdir(parents=True)
     (lib / "liboctomil-runtime.dylib").write_bytes(b"\x00")
-    (lib / loader._EXTRACTION_SENTINEL).write_text(f"{version}\nchat\n")
+    _write_sentinel(lib, f"{version}\nchat\n")
 
     monkeypatch.setattr(loader, "_FETCH_CACHE_ROOT", tmp_path)
     monkeypatch.setenv(loader._ENV_FLAVOR, "bogus")
@@ -1738,14 +1750,14 @@ def test_env_flavor_override_applies_to_new_layout_legacy_unaffected(monkeypatch
     legacy_lib.mkdir(parents=True)
     legacy_dylib = legacy_lib / "liboctomil-runtime.dylib"
     legacy_dylib.write_bytes(b"\x00")
-    (legacy_lib / loader._EXTRACTION_SENTINEL).write_text("v0.1.4\n")
+    _write_sentinel(legacy_lib, "v0.1.4\n")
 
     # New-layout stt: v0.1.5/stt/lib/
     stt_lib = tmp_path / "v0.1.5" / "stt" / "lib"
     stt_lib.mkdir(parents=True)
     stt_dylib = stt_lib / "liboctomil-runtime.dylib"
     stt_dylib.write_bytes(b"\x00")
-    (stt_lib / loader._EXTRACTION_SENTINEL).write_text("v0.1.5\nstt\n")
+    _write_sentinel(stt_lib, "v0.1.5\nstt\n")
 
     monkeypatch.setattr(loader, "_FETCH_CACHE_ROOT", tmp_path)
     monkeypatch.setenv(loader._ENV_FLAVOR, "stt")
@@ -1764,3 +1776,32 @@ def test_env_flavor_override_applies_to_new_layout_legacy_unaffected(monkeypatch
 
     resolved = loader._resolve_dylib()
     assert resolved == stt_dylib, f"_resolve_dylib must pick stt when OCTOMIL_RUNTIME_FLAVOR=stt; got {resolved}"
+
+
+def test_resolve_dylib_rejects_tampered_cache(monkeypatch, tmp_path: Path):
+    import octomil.runtime.native.loader as loader
+
+    lib = tmp_path / "v0.1.5" / "chat" / "lib"
+    lib.mkdir(parents=True)
+    dylib = lib / "liboctomil-runtime.dylib"
+    dylib.write_bytes(b"\x00")
+    _write_sentinel(lib, "v0.1.5\nchat\n")
+    monkeypatch.delenv("OCTOMIL_RUNTIME_DYLIB", raising=False)
+    monkeypatch.delenv(loader._ENV_FLAVOR, raising=False)
+    monkeypatch.setattr(loader, "_FETCH_CACHE_ROOT", tmp_path)
+    assert loader._resolve_dylib() == dylib
+
+    dylib.write_bytes(b"\x01")
+    with pytest.raises(ImportError):
+        loader._resolve_dylib()
+
+
+def test_env_override_sha_pin(monkeypatch, tmp_path: Path):
+    import octomil.runtime.native.loader as loader
+
+    dylib = tmp_path / "liboctomil-runtime.dylib"
+    dylib.write_bytes(b"abc")
+    monkeypatch.setenv(loader.ENV_DYLIB_OVERRIDE, str(dylib))
+    monkeypatch.setenv(loader.ENV_DYLIB_OVERRIDE_SHA256, "0" * 64)
+    with pytest.raises(ImportError):
+        loader._resolve_dylib()

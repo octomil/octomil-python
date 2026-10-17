@@ -66,6 +66,16 @@ async def test_http_error_returns_error_result():
     assert result.tool_call_id == "tc_test_1"
     assert result.is_error is True
     assert "500" in result.content
+    assert "Internal Server Error" not in result.content
+
+
+@pytest.mark.asyncio
+async def test_malformed_arguments_return_error_result():
+    executor = RemoteToolExecutor(base_url="https://api.example.com", session_id="s", auth_token="t")
+    call = ResponseToolCall(id="tc_bad", name="x", arguments="{not json")
+    result = await executor.execute(call)
+    assert result.is_error is True
+    assert result.tool_call_id == "tc_bad"
 
 
 @pytest.mark.asyncio

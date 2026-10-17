@@ -18,6 +18,7 @@ from typing import Any
 import httpx
 
 from octomil.errors import OctomilError, OctomilErrorCode
+from octomil.runtime.lifecycle._fs_key import safe_filesystem_key
 from octomil.runtime.lifecycle.artifact_cache import ArtifactCache, _compute_sha256
 from octomil.runtime.lifecycle.file_lock import FileLock
 
@@ -212,9 +213,9 @@ def _filename_from_url(url: str, fallback: str) -> str:
     path = parsed.path.rstrip("/")
     if "/" in path:
         name = path.rsplit("/", 1)[1]
-        if name:
+        if name not in ("", ".", "..") and "\\" not in name:
             return name
-    return fallback.replace("/", "_")
+    return safe_filesystem_key(fallback)
 
 
 def _get_content_length(response: Any, offset: int) -> int | None:

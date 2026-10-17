@@ -30,13 +30,13 @@ class RemoteToolExecutor(ToolExecutor):
     async def execute(self, call: ResponseToolCall) -> ToolResult:
         url = f"{self._base_url}/api/v1/agents/sessions/{self._session_id}/execute"
         headers = {"Authorization": f"Bearer {self._auth_token}"}
-        payload = {
-            "tool_name": call.name,
-            "arguments": json.loads(call.arguments),
-            "tool_call_id": call.id,
-        }
 
         try:
+            payload = {
+                "tool_name": call.name,
+                "arguments": json.loads(call.arguments),
+                "tool_call_id": call.id,
+            }
             async with httpx.AsyncClient(timeout=30.0) as client:
                 resp = await client.post(url, json=payload, headers=headers)
                 resp.raise_for_status()
@@ -49,7 +49,7 @@ class RemoteToolExecutor(ToolExecutor):
         except httpx.HTTPStatusError as e:
             return ToolResult(
                 tool_call_id=call.id,
-                content=f"HTTP {e.response.status_code}: {e.response.text}",
+                content=f"Remote tool execution failed: HTTP {e.response.status_code}",
                 is_error=True,
             )
         except (httpx.RequestError, json.JSONDecodeError, KeyError) as e:

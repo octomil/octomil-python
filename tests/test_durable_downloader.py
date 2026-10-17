@@ -541,3 +541,27 @@ def test_module_import_does_not_require_sqlite3(monkeypatch):
     finally:
         for k, v in real_sqlite_modules.items():
             sys.modules[k] = v
+
+
+def test_cross_host_redirect_drops_custom_headers() -> None:
+    import httpx
+
+    from octomil.runtime.lifecycle.durable_download import _strip_headers_cross_host
+
+    seen: dict[str, dict[str, str]] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen[request.url.host] = dict(request.headers)
+        if request.url.host == "origin.example":
+            return httpx.Response(302, headers={"location": "https://cdn.example/f"})
+        return httpx.Response(200, content=b"ok")
+
+    hdrs = {"X-Api-Key": "secret"}
+    client = httpx.Client(
+        transport=httpx.MockTransport(handler),
+        follow_redirects=True,
+        event_hooks={"request": [_strip_headers_cross_host("https://origin.example/f", hdrs)]},
+    )
+    client.get("https://origin.example/f", headers=hdrs)
+    assert seen["origin.example"]["x-api-key"] == "secret"
+    assert "x-api-key" not in seen["cdn.example"]

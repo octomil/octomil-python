@@ -557,6 +557,41 @@ def test_materializer_enforces_max_uncompressed_size(tmp_path):
         Materializer().materialize(artifact_dir, plan)
 
 
+def test_materializer_zip_skips_symlink_entries_by_default(tmp_path):
+    import zipfile
+
+    artifact_dir = tmp_path / "artifact"
+    artifact_dir.mkdir()
+    archive = artifact_dir / "link.zip"
+    with zipfile.ZipFile(archive, "w") as z:
+        info = zipfile.ZipInfo("link")
+        info.external_attr = (0o120777) << 16
+        z.writestr(info, "/etc/passwd")
+        z.writestr("ok.txt", "ok")
+    plan = MaterializationPlan(kind="archive", source="link.zip", archive_format="zip")
+    Materializer().materialize(artifact_dir, plan)
+    assert (artifact_dir / "ok.txt").exists()
+    assert not (artifact_dir / "link").exists()
+
+
+def test_materializer_tar_fallback_without_data_filter_writes_only_regular_files(tmp_path, monkeypatch):
+    artifact_dir = tmp_path / "artifact"
+    artifact_dir.mkdir()
+    src = tmp_path / "f.txt"
+    src.write_text("hi")
+    tarball = artifact_dir / "a.tar"
+    with tarfile.open(tarball, "w") as tar:
+        tar.add(src, arcname="f.txt")
+        fifo = tarfile.TarInfo("pipe")
+        fifo.type = tarfile.FIFOTYPE
+        tar.addfile(fifo)
+    monkeypatch.delattr(tarfile, "data_filter", raising=False)
+    plan = MaterializationPlan(kind="archive", source="a.tar", archive_format="tar")
+    Materializer().materialize(artifact_dir, plan)
+    assert (artifact_dir / "f.txt").read_text() == "hi"
+    assert not (artifact_dir / "pipe").exists()
+
+
 # ---------------------------------------------------------------------------
 # Idempotency: marker logic + partial extraction handling
 # ---------------------------------------------------------------------------

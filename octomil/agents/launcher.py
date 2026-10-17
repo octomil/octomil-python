@@ -617,14 +617,18 @@ def start_serve_background(model: str, port: int = 8080, timeout: int = 600) -> 
     """
     log_path = os.path.join(os.path.expanduser("~"), ".cache", "octomil", "serve.log")
     os.makedirs(os.path.dirname(log_path), exist_ok=True)
-    log_file = open(log_path, "w")  # noqa: SIM115
+    log_file = os.fdopen(os.open(log_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w")
 
     cmd = _build_serve_cmd(model, port)
-    proc = subprocess.Popen(
-        cmd,
-        stdout=log_file,
-        stderr=subprocess.STDOUT,
-    )
+    try:
+        proc = subprocess.Popen(
+            cmd,
+            stdout=log_file,
+            stderr=subprocess.STDOUT,
+        )
+    except BaseException:
+        log_file.close()
+        raise
     click.echo(f"Waiting for model to load (log: {log_path})...")
     for i in range(timeout):
         if proc.poll() is not None:

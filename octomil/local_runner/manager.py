@@ -324,6 +324,9 @@ class LocalRunnerManager:
     def _kill_runner(self, manifest: RunnerManifest) -> None:
         """Send SIGTERM to the runner process, then SIGKILL if needed."""
         pid = manifest.pid
+        if not self._pid_is_runner(pid, manifest.port):
+            logger.warning("PID %d is not the local runner (stale manifest); not signalling it.", pid)
+            return
         try:
             os.kill(pid, signal.SIGTERM)
             # Wait briefly for graceful shutdown
@@ -337,6 +340,20 @@ class LocalRunnerManager:
             pass
         except PermissionError:
             logger.warning("Permission denied killing PID %d", pid)
+
+    @staticmethod
+    def _pid_is_runner(pid: int, port: int) -> bool:
+        """True only if ``pid``'s command line is our ``_local-runner-serve`` on ``port``."""
+        if pid <= 1:
+            return False
+        try:
+            out = subprocess.run(
+                ["ps", "-p", str(pid), "-o", "args="], capture_output=True, text=True, timeout=5, check=False
+            ).stdout
+        except (OSError, subprocess.SubprocessError):
+            return False
+        args = out.split()
+        return "_local-runner-serve" in args and ("--port", str(port)) in zip(args, args[1:])
 
     @staticmethod
     def _pid_exists(pid: int) -> bool:

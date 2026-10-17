@@ -152,7 +152,7 @@ class OllamaSource(SourceBackend):
         logger.info("Pulling %s via ollama CLI...", ref)
         try:
             subprocess.run(
-                ["ollama", "pull", ref],
+                ["ollama", "pull", "--", ref],
                 check=True,
                 capture_output=True,
                 text=True,

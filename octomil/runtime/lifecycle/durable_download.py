@@ -107,6 +107,19 @@ class RequiredFile:
     size_bytes: int | None = None
 
 
+def _strip_headers_cross_host(origin_url: str, sensitive: dict[str, str]) -> Any:
+    """Request hook that drops endpoint-supplied headers once a redirect leaves the origin host."""
+    origin_host = httpx.URL(origin_url).host
+    names = {k.lower() for k in sensitive} - {"range"}
+
+    def hook(request: httpx.Request) -> None:
+        if request.url.host != origin_host:
+            for name in names:
+                request.headers.pop(name, None)
+
+    return hook
+
+
 def _validate_relative_path(relative_path: str) -> str:
     """Reject planner-supplied paths that could escape the artifact dir.
 
@@ -489,7 +502,11 @@ class DurableDownloader:
         if offset > 0:
             headers["Range"] = f"bytes={offset}-"
 
-        client = self._client or httpx.Client(timeout=self._timeout, follow_redirects=True)
+        client = self._client or httpx.Client(
+            timeout=self._timeout,
+            follow_redirects=True,
+            event_hooks={"request": [_strip_headers_cross_host(url, headers)]},
+        )
         owns_client = self._client is None
         try:
             with client.stream("GET", url, headers=headers) as response:
