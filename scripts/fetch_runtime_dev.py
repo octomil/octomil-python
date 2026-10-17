@@ -610,7 +610,9 @@ def main() -> int:
             if _sha256(work / sums_name) != args.sums_sha256.strip().lower():
                 raise SystemExit(f"error: {sums_name} does not match the pinned --sums-sha256 digest")
         else:
-            print(f"  warning: {sums_name} is unpinned (same release as the artifacts); pass --sums-sha256 to authenticate it")
+            print(
+                f"  warning: {sums_name} is unpinned (same release as the artifacts); pass --sums-sha256 to authenticate it"
+            )
         _verify_sha256(work / bin_name, work / sums_name)
         if headers_name is not None:
             _verify_sha256(work / headers_name, work / sums_name)
@@ -646,7 +648,9 @@ def main() -> int:
         # exists. Codex R2 missed-case fix.
         # Record version and flavor so the content is self-describing.
         # Line 3 pins the dylib digest; the loader re-hashes before dlopen.
-        sentinel.write_text(f"{version}\n{flavor}\n{_sha256(resolved_dylib)}  {resolved_dylib.name}\n", encoding="utf-8")
+        sentinel.write_text(
+            f"{version}\n{flavor}\n{_sha256(resolved_dylib)}  {resolved_dylib.name}\n", encoding="utf-8"
+        )
     finally:
         # Clean up the download scratch dir whether we succeeded or
         # bailed on a sha256 mismatch / missing asset / extraction

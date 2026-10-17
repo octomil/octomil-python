@@ -391,8 +391,7 @@ class Materializer:
         return OctomilError(
             code=OctomilErrorCode.INVALID_INPUT,
             message=(
-                f"Materializer: zip {archive_path.name!r} exceeds safety policy "
-                f"max_total_uncompressed_bytes; refusing."
+                f"Materializer: zip {archive_path.name!r} exceeds safety policy max_total_uncompressed_bytes; refusing."
             ),
         )
 
